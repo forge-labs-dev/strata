@@ -386,7 +386,7 @@ async def metrics_prometheus():
                 "# TYPE strata_metadata_manifest_hits_total counter",
                 f"strata_metadata_manifest_hits_total {store_stats.get('manifest_hits', 0)}",
                 "",
-                "# HELP strata_metadata_manifest_misses_total Manifest cache misses in metadata store",
+                "# HELP strata_metadata_manifest_misses_total Manifest cache misses",
                 "# TYPE strata_metadata_manifest_misses_total counter",
                 f"strata_metadata_manifest_misses_total {store_stats.get('manifest_misses', 0)}",
                 "",
