@@ -11,7 +11,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.27", features = ["extension-module"] }
-arrow = { version = "53", features = ["ipc"] }
+arrow = { version = "57", features = ["ipc"] }
 memmap2 = "0.9"
 thiserror = "1.0"
 
