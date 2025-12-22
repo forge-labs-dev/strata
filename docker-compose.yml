@@ -1,0 +1,32 @@
+# Strata Demo Environment
+#
+# Quick start:
+#   docker compose up -d
+#   python examples/hello_world.py
+#
+# This creates a local Iceberg warehouse and runs Strata against it.
+
+services:
+  # Strata server
+  strata:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      # Mount the demo warehouse (created by setup script)
+      - ./demo-warehouse:/data/warehouse:ro
+      # Persist the cache between restarts
+      - strata-cache:/home/strata/.strata/cache
+    environment:
+      - STRATA_HOST=0.0.0.0
+      - STRATA_PORT=8765
+      - STRATA_CACHE_DIR=/home/strata/.strata/cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8765/health').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  strata-cache:

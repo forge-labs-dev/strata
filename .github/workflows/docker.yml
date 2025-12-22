@@ -1,0 +1,47 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build and test Docker image
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: strata:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start container
+        run: |
+          docker run -d --name strata-test -p 8765:8765 strata:test
+          sleep 10  # Wait for server to start
+
+      - name: Health check
+        run: |
+          curl -f http://localhost:8765/health
+
+      - name: Check metrics endpoint
+        run: |
+          curl -f http://localhost:8765/metrics
+
+      - name: Stop container
+        if: always()
+        run: |
+          docker stop strata-test || true
+          docker rm strata-test || true

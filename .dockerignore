@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.venv
+venv
+env
+.pytest_cache
+*.egg-info
+dist
+build
+
+# Rust
+rust/target
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Cache
+.strata
+demo-warehouse
+*.sqlite
+
+# Tests
+tests/
+.coverage
+htmlcov
+
+# Docs
+docs/
+*.md
+!README.md

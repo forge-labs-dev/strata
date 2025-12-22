@@ -1,0 +1,21 @@
+[package]
+name = "strata_core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust acceleration for Strata's data plane"
+
+[lib]
+name = "strata_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+arrow = { version = "53", features = ["ipc"] }
+memmap2 = "0.9"
+thiserror = "1.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

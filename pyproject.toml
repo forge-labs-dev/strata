@@ -1,0 +1,61 @@
+[project]
+name = "strata"
+version = "0.1.0"
+description = "Snapshot-aware serving layer for Iceberg tables with Arrow-based caching"
+readme = "README.md"
+authors = [
+    { name = "Fangchen Li", email = "fangchen.li@outlook.com" }
+]
+requires-python = ">=3.12"
+license = "Apache-2.0"
+keywords = ["iceberg", "arrow", "cache", "analytics", "duckdb"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+dependencies = [
+    "pyiceberg[sql-sqlite]>=0.8.0",
+    "pyarrow>=18.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "httpx>=0.28.0",
+    "duckdb>=1.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+[project.scripts]
+strata-server = "strata.server:main"
+
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+# Maturin configuration for building the Rust extension
+# Build with: maturin develop (dev) or maturin build (release)
+[tool.maturin]
+manifest-path = "rust/Cargo.toml"
+python-source = "src"
+module-name = "strata._strata_core"
+features = ["pyo3/extension-module"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

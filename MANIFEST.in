@@ -1,0 +1,5 @@
+include README.md
+include pyproject.toml
+include Cargo.toml
+recursive-include rust *
+recursive-include src *

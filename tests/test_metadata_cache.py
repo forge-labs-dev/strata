@@ -1,0 +1,761 @@
+"""Tests for metadata caching (Parquet metadata and manifest resolution)."""
+
+import tempfile
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+import pytest
+
+from strata.metadata_cache import (
+    LRUCache,
+    ManifestCache,
+    ManifestEntry,
+    ManifestResolution,
+    ParquetMetadata,
+    ParquetMetadataCache,
+    clear_all_caches,
+    get_manifest_cache,
+    get_parquet_cache,
+    reset_caches,
+)
+
+
+class TestLRUCache:
+    """Tests for the base LRU cache."""
+
+    def test_put_and_get(self):
+        """Test basic put and get operations."""
+        cache = LRUCache[str, int](max_size=10)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        assert cache.get("a") == 1
+        assert cache.get("b") == 2
+        assert cache.get("c") is None
+
+    def test_lru_eviction(self):
+        """Test that oldest entries are evicted when at capacity."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)  # This should evict "a"
+
+        assert cache.get("a") is None
+        assert cache.get("b") == 2
+        assert cache.get("c") == 3
+
+    def test_access_updates_lru_order(self):
+        """Test that accessing an entry updates its LRU position."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        # Access "a" to make it most recently used
+        cache.get("a")
+
+        # Now add "c", which should evict "b" (not "a")
+        cache.put("c", 3)
+
+        assert cache.get("a") == 1
+        assert cache.get("b") is None
+        assert cache.get("c") == 3
+
+    def test_update_existing_key(self):
+        """Test that updating an existing key works."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+        cache.put("a", 2)  # Update
+
+        assert cache.get("a") == 2
+        assert len(cache) == 1
+
+    def test_stats(self):
+        """Test cache statistics."""
+        cache = LRUCache[str, int](max_size=10)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        cache.get("a")  # Hit
+        cache.get("b")  # Hit
+        cache.get("c")  # Miss
+
+        stats = cache.stats()
+        assert stats["size"] == 2
+        assert stats["max_size"] == 10
+        assert stats["hits"] == 2
+        assert stats["misses"] == 1
+        assert stats["hit_rate"] == 2 / 3
+
+    def test_clear(self):
+        """Test clearing the cache."""
+        cache = LRUCache[str, int](max_size=10)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        cache.clear()
+
+        assert len(cache) == 0
+        assert cache.get("a") is None
+
+    def test_contains(self):
+        """Test contains check (doesn't update LRU order)."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+
+        assert "a" in cache
+        assert "b" not in cache
+
+    def test_get_with_default(self):
+        """Test get with default value."""
+        cache = LRUCache[str, int](max_size=10)
+        cache.put("a", 1)
+
+        assert cache.get("a") == 1
+        assert cache.get("b") is None
+        assert cache.get("b", 42) == 42
+        assert cache.get("a", 99) == 1  # Existing value, not default
+
+    def test_get_or_put(self):
+        """Test get_or_put computes only on miss."""
+        cache = LRUCache[str, int](max_size=10)
+        call_count = 0
+
+        def factory():
+            nonlocal call_count
+            call_count += 1
+            return 42
+
+        # First call should invoke factory
+        result1 = cache.get_or_put("a", factory)
+        assert result1 == 42
+        assert call_count == 1
+
+        # Second call should return cached value, not invoke factory
+        result2 = cache.get_or_put("a", factory)
+        assert result2 == 42
+        assert call_count == 1  # Still 1
+
+    def test_resize_shrink(self):
+        """Test resizing cache smaller evicts entries."""
+        cache = LRUCache[str, int](max_size=5)
+        for i in range(5):
+            cache.put(str(i), i)
+
+        assert len(cache) == 5
+
+        cache.resize(2)
+        assert len(cache) == 2
+        assert cache.stats()["max_size"] == 2
+        # Oldest entries (0, 1, 2) should be evicted
+        assert "0" not in cache
+        assert "1" not in cache
+        assert "2" not in cache
+        assert "3" in cache
+        assert "4" in cache
+
+    def test_resize_grow(self):
+        """Test resizing cache larger allows more entries."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+
+        cache.resize(5)
+        cache.put("c", 3)
+        cache.put("d", 4)
+
+        assert len(cache) == 4
+        assert cache.get("a") == 1  # Not evicted
+
+    def test_max_size_zero_disables_cache(self):
+        """Test max_size=0 disables caching."""
+        cache = LRUCache[str, int](max_size=0)
+        cache.put("a", 1)
+
+        assert len(cache) == 0
+        assert cache.get("a") is None
+
+    def test_evictions_counter(self):
+        """Test evictions are tracked in stats."""
+        cache = LRUCache[str, int](max_size=2)
+        cache.put("a", 1)
+        cache.put("b", 2)
+        cache.put("c", 3)  # Evicts "a"
+        cache.put("d", 4)  # Evicts "b"
+
+        stats = cache.stats()
+        assert stats["evictions"] == 2
+
+    def test_updates_counter(self):
+        """Test updates (overwrites) are tracked in stats."""
+        cache = LRUCache[str, int](max_size=10)
+        cache.put("a", 1)
+        cache.put("a", 2)  # Update
+        cache.put("a", 3)  # Update
+        cache.put("b", 1)  # New entry
+
+        stats = cache.stats()
+        assert stats["updates"] == 2
+
+
+class TestParquetMetadataCache:
+    """Tests for Parquet metadata caching."""
+
+    @pytest.fixture
+    def sample_parquet_file(self, tmp_path):
+        """Create a sample Parquet file."""
+        table = pa.table({
+            "id": [1, 2, 3, 4, 5],
+            "value": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "name": ["a", "b", "c", "d", "e"],
+        })
+        file_path = tmp_path / "test.parquet"
+        pq.write_table(table, file_path, row_group_size=2)
+        return str(file_path)
+
+    def test_get_or_load_caches_metadata(self, sample_parquet_file):
+        """Test that get_or_load caches Parquet metadata."""
+        cache = ParquetMetadataCache(max_size=10)
+
+        # First call should load
+        stats_before = cache.stats()
+        assert stats_before["misses"] == 0
+
+        meta1 = cache.get_or_load(sample_parquet_file)
+
+        stats_after = cache.stats()
+        assert stats_after["misses"] == 1  # Cache miss
+        assert stats_after["size"] == 1
+
+        # Second call should hit cache
+        meta2 = cache.get_or_load(sample_parquet_file)
+
+        stats_final = cache.stats()
+        assert stats_final["hits"] == 1  # Cache hit
+        assert stats_final["misses"] == 1  # No new misses
+
+        # Same metadata object
+        assert meta1 is meta2
+
+    def test_metadata_contains_expected_fields(self, sample_parquet_file):
+        """Test that cached metadata has all expected fields."""
+        cache = ParquetMetadataCache(max_size=10)
+        meta = cache.get_or_load(sample_parquet_file)
+
+        assert isinstance(meta, ParquetMetadata)
+        assert meta.arrow_schema is not None
+        assert meta.num_row_groups == 3  # 5 rows / 2 per group = 3 groups
+        assert len(meta.row_group_metadata) == 3
+        assert meta.parquet_schema is not None
+
+    def test_row_group_metadata_accessible(self, sample_parquet_file):
+        """Test that row group metadata is accessible from cache."""
+        cache = ParquetMetadataCache(max_size=10)
+        meta = cache.get_or_load(sample_parquet_file)
+
+        # Check we can access row group metadata
+        for i, rg_meta in enumerate(meta.row_group_metadata):
+            assert rg_meta.num_rows > 0
+            # First two groups have 2 rows, last has 1
+            if i < 2:
+                assert rg_meta.num_rows == 2
+            else:
+                assert rg_meta.num_rows == 1
+
+    def test_lru_eviction_works(self, tmp_path):
+        """Test that LRU eviction works for Parquet cache."""
+        cache = ParquetMetadataCache(max_size=2)
+
+        # Create 3 Parquet files
+        files = []
+        for i in range(3):
+            table = pa.table({"x": [i]})
+            file_path = tmp_path / f"test_{i}.parquet"
+            pq.write_table(table, file_path)
+            files.append(str(file_path))
+
+        # Load all 3 (should evict first)
+        cache.get_or_load(files[0])
+        cache.get_or_load(files[1])
+        cache.get_or_load(files[2])  # Evicts files[0]
+
+        assert cache.get(files[0]) is None
+        assert cache.get(files[1]) is not None
+        assert cache.get(files[2]) is not None
+
+
+class TestManifestCache:
+    """Tests for manifest resolution caching."""
+
+    def test_put_and_get(self):
+        """Test basic put and get operations."""
+        cache = ManifestCache(max_size=10)
+
+        resolution = ManifestResolution(
+            data_files=[
+                ManifestEntry(file_path="/data/file1.parquet", actual_path="/abs/file1.parquet"),
+                ManifestEntry(file_path="/data/file2.parquet", actual_path="/abs/file2.parquet"),
+            ]
+        )
+
+        cache.put("default", "strata.ns.table", 123, resolution)
+
+        # Same catalog+table+snapshot should hit
+        cached = cache.get("default", "strata.ns.table", 123)
+        assert cached is not None
+        assert len(cached.data_files) == 2
+        assert cached.data_files[0].file_path == "/data/file1.parquet"
+
+        # Different snapshot should miss
+        assert cache.get("default", "strata.ns.table", 124) is None
+
+        # Different table should miss
+        assert cache.get("default", "strata.ns.other", 123) is None
+
+        # Different catalog should miss
+        assert cache.get("other_catalog", "strata.ns.table", 123) is None
+
+    def test_cache_key_includes_snapshot_id(self):
+        """Test that different snapshots have different cache entries."""
+        cache = ManifestCache(max_size=10)
+
+        res1 = ManifestResolution(
+            data_files=[ManifestEntry(file_path="/data/v1.parquet", actual_path="/data/v1.parquet")]
+        )
+        res2 = ManifestResolution(
+            data_files=[ManifestEntry(file_path="/data/v2.parquet", actual_path="/data/v2.parquet")]
+        )
+
+        cache.put("default", "strata.ns.table", 1, res1)
+        cache.put("default", "strata.ns.table", 2, res2)
+
+        cached1 = cache.get("default", "strata.ns.table", 1)
+        cached2 = cache.get("default", "strata.ns.table", 2)
+
+        assert cached1.data_files[0].file_path == "/data/v1.parquet"
+        assert cached2.data_files[0].file_path == "/data/v2.parquet"
+
+    def test_lru_eviction(self):
+        """Test that LRU eviction works for manifest cache."""
+        cache = ManifestCache(max_size=2)
+
+        res1 = ManifestResolution(data_files=[])
+        res2 = ManifestResolution(data_files=[])
+        res3 = ManifestResolution(data_files=[])
+
+        cache.put("default", "table1", 1, res1)
+        cache.put("default", "table2", 1, res2)
+        cache.put("default", "table3", 1, res3)  # Evicts table1
+
+        assert cache.get("default", "table1", 1) is None
+        assert cache.get("default", "table2", 1) is not None
+        assert cache.get("default", "table3", 1) is not None
+
+
+class TestGlobalCaches:
+    """Tests for global cache singletons."""
+
+    def setup_method(self):
+        """Reset global caches before each test."""
+        reset_caches()
+
+    def test_get_parquet_cache_creates_singleton(self):
+        """Test that get_parquet_cache returns a singleton."""
+        cache1 = get_parquet_cache()
+        cache2 = get_parquet_cache()
+        assert cache1 is cache2
+
+    def test_get_manifest_cache_creates_singleton(self):
+        """Test that get_manifest_cache returns a singleton."""
+        cache1 = get_manifest_cache()
+        cache2 = get_manifest_cache()
+        assert cache1 is cache2
+
+    def test_clear_all_caches(self, tmp_path):
+        """Test that clear_all_caches clears both caches."""
+        # Create a Parquet file
+        table = pa.table({"x": [1]})
+        file_path = tmp_path / "test.parquet"
+        pq.write_table(table, file_path)
+
+        # Populate caches
+        pq_cache = get_parquet_cache()
+        manifest_cache = get_manifest_cache()
+
+        pq_cache.get_or_load(str(file_path))
+        manifest_cache.put("default", "table", 1, ManifestResolution(data_files=[]))
+
+        assert len(pq_cache._cache) == 1
+        assert len(manifest_cache._cache) == 1
+
+        # Clear all
+        clear_all_caches()
+
+        assert len(pq_cache._cache) == 0
+        assert len(manifest_cache._cache) == 0
+
+    def test_reset_caches(self):
+        """Test that reset_caches recreates new instances."""
+        cache1 = get_parquet_cache()
+        reset_caches()
+        cache2 = get_parquet_cache()
+        assert cache1 is not cache2
+
+
+class TestPlannerWithMetadataCache:
+    """Integration tests for planner with metadata caching."""
+
+    @pytest.fixture
+    def warehouse_with_table(self, tmp_path):
+        """Create a warehouse with an Iceberg table."""
+        from pyiceberg.catalog.sql import SqlCatalog
+        from pyiceberg.schema import Schema
+        from pyiceberg.types import LongType, NestedField, StringType
+
+        warehouse_path = tmp_path / "warehouse"
+        warehouse_path.mkdir()
+
+        # Use "strata" as catalog name to match what the planner expects
+        catalog = SqlCatalog(
+            "strata",
+            **{
+                "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
+                "warehouse": str(warehouse_path),
+            },
+        )
+
+        catalog.create_namespace("test_ns")
+
+        # Use LongType to match PyArrow's default int64
+        schema = Schema(
+            NestedField(1, "id", LongType()),
+            NestedField(2, "name", StringType()),
+        )
+        table = catalog.create_table("test_ns.events", schema)
+
+        # Write some data
+        batch = pa.RecordBatch.from_pydict({"id": [1, 2, 3], "name": ["a", "b", "c"]})
+        df = pa.Table.from_batches([batch])
+        table.append(df)
+
+        return {
+            "warehouse_path": warehouse_path,
+            "table_uri": f"file://{warehouse_path}#test_ns.events",
+            "catalog": catalog,
+        }
+
+    def test_planner_uses_parquet_cache(self, warehouse_with_table):
+        """Test that planner uses Parquet metadata cache."""
+        reset_caches()
+
+        from strata.config import StrataConfig
+        from strata.planner import ReadPlanner
+
+        config = StrataConfig()
+        planner = ReadPlanner(config)
+
+        table_uri = warehouse_with_table["table_uri"]
+
+        # First plan - cache miss
+        plan1 = planner.plan(table_uri)
+        assert len(plan1.tasks) > 0
+
+        pq_cache_stats = planner.parquet_cache.stats()
+        assert pq_cache_stats["misses"] >= 1
+
+        # Second plan - should use cache
+        plan2 = planner.plan(table_uri)
+        assert len(plan2.tasks) == len(plan1.tasks)
+
+        pq_cache_stats = planner.parquet_cache.stats()
+        assert pq_cache_stats["hits"] >= 1
+
+    def test_planner_uses_manifest_cache(self, warehouse_with_table):
+        """Test that planner uses manifest resolution cache."""
+        reset_caches()
+
+        from strata.config import StrataConfig
+        from strata.planner import ReadPlanner
+
+        config = StrataConfig()
+        planner = ReadPlanner(config)
+
+        table_uri = warehouse_with_table["table_uri"]
+
+        # First plan - cache miss
+        plan1 = planner.plan(table_uri)
+        assert len(plan1.tasks) > 0
+
+        manifest_stats = planner.manifest_cache.stats()
+        assert manifest_stats["misses"] >= 1
+
+        # Second plan - should use cache
+        plan2 = planner.plan(table_uri)
+        assert len(plan2.tasks) == len(plan1.tasks)
+
+        manifest_stats = planner.manifest_cache.stats()
+        assert manifest_stats["hits"] >= 1
+
+    def test_different_snapshots_use_different_cache_entries(self, warehouse_with_table):
+        """Test that different snapshots don't share manifest cache entries."""
+        reset_caches()
+
+        from strata.config import StrataConfig
+        from strata.planner import ReadPlanner
+
+        catalog = warehouse_with_table["catalog"]
+        table = catalog.load_table("test_ns.events")
+
+        # Add a second snapshot
+        batch = pa.RecordBatch.from_pydict({"id": [4, 5, 6], "name": ["d", "e", "f"]})
+        df = pa.Table.from_batches([batch])
+        table.append(df)
+
+        # Get both snapshot IDs
+        snapshots = list(table.history())
+        assert len(snapshots) >= 2
+        snap1_id = snapshots[0].snapshot_id
+        snap2_id = snapshots[1].snapshot_id
+
+        config = StrataConfig()
+        planner = ReadPlanner(config)
+        table_uri = warehouse_with_table["table_uri"]
+
+        # Plan for snapshot 1
+        plan1 = planner.plan(table_uri, snapshot_id=snap1_id)
+
+        # Plan for snapshot 2
+        plan2 = planner.plan(table_uri, snapshot_id=snap2_id)
+
+        # Both should be cache misses (different snapshots)
+        manifest_stats = planner.manifest_cache.stats()
+        assert manifest_stats["misses"] >= 2
+
+        # Repeat - should hit cache
+        plan1b = planner.plan(table_uri, snapshot_id=snap1_id)
+        plan2b = planner.plan(table_uri, snapshot_id=snap2_id)
+
+        manifest_stats = planner.manifest_cache.stats()
+        assert manifest_stats["hits"] >= 2
+
+
+class TestMetadataStore:
+    """Tests for SQLite-backed metadata store."""
+
+    @pytest.fixture
+    def store(self, tmp_path):
+        """Create a MetadataStore with a temp database."""
+        from strata.metadata_store import MetadataStore
+
+        db_path = tmp_path / "test_metadata.sqlite"
+        return MetadataStore(db_path)
+
+    @pytest.fixture
+    def sample_parquet_files(self, tmp_path):
+        """Create sample Parquet files for testing."""
+        files = []
+        for i in range(3):
+            file_path = tmp_path / f"test_{i}.parquet"
+            table = pa.table({"id": [i * 10 + j for j in range(5)], "name": [f"row_{j}" for j in range(5)]})
+            pq.write_table(table, file_path)
+            files.append(str(file_path))
+        return files
+
+    def test_manifest_put_and_get(self, store):
+        """Test basic manifest cache operations."""
+        data_files = [("/data/f1.parquet", "/abs/f1.parquet"), ("/data/f2.parquet", "/abs/f2.parquet")]
+
+        store.put_manifest("default", "ns.table", 123, data_files)
+
+        result = store.get_manifest("default", "ns.table", 123)
+        assert result is not None
+        assert len(result) == 2
+        assert result[0] == ("/data/f1.parquet", "/abs/f1.parquet")
+
+    def test_manifest_miss(self, store):
+        """Test manifest cache miss."""
+        result = store.get_manifest("default", "ns.table", 999)
+        assert result is None
+        assert store.manifest_misses == 1
+
+    def test_manifest_hit_counter(self, store):
+        """Test manifest hit counter."""
+        store.put_manifest("default", "ns.table", 1, [])
+        store.get_manifest("default", "ns.table", 1)
+        assert store.manifest_hits == 1
+
+    def test_parquet_meta_put_and_get(self, store, sample_parquet_files):
+        """Test basic parquet metadata operations."""
+        from strata.metadata_store import PersistedParquetMeta, PersistedRowGroupMeta, extract_parquet_meta
+
+        file_path = sample_parquet_files[0]
+        meta = extract_parquet_meta(file_path)
+
+        store.put_parquet_meta(file_path, meta)
+
+        result = store.get_parquet_meta(file_path)
+        assert result is not None
+        assert result.num_row_groups == meta.num_row_groups
+        assert result.column_names == meta.column_names
+
+    def test_parquet_meta_stale_detection(self, store, tmp_path):
+        """Test that stale entries are detected."""
+        import time
+        from strata.metadata_store import extract_parquet_meta
+
+        file_path = tmp_path / "stale_test.parquet"
+        table = pa.table({"x": [1, 2, 3]})
+        pq.write_table(table, file_path)
+
+        meta = extract_parquet_meta(str(file_path))
+        store.put_parquet_meta(str(file_path), meta)
+
+        # Verify it's cached
+        assert store.get_parquet_meta(str(file_path)) is not None
+        initial_stale = store.stale_invalidations
+
+        # Modify the file
+        time.sleep(0.01)  # Ensure mtime changes
+        table2 = pa.table({"x": [4, 5, 6, 7]})
+        pq.write_table(table2, file_path)
+
+        # Should detect staleness
+        result = store.get_parquet_meta(str(file_path))
+        assert result is None
+        assert store.stale_invalidations == initial_stale + 1
+
+    def test_get_parquet_meta_many(self, store, sample_parquet_files):
+        """Test batch get for parquet metadata."""
+        from strata.metadata_store import extract_parquet_meta
+
+        # Store metadata for all files
+        for file_path in sample_parquet_files:
+            meta = extract_parquet_meta(file_path)
+            store.put_parquet_meta(file_path, meta)
+
+        # Batch get
+        result = store.get_parquet_meta_many(sample_parquet_files)
+
+        assert len(result) == 3
+        for file_path in sample_parquet_files:
+            assert file_path in result
+            assert result[file_path].num_row_groups >= 1
+
+    def test_get_parquet_meta_many_partial(self, store, sample_parquet_files):
+        """Test batch get with some missing entries."""
+        from strata.metadata_store import extract_parquet_meta
+
+        # Only store first file
+        meta = extract_parquet_meta(sample_parquet_files[0])
+        store.put_parquet_meta(sample_parquet_files[0], meta)
+
+        # Batch get all three
+        result = store.get_parquet_meta_many(sample_parquet_files)
+
+        assert len(result) == 1
+        assert sample_parquet_files[0] in result
+
+    def test_get_parquet_meta_many_empty(self, store):
+        """Test batch get with empty input."""
+        result = store.get_parquet_meta_many([])
+        assert result == {}
+
+    def test_put_parquet_meta_many(self, store, sample_parquet_files):
+        """Test batch put for parquet metadata."""
+        from strata.metadata_store import extract_parquet_meta
+
+        # Extract metadata for all files
+        items = [(fp, extract_parquet_meta(fp)) for fp in sample_parquet_files]
+
+        # Batch put
+        store.put_parquet_meta_many(items)
+
+        # Verify all stored
+        for file_path in sample_parquet_files:
+            result = store.get_parquet_meta(file_path)
+            assert result is not None
+
+    def test_put_parquet_meta_many_empty(self, store):
+        """Test batch put with empty input."""
+        store.put_parquet_meta_many([])  # Should not raise
+
+    def test_stats_includes_counters(self, store, sample_parquet_files):
+        """Test that stats() includes all counters."""
+        from strata.metadata_store import extract_parquet_meta
+
+        # Generate some hits and misses
+        store.get_manifest("default", "ns.table", 1)  # miss
+        store.put_manifest("default", "ns.table", 1, [])
+        store.get_manifest("default", "ns.table", 1)  # hit
+
+        meta = extract_parquet_meta(sample_parquet_files[0])
+        store.get_parquet_meta(sample_parquet_files[0])  # miss
+        store.put_parquet_meta(sample_parquet_files[0], meta)
+        store.get_parquet_meta(sample_parquet_files[0])  # hit
+
+        stats = store.stats()
+
+        assert stats["manifest_hits"] == 1
+        assert stats["manifest_misses"] == 1
+        assert stats["parquet_meta_hits"] == 1
+        assert stats["parquet_meta_misses"] == 1
+        assert "stale_invalidations" in stats
+        assert "db_path" in stats
+
+    def test_cleanup_stale_parquet_meta(self, store, tmp_path):
+        """Test cleanup of stale entries."""
+        from strata.metadata_store import extract_parquet_meta
+
+        # Create a file and cache its metadata
+        file_path = tmp_path / "cleanup_test.parquet"
+        table = pa.table({"x": [1, 2, 3]})
+        pq.write_table(table, file_path)
+
+        meta = extract_parquet_meta(str(file_path))
+        store.put_parquet_meta(str(file_path), meta)
+
+        # Delete the file
+        file_path.unlink()
+
+        # Cleanup should remove the stale entry
+        removed = store.cleanup_stale_parquet_meta()
+        assert removed == 1
+
+        # Entry should be gone
+        stats = store.stats()
+        assert stats["parquet_entries"] == 0
+
+    def test_schema_migration(self, tmp_path):
+        """Test that schema migration works for old databases."""
+        import sqlite3
+        from strata.metadata_store import MetadataStore
+
+        db_path = tmp_path / "old_schema.sqlite"
+
+        # Create old schema without catalog_name and file_size
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE manifest_cache (
+                table_identity TEXT NOT NULL,
+                snapshot_id INTEGER NOT NULL,
+                data_files_json TEXT NOT NULL,
+                PRIMARY KEY (table_identity, snapshot_id)
+            );
+            CREATE TABLE parquet_meta (
+                file_path TEXT PRIMARY KEY,
+                schema_ipc BLOB NOT NULL,
+                num_row_groups INTEGER NOT NULL,
+                row_groups_json TEXT NOT NULL,
+                column_names_json TEXT NOT NULL,
+                file_mtime REAL
+            );
+        """)
+        conn.close()
+
+        # Opening with MetadataStore should migrate
+        store = MetadataStore(db_path)
+
+        # Should work with new schema
+        store.put_manifest("default", "ns.table", 1, [])
+        result = store.get_manifest("default", "ns.table", 1)
+        assert result == []
