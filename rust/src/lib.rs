@@ -83,7 +83,7 @@ fn read_arrow_ipc_as_stream<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<
     }
 
     // Return as Python bytes
-    Ok(PyBytes::new_bound(py, &buffer))
+    Ok(PyBytes::new(py, &buffer))
 }
 
 /// Read an Arrow IPC file and return raw bytes (for cache passthrough).
@@ -100,7 +100,7 @@ fn read_arrow_ipc_as_stream<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<
 fn read_file_bytes<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
     let file = File::open(path).map_err(StrataError::from)?;
     let mmap = unsafe { Mmap::map(&file) }.map_err(StrataError::from)?;
-    Ok(PyBytes::new_bound(py, &mmap[..]))
+    Ok(PyBytes::new(py, &mmap[..]))
 }
 
 /// Convert Arrow IPC file format to stream format.
@@ -132,7 +132,7 @@ fn file_to_stream_format<'py>(py: Python<'py>, data: &[u8]) -> PyResult<Bound<'p
         writer.finish().map_err(StrataError::from)?;
     }
 
-    Ok(PyBytes::new_bound(py, &buffer))
+    Ok(PyBytes::new(py, &buffer))
 }
 
 /// Fast concatenation of Arrow IPC streams by byte manipulation.
@@ -237,12 +237,12 @@ fn concat_ipc_streams_fast<'py>(
     offsets: Vec<(usize, usize)>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     if offsets.is_empty() {
-        return Ok(PyBytes::new_bound(py, &[]));
+        return Ok(PyBytes::new(py, &[]));
     }
 
     if offsets.len() == 1 {
         let (start, end) = offsets[0];
-        return Ok(PyBytes::new_bound(py, &data[start..end]));
+        return Ok(PyBytes::new(py, &data[start..end]));
     }
 
     // Estimate output size (slightly less than input due to removed schemas)
@@ -309,7 +309,7 @@ fn concat_ipc_streams_fast<'py>(
     // Add final EOS marker
     result.extend_from_slice(&EOS_MARKER);
 
-    Ok(PyBytes::new_bound(py, &result))
+    Ok(PyBytes::new(py, &result))
 }
 
 /// Concatenate multiple Arrow IPC stream segments into one.
@@ -327,7 +327,7 @@ fn concat_ipc_streams_fast<'py>(
 fn concat_ipc_streams<'py>(py: Python<'py>, segments: Vec<Vec<u8>>) -> PyResult<Bound<'py, PyBytes>> {
     // Try fast path first (byte manipulation)
     match concat_streams_fast(&segments) {
-        Ok(result) => return Ok(PyBytes::new_bound(py, &result)),
+        Ok(result) => return Ok(PyBytes::new(py, &result)),
         Err(_) => {
             // Fall back to full Arrow parsing
         }
@@ -337,7 +337,7 @@ fn concat_ipc_streams<'py>(py: Python<'py>, segments: Vec<Vec<u8>>) -> PyResult<
     use arrow::ipc::reader::StreamReader;
 
     if segments.is_empty() {
-        return Ok(PyBytes::new_bound(py, &[]));
+        return Ok(PyBytes::new(py, &[]));
     }
 
     // Read first segment to get schema
@@ -371,7 +371,7 @@ fn concat_ipc_streams<'py>(py: Python<'py>, segments: Vec<Vec<u8>>) -> PyResult<
         writer.finish().map_err(StrataError::from)?;
     }
 
-    Ok(PyBytes::new_bound(py, &buffer))
+    Ok(PyBytes::new(py, &buffer))
 }
 
 /// Get statistics about an Arrow IPC file without fully parsing it.
