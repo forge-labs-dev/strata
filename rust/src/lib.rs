@@ -22,7 +22,6 @@ use std::io::Cursor;
 use thiserror::Error;
 
 // Arrow IPC constants
-const ARROW_MAGIC: &[u8] = b"ARROW1";
 const CONTINUATION_MARKER: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const EOS_MARKER: [u8; 8] = [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00];
 
@@ -44,44 +43,6 @@ impl From<StrataError> for PyErr {
             StrataError::InvalidFile(msg) => PyValueError::new_err(msg),
         }
     }
-}
-
-/// Parse Arrow IPC file footer to extract schema and block metadata.
-/// Returns (footer_offset, schema_bytes, block_offsets_and_sizes)
-fn parse_ipc_file_footer(data: &[u8]) -> Result<(usize, Vec<u8>, Vec<(usize, usize)>), StrataError> {
-    // Arrow IPC file format:
-    // - Magic "ARROW1" (6 bytes)
-    // - Padding to 8-byte boundary (2 bytes)
-    // - Schema message (flatbuffer)
-    // - Record batch messages
-    // - Footer (flatbuffer with block offsets)
-    // - Footer size (4 bytes, little-endian)
-    // - Magic "ARROW1" (6 bytes)
-
-    if data.len() < 22 {
-        return Err(StrataError::InvalidFile("File too small".into()));
-    }
-
-    // Verify magic at start and end
-    if &data[0..6] != ARROW_MAGIC || &data[data.len() - 6..] != ARROW_MAGIC {
-        return Err(StrataError::InvalidFile("Invalid Arrow magic bytes".into()));
-    }
-
-    // Read footer size (4 bytes before trailing magic)
-    let footer_size_offset = data.len() - 10;
-    let footer_size = u32::from_le_bytes([
-        data[footer_size_offset],
-        data[footer_size_offset + 1],
-        data[footer_size_offset + 2],
-        data[footer_size_offset + 3],
-    ]) as usize;
-
-    let footer_offset = data.len() - 10 - footer_size;
-
-    // For now, we use the slower path that parses with Arrow library
-    // The low-level flatbuffer parsing for footer is complex
-    // But we can still optimize by reusing the schema bytes directly
-    Err(StrataError::InvalidFile("Use standard path".into()))
 }
 
 /// Read an Arrow IPC file from disk and return it as IPC stream bytes.
