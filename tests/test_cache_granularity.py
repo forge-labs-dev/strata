@@ -11,11 +11,13 @@ from strata.types import CacheGranularity, CacheKey, TableIdentity
 @pytest.fixture
 def sample_batch():
     """Create a sample record batch."""
-    return pa.RecordBatch.from_pydict({
-        "id": [1, 2, 3],
-        "value": [1.0, 2.0, 3.0],
-        "name": ["a", "b", "c"],
-    })
+    return pa.RecordBatch.from_pydict(
+        {
+            "id": [1, 2, 3],
+            "value": [1.0, 2.0, 3.0],
+            "name": ["a", "b", "c"],
+        }
+    )
 
 
 @pytest.fixture
@@ -114,9 +116,7 @@ class TestCacheKeyGranularity:
 class TestDiskCacheGranularity:
     """Tests for DiskCache with different granularity options."""
 
-    def test_row_group_projection_caches_separately(
-        self, tmp_path, sample_batch, table_identity
-    ):
+    def test_row_group_projection_caches_separately(self, tmp_path, sample_batch, table_identity):
         """Test that ROW_GROUP_PROJECTION caches different projections separately."""
         config = StrataConfig(
             cache_dir=tmp_path / "cache",

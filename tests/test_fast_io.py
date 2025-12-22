@@ -76,11 +76,13 @@ class TestConcatStreamBytes:
 
     def test_concat_preserves_schema(self):
         """Test that concat preserves the schema."""
-        batch = pa.RecordBatch.from_pydict({
-            "id": [1, 2, 3],
-            "value": [1.0, 2.0, 3.0],
-            "name": ["a", "b", "c"],
-        })
+        batch = pa.RecordBatch.from_pydict(
+            {
+                "id": [1, 2, 3],
+                "value": [1.0, 2.0, 3.0],
+                "name": ["a", "b", "c"],
+            }
+        )
         segments = [create_stream_bytes(batch) for _ in range(2)]
 
         result = fast_io.concat_stream_bytes(segments)
@@ -232,9 +234,7 @@ class TestStreamConcatIpcSegments:
         batch = pa.RecordBatch.from_pydict({"id": [1]})
         segment = create_stream_bytes(batch)
 
-        chunks = list(
-            fast_io.stream_concat_ipc_segments(iter([segment, b"", segment]))
-        )
+        chunks = list(fast_io.stream_concat_ipc_segments(iter([segment, b"", segment])))
 
         combined = b"".join(chunks)
         reader = ipc.open_stream(pa.BufferReader(combined))
@@ -248,11 +248,13 @@ class TestStreamConcatIpcSegments:
 
     def test_stream_preserves_schema(self):
         """Test that streaming preserves the schema."""
-        batch = pa.RecordBatch.from_pydict({
-            "id": [1, 2],
-            "value": [1.5, 2.5],
-            "name": ["a", "b"],
-        })
+        batch = pa.RecordBatch.from_pydict(
+            {
+                "id": [1, 2],
+                "value": [1.5, 2.5],
+                "name": ["a", "b"],
+            }
+        )
         segment = create_stream_bytes(batch)
 
         chunks = list(fast_io.stream_concat_ipc_segments(iter([segment, segment])))
@@ -317,7 +319,7 @@ class TestStreamConcatIpcSegments:
         assert fetch_count >= 1  # At least first segment fetched
 
         # Consume remaining chunks
-        remaining = list(gen)
+        list(gen)
         assert fetch_count == 3  # All segments fetched
 
     def test_stream_vs_concat_produce_same_result(self):
@@ -331,9 +333,7 @@ class TestStreamConcatIpcSegments:
         buffered_result = fast_io.concat_stream_bytes(segments.copy())
 
         # Get streaming result
-        streaming_result = b"".join(
-            fast_io.stream_concat_ipc_segments(iter(segments))
-        )
+        streaming_result = b"".join(fast_io.stream_concat_ipc_segments(iter(segments)))
 
         # Results should be identical
         assert buffered_result == streaming_result
@@ -395,6 +395,7 @@ class TestStreamConcatIpcSegments:
         The IPC format handles dictionaries specially - this test ensures
         the streaming concatenation preserves dictionary encoding correctly.
         """
+
         # Create segments with dictionary-encoded string column
         def make_dict_segment(categories: list[str], ids: list[int]) -> bytes:
             cat_array = pa.array(categories).dictionary_encode()
@@ -431,9 +432,18 @@ class TestStreamConcatIpcSegments:
 
         assert all_ids == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         assert all_categories == [
-            "A", "B", "C", "A", "B",  # batch 1
-            "X", "Y", "X",            # batch 2
-            "A", "A", "B", "B",       # batch 3
+            "A",
+            "B",
+            "C",
+            "A",
+            "B",  # batch 1
+            "X",
+            "Y",
+            "X",  # batch 2
+            "A",
+            "A",
+            "B",
+            "B",  # batch 3
         ]
 
         # Verify streaming matches buffered result
@@ -488,9 +498,7 @@ class TestStreamConcatIpcSegments:
         segment = create_stream_bytes(batch)
 
         # Use a small min_chunk_size to see immediate yield behavior
-        chunks = list(
-            fast_io.stream_concat_ipc_segments(iter([segment]), min_chunk_size=1024)
-        )
+        chunks = list(fast_io.stream_concat_ipc_segments(iter([segment]), min_chunk_size=1024))
 
         # Should have at least schema + batch data + eos
         assert len(chunks) >= 2
@@ -529,9 +537,7 @@ class TestStreamConcatIpcSegments:
     def test_stream_schema_mismatch_column_order(self):
         """Test that column order differences are detected as schema mismatch."""
         # Same columns but different order
-        segment1 = create_stream_bytes(
-            pa.RecordBatch.from_pydict({"a": [1], "b": [2]})
-        )
+        segment1 = create_stream_bytes(pa.RecordBatch.from_pydict({"a": [1], "b": [2]}))
         segment2 = create_stream_bytes(
             pa.RecordBatch.from_pydict({"b": [3], "a": [4]})  # Different order
         )
@@ -567,10 +573,12 @@ class TestStreamEnforcementHooks:
         segment = create_stream_bytes(batch)
 
         # Set a large limit that won't be exceeded
-        chunks = list(fast_io.stream_concat_ipc_segments(
-            iter([segment]),
-            max_output_bytes=1_000_000,  # 1MB limit
-        ))
+        chunks = list(
+            fast_io.stream_concat_ipc_segments(
+                iter([segment]),
+                max_output_bytes=1_000_000,  # 1MB limit
+            )
+        )
 
         # Should complete successfully
         combined = b"".join(chunks)
@@ -638,10 +646,12 @@ class TestStreamEnforcementHooks:
         # Set deadline far in the future
         future_deadline = time.monotonic() + 60.0  # 60 seconds from now
 
-        chunks = list(fast_io.stream_concat_ipc_segments(
-            iter([segment]),
-            deadline=future_deadline,
-        ))
+        chunks = list(
+            fast_io.stream_concat_ipc_segments(
+                iter([segment]),
+                deadline=future_deadline,
+            )
+        )
 
         # Should complete successfully
         combined = b"".join(chunks)
@@ -689,11 +699,13 @@ class TestStreamEnforcementHooks:
         batch = pa.RecordBatch.from_pydict({"id": [1, 2, 3]})
         segment = create_stream_bytes(batch)
 
-        chunks = list(fast_io.stream_concat_ipc_segments(
-            iter([segment]),
-            max_output_bytes=1_000_000,
-            deadline=time.monotonic() + 60.0,
-        ))
+        chunks = list(
+            fast_io.stream_concat_ipc_segments(
+                iter([segment]),
+                max_output_bytes=1_000_000,
+                deadline=time.monotonic() + 60.0,
+            )
+        )
 
         # Should complete successfully
         combined = b"".join(chunks)

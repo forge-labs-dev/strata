@@ -37,10 +37,12 @@ lf = scan_to_lazy(
 result = (
     lf.filter(pl.col("value") > 50)
     .group_by("category")
-    .agg([
-        pl.count().alias("count"),
-        pl.col("value").mean().alias("avg_value"),
-    ])
+    .agg(
+        [
+            pl.count().alias("count"),
+            pl.col("value").mean().alias("avg_value"),
+        ]
+    )
     .sort("count", descending=True)
     .head(10)
     .collect()
@@ -57,12 +59,11 @@ with StrataPolarsScanner() as scanner:
     )
 
     # Polars operations
-    summary = (
-        events.group_by("category")
-        .agg([
+    summary = events.group_by("category").agg(
+        [
             pl.count().alias("count"),
             pl.col("value").sum().alias("total_value"),
-        ])
+        ]
     )
     print("\n=== Category Summary ===")
     print(summary.head())

@@ -1,17 +1,14 @@
 """Tests for resource limits and backpressure."""
 
-import asyncio
 import threading
 import time
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
 import pyarrow as pa
 import pytest
 import uvicorn
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
-from pyiceberg.types import DoubleType, LongType, NestedField, StringType
+from pyiceberg.types import DoubleType, LongType, NestedField
 
 from strata.client import StrataClient
 from strata.config import StrataConfig
@@ -111,8 +108,8 @@ class TestServerResourceLimits:
             max_response_bytes=1024 * 1024,  # 1 MB for testing
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 

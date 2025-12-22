@@ -46,6 +46,7 @@ def _eager_warmup(config: StrataConfig) -> dict:
     import pyarrow.parquet  # noqa: F401 - heavy, loads libparquet
     from pyiceberg.catalog.sql import SqlCatalog  # noqa: F401 - loads SQLAlchemy
     from pyiceberg.table import Table  # noqa: F401 - loads table machinery
+
     warmup_times["imports_ms"] = (time.perf_counter() - import_start) * 1000
 
     # 2. Initialize and warm up SQLite metadata store
@@ -323,15 +324,15 @@ async def metrics_prometheus():
     lines = [
         "# HELP strata_cache_hits_total Total number of cache hits",
         "# TYPE strata_cache_hits_total counter",
-        f'strata_cache_hits_total {stats.get("cache_hits", 0)}',
+        f"strata_cache_hits_total {stats.get('cache_hits', 0)}",
         "",
         "# HELP strata_cache_misses_total Total number of cache misses",
         "# TYPE strata_cache_misses_total counter",
-        f'strata_cache_misses_total {stats.get("cache_misses", 0)}',
+        f"strata_cache_misses_total {stats.get('cache_misses', 0)}",
         "",
         "# HELP strata_scans_total Total number of completed scans",
         "# TYPE strata_scans_total counter",
-        f'strata_scans_total {stats.get("scan_count", 0)}',
+        f"strata_scans_total {stats.get('scan_count', 0)}",
         "",
         "# HELP strata_active_scans Current number of active scans",
         "# TYPE strata_active_scans gauge",
@@ -343,19 +344,19 @@ async def metrics_prometheus():
         "",
         "# HELP strata_bytes_from_cache_total Total bytes served from cache",
         "# TYPE strata_bytes_from_cache_total counter",
-        f'strata_bytes_from_cache_total {stats.get("bytes_from_cache", 0)}',
+        f"strata_bytes_from_cache_total {stats.get('bytes_from_cache', 0)}",
         "",
         "# HELP strata_bytes_from_storage_total Total bytes read from storage",
         "# TYPE strata_bytes_from_storage_total counter",
-        f'strata_bytes_from_storage_total {stats.get("bytes_from_storage", 0)}',
+        f"strata_bytes_from_storage_total {stats.get('bytes_from_storage', 0)}",
         "",
         "# HELP strata_rows_returned_total Total rows returned across all scans",
         "# TYPE strata_rows_returned_total counter",
-        f'strata_rows_returned_total {stats.get("rows_returned", 0)}',
+        f"strata_rows_returned_total {stats.get('rows_returned', 0)}",
         "",
         "# HELP strata_row_groups_pruned_total Total row groups pruned by filters",
         "# TYPE strata_row_groups_pruned_total counter",
-        f'strata_row_groups_pruned_total {stats.get("row_groups_pruned", 0)}',
+        f"strata_row_groups_pruned_total {stats.get('row_groups_pruned', 0)}",
         "",
         "# HELP strata_draining Server is draining (shutting down)",
         "# TYPE strata_draining gauge",
@@ -363,43 +364,46 @@ async def metrics_prometheus():
         "",
         "# HELP strata_stream_aborts_timeout_total Streams aborted due to timeout",
         "# TYPE strata_stream_aborts_timeout_total counter",
-        f'strata_stream_aborts_timeout_total {stats.get("stream_aborts_timeout", 0)}',
+        f"strata_stream_aborts_timeout_total {stats.get('stream_aborts_timeout', 0)}",
         "",
         "# HELP strata_stream_aborts_size_total Streams aborted due to size limit",
         "# TYPE strata_stream_aborts_size_total counter",
-        f'strata_stream_aborts_size_total {stats.get("stream_aborts_size", 0)}',
+        f"strata_stream_aborts_size_total {stats.get('stream_aborts_size', 0)}",
         "",
         "# HELP strata_client_disconnects_total Client disconnects during streaming",
         "# TYPE strata_client_disconnects_total counter",
-        f'strata_client_disconnects_total {stats.get("client_disconnects", 0)}',
+        f"strata_client_disconnects_total {stats.get('client_disconnects', 0)}",
     ]
 
     # Add metadata store stats if available
     try:
         store = get_metadata_store()
         store_stats = store.stats()
-        lines.extend([
-            "",
-            "# HELP strata_metadata_manifest_hits_total Manifest cache hits in metadata store",
-            "# TYPE strata_metadata_manifest_hits_total counter",
-            f'strata_metadata_manifest_hits_total {store_stats.get("manifest_hits", 0)}',
-            "",
-            "# HELP strata_metadata_manifest_misses_total Manifest cache misses in metadata store",
-            "# TYPE strata_metadata_manifest_misses_total counter",
-            f'strata_metadata_manifest_misses_total {store_stats.get("manifest_misses", 0)}',
-            "",
-            "# HELP strata_metadata_parquet_hits_total Parquet metadata cache hits",
-            "# TYPE strata_metadata_parquet_hits_total counter",
-            f'strata_metadata_parquet_hits_total {store_stats.get("parquet_meta_hits", 0)}',
-            "",
-            "# HELP strata_metadata_parquet_misses_total Parquet metadata cache misses",
-            "# TYPE strata_metadata_parquet_misses_total counter",
-            f'strata_metadata_parquet_misses_total {store_stats.get("parquet_meta_misses", 0)}',
-            "",
-            "# HELP strata_metadata_stale_invalidations_total Stale entries invalidated",
-            "# TYPE strata_metadata_stale_invalidations_total counter",
-            f'strata_metadata_stale_invalidations_total {store_stats.get("stale_invalidations", 0)}',
-        ])
+        lines.extend(
+            [
+                "",
+                "# HELP strata_metadata_manifest_hits_total Manifest cache hits in metadata store",
+                "# TYPE strata_metadata_manifest_hits_total counter",
+                f"strata_metadata_manifest_hits_total {store_stats.get('manifest_hits', 0)}",
+                "",
+                "# HELP strata_metadata_manifest_misses_total Manifest cache misses in metadata store",
+                "# TYPE strata_metadata_manifest_misses_total counter",
+                f"strata_metadata_manifest_misses_total {store_stats.get('manifest_misses', 0)}",
+                "",
+                "# HELP strata_metadata_parquet_hits_total Parquet metadata cache hits",
+                "# TYPE strata_metadata_parquet_hits_total counter",
+                f"strata_metadata_parquet_hits_total {store_stats.get('parquet_meta_hits', 0)}",
+                "",
+                "# HELP strata_metadata_parquet_misses_total Parquet metadata cache misses",
+                "# TYPE strata_metadata_parquet_misses_total counter",
+                f"strata_metadata_parquet_misses_total {store_stats.get('parquet_meta_misses', 0)}",
+                "",
+                "# HELP strata_metadata_stale_invalidations_total Stale entries invalidated",
+                "# TYPE strata_metadata_stale_invalidations_total counter",
+                f"strata_metadata_stale_invalidations_total "
+                f"{store_stats.get('stale_invalidations', 0)}",
+            ]
+        )
     except Exception:
         pass  # Metadata store not available
 
@@ -407,32 +411,34 @@ async def metrics_prometheus():
     pq_cache_stats = state.planner.parquet_cache.stats()
     manifest_cache_stats = state.planner.manifest_cache.stats()
 
-    lines.extend([
-        "",
-        "# HELP strata_parquet_cache_hits_total In-memory parquet cache hits",
-        "# TYPE strata_parquet_cache_hits_total counter",
-        f'strata_parquet_cache_hits_total {pq_cache_stats.get("hits", 0)}',
-        "",
-        "# HELP strata_parquet_cache_misses_total In-memory parquet cache misses",
-        "# TYPE strata_parquet_cache_misses_total counter",
-        f'strata_parquet_cache_misses_total {pq_cache_stats.get("misses", 0)}',
-        "",
-        "# HELP strata_parquet_cache_size Current entries in parquet cache",
-        "# TYPE strata_parquet_cache_size gauge",
-        f'strata_parquet_cache_size {pq_cache_stats.get("size", 0)}',
-        "",
-        "# HELP strata_manifest_cache_hits_total In-memory manifest cache hits",
-        "# TYPE strata_manifest_cache_hits_total counter",
-        f'strata_manifest_cache_hits_total {manifest_cache_stats.get("hits", 0)}',
-        "",
-        "# HELP strata_manifest_cache_misses_total In-memory manifest cache misses",
-        "# TYPE strata_manifest_cache_misses_total counter",
-        f'strata_manifest_cache_misses_total {manifest_cache_stats.get("misses", 0)}',
-        "",
-        "# HELP strata_manifest_cache_size Current entries in manifest cache",
-        "# TYPE strata_manifest_cache_size gauge",
-        f'strata_manifest_cache_size {manifest_cache_stats.get("size", 0)}',
-    ])
+    lines.extend(
+        [
+            "",
+            "# HELP strata_parquet_cache_hits_total In-memory parquet cache hits",
+            "# TYPE strata_parquet_cache_hits_total counter",
+            f"strata_parquet_cache_hits_total {pq_cache_stats.get('hits', 0)}",
+            "",
+            "# HELP strata_parquet_cache_misses_total In-memory parquet cache misses",
+            "# TYPE strata_parquet_cache_misses_total counter",
+            f"strata_parquet_cache_misses_total {pq_cache_stats.get('misses', 0)}",
+            "",
+            "# HELP strata_parquet_cache_size Current entries in parquet cache",
+            "# TYPE strata_parquet_cache_size gauge",
+            f"strata_parquet_cache_size {pq_cache_stats.get('size', 0)}",
+            "",
+            "# HELP strata_manifest_cache_hits_total In-memory manifest cache hits",
+            "# TYPE strata_manifest_cache_hits_total counter",
+            f"strata_manifest_cache_hits_total {manifest_cache_stats.get('hits', 0)}",
+            "",
+            "# HELP strata_manifest_cache_misses_total In-memory manifest cache misses",
+            "# TYPE strata_manifest_cache_misses_total counter",
+            f"strata_manifest_cache_misses_total {manifest_cache_stats.get('misses', 0)}",
+            "",
+            "# HELP strata_manifest_cache_size Current entries in manifest cache",
+            "# TYPE strata_manifest_cache_size gauge",
+            f"strata_manifest_cache_size {manifest_cache_stats.get('size', 0)}",
+        ]
+    )
 
     return Response(
         content="\n".join(lines) + "\n",
@@ -498,7 +504,7 @@ async def create_scan_v1(request: ScanRequest):
                     asyncio.get_event_loop().run_in_executor(None, do_plan),
                     timeout=plan_timeout,
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise HTTPException(
                     status_code=504,
                     detail=(
@@ -687,12 +693,8 @@ async def get_batches_v1(scan_id: str, request: Request):
             visibility. Outcomes: 'complete', 'client_disconnect', 'timeout', 'size_exceeded'.
             """
             scan_metrics.total_time_ms = (time.perf_counter() - start_time) * 1000
-            scan_metrics.fetch_time_ms = (
-                scan_metrics.total_time_ms - scan_metrics.planning_time_ms
-            )
-            scan_metrics.rows_returned = sum(
-                t.num_rows for t in plan.tasks[:tasks_completed]
-            )
+            scan_metrics.fetch_time_ms = scan_metrics.total_time_ms - scan_metrics.planning_time_ms
+            scan_metrics.rows_returned = sum(t.num_rows for t in plan.tasks[:tasks_completed])
 
             if outcome == "complete":
                 # Normal completion - use structured scan_complete event
@@ -736,9 +738,7 @@ async def get_batches_v1(scan_id: str, request: Request):
 
                     # Fetch segment in thread pool to avoid blocking event loop
                     # This allows other requests to be processed during S3 fetches
-                    segment = await asyncio.to_thread(
-                        state.fetcher.fetch_as_stream_bytes, task
-                    )
+                    segment = await asyncio.to_thread(state.fetcher.fetch_as_stream_bytes, task)
                     tasks_completed += 1
 
                     # Track cache metrics
@@ -907,10 +907,12 @@ async def list_cache_entries_v1():
 
 @app.get("/v1/debug/cache/inspect")
 async def inspect_cache_v1(
-    prefix: Annotated[str | None, Query(description="Hash prefix to filter entries (hex string, e.g., 'a1b2')")] = None,
+    prefix: Annotated[
+        str | None, Query(description="Hash prefix to filter entries (hex, e.g., 'a1b2')")
+    ] = None,
     table_id: Annotated[str | None, Query(description="Filter by table identifier")] = None,
     snapshot_id: Annotated[int | None, Query(description="Filter by snapshot ID")] = None,
-    limit: Annotated[int, Query(description="Maximum number of entries to return", ge=1, le=1000)] = 100,
+    limit: Annotated[int, Query(description="Maximum entries to return", ge=1, le=1000)] = 100,
 ):
     """Inspect cache entries with detailed diagnostics (admin endpoint).
 
@@ -934,6 +936,7 @@ async def inspect_cache_v1(
     - File size and creation time
     """
     import json as json_module
+
     from strata.cache import CACHE_FILE_EXTENSION, CACHE_META_EXTENSION, CACHE_VERSION
 
     state = get_state()
@@ -1022,23 +1025,27 @@ async def inspect_cache_v1(
                 file_size = data_path.stat().st_size if data_path.exists() else None
                 file_exists = data_path.exists()
 
-                results.append({
-                    "hash": cache_hash,
-                    "hash_prefix": cache_hash[:8],
-                    "file_path": str(data_path.relative_to(cache.cache_dir)),
-                    "file_exists": file_exists,
-                    "file_size_bytes": file_size,
-                    "metadata": meta_data,
-                })
+                results.append(
+                    {
+                        "hash": cache_hash,
+                        "hash_prefix": cache_hash[:8],
+                        "file_path": str(data_path.relative_to(cache.cache_dir)),
+                        "file_exists": file_exists,
+                        "file_size_bytes": file_size,
+                        "metadata": meta_data,
+                    }
+                )
 
             except Exception as e:
                 # Include corrupted entries for debugging
-                results.append({
-                    "hash": cache_hash,
-                    "file_path": str(meta_path.relative_to(cache.cache_dir)),
-                    "error": str(e),
-                    "corrupted": True,
-                })
+                results.append(
+                    {
+                        "hash": cache_hash,
+                        "file_path": str(meta_path.relative_to(cache.cache_dir)),
+                        "error": str(e),
+                        "corrupted": True,
+                    }
+                )
                 matched_count += 1
 
     # Sort by hash for consistent output

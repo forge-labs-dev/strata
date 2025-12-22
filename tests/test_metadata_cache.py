@@ -1,8 +1,5 @@
 """Tests for metadata caching (Parquet metadata and manifest resolution)."""
 
-import tempfile
-from pathlib import Path
-
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -204,11 +201,13 @@ class TestParquetMetadataCache:
     @pytest.fixture
     def sample_parquet_file(self, tmp_path):
         """Create a sample Parquet file."""
-        table = pa.table({
-            "id": [1, 2, 3, 4, 5],
-            "value": [1.0, 2.0, 3.0, 4.0, 5.0],
-            "name": ["a", "b", "c", "d", "e"],
-        })
+        table = pa.table(
+            {
+                "id": [1, 2, 3, 4, 5],
+                "value": [1.0, 2.0, 3.0, 4.0, 5.0],
+                "name": ["a", "b", "c", "d", "e"],
+            }
+        )
         file_path = tmp_path / "test.parquet"
         pq.write_table(table, file_path, row_group_size=2)
         return str(file_path)
@@ -522,18 +521,18 @@ class TestPlannerWithMetadataCache:
         table_uri = warehouse_with_table["table_uri"]
 
         # Plan for snapshot 1
-        plan1 = planner.plan(table_uri, snapshot_id=snap1_id)
+        planner.plan(table_uri, snapshot_id=snap1_id)
 
         # Plan for snapshot 2
-        plan2 = planner.plan(table_uri, snapshot_id=snap2_id)
+        planner.plan(table_uri, snapshot_id=snap2_id)
 
         # Both should be cache misses (different snapshots)
         manifest_stats = planner.manifest_cache.stats()
         assert manifest_stats["misses"] >= 2
 
         # Repeat - should hit cache
-        plan1b = planner.plan(table_uri, snapshot_id=snap1_id)
-        plan2b = planner.plan(table_uri, snapshot_id=snap2_id)
+        planner.plan(table_uri, snapshot_id=snap1_id)
+        planner.plan(table_uri, snapshot_id=snap2_id)
 
         manifest_stats = planner.manifest_cache.stats()
         assert manifest_stats["hits"] >= 2
@@ -556,14 +555,22 @@ class TestMetadataStore:
         files = []
         for i in range(3):
             file_path = tmp_path / f"test_{i}.parquet"
-            table = pa.table({"id": [i * 10 + j for j in range(5)], "name": [f"row_{j}" for j in range(5)]})
+            table = pa.table(
+                {
+                    "id": [i * 10 + j for j in range(5)],
+                    "name": [f"row_{j}" for j in range(5)],
+                }
+            )
             pq.write_table(table, file_path)
             files.append(str(file_path))
         return files
 
     def test_manifest_put_and_get(self, store):
         """Test basic manifest cache operations."""
-        data_files = [("/data/f1.parquet", "/abs/f1.parquet"), ("/data/f2.parquet", "/abs/f2.parquet")]
+        data_files = [
+            ("/data/f1.parquet", "/abs/f1.parquet"),
+            ("/data/f2.parquet", "/abs/f2.parquet"),
+        ]
 
         store.put_manifest("default", "ns.table", 123, data_files)
 
@@ -586,7 +593,9 @@ class TestMetadataStore:
 
     def test_parquet_meta_put_and_get(self, store, sample_parquet_files):
         """Test basic parquet metadata operations."""
-        from strata.metadata_store import PersistedParquetMeta, PersistedRowGroupMeta, extract_parquet_meta
+        from strata.metadata_store import (
+            extract_parquet_meta,
+        )
 
         file_path = sample_parquet_files[0]
         meta = extract_parquet_meta(file_path)
@@ -601,6 +610,7 @@ class TestMetadataStore:
     def test_parquet_meta_stale_detection(self, store, tmp_path):
         """Test that stale entries are detected."""
         import time
+
         from strata.metadata_store import extract_parquet_meta
 
         file_path = tmp_path / "stale_test.parquet"
@@ -728,6 +738,7 @@ class TestMetadataStore:
     def test_schema_migration(self, tmp_path):
         """Test that schema migration works for old databases."""
         import sqlite3
+
         from strata.metadata_store import MetadataStore
 
         db_path = tmp_path / "old_schema.sqlite"

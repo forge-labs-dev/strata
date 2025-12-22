@@ -2,9 +2,8 @@
 
 import json
 import os
-import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -14,7 +13,7 @@ import pyarrow.ipc as ipc
 from strata.config import StrataConfig
 from strata.fetcher import Fetcher, create_fetcher
 from strata.metrics import MetricsCollector
-from strata.types import CacheGranularity, CacheKey, ReadPlan, Task
+from strata.types import CacheKey, ReadPlan, Task
 
 # Cache file extension (Arrow IPC Stream format for zero-copy serving)
 CACHE_FILE_EXTENSION = ".arrowstream"
@@ -251,7 +250,7 @@ class DiskCache:
                 columns=None,  # Could be extracted from projection_fingerprint if needed
                 num_rows=batch.num_rows,
                 size_bytes=batch.nbytes,
-                created_at=datetime.now(timezone.utc).isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
             )
             meta_tmp_path.write_text(json.dumps(metadata.to_dict()))
 

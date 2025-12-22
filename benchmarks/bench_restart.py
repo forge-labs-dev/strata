@@ -165,6 +165,7 @@ class ServerProcess:
         # Print server stderr on timeout for debugging
         if self._process and self._process.stderr:
             import select
+
             if select.select([self._process.stderr], [], [], 0)[0]:
                 print(f"SERVER STDERR: {self._process.stderr.read().decode()[:1000]}")
         raise TimeoutError(f"Server did not start within {timeout}s")
@@ -233,7 +234,9 @@ def run_scan(client, table_uri: str, metrics_before: dict | None = None) -> Benc
         cache_hits = metrics_after["cache_hits"] - metrics_before["cache_hits"]
         cache_misses = metrics_after["cache_misses"] - metrics_before["cache_misses"]
         bytes_from_cache = metrics_after["bytes_from_cache"] - metrics_before["bytes_from_cache"]
-        bytes_from_storage = metrics_after["bytes_from_storage"] - metrics_before["bytes_from_storage"]
+        bytes_from_storage = (
+            metrics_after["bytes_from_storage"] - metrics_before["bytes_from_storage"]
+        )
     else:
         cache_hits = metrics_after["cache_hits"]
         cache_misses = metrics_after["cache_misses"]
@@ -319,11 +322,15 @@ def print_results_table(results: list[BenchmarkResult]):
 
         # Speedups - show both total and fetch-only
         print("\n" + "-" * 72)
-        warm_total = cold.total_latency_ms / warm.total_latency_ms if warm.total_latency_ms > 0 else 0
+        warm_total = (
+            cold.total_latency_ms / warm.total_latency_ms if warm.total_latency_ms > 0 else 0
+        )
         restart_total = (
             cold.total_latency_ms / restart.total_latency_ms if restart.total_latency_ms > 0 else 0
         )
-        warm_fetch = cold.fetch_latency_ms / warm.fetch_latency_ms if warm.fetch_latency_ms > 0 else 0
+        warm_fetch = (
+            cold.fetch_latency_ms / warm.fetch_latency_ms if warm.fetch_latency_ms > 0 else 0
+        )
         restart_fetch = (
             cold.fetch_latency_ms / restart.fetch_latency_ms if restart.fetch_latency_ms > 0 else 0
         )
@@ -553,8 +560,8 @@ def run_scale_benchmark():
     scale_results = []
 
     for i, (num_rows, num_files, label) in enumerate(scale_points):
-        print(f"\n{'='*100}")
-        print(f"SCALE POINT {i+1}/{len(scale_points)}: {label}")
+        print(f"\n{'=' * 100}")
+        print(f"SCALE POINT {i + 1}/{len(scale_points)}: {label}")
         print(f"  Rows: {num_rows:,}")
         print(f"  Data files: {num_files}")
         print("=" * 100)

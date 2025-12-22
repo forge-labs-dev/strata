@@ -1,7 +1,7 @@
 """Python client for Strata server."""
 
-from datetime import datetime
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import httpx
 import pyarrow as pa

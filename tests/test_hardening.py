@@ -9,13 +9,9 @@ These tests cover failure modes that occur in production:
 """
 
 import asyncio
-import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
-from pathlib import Path
-from unittest.mock import patch
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
@@ -25,11 +21,10 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import DoubleType, LongType, NestedField, StringType
 
-from strata.cache import CACHE_FILE_EXTENSION, CACHE_VERSION, CachedFetcher, DiskCache
+from strata.cache import CACHE_FILE_EXTENSION, CACHE_VERSION, CachedFetcher
 from strata.client import StrataClient
 from strata.config import StrataConfig
 from strata.planner import ReadPlanner
-from strata.types import CacheKey, TableIdentity
 
 
 @pytest.fixture
@@ -145,13 +140,10 @@ class TestRestartPersistence:
         planner2 = ReadPlanner(config)
 
         # Record timing - should be faster due to cached metadata
-        start = time.perf_counter()
         plan2 = planner2.plan(table_uri)
-        elapsed_ms = (time.perf_counter() - start) * 1000
 
         # Verify metadata was reused (check store hit counters)
-        store2 = get_metadata_store(cache_dir)
-        stats2 = store2.stats()
+        get_metadata_store(cache_dir)
 
         # Should have hits from second planning
         assert len(plan2.tasks) == len(plan1.tasks)
@@ -179,7 +171,6 @@ class TestCorruptedCacheSelfHealing:
         assert len(cache_files) > 0
 
         corrupted_file = cache_files[0]
-        original_size = corrupted_file.stat().st_size
 
         # Write garbage to corrupt the file
         corrupted_file.write_bytes(b"CORRUPTED DATA - NOT VALID ARROW IPC")
@@ -199,8 +190,9 @@ class TestCorruptedCacheSelfHealing:
         if corrupted_file.exists():
             # If it exists, it should be valid Arrow IPC now
             new_size = corrupted_file.stat().st_size
-            assert new_size != len(b"CORRUPTED DATA - NOT VALID ARROW IPC"), \
+            assert new_size != len(b"CORRUPTED DATA - NOT VALID ARROW IPC"), (
                 "Corrupted file should be replaced with valid data"
+            )
 
     def test_corrupted_metadata_sidecar_handled_gracefully(self, temp_warehouse, tmp_path):
         """Corrupted metadata sidecar doesn't break cache operation."""
@@ -252,6 +244,7 @@ class TestConcurrentRequestsNoThunderingHerd:
                 results.append(sum(b.num_rows for b in batches))
             except Exception as e:
                 import traceback
+
                 errors.append((e, traceback.format_exc()))
 
         # Run multiple concurrent fetchers
@@ -290,8 +283,8 @@ class TestConcurrentRequestsNoThunderingHerd:
             max_concurrent_scans=2,  # Low limit to test queuing
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 
@@ -344,7 +337,6 @@ class TestStaleMetadataInvalidation:
         from strata.metadata_cache import get_metadata_store, reset_caches
 
         cache_dir = tmp_path / "cache"
-        warehouse_path = temp_warehouse["warehouse_path"]
         table = temp_warehouse["table"]
 
         reset_caches()
@@ -371,7 +363,7 @@ class TestStaleMetadataInvalidation:
         table.append(new_data)
 
         # Run cleanup - should detect stale entries
-        removed = store.cleanup_stale_parquet_meta()
+        store.cleanup_stale_parquet_meta()
 
         # New planning should work correctly
         reset_caches()
@@ -482,8 +474,8 @@ class TestStreamingIntegration:
             cache_dir=cache_dir,
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 
@@ -524,7 +516,6 @@ class TestStreamingIntegration:
         """
         import requests
 
-        client = server_with_client["client"]
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
         expected_rows = server_with_client["warehouse"]["num_rows"]
@@ -719,6 +710,7 @@ class TestStreamingIntegration:
         We use a very short timeout to trigger this behavior.
         """
         import socket
+
         import requests
 
         sock = socket.socket()
@@ -736,8 +728,8 @@ class TestStreamingIntegration:
             scan_timeout_seconds=0.001,  # 1ms - will definitely timeout
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 
@@ -811,8 +803,8 @@ class TestStreamAbortMetrics:
             cache_dir=cache_dir,
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         state = ServerState(config)
         server_module._state = state
@@ -881,6 +873,7 @@ class TestStreamAbortMetrics:
     def test_timeout_increments_counter(self, temp_warehouse, tmp_path):
         """Scan timeout increments stream_aborts_timeout counter."""
         import socket
+
         import requests
 
         sock = socket.socket()
@@ -896,8 +889,8 @@ class TestStreamAbortMetrics:
             scan_timeout_seconds=0.001,  # Very short timeout
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         state = ServerState(config)
         server_module._state = state
@@ -978,7 +971,6 @@ class TestActiveScanCount:
 
     def test_get_active_scan_count_matches_semaphore(self, temp_warehouse, tmp_path):
         """_get_active_scan_count returns correct count based on semaphore."""
-        import asyncio
 
         cache_dir = tmp_path / "cache"
         config = StrataConfig(
@@ -1014,6 +1006,7 @@ class TestActiveScanCount:
     def test_active_scans_released_on_completion(self, temp_warehouse, tmp_path):
         """Active scan count returns to zero after scan completes."""
         import socket
+
         import requests
 
         sock = socket.socket()
@@ -1029,8 +1022,8 @@ class TestActiveScanCount:
             max_concurrent_scans=2,
         )
 
-        from strata.server import ServerState, _get_active_scan_count, app
         import strata.server as server_module
+        from strata.server import ServerState, _get_active_scan_count, app
 
         state = ServerState(config)
         server_module._state = state
@@ -1083,8 +1076,9 @@ class TestAsyncIONonBlocking:
         would serialize and take much longer.
         """
         import socket
+        from concurrent.futures import as_completed
+
         import requests
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -1099,8 +1093,8 @@ class TestAsyncIONonBlocking:
             max_concurrent_scans=10,
         )
 
-        from strata.server import ServerState, app
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 
@@ -1166,7 +1160,6 @@ class TestCacheVersioning:
 
     def test_different_cache_versions_coexist(self, temp_warehouse, tmp_path):
         """Different cache versions don't interfere with each other."""
-        from strata.cache import CACHE_VERSION
 
         cache_dir = tmp_path / "cache"
         table_uri = temp_warehouse["table_uri"]

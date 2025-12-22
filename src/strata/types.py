@@ -49,9 +49,7 @@ class TableIdentity:
         """
         parts = table_id.split(".")
         if len(parts) != 2:
-            raise ValueError(
-                f"Invalid table_id '{table_id}': expected 'namespace.table' format"
-            )
+            raise ValueError(f"Invalid table_id '{table_id}': expected 'namespace.table' format")
         return cls(catalog=catalog, namespace=parts[0], table=parts[1])
 
 
@@ -164,10 +162,15 @@ class CacheKey:
         """
         if granularity == CacheGranularity.ROW_GROUP:
             # Ignore projection - cache all columns
-            key_str = f"{self.table_identity}|{self.snapshot_id}|{self.file_path}|{self.row_group_id}"
+            key_str = (
+                f"{self.table_identity}|{self.snapshot_id}|{self.file_path}|{self.row_group_id}"
+            )
         else:
             # Include projection in key
-            key_str = f"{self.table_identity}|{self.snapshot_id}|{self.file_path}|{self.row_group_id}|{self.projection_fingerprint}"
+            key_str = (
+                f"{self.table_identity}|{self.snapshot_id}|"
+                f"{self.file_path}|{self.row_group_id}|{self.projection_fingerprint}"
+            )
         return hashlib.sha256(key_str.encode()).hexdigest()
 
     @staticmethod

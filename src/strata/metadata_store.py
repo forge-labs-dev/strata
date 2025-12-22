@@ -276,9 +276,7 @@ class MetadataStore:
         finally:
             conn.close()
 
-    def get_parquet_meta_many(
-        self, file_paths: list[str]
-    ) -> dict[str, PersistedParquetMeta]:
+    def get_parquet_meta_many(self, file_paths: list[str]) -> dict[str, PersistedParquetMeta]:
         """Get cached Parquet metadata for multiple files in one query.
 
         More efficient than calling get_parquet_meta() in a loop.
@@ -336,9 +334,7 @@ class MetadataStore:
         self.parquet_meta_misses += len(file_paths) - len(result)
         return result
 
-    def put_parquet_meta_many(
-        self, items: list[tuple[str, PersistedParquetMeta]]
-    ) -> None:
+    def put_parquet_meta_many(self, items: list[tuple[str, PersistedParquetMeta]]) -> None:
         """Store multiple Parquet metadata entries in one transaction.
 
         More efficient than calling put_parquet_meta() in a loop.
@@ -406,12 +402,8 @@ class MetadataStore:
     def stats(self) -> dict:
         """Get store statistics."""
         with self._get_conn() as conn:
-            manifest_count = conn.execute(
-                "SELECT COUNT(*) FROM manifest_cache"
-            ).fetchone()[0]
-            parquet_count = conn.execute(
-                "SELECT COUNT(*) FROM parquet_meta"
-            ).fetchone()[0]
+            manifest_count = conn.execute("SELECT COUNT(*) FROM manifest_cache").fetchone()[0]
+            parquet_count = conn.execute("SELECT COUNT(*) FROM parquet_meta").fetchone()[0]
 
         return {
             "manifest_entries": manifest_count,
@@ -466,9 +458,7 @@ def serialize_arrow_schema(schema: pa.Schema) -> bytes:
     """Serialize Arrow schema to IPC format bytes."""
     sink = pa.BufferOutputStream()
     # Write empty batch to capture schema
-    batch = pa.RecordBatch.from_pydict(
-        {name: [] for name in schema.names}, schema=schema
-    )
+    batch = pa.RecordBatch.from_pydict({name: [] for name in schema.names}, schema=schema)
     writer = pa.ipc.new_stream(sink, schema)
     writer.write_batch(batch)
     writer.close()

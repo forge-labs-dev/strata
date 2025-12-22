@@ -1,14 +1,10 @@
 """Smoke tests for Strata."""
 
-import tempfile
 import threading
 import time
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
-import duckdb
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 import uvicorn
 from pyiceberg.catalog.sql import SqlCatalog
@@ -21,7 +17,7 @@ from pyiceberg.types import (
 )
 
 from strata.cache import CachedFetcher, DiskCache
-from strata.client import StrataClient, gt, lt
+from strata.client import StrataClient, lt
 from strata.config import StrataConfig
 from strata.duckdb_ext import StrataScanner
 from strata.planner import ReadPlanner
@@ -59,7 +55,7 @@ def temp_warehouse(tmp_path):
 
     # Create sample data with multiple row groups
     num_rows = 500
-    base_ts = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1_000_000)
+    base_ts = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000)
     data = pa.table(
         {
             "id": pa.array(range(num_rows), type=pa.int64()),
@@ -185,9 +181,7 @@ class TestDiskCache:
             projection_fingerprint="*",
         )
 
-        batch = pa.RecordBatch.from_pydict(
-            {"id": [1, 2, 3], "value": [1.0, 2.0, 3.0]}
-        )
+        batch = pa.RecordBatch.from_pydict({"id": [1, 2, 3], "value": [1.0, 2.0, 3.0]})
 
         assert cache.contains(key) is False
         cache.put(key, batch)
@@ -250,7 +244,7 @@ class TestReadPlanner:
         planner = ReadPlanner(strata_config)
 
         # Get baseline without filters
-        plan_all = planner.plan(temp_warehouse["table_uri"])
+        planner.plan(temp_warehouse["table_uri"])
 
         # With filter that should prune some row groups
         # value ranges from 0 to 748.5 (500 rows * 1.5)
@@ -307,10 +301,9 @@ class TestEndToEnd:
         )
 
         # Start server in a thread
-        from strata.server import app, _state, ServerState
-
         # Initialize state manually for testing
         import strata.server as server_module
+        from strata.server import ServerState, app
 
         server_module._state = ServerState(config)
 
@@ -353,7 +346,6 @@ class TestEndToEnd:
         # Check metrics
         metrics1 = client.metrics()
         initial_hits = metrics1["cache_hits"]
-        initial_misses = metrics1["cache_misses"]
 
         # Second scan - should have cache hits
         batches2 = list(client.scan(table_uri))
@@ -380,7 +372,6 @@ class TestEndToEnd:
 
     def test_duckdb_integration(self, server_with_client):
         """Test DuckDB integration."""
-        client = server_with_client["client"]
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
@@ -547,9 +538,7 @@ class TestEndToEnd:
         assert "metadata" in entry
 
         # Test with limit
-        response = requests.get(
-            f"http://127.0.0.1:{config.port}/v1/debug/cache/inspect?limit=1"
-        )
+        response = requests.get(f"http://127.0.0.1:{config.port}/v1/debug/cache/inspect?limit=1")
         assert response.status_code == 200
         result = response.json()
         assert len(result["entries"]) <= 1
@@ -600,12 +589,11 @@ class TestEagerWarmup:
 
     def test_warmup_initializes_metadata_store(self, tmp_path):
         """Test that warmup initializes the metadata store."""
-        from strata.config import StrataConfig
-        from strata.metadata_cache import _metadata_store, get_metadata_store
-        from strata.server import _eager_warmup
-
         # Reset global state
         import strata.metadata_cache
+        from strata.config import StrataConfig
+        from strata.metadata_cache import get_metadata_store
+        from strata.server import _eager_warmup
 
         strata.metadata_cache._metadata_store = None
 

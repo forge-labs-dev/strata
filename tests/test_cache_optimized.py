@@ -54,9 +54,7 @@ class TestDiskCacheGetAsStreamBytes:
 
         assert result is None
 
-    def test_returns_stream_bytes_for_cached_data(
-        self, strata_config, cache_key, sample_batch
-    ):
+    def test_returns_stream_bytes_for_cached_data(self, strata_config, cache_key, sample_batch):
         """Test that get_as_stream_bytes returns valid stream bytes for cached data."""
         cache = DiskCache(strata_config)
 
@@ -76,9 +74,7 @@ class TestDiskCacheGetAsStreamBytes:
         assert len(batches) == 1
         assert batches[0].num_rows == sample_batch.num_rows
 
-    def test_stream_bytes_data_matches_original(
-        self, strata_config, cache_key, sample_batch
-    ):
+    def test_stream_bytes_data_matches_original(self, strata_config, cache_key, sample_batch):
         """Test that stream bytes contain the same data as the original batch."""
         cache = DiskCache(strata_config)
         cache.put(cache_key, sample_batch)
@@ -105,9 +101,7 @@ class TestDiskCacheGetPath:
 
         assert result is None
 
-    def test_returns_path_for_cached_data(
-        self, strata_config, cache_key, sample_batch
-    ):
+    def test_returns_path_for_cached_data(self, strata_config, cache_key, sample_batch):
         """Test that get_path returns a valid path for cached data."""
         cache = DiskCache(strata_config)
         cache.put(cache_key, sample_batch)
@@ -122,9 +116,7 @@ class TestDiskCacheGetPath:
 class TestCachedFetcherFetchAsStreamBytes:
     """Tests for CachedFetcher.fetch_as_stream_bytes() method."""
 
-    def test_returns_stream_bytes_for_cache_hit(
-        self, strata_config, cache_key, sample_batch
-    ):
+    def test_returns_stream_bytes_for_cache_hit(self, strata_config, cache_key, sample_batch):
         """Test that fetch_as_stream_bytes returns stream bytes for cache hits."""
         cache = DiskCache(strata_config)
         cache.put(cache_key, sample_batch)
@@ -163,9 +155,7 @@ class TestCachedFetcherFetchAsStreamBytes:
 class TestRustAccelerationIntegration:
     """Tests for Rust acceleration integration with cache."""
 
-    def test_rust_path_produces_valid_output(
-        self, strata_config, cache_key, sample_batch
-    ):
+    def test_rust_path_produces_valid_output(self, strata_config, cache_key, sample_batch):
         """Test that Rust acceleration produces valid output when available."""
         cache = DiskCache(strata_config)
         cache.put(cache_key, sample_batch)

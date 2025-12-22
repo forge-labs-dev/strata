@@ -395,11 +395,13 @@ class ParquetMetadataCache:
                     else:
                         columns[idx] = ColumnChunkMeta(is_stats_set=False, statistics=None)
 
-                row_group_meta.append(RowGroupMeta(
-                    num_rows=rg.num_rows,
-                    total_byte_size=rg.total_byte_size,
-                    _columns=columns,
-                ))
+                row_group_meta.append(
+                    RowGroupMeta(
+                        num_rows=rg.num_rows,
+                        total_byte_size=rg.total_byte_size,
+                        _columns=columns,
+                    )
+                )
 
             return ParquetMetadata(
                 arrow_schema=arrow_schema,
@@ -440,11 +442,13 @@ class ParquetMetadataCache:
                     else:
                         columns[idx] = ColumnChunkMeta(is_stats_set=False, statistics=None)
 
-                row_group_meta.append(RowGroupMeta(
-                    num_rows=rg.num_rows,
-                    total_byte_size=rg.total_byte_size,
-                    _columns=columns,
-                ))
+                row_group_meta.append(
+                    RowGroupMeta(
+                        num_rows=rg.num_rows,
+                        total_byte_size=rg.total_byte_size,
+                        _columns=columns,
+                    )
+                )
 
             return ParquetMetadata(
                 arrow_schema=arrow_schema,
@@ -520,12 +524,8 @@ class ManifestCache:
     since the key includes snapshot_id.
     """
 
-    def __init__(
-        self, max_size: int = 100, store: "MetadataStore | None" = None
-    ) -> None:
-        self._cache: LRUCache[tuple[str, str, int], ManifestResolution] = LRUCache(
-            max_size
-        )
+    def __init__(self, max_size: int = 100, store: "MetadataStore | None" = None) -> None:
+        self._cache: LRUCache[tuple[str, str, int], ManifestResolution] = LRUCache(max_size)
         self._store = store
 
     def get(
@@ -542,16 +542,11 @@ class ManifestCache:
 
         # Check persistent store if available
         if self._store is not None:
-            persisted = self._store.get_manifest(
-                catalog_name, table_identity, snapshot_id
-            )
+            persisted = self._store.get_manifest(catalog_name, table_identity, snapshot_id)
             if persisted is not None:
                 # Convert to ManifestResolution
                 resolution = ManifestResolution(
-                    data_files=[
-                        ManifestEntry(file_path=fp, actual_path=ap)
-                        for fp, ap in persisted
-                    ]
+                    data_files=[ManifestEntry(file_path=fp, actual_path=ap) for fp, ap in persisted]
                 )
                 self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
                 return resolution
@@ -572,12 +567,9 @@ class ManifestCache:
         if self._store is not None:
             try:
                 data_files = [
-                    (entry.file_path, entry.actual_path)
-                    for entry in resolution.data_files
+                    (entry.file_path, entry.actual_path) for entry in resolution.data_files
                 ]
-                self._store.put_manifest(
-                    catalog_name, table_identity, snapshot_id, data_files
-                )
+                self._store.put_manifest(catalog_name, table_identity, snapshot_id, data_files)
             except Exception:
                 pass  # Don't fail if persistence fails
 
@@ -657,9 +649,7 @@ def get_parquet_cache(
                 max_size, store=store, s3_filesystem=s3_filesystem
             )
     elif _parquet_cache is None:
-        _parquet_cache = ParquetMetadataCache(
-            max_size, store=None, s3_filesystem=s3_filesystem
-        )
+        _parquet_cache = ParquetMetadataCache(max_size, store=None, s3_filesystem=s3_filesystem)
     elif s3_filesystem is not None and _parquet_cache._s3_filesystem is None:
         # Update existing cache with S3 filesystem
         _parquet_cache._s3_filesystem = s3_filesystem
@@ -667,9 +657,7 @@ def get_parquet_cache(
     return _parquet_cache
 
 
-def get_manifest_cache(
-    max_size: int = 100, cache_dir: Path | None = None
-) -> ManifestCache:
+def get_manifest_cache(max_size: int = 100, cache_dir: Path | None = None) -> ManifestCache:
     """Get the global manifest cache (creates if needed).
 
     Args:

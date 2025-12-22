@@ -93,9 +93,7 @@ def benchmark_parse_and_serve(file_path: Path, num_iterations: int = 100) -> dic
     }
 
 
-def benchmark_concat_stream_bytes(
-    segments: list[bytes], num_iterations: int = 100
-) -> dict:
+def benchmark_concat_stream_bytes(segments: list[bytes], num_iterations: int = 100) -> dict:
     """Benchmark concat_stream_bytes."""
     times = []
     for _ in range(num_iterations):

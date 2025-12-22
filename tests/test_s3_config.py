@@ -180,9 +180,7 @@ class TestS3URIParsing:
         from strata.iceberg import PyIcebergCatalog
 
         # S3 URI with warehouse path
-        warehouse, table_id = PyIcebergCatalog.parse_table_uri(
-            "s3://my-bucket/warehouse#db.table"
-        )
+        warehouse, table_id = PyIcebergCatalog.parse_table_uri("s3://my-bucket/warehouse#db.table")
         assert warehouse == "s3://my-bucket/warehouse"
         assert table_id == "db.table"
 
@@ -200,9 +198,7 @@ class TestS3URIParsing:
         """Local file:// URIs still strip the prefix."""
         from strata.iceberg import PyIcebergCatalog
 
-        warehouse, table_id = PyIcebergCatalog.parse_table_uri(
-            "file:///path/to/warehouse#db.table"
-        )
+        warehouse, table_id = PyIcebergCatalog.parse_table_uri("file:///path/to/warehouse#db.table")
         assert warehouse == "/path/to/warehouse"
         assert not warehouse.startswith("file://")
 
