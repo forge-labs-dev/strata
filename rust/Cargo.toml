@@ -15,9 +15,6 @@ arrow = { version = "57", features = ["ipc"] }
 memmap2 = "0.9"
 thiserror = "1.0"
 
-[dev-dependencies]
-tempfile = "3"
-
 [profile.release]
 lto = true
 codegen-units = 1
