@@ -486,14 +486,15 @@ class TestPlannerWithMetadataCache:
         assert len(plan1.tasks) > 0
 
         manifest_stats = planner.manifest_cache.stats()
-        assert manifest_stats["misses"] >= 1
+        # Stats are now nested: {"unfiltered": {...}, "filtered": {...}}
+        assert manifest_stats["unfiltered"]["misses"] >= 1
 
         # Second plan - should use cache
         plan2 = planner.plan(table_uri)
         assert len(plan2.tasks) == len(plan1.tasks)
 
         manifest_stats = planner.manifest_cache.stats()
-        assert manifest_stats["hits"] >= 1
+        assert manifest_stats["unfiltered"]["hits"] >= 1
 
     def test_different_snapshots_use_different_cache_entries(self, warehouse_with_table):
         """Test that different snapshots don't share manifest cache entries."""
@@ -528,14 +529,14 @@ class TestPlannerWithMetadataCache:
 
         # Both should be cache misses (different snapshots)
         manifest_stats = planner.manifest_cache.stats()
-        assert manifest_stats["misses"] >= 2
+        assert manifest_stats["unfiltered"]["misses"] >= 2
 
         # Repeat - should hit cache
         planner.plan(table_uri, snapshot_id=snap1_id)
         planner.plan(table_uri, snapshot_id=snap2_id)
 
         manifest_stats = planner.manifest_cache.stats()
-        assert manifest_stats["hits"] >= 2
+        assert manifest_stats["unfiltered"]["hits"] >= 2
 
 
 class TestMetadataStore:

@@ -13,7 +13,15 @@ from strata.metadata_cache import (
     get_manifest_cache,
     get_parquet_cache,
 )
-from strata.types import CacheKey, Filter, ReadPlan, TableIdentity, Task
+from strata.types import (
+    CacheKey,
+    Filter,
+    ReadPlan,
+    TableIdentity,
+    Task,
+    compute_filter_fingerprint,
+    filters_to_iceberg_expression,
+)
 
 # Type alias for compiled filters: list of (parquet_column_index, filter)
 CompiledFilters = list[tuple[int, Filter]]
@@ -134,6 +142,9 @@ class ReadPlanner:
         # Compute projection fingerprint
         proj_fingerprint = CacheKey.compute_projection_fingerprint(columns)
 
+        # Compute filter fingerprint for cache keying
+        filter_fingerprint = compute_filter_fingerprint(filters)
+
         # Collect all data files from the snapshot
         plan = ReadPlan(
             table_uri=table_uri,
@@ -144,16 +155,29 @@ class ReadPlanner:
         )
 
         # Get data files from manifest cache or resolve fresh
+        # Two-level lookup: try filtered cache first, then compute with Iceberg pruning
         catalog_name = self.config.catalog_name
         table_identity_str = str(table_identity)
         manifest_resolution = self.manifest_cache.get(
-            catalog_name, table_identity_str, resolved_snapshot_id
+            catalog_name, table_identity_str, resolved_snapshot_id, filter_fingerprint
         )
 
         if manifest_resolution is None:
-            # Cache miss: resolve manifests and cache result
-            scan = table.scan(snapshot_id=resolved_snapshot_id)
-            data_files = list(scan.plan_files())
+            # Cache miss: resolve manifests with Iceberg file-level pruning
+            iceberg_expr = filters_to_iceberg_expression(filters)
+
+            try:
+                # Use Iceberg's file-level pruning if we have filters
+                if iceberg_expr is not None:
+                    scan = table.scan(snapshot_id=resolved_snapshot_id, row_filter=iceberg_expr)
+                else:
+                    scan = table.scan(snapshot_id=resolved_snapshot_id)
+                data_files = list(scan.plan_files())
+            except Exception:
+                # If Iceberg expression fails (type mismatch, unsupported column, etc.),
+                # fall back to unfiltered scan - row-group pruning will still work
+                scan = table.scan(snapshot_id=resolved_snapshot_id)
+                data_files = list(scan.plan_files())
 
             # Build manifest entries with resolved paths
             entries = []
@@ -164,7 +188,11 @@ class ReadPlanner:
 
             manifest_resolution = ManifestResolution(data_files=entries)
             self.manifest_cache.put(
-                catalog_name, table_identity_str, resolved_snapshot_id, manifest_resolution
+                catalog_name,
+                table_identity_str,
+                resolved_snapshot_id,
+                manifest_resolution,
+                filter_fingerprint,
             )
 
         total_row_groups = 0

@@ -95,6 +95,90 @@ class Filter:
                 return max_val >= self.value
 
 
+def compute_filter_fingerprint(filters: list[Filter] | None) -> str:
+    """Compute a stable fingerprint for a list of filters.
+
+    Used for cache keying when filters affect file-level pruning.
+    Returns a deterministic hash that is stable across runs.
+
+    Args:
+        filters: List of Filter objects (may be None or empty)
+
+    Returns:
+        16-character hex string, or "nofilter" if no filters
+    """
+    if not filters:
+        return "nofilter"
+
+    # Sort filters deterministically by (column, op, value_repr)
+    # This ensures the same filters in different order produce the same fingerprint
+    parts = []
+    for f in sorted(filters, key=lambda x: (x.column, x.op.value, repr(x.value))):
+        # Normalize datetime values to ISO format for consistency
+        if isinstance(f.value, datetime):
+            value_str = f.value.isoformat()
+        else:
+            value_str = repr(f.value)
+        parts.append(f"{f.column}{f.op.value}{value_str}")
+
+    combined = "|".join(parts)
+    return hashlib.md5(combined.encode()).hexdigest()[:16]
+
+
+def filters_to_iceberg_expression(filters: list[Filter] | None):
+    """Convert Strata filters to a PyIceberg boolean expression.
+
+    Only converts filters that PyIceberg can handle (flat columns, basic ops).
+    Uses AND semantics to combine multiple filters.
+
+    Args:
+        filters: List of Filter objects
+
+    Returns:
+        PyIceberg BooleanExpression, or None if no filters
+    """
+    if not filters:
+        return None
+
+    from functools import reduce
+
+    from pyiceberg.expressions import (
+        And,
+        EqualTo,
+        GreaterThan,
+        GreaterThanOrEqual,
+        LessThan,
+        LessThanOrEqual,
+        NotEqualTo,
+    )
+
+    exprs = []
+    for f in filters:
+        # Skip nested column references (contain dots)
+        if "." in f.column:
+            continue
+
+        match f.op:
+            case FilterOp.EQ:
+                exprs.append(EqualTo(f.column, f.value))
+            case FilterOp.NE:
+                exprs.append(NotEqualTo(f.column, f.value))
+            case FilterOp.LT:
+                exprs.append(LessThan(f.column, f.value))
+            case FilterOp.LE:
+                exprs.append(LessThanOrEqual(f.column, f.value))
+            case FilterOp.GT:
+                exprs.append(GreaterThan(f.column, f.value))
+            case FilterOp.GE:
+                exprs.append(GreaterThanOrEqual(f.column, f.value))
+
+    if not exprs:
+        return None
+
+    # Combine with AND
+    return reduce(And, exprs)
+
+
 class CacheGranularity(Enum):
     """Cache granularity options.
 

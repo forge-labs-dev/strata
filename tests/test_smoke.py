@@ -422,10 +422,12 @@ class TestEndToEnd:
         assert "hits" in pq_stats
         assert "misses" in pq_stats
 
-        # Manifest cache should have some activity
+        # Manifest cache should have some activity (two-level: unfiltered and filtered)
         manifest_stats = stats["manifest_cache"]
-        assert "hits" in manifest_stats
-        assert "misses" in manifest_stats
+        assert "unfiltered" in manifest_stats
+        assert "filtered" in manifest_stats
+        assert "hits" in manifest_stats["unfiltered"]
+        assert "misses" in manifest_stats["unfiltered"]
 
         # Metadata store stats (if available)
         store_stats = stats["metadata_store"]

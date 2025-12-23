@@ -513,43 +513,77 @@ class ManifestCache:
     """Cache for Iceberg manifest resolution results with optional persistence.
 
     Avoids re-resolving manifests on every scan for the same snapshot.
-    Key: (catalog_name, table_identity_str, snapshot_id)
-    Value: ManifestResolution
+
+    Two-level caching:
+    - Unfiltered: Key is (catalog, table, snapshot) -> all files
+    - Filtered: Key is (catalog, table, snapshot, filter_fingerprint) -> pruned files
+
+    The unfiltered cache is used for persistence and as a fallback.
+    The filtered cache stores results of Iceberg file-level pruning.
 
     Architecture:
     - In-memory LRU cache for fast access
-    - Optional SQLite store for persistence across restarts
+    - Optional SQLite store for persistence across restarts (unfiltered only)
 
     Note: This cache is invalidated when a new snapshot is created,
     since the key includes snapshot_id.
     """
 
     def __init__(self, max_size: int = 100, store: "MetadataStore | None" = None) -> None:
+        # Unfiltered cache: (catalog, table, snapshot) -> all files
         self._cache: LRUCache[tuple[str, str, int], ManifestResolution] = LRUCache(max_size)
+        # Filtered cache: (catalog, table, snapshot, filter_fp) -> pruned files
+        self._filtered_cache: LRUCache[tuple[str, str, int, str], ManifestResolution] = LRUCache(
+            max_size * 2
+        )
         self._store = store
 
     def get(
-        self, catalog_name: str, table_identity: str, snapshot_id: int
+        self,
+        catalog_name: str,
+        table_identity: str,
+        snapshot_id: int,
+        filter_fingerprint: str = "nofilter",
     ) -> ManifestResolution | None:
         """Get cached manifest resolution.
 
-        Lookup order: in-memory cache -> SQLite store
-        """
-        # Check in-memory cache first
-        cached = self._cache.get((catalog_name, table_identity, snapshot_id))
-        if cached is not None:
-            return cached
+        Args:
+            catalog_name: Catalog name
+            table_identity: Table identity string
+            snapshot_id: Snapshot ID
+            filter_fingerprint: Filter fingerprint for filtered queries (default: "nofilter")
 
-        # Check persistent store if available
-        if self._store is not None:
-            persisted = self._store.get_manifest(catalog_name, table_identity, snapshot_id)
-            if persisted is not None:
-                # Convert to ManifestResolution
-                resolution = ManifestResolution(
-                    data_files=[ManifestEntry(file_path=fp, actual_path=ap) for fp, ap in persisted]
-                )
-                self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
-                return resolution
+        Lookup order:
+        - If filter_fingerprint != "nofilter": check filtered cache
+        - Check unfiltered in-memory cache
+        - Check SQLite store (unfiltered only)
+        """
+        # For filtered queries, check filtered cache first
+        if filter_fingerprint != "nofilter":
+            cached = self._filtered_cache.get(
+                (catalog_name, table_identity, snapshot_id, filter_fingerprint)
+            )
+            if cached is not None:
+                return cached
+
+        # Check unfiltered in-memory cache
+        # Only return this for unfiltered queries
+        if filter_fingerprint == "nofilter":
+            cached = self._cache.get((catalog_name, table_identity, snapshot_id))
+            if cached is not None:
+                return cached
+
+            # Check persistent store if available (unfiltered only)
+            if self._store is not None:
+                persisted = self._store.get_manifest(catalog_name, table_identity, snapshot_id)
+                if persisted is not None:
+                    resolution = ManifestResolution(
+                        data_files=[
+                            ManifestEntry(file_path=fp, actual_path=ap) for fp, ap in persisted
+                        ]
+                    )
+                    self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
+                    return resolution
 
         return None
 
@@ -559,27 +593,49 @@ class ManifestCache:
         table_identity: str,
         snapshot_id: int,
         resolution: ManifestResolution,
+        filter_fingerprint: str = "nofilter",
     ) -> None:
-        """Cache manifest resolution."""
-        self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
+        """Cache manifest resolution.
 
-        # Persist to store if available
-        if self._store is not None:
-            try:
-                data_files = [
-                    (entry.file_path, entry.actual_path) for entry in resolution.data_files
-                ]
-                self._store.put_manifest(catalog_name, table_identity, snapshot_id, data_files)
-            except Exception:
-                pass  # Don't fail if persistence fails
+        Args:
+            catalog_name: Catalog name
+            table_identity: Table identity string
+            snapshot_id: Snapshot ID
+            resolution: Manifest resolution to cache
+            filter_fingerprint: Filter fingerprint (default: "nofilter" for unfiltered)
+        """
+        if filter_fingerprint != "nofilter":
+            # Cache filtered result (in-memory only, not persisted)
+            self._filtered_cache.put(
+                (catalog_name, table_identity, snapshot_id, filter_fingerprint), resolution
+            )
+        else:
+            # Cache unfiltered result
+            self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
+
+            # Persist to store if available (unfiltered only)
+            if self._store is not None:
+                try:
+                    data_files = [
+                        (entry.file_path, entry.actual_path) for entry in resolution.data_files
+                    ]
+                    self._store.put_manifest(catalog_name, table_identity, snapshot_id, data_files)
+                except Exception:
+                    pass  # Don't fail if persistence fails
 
     def clear(self) -> None:
         """Clear all cached resolutions."""
         self._cache.clear()
+        self._filtered_cache.clear()
 
     def stats(self) -> dict:
         """Get cache statistics."""
-        return self._cache.stats()
+        unfiltered = self._cache.stats()
+        filtered = self._filtered_cache.stats()
+        return {
+            "unfiltered": unfiltered,
+            "filtered": filtered,
+        }
 
 
 # Global singleton caches for use across the application.

@@ -4,14 +4,214 @@
 [![Pre-commit](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml)
 [![Docker](https://github.com/fangchenli/strata/actions/workflows/docker.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/docker.yml)
 
-Snapshot-aware serving layer for Iceberg tables that provides durable, shared, read-optimized state (cache) for ephemeral analytical compute, returning Arrow batches to clients.
+**A Snapshot-Aware Serving Layer for Iceberg Tables**
+
+Modern data lakes are built on immutable files and versioned metadata, yet every query engine still treats reads as a fresh execution problem.
+
+Strata changes that.
+
+Strata is a snapshot-aware serving layer for Apache Iceberg tables. It turns Iceberg snapshots into reusable, persistent read artifacts that can be fetched efficiently, streamed safely, and reused across queries, processes, and restarts.
+
+Instead of re-planning and re-reading the same Parquet data over and over, Strata:
+
+- Understands Iceberg snapshot semantics
+- Materializes stable row-group read units
+- Persists them across process lifetimes
+- Serves them directly in Arrow IPC stream format
+
+The result is predictable, low-latency reads for repeated queries—without changing file formats, rewriting engines, or sacrificing correctness.
+
+## Why Strata Exists
+
+Iceberg snapshots are immutable. Parquet row groups are immutable.
+Arrow IPC streams are already the wire format most engines consume.
+
+Yet today, every scan:
+
+- Re-resolves manifests
+- Re-reads metadata
+- Re-parses Parquet
+- And discards the result on restart
+
+Strata sits between storage and execution and treats immutable data like immutable data should be treated: as cacheable, restart-safe serving artifacts.
+
+## What Strata Is (and Isn't)
+
+Strata is **not** a query engine.
+Strata is **not** a SQL layer.
+Strata is **not** just an in-memory cache.
+
+Strata is a long-lived service that:
+
+- Plans reads using Iceberg metadata
+- Prunes at file and row-group granularity
+- Persists Arrow IPC streams on disk
+- Streams results with bounded memory
+
+Engines like DuckDB, Polars, and Spark can fetch data from Strata as if they were reading a local Arrow stream—except the expensive work has already been done.
+
+## When Strata Helps Most
+
+Strata shines when:
+
+- The same Iceberg snapshot is queried repeatedly
+- Workloads are interactive or dashboard-driven
+- Cold starts are expensive
+- Object storage latency dominates
+
+Typical speedups range from 2–3× on warm reads, with correctness guaranteed by Iceberg snapshot immutability.
+
+## Design Principles
+
+- **Correctness first**: Cache keys include snapshot identity
+- **Conservative pruning**: If in doubt, read rather than risk dropping data
+- **Bounded memory**: Large scans stream incrementally
+- **No magic**: All data served is valid Arrow IPC
+
+Strata is intentionally simple—because the right abstraction often is.
+
+## How Strata Works
+
+Strata sits between query engines and Iceberg-backed storage.
+It does not execute queries. Instead, it plans, materializes, and serves snapshot-consistent read units.
+
+At a high level, a Strata scan has three phases:
+
+1. **Plan** – Resolve what needs to be read (cheap, metadata-only)
+2. **Fetch** – Read immutable row groups (expensive, I/O-bound)
+3. **Serve** – Stream Arrow IPC bytes to the client (cheap, CPU-light)
+
+Because Iceberg snapshots and Parquet row groups are immutable, Strata can safely persist the results of phases (1) and (2).
+
+### 1. Planning: Snapshot-Aware Read Planning
+
+When a client requests a scan, Strata:
+
+1. Resolves the Iceberg table and snapshot ID
+2. Loads (or reuses) the snapshot's manifest resolution
+3. Applies conservative pruning using:
+   - Iceberg file-level metadata
+   - Parquet row-group statistics (min/max, row counts)
+4. Produces a `ReadPlan` consisting of independent row-group tasks
+
+Each task represents:
+- A specific data file
+- A specific row group
+- A specific column projection
+- A specific snapshot
+
+This makes every task fully deterministic and cacheable.
+
+**Key property**: Planning is metadata-only. No Parquet data is read during this phase.
+
+### 2. Fetching: Immutable Row-Group Materialization
+
+Each task is executed independently:
+
+**If a cached result exists:**
+- Strata reads raw bytes directly from disk
+
+**Otherwise:**
+- Strata reads the Parquet row group
+- Projects requested columns
+- Writes the result as an Arrow IPC stream
+- Persists it to disk
+
+The cache key includes:
+- Table identity
+- Snapshot ID
+- File path
+- Row group ID
+- Projection fingerprint
+
+Because all of these inputs are immutable, cached results remain valid forever.
+
+**Important distinction**: Strata caches execution results, not raw Parquet files.
+
+### 3. Serving: True Streaming, Bounded Memory
+
+For multi-row-group scans, Strata does not buffer the full result.
+
+Instead:
+- Each cached or freshly fetched row group is an Arrow IPC stream
+- Streams are concatenated incrementally
+- Bytes are yielded as soon as they are produced
+
+This ensures:
+- O(single row group) memory usage
+- Safe handling of multi-gigabyte scans
+- Immediate backpressure on slow clients
+
+If a client disconnects, exceeds size limits, or times out:
+- Streaming stops immediately
+- Resources are released
+- Partial results are discarded (by design)
+
+### Metadata Caching and Restart Behavior
+
+Strata maintains two distinct caches:
+
+**Persistent (on disk):**
+- Iceberg manifest resolutions
+- Parquet file metadata
+- Arrow IPC row-group streams
+
+These survive process restarts.
+
+**In-memory (per process):**
+- Open Parquet handles
+- Hot metadata
+- Active scan state
+
+These reset on restart.
+
+As a result:
+- **Cold start**: full planning + fetch
+- **Warm cache**: fast planning + zero I/O
+- **Post-restart**: slower planning, fast fetch
+
+This behavior is intentional and predictable.
+
+### Why This Is Safe
+
+Strata relies on three guarantees:
+
+1. Iceberg snapshots are immutable
+2. Parquet row groups are immutable
+3. Arrow IPC streams are deterministic
+
+As long as these hold (and they do), cached results are correct by construction.
+
+If anything cannot be proven safe to prune or reuse, Strata defaults to reading more data—never less.
+
+### What Strata Does Not Do
+
+Strata deliberately avoids:
+- SQL parsing
+- Query optimization
+- Joins, aggregations, or filtering on data
+- Speculative caching
+
+Those responsibilities belong to query engines.
+
+Strata's job is to serve snapshot-consistent data efficiently.
+
+### Mental Model
+
+If it helps, think of Strata as:
+
+> "A content-addressable CDN for Iceberg snapshots, where the objects are Arrow streams."
+
+Or, more bluntly:
+
+> "What query engines wish object storage behaved like."
 
 ## Features
 
 - **Snapshot-aware caching**: Cache keys include `snapshot_id`, ensuring immutable cached objects with no invalidation required
 - **Row-group level caching**: Fine-grained caching at the Parquet row-group level using Arrow IPC format
-- **Filter pruning**: Prune row groups using Parquet min/max statistics for numeric and timestamp columns
-- **Streaming Arrow IPC**: Streams Arrow results without buffering entire scans in memory. Memory footprint scales with row group size, not query result size—a real production differentiator for large scans
+- **Two-tier filter pruning**: Prunes files using Iceberg manifest statistics, then row groups using Parquet min/max statistics
+- **Streaming Arrow IPC**: Streams Arrow results without buffering entire scans in memory. Memory footprint scales with row group size, not query result size
 - **Pre-flight size estimation**: Rejects oversized scans upfront (HTTP 413) using Parquet metadata, preventing wasted work
 - **DuckDB integration**: Query cached data directly with DuckDB SQL
 - **Polars integration**: Zero-copy DataFrame access via Arrow
@@ -60,7 +260,7 @@ for batch in client.scan(
 ):
     process(batch)
 
-# With filters (enables row-group pruning)
+# With filters (enables two-tier pruning)
 for batch in client.scan(
     "file:///warehouse#db.events",
     filters=[gt("value", 100), lt("timestamp", some_datetime)]
@@ -166,7 +366,7 @@ Since Iceberg snapshots are immutable, cached objects never need invalidation.
 
 - `server.py` - FastAPI HTTP server with streaming responses
 - `client.py` - Python client SDK
-- `planner.py` - Read planning with row-group pruning
+- `planner.py` - Read planning with two-tier pruning
 - `fetcher.py` - Parquet reading with Rust acceleration
 - `cache.py` - Disk cache using Arrow IPC
 - `fast_io.py` - Rust-accelerated I/O operations
@@ -240,7 +440,7 @@ pre-commit run --all-files
 
 The project uses GitHub Actions for continuous integration:
 
-- **CI** - Tests on Python 3.12, 3.13, and 3.14 across Ubuntu, macOS, and Windows
+- **CI** - Tests on Python 3.12, 3.13, and 3.14 across Ubuntu and macOS
 - **Pre-commit** - Linting and formatting with ruff
 - **Docker** - Builds and tests the Docker image
 
