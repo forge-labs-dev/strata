@@ -15,6 +15,53 @@ from strata.metadata_cache import (
 )
 from strata.types import CacheKey, Filter, ReadPlan, TableIdentity, Task
 
+# Type alias for compiled filters: list of (parquet_column_index, filter)
+CompiledFilters = list[tuple[int, Filter]]
+
+
+def _build_column_index_map(schema) -> dict[str, int]:
+    """Build a mapping from column name to Parquet leaf column index.
+
+    Only includes flat (non-nested) columns that can be reliably used
+    for row group pruning via statistics.
+
+    Args:
+        schema: Parquet schema from file metadata
+
+    Returns:
+        Dict mapping column name to its physical column index
+    """
+    col_map: dict[str, int] = {}
+    for i in range(len(schema)):
+        col = schema.column(i)
+        # Skip nested/repeated fields - path contains '.' for nested
+        if "." in col.path:
+            continue
+        col_map[col.name] = i
+    return col_map
+
+
+def _compile_filters(
+    filters: list[Filter], col_index_map: dict[str, int]
+) -> CompiledFilters:
+    """Compile filters into (column_index, filter) pairs for fast evaluation.
+
+    Filters referencing columns not in the map (nested or missing) are dropped.
+
+    Args:
+        filters: List of Filter objects
+        col_index_map: Mapping from column name to Parquet column index
+
+    Returns:
+        List of (column_index, filter) tuples for columns that exist
+    """
+    compiled: CompiledFilters = []
+    for f in filters:
+        col_idx = col_index_map.get(f.column)
+        if col_idx is not None:
+            compiled.append((col_idx, f))
+    return compiled
+
 
 class ReadPlanner:
     """Plans reads from Iceberg tables with row-group pruning.
@@ -144,12 +191,17 @@ class ReadPlanner:
             if arrow_schema is None:
                 arrow_schema = pq_meta.arrow_schema
 
+            # Build column index map once per file and compile filters
+            # This avoids O(num_columns × num_filters × num_row_groups) scanning
+            col_index_map = _build_column_index_map(pq_meta.parquet_schema)
+            compiled_filters = _compile_filters(filters, col_index_map)
+
             for rg_idx in range(pq_meta.num_row_groups):
                 total_row_groups += 1
                 rg_meta = pq_meta.row_group_metadata[rg_idx]
 
-                # Check if we can prune this row group
-                if self._should_prune_row_group(rg_meta, filters, pq_meta.parquet_schema):
+                # Check if we can prune this row group using compiled filters
+                if self._should_prune_row_group(rg_meta, compiled_filters):
                     pruned_row_groups += 1
                     continue
 
@@ -223,39 +275,25 @@ class ReadPlanner:
     def _should_prune_row_group(
         self,
         rg_meta,
-        filters: list[Filter],
-        schema,
+        compiled_filters: CompiledFilters,
     ) -> bool:
-        """Check if a row group can be pruned based on filters and stats.
+        """Check if a row group can be pruned based on compiled filters and stats.
+
+        Uses pre-compiled filters with resolved column indices for efficiency.
+        Column index mapping is done once per file, not per row group.
 
         Limitations (v0):
         - Only flat, primitive columns are supported for pruning
-        - Nested/repeated fields may not align correctly with column chunk ordering
         - Complex Parquet timestamps may not convert correctly; use int64 epoch
         - Filters use AND semantics (all must match for row to be included)
 
         If pruning cannot be safely determined, we err on the side of NOT pruning
         (i.e., we read the row group rather than risk missing data).
         """
-        if not filters:
+        if not compiled_filters:
             return False
 
-        for f in filters:
-            # Find the column index - only works reliably for flat schemas
-            col_idx = None
-            for i in range(len(schema)):
-                col = schema.column(i)
-                # Skip nested/repeated fields - can't reliably prune these
-                if "." in col.path:
-                    continue
-                if col.name == f.column:
-                    col_idx = i
-                    break
-
-            if col_idx is None:
-                # Column not found or nested, can't prune safely
-                continue
-
+        for col_idx, f in compiled_filters:
             try:
                 col_meta = rg_meta.column(col_idx)
                 if not col_meta.is_stats_set:
