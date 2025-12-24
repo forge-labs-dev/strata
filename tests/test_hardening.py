@@ -970,12 +970,13 @@ class TestActiveScanCount:
     """Tests for active scan counting and semaphore management."""
 
     def test_get_active_scan_count_matches_semaphore(self, temp_warehouse, tmp_path):
-        """_get_active_scan_count returns correct count based on semaphore."""
+        """_get_active_scan_count returns correct count based on QoS tier semaphores."""
 
         cache_dir = tmp_path / "cache"
         config = StrataConfig(
             cache_dir=cache_dir,
-            max_concurrent_scans=5,
+            interactive_slots=4,
+            bulk_slots=2,
         )
 
         from strata.server import ServerState, _get_active_scan_count
@@ -985,20 +986,32 @@ class TestActiveScanCount:
         # Initially no active scans
         assert _get_active_scan_count(state) == 0
 
-        # Acquire semaphore slots manually
+        # Acquire semaphore slots manually from both tiers
         async def test_counting():
             assert _get_active_scan_count(state) == 0
 
-            await state._scan_semaphore.acquire()
+            # Acquire from interactive tier
+            await state._interactive_semaphore.acquire()
             assert _get_active_scan_count(state) == 1
 
-            await state._scan_semaphore.acquire()
+            # Acquire from bulk tier
+            await state._bulk_semaphore.acquire()
             assert _get_active_scan_count(state) == 2
 
-            state._scan_semaphore.release()
+            # Acquire another from interactive
+            await state._interactive_semaphore.acquire()
+            assert _get_active_scan_count(state) == 3
+
+            # Release from interactive
+            state._interactive_semaphore.release()
+            assert _get_active_scan_count(state) == 2
+
+            # Release from bulk
+            state._bulk_semaphore.release()
             assert _get_active_scan_count(state) == 1
 
-            state._scan_semaphore.release()
+            # Release remaining interactive
+            state._interactive_semaphore.release()
             assert _get_active_scan_count(state) == 0
 
         asyncio.run(test_counting())
@@ -1153,6 +1166,155 @@ class TestAsyncIONonBlocking:
             f"Concurrent scans too slow: max={max_concurrent_time:.3f}s, "
             f"single={single_time:.3f}s. May indicate event loop blocking."
         )
+
+
+class TestNonBlockingLogging:
+    """Tests for non-blocking metrics logging.
+
+    These tests verify that the MetricsCollector uses a queue + background writer
+    to prevent logging from blocking request handlers. This prevents the pipe buffer
+    deadlock that occurred when:
+    1. Server was started with stdout=subprocess.PIPE
+    2. Parent didn't read from pipe, so buffer filled up (~64KB)
+    3. MetricsCollector._write_log() called flush() while holding _lock
+    4. flush() blocked waiting for buffer space
+    5. /metrics endpoint needed _lock, causing deadlock
+    """
+
+    def test_metrics_collector_uses_queue_based_logging(self):
+        """MetricsCollector should use a queue for non-blocking writes."""
+        import io
+        import queue as queue_module
+
+        from strata.metrics import MetricsCollector
+
+        output = io.StringIO()
+        collector = MetricsCollector(output=output, enabled=True)
+
+        try:
+            # Verify queue exists
+            assert hasattr(collector, "_log_queue")
+            assert isinstance(collector._log_queue, queue_module.Queue)
+
+            # Verify background writer thread is running
+            assert hasattr(collector, "_writer_thread")
+            assert collector._writer_thread.is_alive()
+
+            # Log an event
+            collector.log_event("test_event", key="value")
+
+            # Wait for background thread to process
+            collector._log_queue.join()
+
+            # Verify output was written
+            output.seek(0)
+            content = output.read()
+            assert "test_event" in content
+            assert "key" in content
+        finally:
+            collector.shutdown()
+
+    def test_logging_drops_when_queue_full(self):
+        """Logs should be dropped (not blocked) when queue is full."""
+        import io
+
+        from strata.metrics import MetricsCollector
+
+        # Create collector with tiny queue that will fill up
+        output = io.StringIO()
+        collector = MetricsCollector(output=output, enabled=True, log_queue_size=2)
+
+        try:
+            # Pause background writer by filling queue beyond capacity
+            # First, shut down the writer so queue fills up
+            collector._shutdown.set()
+            collector._writer_thread.join(timeout=1)
+
+            # Reset for new attempt - create a blocking scenario
+            initial_dropped = collector.dropped_logs
+
+            # Flood the queue - should drop after queue is full
+            for i in range(100):
+                collector.log_event(f"flood_event_{i}")
+
+            # Some logs should have been dropped (queue only holds 2)
+            assert collector.dropped_logs > initial_dropped, (
+                "Should have dropped logs when queue was full"
+            )
+        finally:
+            collector.shutdown()
+
+    def test_get_aggregate_stats_never_blocks_on_logging(self):
+        """get_aggregate_stats() should not block even if logging is slow."""
+        import io
+        import time
+
+        from strata.metrics import MetricsCollector
+
+        output = io.StringIO()
+        collector = MetricsCollector(output=output, enabled=True)
+
+        try:
+            # Record some metrics
+            collector.record_fetch(1000, 10, 5.0, from_cache=True)
+            collector.record_fetch(2000, 20, 10.0, from_cache=False)
+
+            # Time the stats call - should be fast
+            start = time.perf_counter()
+            stats = collector.get_aggregate_stats()
+            elapsed = time.perf_counter() - start
+
+            # Should complete in < 100ms (no blocking on I/O)
+            assert elapsed < 0.1, f"get_aggregate_stats took too long: {elapsed:.3f}s"
+
+            # Verify stats are correct
+            assert stats["cache_hits"] == 1
+            assert stats["cache_misses"] == 1
+            assert stats["bytes_from_cache"] == 1000
+            assert stats["bytes_from_storage"] == 2000
+        finally:
+            collector.shutdown()
+
+    def test_dropped_logs_counter_in_stats(self):
+        """dropped_logs counter should be exposed in aggregate stats."""
+        import io
+
+        from strata.metrics import MetricsCollector
+
+        output = io.StringIO()
+        collector = MetricsCollector(output=output, enabled=True, log_queue_size=1)
+
+        try:
+            # Force some drops
+            collector._shutdown.set()
+            collector._writer_thread.join(timeout=1)
+
+            for _ in range(50):
+                collector.log_event("flood")
+
+            stats = collector.get_aggregate_stats()
+            assert "dropped_logs" in stats
+            assert stats["dropped_logs"] > 0
+        finally:
+            collector.shutdown()
+
+    def test_logging_thread_shuts_down_gracefully(self):
+        """Background writer thread should shut down cleanly."""
+        import io
+
+        from strata.metrics import MetricsCollector
+
+        output = io.StringIO()
+        collector = MetricsCollector(output=output, enabled=True)
+
+        # Thread should be alive
+        assert collector._writer_thread.is_alive()
+
+        # Shutdown should complete quickly
+        collector.shutdown()
+
+        # Thread should be stopped
+        assert not collector._writer_thread.is_alive()
 
 
 class TestCacheVersioning:

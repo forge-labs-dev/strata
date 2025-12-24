@@ -318,6 +318,11 @@ class ReadPlan:
     # Used for pre-flight size checks before streaming begins
     estimated_bytes: int = 0
 
+    # Prefetched first row group bytes (optimization to reduce TTFB).
+    # Set by server after plan is stored; consumed by streaming endpoint.
+    # Using bytes | None avoids asyncio.Future which isn't picklable.
+    prefetched_first: bytes | None = None
+
 
 class ScanRequest(BaseModel):
     """API request to scan a table."""

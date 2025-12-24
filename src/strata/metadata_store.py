@@ -13,9 +13,13 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+if TYPE_CHECKING:
+    import pyarrow.fs as pafs
 
 
 @dataclass
@@ -471,9 +475,29 @@ def deserialize_arrow_schema(schema_bytes: bytes) -> pa.Schema:
     return reader.schema
 
 
-def extract_parquet_meta(file_path: str) -> PersistedParquetMeta:
-    """Extract metadata from a Parquet file for persistence."""
-    pq_file = pq.ParquetFile(file_path)
+def extract_parquet_meta(
+    file_path: str, s3_filesystem: "pafs.S3FileSystem | None" = None
+) -> PersistedParquetMeta:
+    """Extract metadata from a Parquet file for persistence.
+
+    Args:
+        file_path: Path to the Parquet file (local or s3://)
+        s3_filesystem: Optional S3 filesystem for reading S3 paths
+
+    Returns:
+        PersistedParquetMeta containing serializable metadata
+    """
+    # Handle S3 paths
+    if file_path.startswith("s3://"):
+        if s3_filesystem is None:
+            import pyarrow.fs as pafs
+
+            s3_filesystem = pafs.S3FileSystem()
+        # Strip s3:// prefix for PyArrow filesystem
+        s3_path = file_path[5:]
+        pq_file = pq.ParquetFile(s3_path, filesystem=s3_filesystem)
+    else:
+        pq_file = pq.ParquetFile(file_path)
     metadata = pq_file.metadata
 
     # Serialize schema

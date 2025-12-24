@@ -213,9 +213,12 @@ Or, more bluntly:
 - **Two-tier filter pruning**: Prunes files using Iceberg manifest statistics, then row groups using Parquet min/max statistics
 - **Streaming Arrow IPC**: Streams Arrow results without buffering entire scans in memory. Memory footprint scales with row group size, not query result size
 - **Pre-flight size estimation**: Rejects oversized scans upfront (HTTP 413) using Parquet metadata, preventing wasted work
+- **Two-tier QoS**: Separate admission control for interactive (dashboard) and bulk (ETL) queries, preventing starvation
+- **Prefetch**: Background prefetching of first row group during scan creation for lower latency
+- **S3 support**: Native S3 storage backend via PyArrow S3FileSystem
 - **DuckDB integration**: Query cached data directly with DuckDB SQL
 - **Polars integration**: Zero-copy DataFrame access via Arrow
-- **Metrics**: Structured JSON logging for cache hits/misses, bytes transferred, and timing
+- **Metrics**: Structured JSON logging with Prometheus export for cache, QoS, and prefetch metrics
 
 ## Installation
 
@@ -309,6 +312,12 @@ cache_dir = "/tmp/strata-cache"
 max_cache_size_bytes = 10737418240  # 10 GB
 batch_size = 65536
 
+# QoS settings
+interactive_slots = 8      # Slots for dashboard queries
+bulk_slots = 4             # Slots for ETL/export queries
+interactive_max_bytes = 10485760  # 10 MB threshold
+interactive_max_columns = 10
+
 [tool.strata.catalog_properties]
 type = "sql"
 uri = "sqlite:///catalog.db"
@@ -323,7 +332,30 @@ config = StrataConfig(
     host="127.0.0.1",
     port=8765,
     cache_dir="/tmp/strata-cache",
+    # S3 configuration
+    s3_endpoint_url="http://localhost:9000",  # MinIO
+    s3_access_key="minioadmin",
+    s3_secret_key="minioadmin",
 )
+```
+
+### S3 Configuration
+
+For S3 storage backends, configure via environment variables:
+
+```bash
+# AWS S3
+export STRATA_S3_REGION=us-west-2
+export AWS_ACCESS_KEY_ID=...
+export AWS_SECRET_ACCESS_KEY=...
+
+# MinIO / S3-compatible
+export STRATA_S3_ENDPOINT_URL=http://localhost:9000
+export STRATA_S3_ACCESS_KEY=minioadmin
+export STRATA_S3_SECRET_KEY=minioadmin
+
+# Public buckets
+export STRATA_S3_ANONYMOUS=true
 ```
 
 ## Architecture
@@ -387,9 +419,11 @@ Since Iceberg snapshots are immutable, cached objects never need invalidation.
 POST /v1/scan              Create a scan, returns scan metadata + estimated_bytes
 GET  /v1/scan/{id}/batches Stream Arrow IPC batches
 DELETE /v1/scan/{id}       Delete scan resources
-POST /v0/cache/clear       Clear disk cache
-GET  /health               Health check
-GET  /metrics              Aggregate metrics
+POST /v1/cache/clear       Clear disk cache
+GET  /health               Liveness check
+GET  /health/ready         Readiness check (capacity, stuck scans)
+GET  /metrics              Aggregate metrics (JSON)
+GET  /metrics/prometheus   Prometheus format metrics
 ```
 
 ### Streaming Contract
@@ -414,11 +448,30 @@ Pre-flight checks (clean HTTP errors before streaming starts):
 
 ### Metrics Output
 
+JSON format (`GET /metrics`):
+
 ```json
-{"event": "scan_complete", "timestamp": 1703123456.789, "scan_id": "123-abc",
- "cache_hits": 5, "cache_misses": 2, "bytes_from_cache": 1048576,
- "bytes_from_storage": 524288, "planning_time_ms": 12.5, "fetch_time_ms": 45.2}
+{
+  "scan_count": 100,
+  "cache_hits": 85,
+  "cache_misses": 15,
+  "cache_hit_rate": 0.85,
+  "qos": {
+    "interactive_slots": 8,
+    "interactive_active": 3,
+    "bulk_slots": 4,
+    "bulk_active": 1
+  },
+  "prefetch": {
+    "started": 100,
+    "used": 95,
+    "wasted": 5,
+    "efficiency": 0.95
+  }
+}
 ```
+
+Prometheus format available at `GET /metrics/prometheus`.
 
 ## Development
 

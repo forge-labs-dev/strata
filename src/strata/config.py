@@ -149,6 +149,18 @@ class StrataConfig:
     scan_timeout_seconds: float = 300.0  # 5 minute timeout per scan
     max_response_bytes: int = 512 * 1024 * 1024  # 512 MB (streaming keeps memory O(row group))
 
+    # QoS: Two-tier admission control
+    # Interactive queries (dashboards) get dedicated slots to avoid bulk query starvation
+    interactive_slots: int = 8  # Slots for small/fast queries
+    bulk_slots: int = 4  # Slots for large/slow queries
+    # Classification thresholds: query is "interactive" if BOTH conditions met
+    interactive_max_bytes: int = 10 * 1024 * 1024  # 10 MB estimated response
+    interactive_max_columns: int = 10  # Max columns for interactive
+    # Queue timeouts: how long to wait for a slot before fast-failing with 503
+    # Interactive gets longer wait (dashboards should succeed), bulk fails fast
+    interactive_queue_timeout: float = 10.0  # 10s wait for interactive slot
+    bulk_queue_timeout: float = 2.0  # 2s wait for bulk slot (fast-fail)
+
     # Metadata database (for catalog metadata persistence)
     metadata_db: Path | None = None  # Defaults to ~/.strata/meta.sqlite
 

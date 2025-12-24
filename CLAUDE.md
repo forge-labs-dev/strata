@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Strata?
 
-Strata is a snapshot-aware serving layer for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, and a Rust extension accelerates I/O.
+Strata is a snapshot-aware serving layer for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports both local filesystem and S3 storage backends.
 
 ## Build & Development Commands
 
@@ -57,10 +57,13 @@ hash(table_identity | snapshot_id | file_path | row_group_id | projection_finger
 ### Key Modules
 
 - **types.py** - Core types: `CacheKey`, `ReadPlan`, `Task`, `Filter`, `TableIdentity`
-- **planner.py** - `ReadPlanner` resolves snapshots, applies pruning, builds plans
-- **cache.py** - `DiskCache` + `CachedFetcher` for row-group caching
-- **server.py** - FastAPI endpoints, streaming responses, resource limits
+- **planner.py** - `ReadPlanner` resolves snapshots, applies pruning, builds plans; S3 path normalization utilities
+- **cache.py** - `DiskCache` + `CachedFetcher` for row-group caching with LRU eviction
+- **server.py** - FastAPI endpoints, streaming responses, two-tier QoS admission control, prefetch
+- **config.py** - Configuration with S3 support (`s3_region`, `s3_endpoint_url`, etc.)
 - **metadata_cache.py** - Two-level `ManifestCache` (filtered + unfiltered) and `ParquetMetadataCache`
+- **metadata_store.py** - SQLite-backed persistent metadata storage
+- **fetcher.py** - `PyArrowFetcher` reads Parquet row groups with S3 filesystem support
 - **fast_io.py** - Python wrapper for Rust extension functions
 - **rust/src/lib.rs** - Arrow IPC stream manipulation (concatenation, format conversion)
 
@@ -94,7 +97,8 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 - `STRATA_HOST`, `STRATA_PORT` - Server binding
 - `STRATA_CACHE_DIR` - Disk cache location
 - `STRATA_MAX_CACHE_SIZE_BYTES` - Cache size limit
-- S3 access: `STRATA_S3_REGION`, `STRATA_S3_ACCESS_KEY`, `STRATA_S3_SECRET_KEY`, `STRATA_S3_ANONYMOUS`
+- S3: `STRATA_S3_REGION`, `STRATA_S3_ENDPOINT_URL`, `STRATA_S3_ACCESS_KEY`, `STRATA_S3_SECRET_KEY`, `STRATA_S3_ANONYMOUS`
+- QoS: `interactive_slots`, `bulk_slots`, `interactive_max_bytes`, `interactive_max_columns`
 
 ## Important Invariants
 
@@ -105,3 +109,22 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 3. **Bounded memory streaming**: Response size is O(single row group), not O(query result). Server yields chunks immediately.
 
 4. **Pre-flight size checks**: Estimated response size is computed from Parquet metadata before streaming begins—oversized scans return HTTP 413.
+
+5. **Two-tier QoS isolation**: Interactive (dashboard) and bulk (ETL) queries use separate semaphores to prevent starvation. Classification based on estimated bytes and column count.
+
+6. **S3 path normalization**: S3 paths are normalized (double slashes, `.`, `..` resolved) to ensure consistent cache keys. See `_normalize_s3_path` in `planner.py`.
+
+## Testing
+
+Key test files:
+- `test_smoke.py` - Core functionality (planning, caching, streaming)
+- `test_hardening.py` - Edge cases, error handling, resource limits
+- `test_qos.py` - Two-tier admission control, fast-fail behavior
+- `test_prefetch.py` - Background prefetching
+- `test_s3_config.py` - S3 configuration and filesystem creation
+- `test_s3_moto.py` - S3 path handling (uses moto for mocking)
+- `test_semaphore_leak.py` - Resource cleanup on errors
+
+Benchmarks in `benchmarks/`:
+- `stress_test.py` - Multi-user load testing with QoS validation
+- `bench_restart.py` - Cold/warm start performance

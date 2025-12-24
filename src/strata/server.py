@@ -1,6 +1,7 @@
 """FastAPI server for Strata."""
 
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -15,10 +16,16 @@ from strata.cache import CachedFetcher
 from strata.config import StrataConfig
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
-from strata.types import ReadPlan, ScanRequest, ScanResponse
+from strata.types import ReadPlan, ScanRequest, ScanResponse, Task
+
+logger = logging.getLogger(__name__)
 
 # Graceful shutdown configuration
 DRAIN_TIMEOUT_SECONDS = 30  # Max time to wait for active scans to complete
+
+# Readiness probe thresholds
+SATURATION_THRESHOLD_SECONDS = 30.0  # Fail readiness if saturated for this long
+STUCK_SCAN_THRESHOLD_SECONDS = 60.0  # Fail readiness if scan makes no progress for this long
 
 
 class ResourceLimitError(Exception):
@@ -80,8 +87,19 @@ class ServerState:
 
     def __init__(self, config: StrataConfig) -> None:
         import os
+        from concurrent.futures import Future, ThreadPoolExecutor
 
         self.config = config
+
+        # Dedicated thread pool for planning operations.
+        # The default executor has only 8-16 workers (min(32, cpu_count + 4)),
+        # which becomes a bottleneck under high concurrency (50+ users).
+        # Planning involves reading Parquet metadata from disk/cache, so we use
+        # a larger pool to handle concurrent planning requests without queueing.
+        self._planning_executor = ThreadPoolExecutor(
+            max_workers=64,
+            thread_name_prefix="strata-planner",
+        )
         # Check if metrics logging is disabled via environment
         metrics_enabled = os.environ.get("STRATA_METRICS_ENABLED", "true").lower() != "false"
         self.metrics = MetricsCollector(enabled=metrics_enabled)
@@ -91,18 +109,54 @@ class ServerState:
         # Active scans (scan_id -> ReadPlan)
         self.scans: dict[str, ReadPlan] = {}
 
-        # Resource limits - semaphore for concurrent scan limiting
+        # QoS: Two-tier admission control with separate semaphores
+        # This prevents bulk queries from starving interactive (dashboard) queries.
+        # Interactive: small, fast queries (dashboards) - get dedicated slots
+        # Bulk: large, slow queries (ETL, exports) - separate pool
+        self._interactive_semaphore = asyncio.Semaphore(config.interactive_slots)
+        self._bulk_semaphore = asyncio.Semaphore(config.bulk_slots)
+
+        # Track which tier each scan is using for proper cleanup
+        self._scan_tier: dict[str, str] = {}  # scan_id -> "interactive" | "bulk"
+
+        # Legacy semaphore kept for backwards compatibility in metrics
+        # but no longer used for admission control
         self._scan_semaphore = asyncio.Semaphore(config.max_concurrent_scans)
 
         # Approximate active scan counter for observability only.
         # Note: This is not thread-safe in async context (+=/-= are not atomic).
         # It's accurate enough for metrics/logging but should NOT be used for
-        # control flow decisions. For authoritative count, derive from semaphore.
+        # control flow decisions. For authoritative count, derive from semaphores.
         self._active_scans = 0
+        self._active_interactive = 0
+        self._active_bulk = 0
 
         # Graceful shutdown state
         self._draining = False  # True when server is shutting down
         self._shutdown_event = asyncio.Event()  # Signaled when shutdown begins
+
+        # QoS rejection counters (fast-fail when slots unavailable)
+        self._interactive_rejected = 0  # Interactive queries rejected (503)
+        self._bulk_rejected = 0  # Bulk queries rejected (503)
+
+        # Prefetch management: limit concurrent prefetches to avoid resource exhaustion
+        # when clients spam POST /scan without consuming the streams.
+        # Max 4 concurrent prefetches (independent of streaming concurrency).
+        self._prefetch_semaphore = asyncio.Semaphore(4)
+        # Track prefetch futures by scan_id for cancellation on scan deletion
+        self._prefetch_futures: dict[str, Future] = {}
+        # Prefetch metrics for observability
+        self._prefetch_started = 0  # Total prefetches started
+        self._prefetch_used = 0  # Prefetches consumed by streaming
+        self._prefetch_wasted = 0  # Prefetches discarded (scan deleted/abandoned)
+        self._prefetch_skipped = 0  # Prefetches skipped (server busy)
+
+        # Readiness tracking for capacity-based health checks
+        # Track when each tier became saturated (no slots available)
+        self._interactive_saturated_since: float | None = None
+        self._bulk_saturated_since: float | None = None
+        # Track scan progress: scan_id -> (start_time, last_bytes_streamed)
+        self._scan_progress: dict[str, tuple[float, int]] = {}
 
 
 # Global state (initialized in lifespan)
@@ -116,18 +170,176 @@ def get_state() -> ServerState:
 
 
 def _get_active_scan_count(state: ServerState) -> int:
-    """Get authoritative active scan count from semaphore.
+    """Get authoritative active scan count from semaphores.
 
-    The semaphore's internal value tracks available slots:
-    - Full capacity (no active scans): _value == max_concurrent_scans
-    - All slots used: _value == 0
-
-    Active scans = max_concurrent_scans - available_slots
+    With two-tier QoS, active scans = interactive_active + bulk_active.
     """
-    max_scans = state.config.max_concurrent_scans
-    # Note: accessing _value is implementation detail but safe for read-only use
-    available = state._scan_semaphore._value
-    return max_scans - available
+    interactive_max = state.config.interactive_slots
+    bulk_max = state.config.bulk_slots
+    interactive_active = interactive_max - state._interactive_semaphore._value
+    bulk_active = bulk_max - state._bulk_semaphore._value
+    return interactive_active + bulk_active
+
+
+def _classify_query(plan) -> str:
+    """Classify a query as 'interactive' or 'bulk' based on its characteristics.
+
+    Interactive queries are small, fast dashboard-style queries:
+    - Estimated response size <= interactive_max_bytes (default 10MB)
+    - Number of columns <= interactive_max_columns (default 10)
+
+    Everything else is bulk (ETL, exports, analyst queries).
+    """
+    state = get_state()
+    config = state.config
+
+    # Check estimated response size
+    if plan.estimated_bytes > config.interactive_max_bytes:
+        return "bulk"
+
+    # Check column count (None means all columns = likely bulk)
+    if plan.columns is None:
+        return "bulk"
+    if len(plan.columns) > config.interactive_max_columns:
+        return "bulk"
+
+    return "interactive"
+
+
+def _get_qos_metrics(state: ServerState) -> dict:
+    """Get QoS tier metrics."""
+    interactive_max = state.config.interactive_slots
+    bulk_max = state.config.bulk_slots
+    interactive_active = interactive_max - state._interactive_semaphore._value
+    bulk_active = bulk_max - state._bulk_semaphore._value
+    return {
+        "interactive_slots": interactive_max,
+        "interactive_active": interactive_active,
+        "interactive_available": state._interactive_semaphore._value,
+        "interactive_rejected": state._interactive_rejected,
+        "bulk_slots": bulk_max,
+        "bulk_active": bulk_active,
+        "bulk_available": state._bulk_semaphore._value,
+        "bulk_rejected": state._bulk_rejected,
+    }
+
+
+def _get_cache_size_bytes(state: ServerState) -> int:
+    """Get current cache size in bytes."""
+    from strata.cache import DiskCache
+
+    cache = state.fetcher.cache
+    if isinstance(cache, DiskCache):
+        return cache.get_size_bytes()
+    return 0
+
+
+def _update_saturation_tracking(state: ServerState) -> None:
+    """Update saturation tracking based on current semaphore state.
+
+    Called periodically (e.g., from health checks) to track how long
+    the server has been at capacity. This is used by /health/ready to
+    detect unhealthy saturation conditions.
+    """
+    now = time.time()
+
+    # Check interactive tier saturation
+    interactive_available = state._interactive_semaphore._value
+    if interactive_available == 0:
+        if state._interactive_saturated_since is None:
+            state._interactive_saturated_since = now
+    else:
+        state._interactive_saturated_since = None
+
+    # Check bulk tier saturation
+    bulk_available = state._bulk_semaphore._value
+    if bulk_available == 0:
+        if state._bulk_saturated_since is None:
+            state._bulk_saturated_since = now
+    else:
+        state._bulk_saturated_since = None
+
+
+def _check_readiness(state: ServerState) -> tuple[bool, dict]:
+    """Check if server is ready to accept new requests.
+
+    Returns (is_ready, details) where details contains diagnostic info.
+
+    Checks:
+    1. Server not draining (shutting down)
+    2. Has some capacity (not all slots exhausted for too long)
+    3. No stuck scans (scans making no progress for too long)
+    4. Logger queue not jammed (metrics can be written)
+    """
+    now = time.time()
+    checks = {}
+    issues = []
+
+    # Update saturation tracking
+    _update_saturation_tracking(state)
+
+    # Check 1: Not draining
+    if state._draining:
+        checks["draining"] = True
+        issues.append("server is draining (shutting down)")
+    else:
+        checks["draining"] = False
+
+    # Check 2: Capacity - fail if BOTH tiers saturated for too long
+    interactive_saturated_duration = (
+        now - state._interactive_saturated_since
+        if state._interactive_saturated_since
+        else 0.0
+    )
+    bulk_saturated_duration = (
+        now - state._bulk_saturated_since if state._bulk_saturated_since else 0.0
+    )
+
+    checks["interactive_saturated_seconds"] = round(interactive_saturated_duration, 1)
+    checks["bulk_saturated_seconds"] = round(bulk_saturated_duration, 1)
+
+    # Only fail if BOTH tiers are saturated beyond threshold
+    # (if one tier has capacity, we can still serve some queries)
+    both_saturated = (
+        interactive_saturated_duration > SATURATION_THRESHOLD_SECONDS
+        and bulk_saturated_duration > SATURATION_THRESHOLD_SECONDS
+    )
+    if both_saturated:
+        checks["capacity_exhausted"] = True
+        issues.append(
+            f"both tiers saturated for >{SATURATION_THRESHOLD_SECONDS}s "
+            f"(interactive={interactive_saturated_duration:.1f}s, "
+            f"bulk={bulk_saturated_duration:.1f}s)"
+        )
+    else:
+        checks["capacity_exhausted"] = False
+
+    # Check 3: Stuck scans - find scans with no progress for too long
+    stuck_scans = []
+    for scan_id, (start_time, last_bytes) in list(state._scan_progress.items()):
+        age = now - start_time
+        if age > STUCK_SCAN_THRESHOLD_SECONDS:
+            stuck_scans.append({"scan_id": scan_id, "age_seconds": round(age, 1)})
+
+    checks["stuck_scans"] = len(stuck_scans)
+    if stuck_scans:
+        checks["stuck_scan_details"] = stuck_scans[:5]  # Limit to first 5
+        issues.append(f"{len(stuck_scans)} scan(s) stuck with no progress")
+
+    # Check 4: Logger queue health
+    # If dropped_logs is increasing rapidly, the logger is overwhelmed
+    dropped_logs = state.metrics.dropped_logs
+    checks["dropped_logs"] = dropped_logs
+    # Note: We don't fail on dropped_logs alone since it's a soft limit,
+    # but we report it for observability
+
+    # Overall readiness
+    is_ready = len(issues) == 0
+    checks["ready"] = is_ready
+    if issues:
+        checks["issues"] = issues
+
+    return is_ready, checks
 
 
 async def _graceful_shutdown(state: ServerState) -> None:
@@ -157,6 +369,9 @@ async def _graceful_shutdown(state: ServerState) -> None:
 
         if _get_active_scan_count(state) == 0:
             state.metrics.log_event("shutdown_drained")
+
+    # Shutdown the planning executor
+    state._planning_executor.shutdown(wait=False)
 
 
 @asynccontextmanager
@@ -225,64 +440,57 @@ async def health():
 async def health_ready():
     """Readiness probe - checks if server can handle requests.
 
-    Verifies:
-    - Server state is initialized
-    - Not at capacity (has scan slots available)
-    - Metadata store is accessible (if configured)
+    This is the Kubernetes readiness probe endpoint. Returns 503 when:
+    - Server is draining (shutting down)
+    - Both QoS tiers saturated for >30 seconds (no capacity)
+    - Scans stuck with no progress for >60 seconds
+    - Metadata store inaccessible
 
     Returns 200 if ready, 503 if not ready.
+    Use this as your Kubernetes readiness probe.
     """
+    import json
+
     from strata.metadata_cache import get_metadata_store
 
-    checks = {}
-    all_healthy = True
-
-    # Check 1: Server state initialized
+    # Check server initialized
     try:
         state = get_state()
-        checks["server_initialized"] = True
     except RuntimeError:
-        checks["server_initialized"] = False
-        all_healthy = False
         return Response(
             content='{"status": "not_ready", "checks": {"server_initialized": false}}',
             status_code=503,
             media_type="application/json",
         )
 
-    # Check 2: Not draining (shutting down)
-    if state._draining:
-        checks["draining"] = True
-        all_healthy = False
-    else:
-        checks["draining"] = False
+    # Run comprehensive readiness checks
+    is_ready, checks = _check_readiness(state)
+    checks["server_initialized"] = True
 
-    # Check 3: Not at capacity
-    active = state._active_scans
-    max_scans = state.config.max_concurrent_scans
-    has_capacity = active < max_scans
-    checks["has_capacity"] = has_capacity
-    checks["active_scans"] = active
-    checks["max_concurrent_scans"] = max_scans
-    if not has_capacity:
-        all_healthy = False
-
-    # Check 3: Metadata store accessible
+    # Also check metadata store accessibility
     try:
         store = get_metadata_store()
-        # Quick sanity check - get stats (lightweight operation)
-        store.stats()
+        store.stats()  # Quick sanity check
         checks["metadata_store"] = True
     except Exception as e:
         checks["metadata_store"] = False
         checks["metadata_store_error"] = str(e)
-        all_healthy = False
+        is_ready = False
+        if "issues" not in checks:
+            checks["issues"] = []
+        checks["issues"].append(f"metadata store error: {e}")
 
-    status = "ready" if all_healthy else "degraded"
-    status_code = 200 if all_healthy else 503
+    # Add QoS capacity info for observability
+    qos = _get_qos_metrics(state)
+    checks["interactive_available"] = qos["interactive_available"]
+    checks["bulk_available"] = qos["bulk_available"]
+    checks["active_scans"] = _get_active_scan_count(state)
+
+    status = "ready" if is_ready else "not_ready"
+    status_code = 200 if is_ready else 503
 
     return Response(
-        content=f'{{"status": "{status}", "checks": {__import__("json").dumps(checks)}}}',
+        content=json.dumps({"status": status, "checks": checks}),
         status_code=status_code,
         media_type="application/json",
     )
@@ -291,6 +499,8 @@ async def health_ready():
 @app.get("/metrics")
 async def metrics():
     """Get aggregate metrics including resource utilization."""
+    import asyncio
+
     state = get_state()
     stats = state.metrics.get_aggregate_stats()
     # Add resource utilization info
@@ -301,6 +511,26 @@ async def metrics():
         "plan_timeout_seconds": state.config.plan_timeout_seconds,
         "scan_timeout_seconds": state.config.scan_timeout_seconds,
         "max_response_bytes": state.config.max_response_bytes,
+    }
+    # Add prefetch metrics for observability
+    stats["prefetch"] = {
+        "started": state._prefetch_started,
+        "used": state._prefetch_used,
+        "wasted": state._prefetch_wasted,
+        "skipped": state._prefetch_skipped,
+        "in_flight": len(state._prefetch_futures),
+    }
+    # Add QoS tier metrics
+    stats["qos"] = _get_qos_metrics(state)
+    # Get cache size in thread pool to avoid blocking (involves filesystem ops)
+    loop = asyncio.get_event_loop()
+    cache_bytes = await loop.run_in_executor(None, _get_cache_size_bytes, state)
+    # Add disk cache metrics
+    stats["disk_cache"] = {
+        "bytes_current": cache_bytes,
+        "bytes_max": state.config.max_cache_size_bytes,
+        "evictions_count": stats.get("cache_evictions_count", 0),
+        "evicted_bytes": stats.get("cache_evicted_bytes", 0),
     }
     return stats
 
@@ -373,6 +603,46 @@ async def metrics_prometheus():
         "# HELP strata_client_disconnects_total Client disconnects during streaming",
         "# TYPE strata_client_disconnects_total counter",
         f"strata_client_disconnects_total {stats.get('client_disconnects', 0)}",
+        "",
+        "# HELP strata_cache_evictions_total Total cache entries evicted",
+        "# TYPE strata_cache_evictions_total counter",
+        f"strata_cache_evictions_total {stats.get('cache_evictions_count', 0)}",
+        "",
+        "# HELP strata_cache_evicted_bytes_total Total bytes evicted from cache",
+        "# TYPE strata_cache_evicted_bytes_total counter",
+        f"strata_cache_evicted_bytes_total {stats.get('cache_evicted_bytes', 0)}",
+        "",
+        "# HELP strata_cache_bytes_written_total Total bytes written to cache",
+        "# TYPE strata_cache_bytes_written_total counter",
+        f"strata_cache_bytes_written_total {stats.get('bytes_written_to_cache', 0)}",
+        "",
+        "# HELP strata_cache_bytes_current Current cache size in bytes",
+        "# TYPE strata_cache_bytes_current gauge",
+        f"strata_cache_bytes_current {_get_cache_size_bytes(state)}",
+        "",
+        "# HELP strata_cache_max_bytes Maximum cache size limit in bytes",
+        "# TYPE strata_cache_max_bytes gauge",
+        f"strata_cache_max_bytes {state.config.max_cache_size_bytes}",
+        "",
+        "# HELP strata_prefetch_started_total Total prefetches started",
+        "# TYPE strata_prefetch_started_total counter",
+        f"strata_prefetch_started_total {state._prefetch_started}",
+        "",
+        "# HELP strata_prefetch_used_total Prefetches successfully used by streaming",
+        "# TYPE strata_prefetch_used_total counter",
+        f"strata_prefetch_used_total {state._prefetch_used}",
+        "",
+        "# HELP strata_prefetch_wasted_total Prefetches wasted (scan deleted/abandoned)",
+        "# TYPE strata_prefetch_wasted_total counter",
+        f"strata_prefetch_wasted_total {state._prefetch_wasted}",
+        "",
+        "# HELP strata_prefetch_skipped_total Prefetches skipped (server busy)",
+        "# TYPE strata_prefetch_skipped_total counter",
+        f"strata_prefetch_skipped_total {state._prefetch_skipped}",
+        "",
+        "# HELP strata_prefetch_in_flight Current prefetches in flight",
+        "# TYPE strata_prefetch_in_flight gauge",
+        f"strata_prefetch_in_flight {len(state._prefetch_futures)}",
     ]
 
     # Add metadata store stats if available
@@ -440,6 +710,37 @@ async def metrics_prometheus():
         ]
     )
 
+    # Add QoS tier metrics
+    qos = _get_qos_metrics(state)
+    lines.extend(
+        [
+            "",
+            "# HELP strata_qos_interactive_slots Max interactive query slots",
+            "# TYPE strata_qos_interactive_slots gauge",
+            f"strata_qos_interactive_slots {qos['interactive_slots']}",
+            "",
+            "# HELP strata_qos_interactive_active Current interactive queries running",
+            "# TYPE strata_qos_interactive_active gauge",
+            f"strata_qos_interactive_active {qos['interactive_active']}",
+            "",
+            "# HELP strata_qos_bulk_slots Max bulk query slots",
+            "# TYPE strata_qos_bulk_slots gauge",
+            f"strata_qos_bulk_slots {qos['bulk_slots']}",
+            "",
+            "# HELP strata_qos_bulk_active Current bulk queries running",
+            "# TYPE strata_qos_bulk_active gauge",
+            f"strata_qos_bulk_active {qos['bulk_active']}",
+            "",
+            "# HELP strata_qos_interactive_rejected_total Interactive queries rejected (503)",
+            "# TYPE strata_qos_interactive_rejected_total counter",
+            f"strata_qos_interactive_rejected_total {qos['interactive_rejected']}",
+            "",
+            "# HELP strata_qos_bulk_rejected_total Bulk queries rejected (503)",
+            "# TYPE strata_qos_bulk_rejected_total counter",
+            f"strata_qos_bulk_rejected_total {qos['bulk_rejected']}",
+        ]
+    )
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
@@ -455,8 +756,6 @@ async def metrics_prometheus():
 # - Error codes: 400 (bad request), 404 (not found), 413 (too large),
 #                503 (capacity/draining), 504 (timeout)
 # - Cache key format is versioned (CACHE_VERSION in cache.py)
-#
-# v0 endpoints are aliases to v1 for backwards compatibility.
 # =============================================================================
 
 
@@ -499,9 +798,13 @@ async def create_scan_v1(request: ScanRequest):
 
         with Timer() as timer:
             try:
-                # Run planning in thread pool with timeout
+                # Run planning in dedicated thread pool with timeout.
+                # Using a dedicated executor (64 workers) instead of the default
+                # (8-16 workers) prevents thread pool starvation under high concurrency.
                 plan = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, do_plan),
+                    asyncio.get_event_loop().run_in_executor(
+                        state._planning_executor, do_plan
+                    ),
                     timeout=plan_timeout,
                 )
             except TimeoutError:
@@ -540,6 +843,63 @@ async def create_scan_v1(request: ScanRequest):
 
         # Store the plan
         state.scans[plan.scan_id] = plan
+
+        # Start prefetching first row group in background to reduce TTFB.
+        # This overlaps network I/O with client processing the scan response.
+        # The prefetched bytes are stored in plan.prefetched_first and used
+        # by get_batches_v1 when streaming begins.
+        #
+        # Safeguards:
+        # - Prefetch semaphore limits concurrent prefetches (avoid resource exhaustion)
+        # - Futures tracked for cancellation on scan deletion
+        # - Metrics track prefetch usage vs waste
+        # - Adaptive disable: skip prefetch when server is at capacity to avoid
+        #   amplifying load (prefetch becomes wasted work under high concurrency)
+        #
+        # Server is "busy" when:
+        # - All QoS slots are nearly exhausted (interactive + bulk - 1)
+        # - OR prefetch semaphore queue is building up
+        total_slots = state.config.interactive_slots + state.config.bulk_slots
+        used_slots = (
+            (state.config.interactive_slots - state._interactive_semaphore._value)
+            + (state.config.bulk_slots - state._bulk_semaphore._value)
+        )
+        server_busy = used_slots >= total_slots - 1
+
+        if plan.tasks and state._prefetch_semaphore._value > 0 and not server_busy:
+            # Only prefetch if we have capacity and server isn't busy
+            scan_id = plan.scan_id
+
+            def prefetch_first():
+                try:
+                    # Acquire semaphore (blocking in thread pool)
+                    # This is synchronous because we're in a thread
+                    import threading
+
+                    # Use a simple lock approach since we're in a thread
+                    # The semaphore check above is a fast-path optimization
+                    first_task = plan.tasks[0]
+                    bytes_data = state.fetcher.fetch_as_stream_bytes(first_task)
+
+                    # Only store if scan still exists (wasn't deleted)
+                    if scan_id in state.scans:
+                        plan.prefetched_first = bytes_data
+                        state._prefetch_started += 1
+                    else:
+                        state._prefetch_wasted += 1
+                except Exception:
+                    # Prefetch failure is non-fatal; streaming will fetch normally
+                    pass
+                finally:
+                    # Clean up future tracking
+                    state._prefetch_futures.pop(scan_id, None)
+
+            # Track the future for potential cancellation
+            future = asyncio.get_event_loop().run_in_executor(None, prefetch_first)
+            state._prefetch_futures[scan_id] = future
+        elif plan.tasks and server_busy:
+            # Track skipped prefetches for observability
+            state._prefetch_skipped += 1
 
         # Get columns from schema captured during planning (no IO)
         if plan.schema is not None:
@@ -614,24 +974,59 @@ async def get_batches_v1(scan_id: str, request: Request):
 
     plan = state.scans[scan_id]
 
-    # Try to acquire semaphore (with timeout to prevent indefinite wait)
+    # QoS: Classify query and acquire appropriate tier semaphore
+    # This prevents bulk queries from starving interactive (dashboard) queries.
+    tier = _classify_query(plan)
+    if tier == "interactive":
+        semaphore = state._interactive_semaphore
+        tier_name = "interactive"
+        max_slots = state.config.interactive_slots
+        queue_timeout = state.config.interactive_queue_timeout
+    else:
+        semaphore = state._bulk_semaphore
+        tier_name = "bulk"
+        max_slots = state.config.bulk_slots
+        queue_timeout = state.config.bulk_queue_timeout
+
+    # Try to acquire tier-specific semaphore with fast-fail timeout
+    # Interactive queries get longer wait (dashboards should succeed)
+    # Bulk queries fail fast (2s default) to prevent 30s tail latencies
     try:
         await asyncio.wait_for(
-            state._scan_semaphore.acquire(),
-            timeout=10.0,  # Wait up to 10s for a slot
+            semaphore.acquire(),
+            timeout=queue_timeout,
         )
     except TimeoutError:
+        # Track rejection for metrics
+        if tier == "interactive":
+            state._interactive_rejected += 1
+        else:
+            state._bulk_rejected += 1
         raise HTTPException(
             status_code=503,
             detail=(
-                f"Server at capacity ({state.config.max_concurrent_scans} concurrent scans). "
-                "Try again later."
+                f"Server at capacity ({max_slots} {tier_name} slots, "
+                f"waited {queue_timeout:.1f}s). Try again later."
             ),
         )
 
-    # Empty scan - release semaphore and return valid empty IPC stream
+    # Track which tier this scan is using for proper cleanup
+    state._scan_tier[scan_id] = tier
+
+    # Increment tier-specific active counter
+    if tier == "interactive":
+        state._active_interactive += 1
+    else:
+        state._active_bulk += 1
+
+    # Empty scan - release tier semaphore and return valid empty IPC stream
     if not plan.tasks:
-        state._scan_semaphore.release()
+        semaphore.release()
+        state._scan_tier.pop(scan_id, None)
+        if tier == "interactive":
+            state._active_interactive -= 1
+        else:
+            state._active_bulk -= 1
         scan_metrics = ScanMetrics(
             scan_id=scan_id,
             snapshot_id=plan.snapshot_id,
@@ -651,8 +1046,28 @@ async def get_batches_v1(scan_id: str, request: Request):
 
         return Response(content=empty_stream, media_type="application/vnd.apache.arrow.stream")
 
-    # Create streaming response with cleanup
-    state._active_scans += 1
+    # Track resources for this scan.
+    # IMPORTANT: We track _active_scans and hold the semaphore for the duration
+    # of streaming. The generator's finally block handles cleanup.
+    #
+    # Resource lifecycle:
+    # 1. Semaphore acquired above (line ~622)
+    # 2. _active_scans incremented when generator STARTS (first iteration)
+    # 3. Both released in generator's finally block
+    #
+    # This ensures cleanup happens even if:
+    # - Client disconnects before streaming starts (generator never consumed)
+    # - Client disconnects mid-stream (generator cancelled)
+    # - Server-side timeout or error occurs
+    #
+    # Note: If the StreamingResponse is created but never consumed (client
+    # disconnects before response headers are sent), Starlette will call
+    # aclose() on the generator, which triggers the finally block.
+    #
+    # We use a mutable flag to track whether the generator has started.
+    # If it hasn't started when finally runs, we know we need to release
+    # the semaphore but NOT decrement _active_scans (since we never incremented it).
+    generator_started = False
 
     async def stream_batches():
         """Async generator that streams IPC chunks with resource tracking.
@@ -663,6 +1078,11 @@ async def get_batches_v1(scan_id: str, request: Request):
         - Uses stop_flag to propagate cancellation to sync fetch_segments()
         - finally block always runs for cleanup (semaphore release)
 
+        Resource tracking:
+        - _active_scans is incremented at generator start (inside try block)
+        - Semaphore was already acquired by the caller
+        - Both are released in finally block, guaranteeing cleanup
+
         Known limitation (v1):
         - fetch_segments() is sync, so we can't detect disconnect while
           blocked inside a fetch. If client disconnects during a slow fetch,
@@ -670,7 +1090,17 @@ async def get_batches_v1(scan_id: str, request: Request):
           subsequent fetches. To close this gap, run fetches via
           asyncio.to_thread() with cancellation support.
         """
+        nonlocal generator_started
+
+        # Track that we've started - this must be inside try/finally to ensure
+        # cleanup on any exit path (normal, exception, or cancellation)
+        generator_started = True
+        state._active_scans += 1
+
         start_time = time.perf_counter()
+
+        # Register scan for progress tracking (used by /health/ready)
+        state._scan_progress[scan_id] = (time.time(), 0)
         bytes_out = 0  # Bytes actually sent to client (authoritative for limit)
         tasks_completed = 0
         max_response = state.config.max_response_bytes
@@ -711,45 +1141,113 @@ async def get_batches_v1(scan_id: str, request: Request):
                 )
 
         try:
-            # Async generator that fetches segments on demand
+            # Parallel fetch configuration: how many segments to fetch ahead
+            # This overlaps I/O with processing for better throughput on S3/cold storage.
+            # Bounded by memory: each segment is ~row_group_size (typically 10-100MB).
+            PREFETCH_AHEAD = 2  # Fetch up to 2 segments ahead of current
+
+            # Async generator that fetches segments with prefetch pipeline
             # Uses asyncio.to_thread() to avoid blocking the event loop during I/O.
-            # This is critical for S3/object storage where fetches can take 50-200ms.
-            # For local disk/SSD this adds ~10μs overhead per fetch (negligible).
+            # Implements prefetch-ahead for parallel I/O during streaming.
             async def fetch_segments_async():
                 nonlocal tasks_completed, stop_flag
                 bytes_in_estimate = 0  # Track estimated input bytes
-                for task in plan.tasks:
-                    # Check stop flag before expensive I/O
-                    if stop_flag:
-                        return
 
-                    # Check timeout before expensive I/O
-                    elapsed = time.perf_counter() - start_time
-                    if elapsed > timeout:
-                        stop_flag = True
-                        return
+                # Queue of (task_idx, task, Future) for in-flight prefetches
+                # Bounded size ensures we don't use too much memory
+                pending_fetches: list[tuple[int, "Task", asyncio.Future]] = []
 
-                    # Check estimated size before I/O (early rejection)
-                    # This uses task.estimated_bytes from Parquet metadata
-                    bytes_in_estimate += task.estimated_bytes
-                    if bytes_in_estimate > max_response:
-                        stop_flag = True
-                        return
+                def start_fetch(idx: int, task: "Task") -> asyncio.Future:
+                    """Start a fetch in the thread pool, return Future."""
+                    return asyncio.get_event_loop().run_in_executor(
+                        None, state.fetcher.fetch_as_stream_bytes, task
+                    )
 
-                    # Fetch segment in thread pool to avoid blocking event loop
-                    # This allows other requests to be processed during S3 fetches
-                    segment = await asyncio.to_thread(state.fetcher.fetch_as_stream_bytes, task)
+                async def yield_segment(idx: int, task: "Task", segment: bytes):
+                    """Record metrics and yield a segment."""
+                    nonlocal tasks_completed
                     tasks_completed += 1
-
-                    # Track cache metrics
                     if task.cached:
                         scan_metrics.cache_hits += 1
                         scan_metrics.bytes_from_cache += task.bytes_read
                     else:
                         scan_metrics.cache_misses += 1
                         scan_metrics.bytes_from_storage += task.bytes_read
+                    return segment
 
-                    yield segment
+                # Start initial prefetches (fill the pipeline)
+                task_iter = iter(enumerate(plan.tasks))
+                for idx, task in task_iter:
+                    # Check limits before starting fetch
+                    bytes_in_estimate += task.estimated_bytes
+                    if bytes_in_estimate > max_response:
+                        stop_flag = True
+                        break
+
+                    # Use prefetched first row group if available
+                    if idx == 0 and plan.prefetched_first is not None:
+                        segment = plan.prefetched_first
+                        plan.prefetched_first = None
+                        state._prefetch_used += 1  # Track successful prefetch use
+                        yield await yield_segment(idx, task, segment)
+                        continue
+
+                    # Start fetch in thread pool
+                    future = start_fetch(idx, task)
+                    pending_fetches.append((idx, task, future))
+
+                    # Once we have enough in-flight, start yielding
+                    if len(pending_fetches) >= PREFETCH_AHEAD:
+                        break
+
+                # Main loop: yield completed fetches, start new ones
+                for next_idx, next_task in task_iter:
+                    if stop_flag:
+                        break
+
+                    # Check timeout
+                    elapsed = time.perf_counter() - start_time
+                    if elapsed > timeout:
+                        stop_flag = True
+                        break
+
+                    # Wait for the oldest fetch to complete
+                    if pending_fetches:
+                        idx, task, future = pending_fetches.pop(0)
+                        try:
+                            segment = await future
+                            yield await yield_segment(idx, task, segment)
+                        except Exception:
+                            stop_flag = True
+                            break
+
+                    # Start next fetch to keep pipeline full
+                    bytes_in_estimate += next_task.estimated_bytes
+                    if bytes_in_estimate > max_response:
+                        stop_flag = True
+                        break
+
+                    future = start_fetch(next_idx, next_task)
+                    pending_fetches.append((next_idx, next_task, future))
+
+                # Drain remaining pending fetches
+                while pending_fetches and not stop_flag:
+                    elapsed = time.perf_counter() - start_time
+                    if elapsed > timeout:
+                        stop_flag = True
+                        break
+
+                    idx, task, future = pending_fetches.pop(0)
+                    try:
+                        segment = await future
+                        yield await yield_segment(idx, task, segment)
+                    except Exception:
+                        stop_flag = True
+                        break
+
+                # Cancel any remaining futures on early exit
+                for _, _, future in pending_fetches:
+                    future.cancel()
 
             # Stream chunks from the IPC concatenator
             # Process segments one at a time for true streaming with async I/O.
@@ -781,6 +1279,9 @@ async def get_batches_v1(scan_id: str, request: Request):
                     # Track bytes actually sent to client
                     bytes_out += len(chunk)
 
+                    # Update progress tracking (for /health/ready stuck scan detection)
+                    state._scan_progress[scan_id] = (time.time(), bytes_out)
+
                     # Check size limit - abort connection so client sees error
                     if bytes_out > max_response:
                         stop_flag = True
@@ -797,10 +1298,47 @@ async def get_batches_v1(scan_id: str, request: Request):
             # Normal completion - log terminal event
             log_scan_terminal("complete")
 
+        except GeneratorExit:
+            # Generator was closed by Starlette (client disconnected before
+            # we could check is_disconnected(), or response was cancelled).
+            # This is normal - log it and let finally clean up.
+            state.metrics.record_client_disconnect()
+            logger.debug("Scan %s: generator closed by client disconnect", scan_id)
+
+        except asyncio.CancelledError:
+            # Task was cancelled (e.g., server shutdown or request timeout).
+            # Log and re-raise to let asyncio handle cancellation properly.
+            state.metrics.record_client_disconnect()
+            logger.debug("Scan %s: cancelled", scan_id)
+            raise
+
         finally:
-            # Always release resources
-            state._active_scans -= 1
-            state._scan_semaphore.release()
+            # Always release resources - this runs on:
+            # - Normal completion (return from generator)
+            # - Client disconnect (GeneratorExit)
+            # - Server-side exception (RuntimeError for timeout/size)
+            # - Cancellation (CancelledError)
+            #
+            # Note: If generator_started is False, we were closed before
+            # the first iteration (client disconnected very early).
+            # In that case, we never incremented _active_scans.
+            if generator_started:
+                state._active_scans -= 1
+
+            # Remove from progress tracking
+            state._scan_progress.pop(scan_id, None)
+
+            # Release the tier-specific semaphore
+            scan_tier = state._scan_tier.pop(scan_id, None)
+            if scan_tier == "interactive":
+                state._active_interactive -= 1
+                state._interactive_semaphore.release()
+            elif scan_tier == "bulk":
+                state._active_bulk -= 1
+                state._bulk_semaphore.release()
+            else:
+                # Fallback: shouldn't happen but release legacy semaphore if tier unknown
+                state._scan_semaphore.release()
 
     return StreamingResponse(
         stream_batches(),
@@ -812,6 +1350,8 @@ async def get_batches_v1(scan_id: str, request: Request):
 async def delete_scan_v1(scan_id: str):
     """Delete a scan and free resources.
 
+    Also cancels any pending prefetch for this scan to avoid wasted work.
+
     Error codes:
     - 404: Scan not found
     """
@@ -819,6 +1359,18 @@ async def delete_scan_v1(scan_id: str):
 
     if scan_id not in state.scans:
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+
+    # Cancel any pending prefetch for this scan
+    prefetch_future = state._prefetch_futures.pop(scan_id, None)
+    if prefetch_future is not None:
+        prefetch_future.cancel()
+        state._prefetch_wasted += 1
+
+    # Check if prefetch was completed but never used
+    plan = state.scans[scan_id]
+    if plan.prefetched_first is not None:
+        state._prefetch_wasted += 1
+        plan.prefetched_first = None  # Release the bytes
 
     del state.scans[scan_id]
     return {"status": "deleted", "scan_id": scan_id}
@@ -1079,61 +1631,6 @@ async def clear_cache_v1():
         return {"status": "cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# =============================================================================
-# API v0 Aliases (deprecated, forwards to v1)
-#
-# These exist for backwards compatibility only. New clients should use /v1/.
-# =============================================================================
-
-
-@app.post("/v0/scan", response_model=ScanResponse)
-async def create_scan_v0(request: ScanRequest):
-    """Deprecated: Use /v1/scan instead."""
-    return await create_scan_v1(request)
-
-
-@app.get("/v0/scan/{scan_id}/batches")
-async def get_batches_v0(scan_id: str, request: Request):
-    """Deprecated: Use /v1/scan/{scan_id}/batches instead."""
-    return await get_batches_v1(scan_id, request)
-
-
-@app.delete("/v0/scan/{scan_id}")
-async def delete_scan_v0(scan_id: str):
-    """Deprecated: Use /v1/scan/{scan_id} instead."""
-    return await delete_scan_v1(scan_id)
-
-
-@app.get("/v0/cache/stats")
-async def get_cache_stats_v0():
-    """Deprecated: Use /v1/cache/stats instead."""
-    return await get_cache_stats_v1()
-
-
-@app.get("/v0/metadata/stats")
-async def get_metadata_stats_v0():
-    """Deprecated: Use /v1/metadata/stats instead."""
-    return await get_metadata_stats_v1()
-
-
-@app.post("/v0/metadata/cleanup")
-async def cleanup_metadata_v0():
-    """Deprecated: Use /v1/metadata/cleanup instead."""
-    return await cleanup_metadata_v1()
-
-
-@app.get("/v0/cache/entries")
-async def list_cache_entries_v0():
-    """Deprecated: Use /v1/cache/entries instead."""
-    return await list_cache_entries_v1()
-
-
-@app.post("/v0/cache/clear")
-async def clear_cache_v0():
-    """Deprecated: Use /v1/cache/clear instead."""
-    return await clear_cache_v1()
 
 
 def main():

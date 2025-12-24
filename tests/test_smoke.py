@@ -395,7 +395,7 @@ class TestEndToEnd:
             scanner.close()
 
     def test_metadata_stats_endpoint(self, server_with_client):
-        """Test the /v0/metadata/stats endpoint."""
+        """Test the /v1/metadata/stats endpoint."""
         import requests
 
         client = server_with_client["client"]
@@ -407,7 +407,7 @@ class TestEndToEnd:
         assert len(batches) > 0
 
         # Check metadata stats endpoint
-        response = requests.get(f"http://127.0.0.1:{config.port}/v0/metadata/stats")
+        response = requests.get(f"http://127.0.0.1:{config.port}/v1/metadata/stats")
         assert response.status_code == 200
 
         stats = response.json()
@@ -437,13 +437,13 @@ class TestEndToEnd:
             assert "stale_invalidations" in store_stats
 
     def test_metadata_cleanup_endpoint(self, server_with_client):
-        """Test the /v0/metadata/cleanup endpoint."""
+        """Test the /v1/metadata/cleanup endpoint."""
         import requests
 
         config = server_with_client["config"]
 
         # Call cleanup endpoint
-        response = requests.post(f"http://127.0.0.1:{config.port}/v0/metadata/cleanup")
+        response = requests.post(f"http://127.0.0.1:{config.port}/v1/metadata/cleanup")
         assert response.status_code == 200
 
         result = response.json()
@@ -467,8 +467,12 @@ class TestEndToEnd:
         checks = result["checks"]
         assert checks["server_initialized"] is True
         assert checks["draining"] is False
-        assert checks["has_capacity"] is True
+        assert checks["capacity_exhausted"] is False  # Not saturated
+        assert checks["stuck_scans"] == 0  # No stuck scans
         assert "metadata_store" in checks
+        assert "interactive_available" in checks
+        assert "bulk_available" in checks
+        assert "active_scans" in checks
 
     def test_prometheus_metrics_endpoint(self, server_with_client):
         """Test the /metrics/prometheus endpoint."""

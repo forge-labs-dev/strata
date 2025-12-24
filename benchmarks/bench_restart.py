@@ -204,7 +204,7 @@ def run_scan(client, table_uri: str, metrics_before: dict | None = None) -> Benc
     # Phase 1: Planning (POST /scan)
     plan_start = time.perf_counter()
     request_body = {"table_uri": table_uri}
-    response = client._client.post("/v0/scan", json=request_body)
+    response = client._client.post("/v1/scan", json=request_body)
     response.raise_for_status()
     scan_info = response.json()
     scan_id = scan_info["scan_id"]
@@ -212,7 +212,7 @@ def run_scan(client, table_uri: str, metrics_before: dict | None = None) -> Benc
 
     # Phase 2: Data fetch (GET /batches)
     fetch_start = time.perf_counter()
-    response = client._client.get(f"/v0/scan/{scan_id}/batches")
+    response = client._client.get(f"/v1/scan/{scan_id}/batches")
     response.raise_for_status()
     batches = []
     if response.content:
@@ -222,7 +222,7 @@ def run_scan(client, table_uri: str, metrics_before: dict | None = None) -> Benc
 
     # Cleanup
     try:
-        client._client.delete(f"/v0/scan/{scan_id}")
+        client._client.delete(f"/v1/scan/{scan_id}")
     except Exception:
         pass
 

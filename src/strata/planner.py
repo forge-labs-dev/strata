@@ -3,6 +3,8 @@
 import time
 from pathlib import Path
 
+import pyarrow.parquet as pq
+
 from strata.config import StrataConfig
 from strata.iceberg import PyIcebergCatalog
 from strata.metadata_cache import (
@@ -10,6 +12,7 @@ from strata.metadata_cache import (
     ManifestEntry,
     ManifestResolution,
     ParquetMetadataCache,
+    RowGroupMeta,
     get_manifest_cache,
     get_parquet_cache,
 )
@@ -71,6 +74,60 @@ def _compile_filters(
     return compiled
 
 
+def _normalize_s3_path(path: str) -> str:
+    """Normalize an S3 path by removing redundant slashes and path components.
+
+    Args:
+        path: S3 URI (s3://bucket/path)
+
+    Returns:
+        Normalized S3 path with clean path components
+    """
+    if not path.startswith("s3://"):
+        return path
+
+    # Split into bucket and path
+    without_prefix = path[5:]
+    if "/" not in without_prefix:
+        return path  # Just bucket name
+
+    bucket_end = without_prefix.index("/")
+    bucket = without_prefix[:bucket_end]
+    key = without_prefix[bucket_end + 1 :]
+
+    # Normalize the key path: split, filter empty/dot components, rejoin
+    parts = key.split("/")
+    normalized_parts = []
+    for part in parts:
+        if part == "" or part == ".":
+            continue
+        if part == ".." and normalized_parts:
+            normalized_parts.pop()
+        elif part != "..":
+            normalized_parts.append(part)
+
+    normalized_key = "/".join(normalized_parts)
+    return f"s3://{bucket}/{normalized_key}" if normalized_key else f"s3://{bucket}"
+
+
+def _join_s3_path(base: str, relative: str) -> str:
+    """Join an S3 base path with a relative path.
+
+    Args:
+        base: S3 base URI (s3://bucket/path)
+        relative: Relative path to append
+
+    Returns:
+        Joined and normalized S3 path
+    """
+    # Strip trailing slash from base
+    base = base.rstrip("/")
+    # Strip leading slash from relative
+    relative = relative.lstrip("/")
+    # Join and normalize
+    return _normalize_s3_path(f"{base}/{relative}")
+
+
 class ReadPlanner:
     """Plans reads from Iceberg tables with row-group pruning.
 
@@ -93,9 +150,14 @@ class ReadPlanner:
         # Enable persistence by passing cache_dir
         cache_dir = config.cache_dir
 
-        # Create S3 filesystem if configured
+        # Create S3 filesystem if any S3 config is provided
         s3_filesystem = None
-        if config.s3_region or config.s3_access_key or config.s3_anonymous:
+        if (
+            config.s3_region
+            or config.s3_access_key
+            or config.s3_anonymous
+            or config.s3_endpoint_url
+        ):
             s3_filesystem = config.get_s3_filesystem()
 
         self.parquet_cache = parquet_cache or get_parquet_cache(
@@ -273,10 +335,18 @@ class ReadPlanner:
         return plan
 
     def _resolve_file_path(self, table_uri: str, file_path: str) -> str:
-        """Resolve a file path from the table metadata to an actual path."""
-        # Handle S3 paths - keep as-is
+        """Resolve a file path from the table metadata to an actual path.
+
+        Args:
+            table_uri: Table URI in format warehouse_path#namespace.table
+            file_path: File path from Iceberg manifest (absolute or relative)
+
+        Returns:
+            Resolved absolute path (local or S3)
+        """
+        # Handle S3 paths - normalize and return
         if file_path.startswith("s3://"):
-            return file_path
+            return _normalize_s3_path(file_path)
 
         # Handle file:// prefix
         if file_path.startswith("file://"):
@@ -291,7 +361,7 @@ class ReadPlanner:
             warehouse_path = table_uri.split("#")[0]
             # S3 relative paths
             if warehouse_path.startswith("s3://"):
-                return f"{warehouse_path}/{file_path}"
+                return _join_s3_path(warehouse_path, file_path)
             # Local filesystem relative paths
             warehouse_path = warehouse_path.replace("file://", "")
             candidate = Path(warehouse_path) / file_path
@@ -302,21 +372,32 @@ class ReadPlanner:
 
     def _should_prune_row_group(
         self,
-        rg_meta,
+        rg_meta: RowGroupMeta | pq.RowGroupMetaData,
         compiled_filters: CompiledFilters,
     ) -> bool:
         """Check if a row group can be pruned based on compiled filters and stats.
 
-        Uses pre-compiled filters with resolved column indices for efficiency.
-        Column index mapping is done once per file, not per row group.
+        Uses pre-compiled filters with resolved column indices for efficient
+        row group pruning. Column index mapping is done once per file, not per
+        row group.
 
-        Limitations (v0):
-        - Only flat, primitive columns are supported for pruning
-        - Complex Parquet timestamps may not convert correctly; use int64 epoch
-        - Filters use AND semantics (all must match for row to be included)
+        Args:
+            rg_meta: Row group metadata from Parquet file (PyArrow RowGroupMetaData)
+            compiled_filters: List of (column_index, Filter) tuples pre-compiled
+                by _compile_filters()
 
-        If pruning cannot be safely determined, we err on the side of NOT pruning
-        (i.e., we read the row group rather than risk missing data).
+        Returns:
+            True if the row group can be safely pruned (no matching rows),
+            False if the row group should be read.
+
+        Note:
+            Limitations:
+            - Only flat, primitive columns are supported for pruning
+            - Complex Parquet timestamps may not convert correctly; use int64 epoch
+            - Filters use AND semantics (all must match for row to be included)
+
+            If pruning cannot be safely determined, we err on the side of NOT
+            pruning (i.e., we read the row group rather than risk missing data).
         """
         if not compiled_filters:
             return False
@@ -335,7 +416,7 @@ class ReadPlanner:
                 max_val = stats.max
 
                 # Convert to comparable types if needed
-                min_val, max_val = self._convert_stats(min_val, max_val, f.value)
+                min_val, max_val = self._convert_stats(min_val, max_val)
 
                 if not f.matches_stats(min_val, max_val):
                     return True
@@ -346,34 +427,36 @@ class ReadPlanner:
 
         return False
 
-    def _convert_stats(self, min_val, max_val, filter_val):
+    def _convert_stats(self, min_val, max_val):
         """Convert statistics to comparable types.
 
-        Limitations (v0):
-        - Only basic type conversions are supported
-        - Numeric types (int, float) work directly with Parquet stats
-        - String comparisons work if both filter and stats are strings
-        - Timestamp pruning:
-          * For int64 epoch micros (recommended): use int filter values
-          * For datetime filters: stats must return datetime-compatible objects
-          * Type mismatches will raise and be caught (no pruning, safe)
-        - Decimals, bytes, and complex types may not compare correctly
+        Converts PyArrow scalar values to Python types for comparison with
+        filter values during row group pruning.
 
-        Long-term: use Iceberg schema for type-aware conversions.
+        Args:
+            min_val: Minimum value from Parquet column statistics (may be PyArrow scalar)
+            max_val: Maximum value from Parquet column statistics (may be PyArrow scalar)
+
+        Returns:
+            Tuple of (min_val, max_val) converted to Python types
+
+        Note:
+            Limitations:
+            - Only basic type conversions are supported
+            - Numeric types (int, float) work directly with Parquet stats
+            - String comparisons work if both filter and stats are strings
+            - Timestamp pruning:
+              * For int64 epoch micros (recommended): use int filter values
+              * For datetime filters: stats must return datetime-compatible objects
+              * Type mismatches will raise and be caught (no pruning, safe)
+            - Decimals, bytes, and complex types may not compare correctly
+
+            Future: use Iceberg schema for type-aware conversions.
         """
-        from datetime import datetime
-
         # Convert PyArrow scalars to Python types if needed
         if hasattr(min_val, "as_py"):
             min_val = min_val.as_py()
         if hasattr(max_val, "as_py"):
             max_val = max_val.as_py()
-
-        # For datetime filters, ensure stats are also datetime
-        # (this handles the case where Parquet stores timestamp with stats)
-        if isinstance(filter_val, datetime):
-            # Stats should already be datetime after as_py() conversion
-            # If not, comparison will raise and we won't prune (safe)
-            pass
 
         return min_val, max_val

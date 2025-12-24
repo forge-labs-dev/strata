@@ -390,12 +390,20 @@ class DiskCache:
 
         # Evict until under limit (target 80% to avoid evicting on every put)
         target_size = int(self.max_size_bytes * 0.8)
+        evicted_count = 0
+        evicted_bytes = 0
         while current_size > target_size and files:
             path, _, size = files.pop(0)
             path.unlink(missing_ok=True)
             # Also remove metadata sidecar
             self._meta_path(path).unlink(missing_ok=True)
             current_size -= size
+            evicted_count += 1
+            evicted_bytes += size
+
+        # Record eviction metrics
+        if evicted_count > 0:
+            self.metrics.record_cache_eviction(evicted_count, evicted_bytes)
 
 
 class CachedFetcher:

@@ -1,11 +1,16 @@
 """Structured metrics logging for Strata."""
 
+import atexit
 import json
+import queue
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import TextIO
+
+# Default queue size - logs are dropped if queue is full to prevent blocking
+DEFAULT_LOG_QUEUE_SIZE = 1000
 
 
 @dataclass
@@ -55,11 +60,24 @@ class ScanMetrics:
 
 @dataclass
 class MetricsCollector:
-    """Collects and logs metrics for Strata operations."""
+    """Collects and logs metrics for Strata operations.
+
+    Logging is non-blocking: log entries are queued and written by a background
+    thread. If the queue is full, logs are dropped (not blocked) to prevent
+    request latency impact. The dropped_logs counter tracks how many were dropped.
+    """
 
     output: TextIO = field(default_factory=lambda: sys.stdout)
     enabled: bool = True
-    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    log_queue_size: int = DEFAULT_LOG_QUEUE_SIZE
+
+    # Lock only protects aggregate counters, NOT log writing
+    _counter_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    # Background writer thread and queue (initialized in __post_init__)
+    _log_queue: queue.Queue = field(init=False, repr=False)
+    _writer_thread: threading.Thread = field(init=False, repr=False)
+    _shutdown: threading.Event = field(default_factory=threading.Event, repr=False)
 
     # Aggregate counters
     total_cache_hits: int = 0
@@ -77,6 +95,64 @@ class MetricsCollector:
     stream_aborts_size: int = 0
     client_disconnects: int = 0
 
+    # Cache eviction counters
+    cache_evictions_count: int = 0
+    cache_evicted_bytes: int = 0
+
+    # Logging metrics
+    dropped_logs: int = 0
+
+    def __post_init__(self) -> None:
+        """Initialize the background writer thread."""
+        self._log_queue = queue.Queue(maxsize=self.log_queue_size)
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            name="MetricsWriter",
+            daemon=True,
+        )
+        self._writer_thread.start()
+        # Register shutdown handler
+        atexit.register(self.shutdown)
+
+    def _writer_loop(self) -> None:
+        """Background thread that writes log entries from the queue."""
+        while not self._shutdown.is_set():
+            try:
+                # Use timeout so we can check shutdown flag periodically
+                entry = self._log_queue.get(timeout=0.1)
+                try:
+                    json.dump(entry, self.output)
+                    self.output.write("\n")
+                    self.output.flush()
+                except Exception:
+                    # Silently ignore write errors (e.g., broken pipe)
+                    pass
+                finally:
+                    self._log_queue.task_done()
+            except queue.Empty:
+                continue
+
+        # Drain remaining items on shutdown
+        while True:
+            try:
+                entry = self._log_queue.get_nowait()
+                try:
+                    json.dump(entry, self.output)
+                    self.output.write("\n")
+                    self.output.flush()
+                except Exception:
+                    pass
+                finally:
+                    self._log_queue.task_done()
+            except queue.Empty:
+                break
+
+    def shutdown(self) -> None:
+        """Shutdown the background writer thread gracefully."""
+        self._shutdown.set()
+        if self._writer_thread.is_alive():
+            self._writer_thread.join(timeout=1.0)
+
     def record_fetch(
         self,
         bytes_read: int,
@@ -85,7 +161,7 @@ class MetricsCollector:
         from_cache: bool,
     ) -> None:
         """Record a fetch operation."""
-        with self._lock:
+        with self._counter_lock:
             self.total_fetches += 1
             self.total_rows_fetched += rows_read
 
@@ -98,28 +174,34 @@ class MetricsCollector:
 
     def record_cache_write(self, bytes_written: int) -> None:
         """Record a cache write operation."""
-        with self._lock:
+        with self._counter_lock:
             self.total_bytes_written_to_cache += bytes_written
 
     def record_stream_abort_timeout(self) -> None:
         """Record a stream abort due to timeout."""
-        with self._lock:
+        with self._counter_lock:
             self.stream_aborts_timeout += 1
 
     def record_stream_abort_size(self) -> None:
         """Record a stream abort due to size limit."""
-        with self._lock:
+        with self._counter_lock:
             self.stream_aborts_size += 1
 
     def record_client_disconnect(self) -> None:
         """Record a client disconnect during streaming."""
-        with self._lock:
+        with self._counter_lock:
             self.client_disconnects += 1
+
+    def record_cache_eviction(self, count: int, bytes_evicted: int) -> None:
+        """Record cache eviction events."""
+        with self._counter_lock:
+            self.cache_evictions_count += count
+            self.cache_evicted_bytes += bytes_evicted
 
     def log_scan_complete(self, metrics: ScanMetrics) -> None:
         """Log completion of a scan operation."""
         # Update aggregate counters
-        with self._lock:
+        with self._counter_lock:
             self.total_scans += 1
             self.total_row_groups_pruned += metrics.pruned_row_groups
 
@@ -146,15 +228,17 @@ class MetricsCollector:
         self._write_log(log_entry)
 
     def _write_log(self, entry: dict) -> None:
-        """Write a log entry as JSON."""
-        with self._lock:
-            json.dump(entry, self.output)
-            self.output.write("\n")
-            self.output.flush()
+        """Queue a log entry for async writing. Drops if queue is full."""
+        try:
+            self._log_queue.put_nowait(entry)
+        except queue.Full:
+            # Drop the log rather than block - increment counter for observability
+            with self._counter_lock:
+                self.dropped_logs += 1
 
     def get_aggregate_stats(self) -> dict:
         """Get aggregate statistics."""
-        with self._lock:
+        with self._counter_lock:
             total_requests = self.total_cache_hits + self.total_cache_misses
             return {
                 "scan_count": self.total_scans,
@@ -173,11 +257,16 @@ class MetricsCollector:
                 "stream_aborts_timeout": self.stream_aborts_timeout,
                 "stream_aborts_size": self.stream_aborts_size,
                 "client_disconnects": self.client_disconnects,
+                # Cache eviction metrics
+                "cache_evictions_count": self.cache_evictions_count,
+                "cache_evicted_bytes": self.cache_evicted_bytes,
+                # Logging metrics
+                "dropped_logs": self.dropped_logs,
             }
 
     def reset(self) -> None:
         """Reset all counters."""
-        with self._lock:
+        with self._counter_lock:
             self.total_cache_hits = 0
             self.total_cache_misses = 0
             self.total_bytes_from_cache = 0
@@ -190,6 +279,9 @@ class MetricsCollector:
             self.stream_aborts_timeout = 0
             self.stream_aborts_size = 0
             self.client_disconnects = 0
+            self.cache_evictions_count = 0
+            self.cache_evicted_bytes = 0
+            self.dropped_logs = 0
 
 
 class Timer:
