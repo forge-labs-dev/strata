@@ -65,6 +65,8 @@ hash(table_identity | snapshot_id | file_path | row_group_id | projection_finger
 - **metadata_store.py** - SQLite-backed persistent metadata storage
 - **fetcher.py** - `PyArrowFetcher` reads Parquet row groups with S3 filesystem support
 - **fast_io.py** - Python wrapper for Rust extension functions
+- **tracing.py** - OpenTelemetry integration (optional, requires `strata[otel]`)
+- **logging.py** - Structured JSON logging with correlation IDs (request_id, scan_id, trace_id)
 - **rust/src/lib.rs** - Arrow IPC stream manipulation (concatenation, format conversion)
 
 ### Rust Extension
@@ -99,6 +101,8 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 - `STRATA_MAX_CACHE_SIZE_BYTES` - Cache size limit
 - S3: `STRATA_S3_REGION`, `STRATA_S3_ENDPOINT_URL`, `STRATA_S3_ACCESS_KEY`, `STRATA_S3_SECRET_KEY`, `STRATA_S3_ANONYMOUS`
 - QoS: `interactive_slots`, `bulk_slots`, `interactive_max_bytes`, `interactive_max_columns`
+- Tracing: `STRATA_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`
+- Logging: `STRATA_LOG_LEVEL`, `STRATA_LOG_FORMAT` (json or text)
 
 ## Important Invariants
 

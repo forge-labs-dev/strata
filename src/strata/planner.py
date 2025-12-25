@@ -16,6 +16,7 @@ from strata.metadata_cache import (
     get_manifest_cache,
     get_parquet_cache,
 )
+from strata.tracing import trace_span
 from strata.types import (
     CacheKey,
     Filter,
@@ -226,29 +227,36 @@ class ReadPlanner:
 
         if manifest_resolution is None:
             # Cache miss: resolve manifests with Iceberg file-level pruning
-            iceberg_expr = filters_to_iceberg_expression(filters)
+            with trace_span(
+                "resolve_manifests",
+                table_id=table_identity_str,
+                snapshot_id=resolved_snapshot_id,
+            ) as span:
+                iceberg_expr = filters_to_iceberg_expression(filters)
 
-            try:
-                # Use Iceberg's file-level pruning if we have filters
-                if iceberg_expr is not None:
-                    scan = table.scan(snapshot_id=resolved_snapshot_id, row_filter=iceberg_expr)
-                else:
+                try:
+                    # Use Iceberg's file-level pruning if we have filters
+                    if iceberg_expr is not None:
+                        scan = table.scan(snapshot_id=resolved_snapshot_id, row_filter=iceberg_expr)
+                    else:
+                        scan = table.scan(snapshot_id=resolved_snapshot_id)
+                    data_files = list(scan.plan_files())
+                except Exception:
+                    # If Iceberg expression fails (type mismatch, unsupported column, etc.),
+                    # fall back to unfiltered scan - row-group pruning will still work
                     scan = table.scan(snapshot_id=resolved_snapshot_id)
-                data_files = list(scan.plan_files())
-            except Exception:
-                # If Iceberg expression fails (type mismatch, unsupported column, etc.),
-                # fall back to unfiltered scan - row-group pruning will still work
-                scan = table.scan(snapshot_id=resolved_snapshot_id)
-                data_files = list(scan.plan_files())
+                    data_files = list(scan.plan_files())
 
-            # Build manifest entries with resolved paths
-            entries = []
-            for file_task in data_files:
-                file_path = file_task.file.file_path
-                actual_path = self._resolve_file_path(table_uri, file_path)
-                entries.append(ManifestEntry(file_path=file_path, actual_path=actual_path))
+                # Build manifest entries with resolved paths
+                entries = []
+                for file_task in data_files:
+                    file_path = file_task.file.file_path
+                    actual_path = self._resolve_file_path(table_uri, file_path)
+                    entries.append(ManifestEntry(file_path=file_path, actual_path=actual_path))
 
-            manifest_resolution = ManifestResolution(data_files=entries)
+                manifest_resolution = ManifestResolution(data_files=entries)
+                span.set_attribute("files_count", len(entries))
+
             self.manifest_cache.put(
                 catalog_name,
                 table_identity_str,

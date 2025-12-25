@@ -22,6 +22,10 @@ def _get_env_overrides() -> dict:
     - STRATA_S3_ENDPOINT_URL: S3 endpoint URL (for MinIO, LocalStack)
     - STRATA_S3_ANONYMOUS: Use anonymous access (set to "true")
     - STRATA_METADATA_DB: Path to SQLite metadata database
+    - STRATA_TRACING_ENABLED: Enable/disable OpenTelemetry tracing
+    - OTEL_EXPORTER_OTLP_ENDPOINT: OpenTelemetry OTLP endpoint
+    - OTEL_SERVICE_NAME: Service name for tracing (default: strata)
+    - STRATA_FETCH_PARALLELISM: Max concurrent row group fetches per scan
     """
     overrides = {}
 
@@ -59,6 +63,9 @@ def _get_env_overrides() -> dict:
 
     if metadata_db := os.environ.get("STRATA_METADATA_DB"):
         overrides["metadata_db"] = Path(metadata_db)
+
+    if fetch_parallelism := os.environ.get("STRATA_FETCH_PARALLELISM"):
+        overrides["fetch_parallelism"] = int(fetch_parallelism)
 
     return overrides
 
@@ -100,6 +107,7 @@ class StrataConfig:
         max_cache_size_bytes = 10737418240
         cache_granularity = "row_group_projection"  # or "row_group"
         batch_size = 65536
+        fetch_parallelism = 4  # Max concurrent row group fetches
         catalog_name = "default"
 
         # Resource limits (backpressure)
@@ -137,6 +145,7 @@ class StrataConfig:
 
     # Fetcher settings
     batch_size: int = 65536  # rows per batch when reading Parquet
+    fetch_parallelism: int = 4  # Max concurrent row group fetches per scan
 
     # Catalog settings (for pyiceberg)
     catalog_name: str = "default"

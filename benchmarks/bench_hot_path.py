@@ -43,11 +43,29 @@ def create_stream_file(path: Path, batch: pa.RecordBatch) -> None:
 
 
 def benchmark_raw_file_read(file_path: Path, num_iterations: int = 100) -> dict:
-    """Benchmark raw file read (new hot path - no parsing)."""
+    """Benchmark raw file read (Python Path.read_bytes())."""
     times = []
     for _ in range(num_iterations):
         start = time.perf_counter()
         _ = file_path.read_bytes()
+        elapsed = time.perf_counter() - start
+        times.append(elapsed * 1000)
+
+    return {
+        "mean_ms": statistics.mean(times),
+        "median_ms": statistics.median(times),
+        "stdev_ms": statistics.stdev(times) if len(times) > 1 else 0,
+        "min_ms": min(times),
+        "max_ms": max(times),
+    }
+
+
+def benchmark_mmap_file_read(file_path: Path, num_iterations: int = 100) -> dict:
+    """Benchmark mmap file read (Rust mmap via fast_io)."""
+    times = []
+    for _ in range(num_iterations):
+        start = time.perf_counter()
+        _ = fast_io.read_file_mmap(str(file_path))
         elapsed = time.perf_counter() - start
         times.append(elapsed * 1000)
 
@@ -167,15 +185,22 @@ def main():
 
             print("Cache Hit Performance:")
             raw_read = benchmark_raw_file_read(file_path, num_iterations)
-            print(format_results("  New hot path (raw file read)", raw_read))
+            print(format_results("  Python read_bytes()", raw_read))
+            print()
+
+            mmap_read = benchmark_mmap_file_read(file_path, num_iterations)
+            print(format_results("  Rust mmap read", mmap_read))
             print()
 
             parse_serve = benchmark_parse_and_serve(file_path, num_iterations)
             print(format_results("  Old path (parse + serialize)", parse_serve))
             print()
 
-            speedup = parse_serve["mean_ms"] / raw_read["mean_ms"]
-            print(f"  Speedup: {speedup:.1f}x faster with new hot path")
+            if raw_read["mean_ms"] > 0:
+                mmap_vs_raw = raw_read["mean_ms"] / mmap_read["mean_ms"]
+                print(f"  Mmap vs read_bytes: {mmap_vs_raw:.2f}x")
+            speedup = parse_serve["mean_ms"] / mmap_read["mean_ms"]
+            print(f"  Mmap vs parse+serialize: {speedup:.1f}x faster")
             print()
 
         # Benchmark concat with multiple segments

@@ -20,6 +20,7 @@ class ScanMetrics:
     scan_id: str
     snapshot_id: int
     table_id: str = ""  # Canonical table identity (catalog.namespace.table)
+    request_id: str = ""  # Correlation ID for request tracing
     planning_time_ms: float = 0.0
     fetch_time_ms: float = 0.0
     total_time_ms: float = 0.0
@@ -36,7 +37,7 @@ class ScanMetrics:
     rows_returned: int = 0
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "scan_id": self.scan_id,
             "table_id": self.table_id,
             "snapshot_id": self.snapshot_id,
@@ -56,6 +57,10 @@ class ScanMetrics:
             "pruned_row_groups": self.pruned_row_groups,
             "rows_returned": self.rows_returned,
         }
+        # Include request_id if set (for correlation)
+        if self.request_id:
+            result["request_id"] = self.request_id
+        return result
 
 
 @dataclass

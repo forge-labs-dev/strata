@@ -214,11 +214,13 @@ Or, more bluntly:
 - **Streaming Arrow IPC**: Streams Arrow results without buffering entire scans in memory. Memory footprint scales with row group size, not query result size
 - **Pre-flight size estimation**: Rejects oversized scans upfront (HTTP 413) using Parquet metadata, preventing wasted work
 - **Two-tier QoS**: Separate admission control for interactive (dashboard) and bulk (ETL) queries, preventing starvation
+- **Parallel row group fetching**: Configurable parallelism with out-of-order completion and reordering buffer for maximum I/O throughput
 - **Prefetch**: Background prefetching of first row group during scan creation for lower latency
 - **S3 support**: Native S3 storage backend via PyArrow S3FileSystem
 - **DuckDB integration**: Query cached data directly with DuckDB SQL
 - **Polars integration**: Zero-copy DataFrame access via Arrow
 - **Metrics**: Structured JSON logging with Prometheus export for cache, QoS, and prefetch metrics
+- **OpenTelemetry tracing**: Optional distributed tracing for observability (install with `pip install strata[otel]`)
 
 ## Installation
 
@@ -318,6 +320,9 @@ bulk_slots = 4             # Slots for ETL/export queries
 interactive_max_bytes = 10485760  # 10 MB threshold
 interactive_max_columns = 10
 
+# Fetch parallelism
+fetch_parallelism = 4      # Max concurrent row group fetches per scan
+
 [tool.strata.catalog_properties]
 type = "sql"
 uri = "sqlite:///catalog.db"
@@ -357,6 +362,78 @@ export STRATA_S3_SECRET_KEY=minioadmin
 # Public buckets
 export STRATA_S3_ANONYMOUS=true
 ```
+
+### Parallel Fetching
+
+Control how many row groups are fetched concurrently within a single scan:
+
+```bash
+# Default: 4 concurrent fetches per scan
+export STRATA_FETCH_PARALLELISM=4
+
+# For high-latency storage (S3), increase parallelism:
+export STRATA_FETCH_PARALLELISM=8
+
+# For local SSD, lower values may be sufficient:
+export STRATA_FETCH_PARALLELISM=2
+```
+
+The fetch thread pool is sized automatically based on `fetch_parallelism * (interactive_slots + bulk_slots)`.
+
+### OpenTelemetry Tracing
+
+Strata supports distributed tracing via OpenTelemetry. Install the optional dependencies:
+
+```bash
+pip install strata[otel]
+# or with uv
+uv sync --extra otel
+```
+
+Configure via environment variables:
+
+```bash
+# Enable tracing with OTLP exporter
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+export OTEL_SERVICE_NAME=strata
+
+# Optional: adjust sampling
+export OTEL_TRACES_SAMPLER=parentbased_traceidratio
+export OTEL_TRACES_SAMPLER_ARG=0.1  # 10% sampling
+
+# Disable tracing (even if OTel is installed)
+export STRATA_TRACING_ENABLED=false
+```
+
+Traced operations:
+- `plan_scan` - Scan planning with manifest resolution
+- `resolve_manifests` - Iceberg manifest resolution (cache miss)
+- `fetch_row_group` - Parquet row group fetches (cache miss)
+- HTTP endpoints via FastAPI auto-instrumentation
+
+### Structured Logging
+
+Strata uses structured JSON logging with automatic correlation IDs:
+
+```bash
+# Log format: json (default) or text (for development)
+export STRATA_LOG_FORMAT=json
+
+# Log level: DEBUG, INFO, WARNING, ERROR
+export STRATA_LOG_LEVEL=INFO
+```
+
+Log entries include:
+- `request_id` - Unique ID for each HTTP request (auto-generated or from `X-Request-ID` header)
+- `scan_id` - Scan identifier for correlation across log entries
+- `trace_id`, `span_id` - OpenTelemetry trace context (when tracing enabled)
+
+Example log output:
+```json
+{"level": "info", "logger": "strata.server", "message": "Scan created", "request_id": "a1b2c3d4e5f6g7h8", "scan_id": "scan-123", "table_uri": "file:///warehouse#db.events", "tasks": 10, "planning_ms": 42.5}
+```
+
+The `X-Request-ID` header is echoed back in responses for client-side correlation.
 
 ## Architecture
 
@@ -419,12 +496,45 @@ Since Iceberg snapshots are immutable, cached objects never need invalidation.
 POST /v1/scan              Create a scan, returns scan metadata + estimated_bytes
 GET  /v1/scan/{id}/batches Stream Arrow IPC batches
 DELETE /v1/scan/{id}       Delete scan resources
+POST /v1/cache/warm        Warm cache for specified tables
 POST /v1/cache/clear       Clear disk cache
 GET  /health               Liveness check
 GET  /health/ready         Readiness check (capacity, stuck scans)
 GET  /metrics              Aggregate metrics (JSON)
 GET  /metrics/prometheus   Prometheus format metrics
 ```
+
+### Cache Warming
+
+The `/v1/cache/warm` endpoint preloads data into the cache for faster subsequent queries:
+
+```bash
+curl -X POST http://localhost:8765/v1/cache/warm \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tables": ["file:///warehouse#db.events", "file:///warehouse#db.users"],
+    "columns": ["id", "timestamp", "value"],
+    "max_row_groups": 100,
+    "concurrent": 4
+  }'
+```
+
+Response:
+```json
+{
+  "tables_warmed": 2,
+  "row_groups_cached": 85,
+  "row_groups_skipped": 15,
+  "bytes_written": 1073741824,
+  "elapsed_ms": 5432.1,
+  "errors": []
+}
+```
+
+Use cases:
+- Warm cache after server restart
+- Preload data before dashboard traffic spikes
+- Ensure low latency for critical tables
 
 ### Streaming Contract
 
@@ -472,6 +582,53 @@ JSON format (`GET /metrics`):
 ```
 
 Prometheus format available at `GET /metrics/prometheus`.
+
+### Grafana Dashboard
+
+A pre-built Grafana dashboard is available at `grafana/strata-dashboard.json`. It provides comprehensive visualization of Strata metrics:
+
+**Overview Row:**
+- Total scans, active scans, cache hit rate, cache size, rows returned, server status
+
+**Cache Performance:**
+- Cache hit rate over time
+- Data throughput (cache vs storage)
+- Cache size vs limit
+- Cache evictions
+
+**QoS (Quality of Service):**
+- Interactive/bulk slot usage vs limits
+- Rejected queries
+
+**Prefetch Performance:**
+- Prefetch efficiency (used/started ratio)
+- Prefetch operations breakdown (started, used, wasted, skipped)
+- Prefetches in flight
+
+**Scan Performance:**
+- Active scans over time
+- Row groups pruned
+- Row throughput (rows/sec)
+
+**Errors & Aborts:**
+- Timeout aborts, size limit aborts, client disconnects
+- Error rate over time
+
+**Metadata Cache:**
+- Parquet/manifest cache hit rates
+- Cache entry counts
+
+**To import the dashboard:**
+
+1. In Grafana, go to Dashboards → Import
+2. Upload `grafana/strata-dashboard.json` or paste its contents
+3. Select your Prometheus data source
+4. Click Import
+
+The dashboard supports:
+- Multiple Prometheus data sources via dropdown
+- Instance filtering for multi-instance deployments
+- Auto-refresh (10s default)
 
 ## Development
 

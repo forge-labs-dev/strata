@@ -383,6 +383,33 @@ class ErrorResponse(BaseModel):
     error_code: str | None = None  # Optional machine-readable code
 
 
+class WarmRequest(BaseModel):
+    """Request to warm the cache for specific tables.
+
+    Preloads row group data into the cache so subsequent queries are fast.
+    This is useful for:
+    - Warming cache after server restart
+    - Preloading data before a batch of dashboards query it
+    - Ensuring low latency for critical tables
+    """
+
+    tables: list[str]  # Table URIs to warm (e.g., "file:///warehouse#ns.table")
+    columns: list[str] | None = None  # Columns to cache (None = all)
+    max_row_groups: int | None = None  # Limit row groups per table (None = all)
+    concurrent: int = 4  # Max concurrent fetches
+
+
+class WarmResponse(BaseModel):
+    """Response from cache warming operation."""
+
+    tables_warmed: int  # Number of tables processed
+    row_groups_cached: int  # Total row groups written to cache
+    row_groups_skipped: int  # Already in cache (cache hits)
+    bytes_written: int  # Total bytes written to cache
+    elapsed_ms: float  # Total time taken
+    errors: list[str]  # Any errors encountered (table URI -> error message)
+
+
 def _deserialize_value(value: Any) -> Any:
     """Deserialize filter values from JSON."""
     if isinstance(value, str) and value.startswith("__datetime__:"):

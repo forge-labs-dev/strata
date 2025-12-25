@@ -53,6 +53,32 @@ def get_concat_mode() -> str:
     return _FAST_CONCAT_MODE
 
 
+def read_file_mmap(path: str) -> bytes:
+    """Read file using memory-mapping for faster cache hits.
+
+    Uses Rust mmap implementation when available, falling back to Python
+    read_bytes() otherwise. Memory-mapping is faster for large files and
+    for repeated access to the same file (OS page cache reuse).
+
+    Args:
+        path: Path to the file to read
+
+    Returns:
+        bytes: File contents
+    """
+    if _RUST_AVAILABLE and _rust_module is not None:
+        try:
+            return bytes(_rust_module.read_file_bytes(path))
+        except Exception:
+            # Fall back to Python on any error
+            pass
+
+    # Fallback: standard Python file read
+    from pathlib import Path
+
+    return Path(path).read_bytes()
+
+
 def _concat_stream_bytes_pyarrow(segments: list[bytes]) -> bytes:
     """PyArrow implementation of concat_stream_bytes.
 

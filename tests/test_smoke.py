@@ -566,6 +566,75 @@ class TestEndToEnd:
         result = response.json()
         assert result["total_matched"] == 0
 
+    def test_cache_warm_endpoint(self, server_with_client):
+        """Test the /v1/cache/warm endpoint."""
+        import requests
+
+        config = server_with_client["config"]
+        table_uri = server_with_client["warehouse"]["table_uri"]
+
+        # Clear cache first
+        response = requests.post(f"http://127.0.0.1:{config.port}/v1/cache/clear")
+        assert response.status_code == 200
+
+        # Warm the cache for our table
+        response = requests.post(
+            f"http://127.0.0.1:{config.port}/v1/cache/warm",
+            json={
+                "tables": [table_uri],
+                "columns": ["id", "value"],  # Subset of columns
+                "max_row_groups": 2,  # Limit for testing
+                "concurrent": 2,
+            },
+        )
+        assert response.status_code == 200
+
+        result = response.json()
+        assert result["tables_warmed"] == 1
+        assert result["row_groups_cached"] > 0  # Should have cached some
+        assert result["row_groups_skipped"] == 0  # Cache was cleared
+        assert result["bytes_written"] > 0
+        assert result["elapsed_ms"] > 0
+        assert result["errors"] == []
+
+        # Warm again - should skip cached row groups
+        response = requests.post(
+            f"http://127.0.0.1:{config.port}/v1/cache/warm",
+            json={
+                "tables": [table_uri],
+                "columns": ["id", "value"],
+                "max_row_groups": 2,
+                "concurrent": 2,
+            },
+        )
+        assert response.status_code == 200
+
+        result2 = response.json()
+        assert result2["tables_warmed"] == 1
+        assert result2["row_groups_cached"] == 0  # Nothing new to cache
+        assert result2["row_groups_skipped"] > 0  # All skipped (already cached)
+        assert result2["bytes_written"] == 0  # No new bytes
+
+    def test_cache_warm_with_invalid_table(self, server_with_client):
+        """Test cache warming with an invalid table URI."""
+        import requests
+
+        config = server_with_client["config"]
+
+        # Try to warm a non-existent table
+        response = requests.post(
+            f"http://127.0.0.1:{config.port}/v1/cache/warm",
+            json={
+                "tables": ["file:///nonexistent#db.table"],
+                "concurrent": 1,
+            },
+        )
+        assert response.status_code == 200
+
+        result = response.json()
+        assert result["tables_warmed"] == 0
+        assert len(result["errors"]) == 1  # Should have an error for the bad table
+
 
 class TestEagerWarmup:
     """Tests for eager warmup at server startup."""

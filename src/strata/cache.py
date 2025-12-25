@@ -13,6 +13,7 @@ import pyarrow.ipc as ipc
 from strata.config import StrataConfig
 from strata.fetcher import Fetcher, create_fetcher
 from strata.metrics import MetricsCollector
+from strata.tracing import trace_span
 from strata.types import CacheKey, ReadPlan, Task
 
 # Cache file extension (Arrow IPC Stream format for zero-copy serving)
@@ -187,7 +188,10 @@ class DiskCache:
 
         This is THE hot-path optimization. Since we store data in stream
         format, cache hits require zero Arrow parsing:
-            disk -> file_read -> bytes -> network
+            disk -> mmap -> bytes -> network
+
+        Uses memory-mapped I/O via Rust when available for faster reads,
+        especially for large files and repeated access (OS page cache reuse).
 
         The bytes are already in the exact format needed for network transfer.
         """
@@ -196,9 +200,11 @@ class DiskCache:
             return None
 
         try:
-            # Direct file read - no Arrow parsing needed!
-            # The cache stores data in stream format ready for network transfer.
-            return path.read_bytes()
+            # Use mmap-based read for better performance on large files
+            # and OS page cache reuse on repeated access
+            from strata import fast_io
+
+            return fast_io.read_file_mmap(str(path))
         except Exception:
             # Corrupted cache file, remove it
             path.unlink(missing_ok=True)
@@ -448,8 +454,16 @@ class CachedFetcher:
             )
             return cached_batch
 
-        # Fetch from storage
-        batch = self.fetcher.fetch(task)
+        # Fetch from storage with tracing
+        with trace_span(
+            "fetch_row_group",
+            file_path=task.file_path,
+            row_group_id=task.row_group_id,
+            cache_hit=False,
+        ) as span:
+            batch = self.fetcher.fetch(task)
+            span.set_attribute("bytes_read", batch.nbytes)
+            span.set_attribute("num_rows", batch.num_rows)
 
         # Store in cache
         self.cache.put(task.cache_key, batch)

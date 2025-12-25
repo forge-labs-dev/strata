@@ -211,3 +211,4 @@ rust/target/
 
 # Strata demo data (generated)
 demo-warehouse/
+benchmarks/results/

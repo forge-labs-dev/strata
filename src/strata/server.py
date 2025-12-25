@@ -1,7 +1,6 @@
 """FastAPI server for Strata."""
 
 import asyncio
-import logging
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -14,11 +13,20 @@ from fastapi.responses import Response, StreamingResponse
 from strata import fast_io
 from strata.cache import CachedFetcher
 from strata.config import StrataConfig
+from strata.logging import (
+    RequestContext,
+    configure_logging,
+    get_logger,
+    get_request_context,
+    request_context_middleware,
+    set_request_context,
+)
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
-from strata.types import ReadPlan, ScanRequest, ScanResponse, Task
+from strata.tracing import init_tracing, instrument_fastapi, is_tracing_enabled, trace_span
+from strata.types import ReadPlan, ScanRequest, ScanResponse, Task, WarmRequest, WarmResponse
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Graceful shutdown configuration
 DRAIN_TIMEOUT_SECONDS = 30  # Max time to wait for active scans to complete
@@ -99,6 +107,17 @@ class ServerState:
         self._planning_executor = ThreadPoolExecutor(
             max_workers=64,
             thread_name_prefix="strata-planner",
+        )
+
+        # Dedicated thread pool for row group fetch operations.
+        # Sized based on fetch_parallelism * expected concurrent scans.
+        # Each scan can have up to fetch_parallelism concurrent fetches.
+        # With default 4 parallelism and 12 concurrent scans (8 interactive + 4 bulk),
+        # we need at most 48 workers to avoid queuing.
+        fetch_workers = config.fetch_parallelism * (config.interactive_slots + config.bulk_slots)
+        self._fetch_executor = ThreadPoolExecutor(
+            max_workers=fetch_workers,
+            thread_name_prefix="strata-fetch",
         )
         # Check if metrics logging is disabled via environment
         metrics_enabled = os.environ.get("STRATA_METRICS_ENABLED", "true").lower() != "false"
@@ -370,8 +389,9 @@ async def _graceful_shutdown(state: ServerState) -> None:
         if _get_active_scan_count(state) == 0:
             state.metrics.log_event("shutdown_drained")
 
-    # Shutdown the planning executor
+    # Shutdown the executors
     state._planning_executor.shutdown(wait=False)
+    state._fetch_executor.shutdown(wait=False)
 
 
 @asynccontextmanager
@@ -379,6 +399,12 @@ async def lifespan(app: FastAPI):
     """Initialize server state on startup, graceful shutdown on exit."""
     global _state
     config = StrataConfig.load()
+
+    # Configure structured logging first
+    configure_logging()
+
+    # Initialize OpenTelemetry tracing (no-op if not installed/configured)
+    tracing_enabled = init_tracing()
 
     # Eager warmup: pre-initialize expensive resources before accepting requests
     # This makes the first request as fast as subsequent "warm" requests
@@ -407,6 +433,7 @@ async def lifespan(app: FastAPI):
         warmup_caches_ms=warmup_times.get("caches_ms", 0),
         sqlite_entries=warmup_times.get("sqlite_entries", 0),
         stale_entries_removed=stale_removed,
+        tracing_enabled=tracing_enabled,
     )
 
     yield
@@ -424,6 +451,12 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Add request context middleware (sets request_id, adds to response headers)
+app.middleware("http")(request_context_middleware)
+
+# Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
+instrument_fastapi(app)
 
 
 @app.get("/health")
@@ -741,6 +774,20 @@ async def metrics_prometheus():
         ]
     )
 
+    # Add fetch parallelism metrics
+    lines.extend(
+        [
+            "",
+            "# HELP strata_fetch_parallelism Max concurrent row group fetches per scan",
+            "# TYPE strata_fetch_parallelism gauge",
+            f"strata_fetch_parallelism {state.config.fetch_parallelism}",
+            "",
+            "# HELP strata_fetch_executor_workers Number of workers in fetch thread pool",
+            "# TYPE strata_fetch_executor_workers gauge",
+            f"strata_fetch_executor_workers {state._fetch_executor._max_workers}",
+        ]
+    )
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
@@ -789,12 +836,24 @@ async def create_scan_v1(request: ScanRequest):
         plan_timeout = state.config.plan_timeout_seconds
 
         def do_plan():
-            return state.planner.plan(
+            with trace_span(
+                "plan_scan",
                 table_uri=request.table_uri,
                 snapshot_id=request.snapshot_id,
-                columns=request.columns,
-                filters=request.parse_filters(),
-            )
+                columns_count=len(request.columns) if request.columns else None,
+            ) as span:
+                plan = state.planner.plan(
+                    table_uri=request.table_uri,
+                    snapshot_id=request.snapshot_id,
+                    columns=request.columns,
+                    filters=request.parse_filters(),
+                )
+                span.set_attribute("scan_id", plan.scan_id)
+                span.set_attribute("row_groups_total", plan.total_row_groups)
+                span.set_attribute("row_groups_pruned", plan.pruned_row_groups)
+                span.set_attribute("tasks_count", len(plan.tasks))
+                span.set_attribute("estimated_bytes", plan.estimated_bytes)
+                return plan
 
         with Timer() as timer:
             try:
@@ -843,6 +902,22 @@ async def create_scan_v1(request: ScanRequest):
 
         # Store the plan
         state.scans[plan.scan_id] = plan
+
+        # Add scan_id to request context for downstream logging
+        set_request_context(scan_id=plan.scan_id)
+
+        # Log scan creation with structured data
+        logger.info(
+            "Scan created",
+            scan_id=plan.scan_id,
+            table_uri=request.table_uri,
+            snapshot_id=plan.snapshot_id,
+            tasks=len(plan.tasks),
+            total_row_groups=plan.total_row_groups,
+            pruned_row_groups=plan.pruned_row_groups,
+            estimated_bytes=plan.estimated_bytes,
+            planning_ms=round(timer.elapsed_ms, 2),
+        )
 
         # Start prefetching first row group in background to reduce TTFB.
         # This overlaps network I/O with client processing the scan response.
@@ -1141,30 +1216,39 @@ async def get_batches_v1(scan_id: str, request: Request):
                 )
 
         try:
-            # Parallel fetch configuration: how many segments to fetch ahead
-            # This overlaps I/O with processing for better throughput on S3/cold storage.
+            # Parallel fetch configuration from config
+            # Overlaps I/O with processing for better throughput on S3/cold storage.
             # Bounded by memory: each segment is ~row_group_size (typically 10-100MB).
-            PREFETCH_AHEAD = 2  # Fetch up to 2 segments ahead of current
+            fetch_parallelism = state.config.fetch_parallelism
 
-            # Async generator that fetches segments with prefetch pipeline
-            # Uses asyncio.to_thread() to avoid blocking the event loop during I/O.
-            # Implements prefetch-ahead for parallel I/O during streaming.
+            # Async generator with out-of-order fetch completion and reordering buffer.
+            # Fetches happen in parallel using dedicated thread pool, but segments
+            # are yielded in order to maintain Arrow IPC stream correctness.
+            # This maximizes I/O parallelism while preserving output order.
             async def fetch_segments_async():
                 nonlocal tasks_completed, stop_flag
                 bytes_in_estimate = 0  # Track estimated input bytes
 
-                # Queue of (task_idx, task, Future) for in-flight prefetches
-                # Bounded size ensures we don't use too much memory
-                pending_fetches: list[tuple[int, "Task", asyncio.Future]] = []
+                # In-flight fetches: dict[idx -> (task, Future)]
+                # Using dict allows O(1) lookup when any fetch completes
+                in_flight: dict[int, tuple["Task", asyncio.Future]] = {}
+
+                # Reordering buffer: completed segments waiting to be yielded
+                # Holds out-of-order completions until earlier ones finish
+                completed: dict[int, tuple["Task", bytes]] = {}
+
+                # Next index to yield (maintains output order)
+                next_yield_idx = 0
 
                 def start_fetch(idx: int, task: "Task") -> asyncio.Future:
-                    """Start a fetch in the thread pool, return Future."""
-                    return asyncio.get_event_loop().run_in_executor(
-                        None, state.fetcher.fetch_as_stream_bytes, task
+                    """Start a fetch in the dedicated thread pool, return Future."""
+                    loop = asyncio.get_event_loop()
+                    return loop.run_in_executor(
+                        state._fetch_executor, state.fetcher.fetch_as_stream_bytes, task
                     )
 
-                async def yield_segment(idx: int, task: "Task", segment: bytes):
-                    """Record metrics and yield a segment."""
+                def record_metrics(task: "Task") -> None:
+                    """Record cache hit/miss metrics for a task."""
                     nonlocal tasks_completed
                     tasks_completed += 1
                     if task.cached:
@@ -1173,11 +1257,14 @@ async def get_batches_v1(scan_id: str, request: Request):
                     else:
                         scan_metrics.cache_misses += 1
                         scan_metrics.bytes_from_storage += task.bytes_read
-                    return segment
 
-                # Start initial prefetches (fill the pipeline)
+                # Iterate through all tasks
                 task_iter = iter(enumerate(plan.tasks))
+
                 for idx, task in task_iter:
+                    if stop_flag:
+                        break
+
                     # Check limits before starting fetch
                     bytes_in_estimate += task.estimated_bytes
                     if bytes_in_estimate > max_response:
@@ -1189,64 +1276,114 @@ async def get_batches_v1(scan_id: str, request: Request):
                         segment = plan.prefetched_first
                         plan.prefetched_first = None
                         state._prefetch_used += 1  # Track successful prefetch use
-                        yield await yield_segment(idx, task, segment)
+                        record_metrics(task)
+                        next_yield_idx = 1
+                        yield segment
                         continue
 
                     # Start fetch in thread pool
                     future = start_fetch(idx, task)
-                    pending_fetches.append((idx, task, future))
+                    in_flight[idx] = (task, future)
 
-                    # Once we have enough in-flight, start yielding
-                    if len(pending_fetches) >= PREFETCH_AHEAD:
-                        break
+                    # Once we hit parallelism limit, wait for any to complete
+                    while len(in_flight) >= fetch_parallelism:
+                        # Check timeout
+                        elapsed = time.perf_counter() - start_time
+                        if elapsed > timeout:
+                            stop_flag = True
+                            break
 
-                # Main loop: yield completed fetches, start new ones
-                for next_idx, next_task in task_iter:
+                        # Wait for ANY in-flight fetch to complete (out-of-order)
+                        done, _ = await asyncio.wait(
+                            [f for _, f in in_flight.values()],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+
+                        # Process completed fetches
+                        for future in done:
+                            # Find which idx completed
+                            completed_idx = None
+                            for i, (t, f) in in_flight.items():
+                                if f is future:
+                                    completed_idx = i
+                                    break
+
+                            if completed_idx is None:
+                                continue
+
+                            task_completed, _ = in_flight.pop(completed_idx)
+                            try:
+                                segment = future.result()
+                                record_metrics(task_completed)
+                                # Store in reorder buffer
+                                completed[completed_idx] = (task_completed, segment)
+                            except Exception:
+                                stop_flag = True
+                                break
+
+                        if stop_flag:
+                            break
+
+                        # Yield segments in order from reorder buffer
+                        while next_yield_idx in completed:
+                            _, segment = completed.pop(next_yield_idx)
+                            next_yield_idx += 1
+                            yield segment
+
                     if stop_flag:
                         break
 
+                # Drain remaining in-flight fetches
+                while in_flight and not stop_flag:
                     # Check timeout
                     elapsed = time.perf_counter() - start_time
                     if elapsed > timeout:
                         stop_flag = True
                         break
 
-                    # Wait for the oldest fetch to complete
-                    if pending_fetches:
-                        idx, task, future = pending_fetches.pop(0)
+                    # Wait for ANY remaining fetch to complete
+                    done, _ = await asyncio.wait(
+                        [f for _, f in in_flight.values()],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    for future in done:
+                        # Find which idx completed
+                        completed_idx = None
+                        for i, (t, f) in in_flight.items():
+                            if f is future:
+                                completed_idx = i
+                                break
+
+                        if completed_idx is None:
+                            continue
+
+                        task_completed, _ = in_flight.pop(completed_idx)
                         try:
-                            segment = await future
-                            yield await yield_segment(idx, task, segment)
+                            segment = future.result()
+                            record_metrics(task_completed)
+                            completed[completed_idx] = (task_completed, segment)
                         except Exception:
                             stop_flag = True
                             break
 
-                    # Start next fetch to keep pipeline full
-                    bytes_in_estimate += next_task.estimated_bytes
-                    if bytes_in_estimate > max_response:
-                        stop_flag = True
+                    if stop_flag:
                         break
 
-                    future = start_fetch(next_idx, next_task)
-                    pending_fetches.append((next_idx, next_task, future))
+                    # Yield segments in order
+                    while next_yield_idx in completed:
+                        _, segment = completed.pop(next_yield_idx)
+                        next_yield_idx += 1
+                        yield segment
 
-                # Drain remaining pending fetches
-                while pending_fetches and not stop_flag:
-                    elapsed = time.perf_counter() - start_time
-                    if elapsed > timeout:
-                        stop_flag = True
-                        break
+                # Yield any remaining completed segments in order
+                while next_yield_idx in completed:
+                    _, segment = completed.pop(next_yield_idx)
+                    next_yield_idx += 1
+                    yield segment
 
-                    idx, task, future = pending_fetches.pop(0)
-                    try:
-                        segment = await future
-                        yield await yield_segment(idx, task, segment)
-                    except Exception:
-                        stop_flag = True
-                        break
-
-                # Cancel any remaining futures on early exit
-                for _, _, future in pending_fetches:
+                # Cancel any remaining in-flight futures on early exit
+                for _, future in in_flight.values():
                     future.cancel()
 
             # Stream chunks from the IPC concatenator
@@ -1303,13 +1440,13 @@ async def get_batches_v1(scan_id: str, request: Request):
             # we could check is_disconnected(), or response was cancelled).
             # This is normal - log it and let finally clean up.
             state.metrics.record_client_disconnect()
-            logger.debug("Scan %s: generator closed by client disconnect", scan_id)
+            logger.debug("Scan generator closed by client disconnect", scan_id=scan_id)
 
         except asyncio.CancelledError:
             # Task was cancelled (e.g., server shutdown or request timeout).
             # Log and re-raise to let asyncio handle cancellation properly.
             state.metrics.record_client_disconnect()
-            logger.debug("Scan %s: cancelled", scan_id)
+            logger.debug("Scan cancelled", scan_id=scan_id)
             raise
 
         finally:
@@ -1631,6 +1768,124 @@ async def clear_cache_v1():
         return {"status": "cleared"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/cache/warm", response_model=WarmResponse)
+async def warm_cache_v1(request: WarmRequest):
+    """Warm the cache for specified tables.
+
+    Preloads row group data into the cache so subsequent queries are fast.
+    This is useful for:
+    - Warming cache after server restart
+    - Preloading data before a batch of dashboards query it
+    - Ensuring low latency for critical tables
+
+    The operation runs synchronously and returns when all row groups
+    have been fetched and cached (or skipped if already cached).
+
+    Request body:
+    - tables: List of table URIs to warm (e.g., "file:///warehouse#ns.table")
+    - columns: Optional column projection (None = all columns)
+    - max_row_groups: Optional limit per table (None = all row groups)
+    - concurrent: Max concurrent fetches (default 4)
+
+    Returns:
+    - tables_warmed: Number of tables processed
+    - row_groups_cached: Total row groups written to cache
+    - row_groups_skipped: Already in cache (cache hits)
+    - bytes_written: Total bytes written to cache
+    - elapsed_ms: Total time taken
+    - errors: Any errors encountered (list of error messages)
+    """
+    state = get_state()
+
+    start_time = time.perf_counter()
+    tables_warmed = 0
+    row_groups_cached = 0
+    row_groups_skipped = 0
+    bytes_written = 0
+    errors: list[str] = []
+
+    # Limit concurrency for cache warming
+    warming_semaphore = asyncio.Semaphore(request.concurrent)
+
+    async def fetch_task(task: Task) -> tuple[bool, int]:
+        """Fetch a single task, return (was_cached, bytes_written)."""
+        async with warming_semaphore:
+            try:
+                # Run fetch in thread pool to avoid blocking
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, state.fetcher.fetch_as_stream_bytes, task
+                )
+                if task.cached:
+                    return (True, 0)  # Already cached
+                else:
+                    return (False, task.bytes_read)
+            except Exception:
+                return (False, 0)
+
+    for table_uri in request.tables:
+        try:
+            # Plan the table
+            plan = state.planner.plan(
+                table_uri=table_uri,
+                snapshot_id=None,  # Current snapshot
+                columns=request.columns,
+                filters=[],
+            )
+
+            # Limit row groups if specified
+            tasks = plan.tasks
+            if request.max_row_groups is not None:
+                tasks = tasks[: request.max_row_groups]
+
+            if not tasks:
+                tables_warmed += 1
+                continue
+
+            # Fetch all tasks concurrently (bounded by semaphore)
+            results = await asyncio.gather(
+                *[fetch_task(task) for task in tasks],
+                return_exceptions=True,
+            )
+
+            for result in results:
+                if isinstance(result, Exception):
+                    continue
+                was_cached, written = result
+                if was_cached:
+                    row_groups_skipped += 1
+                else:
+                    row_groups_cached += 1
+                    bytes_written += written
+
+            tables_warmed += 1
+
+        except Exception as e:
+            errors.append(f"{table_uri}: {e!s}")
+
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+
+    # Log the warming operation
+    state.metrics.log_event(
+        "cache_warm",
+        tables_warmed=tables_warmed,
+        row_groups_cached=row_groups_cached,
+        row_groups_skipped=row_groups_skipped,
+        bytes_written=bytes_written,
+        elapsed_ms=elapsed_ms,
+        errors_count=len(errors),
+    )
+
+    return WarmResponse(
+        tables_warmed=tables_warmed,
+        row_groups_cached=row_groups_cached,
+        row_groups_skipped=row_groups_skipped,
+        bytes_written=bytes_written,
+        elapsed_ms=elapsed_ms,
+        errors=errors,
+    )
 
 
 def main():
