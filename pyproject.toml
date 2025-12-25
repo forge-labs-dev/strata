@@ -44,6 +44,7 @@ dev = [
     "moto[s3]>=5.0.0",
     "boto3>=1.35.0",
     "psutil>=5.9.0",
+    "testcontainers[minio]>=4.0.0",
 ]
 
 [project.scripts]
@@ -71,3 +72,7 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests requiring external services",
+]
