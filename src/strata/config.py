@@ -26,6 +26,7 @@ def _get_env_overrides() -> dict:
     - OTEL_EXPORTER_OTLP_ENDPOINT: OpenTelemetry OTLP endpoint
     - OTEL_SERVICE_NAME: Service name for tracing (default: strata)
     - STRATA_FETCH_PARALLELISM: Max concurrent row group fetches per scan
+    - STRATA_ARROW_MEMORY_POOL: PyArrow memory pool (default, system, jemalloc, mimalloc)
     """
     overrides = {}
 
@@ -66,6 +67,9 @@ def _get_env_overrides() -> dict:
 
     if fetch_parallelism := os.environ.get("STRATA_FETCH_PARALLELISM"):
         overrides["fetch_parallelism"] = int(fetch_parallelism)
+
+    if arrow_memory_pool := os.environ.get("STRATA_ARROW_MEMORY_POOL"):
+        overrides["arrow_memory_pool"] = arrow_memory_pool
 
     return overrides
 
@@ -181,6 +185,14 @@ class StrataConfig:
     s3_endpoint_url: str | None = None  # For MinIO, LocalStack, etc.
     s3_anonymous: bool = False  # Use anonymous access (public buckets)
 
+    # Memory pool settings (for tuning GC behavior)
+    # Options: "default", "system", "jemalloc", "mimalloc"
+    # - default: Use PyArrow's default pool (usually mimalloc if available)
+    # - system: Use system malloc (useful for debugging with valgrind)
+    # - jemalloc: Better fragmentation handling (if available)
+    # - mimalloc: Lower latency allocation (if available)
+    arrow_memory_pool: str | None = None  # None means don't change the default
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -247,3 +259,51 @@ class StrataConfig:
             kwargs["anonymous"] = True
 
         return pafs.S3FileSystem(**kwargs)
+
+    def configure_arrow_memory_pool(self) -> str | None:
+        """Configure PyArrow's global memory pool based on settings.
+
+        This affects all PyArrow allocations in the process. Should be called
+        once at server startup before any Arrow operations.
+
+        Returns:
+            The name of the configured pool, or None if no change was made.
+
+        Raises:
+            ValueError: If the specified pool is not available.
+        """
+        import pyarrow as pa
+
+        if self.arrow_memory_pool is None:
+            return None
+
+        pool_name = self.arrow_memory_pool.lower()
+
+        if pool_name == "default":
+            # Use PyArrow's default (no change needed)
+            return pa.default_memory_pool().backend_name
+
+        if pool_name == "system":
+            pa.set_memory_pool(pa.system_memory_pool())
+            return "system"
+
+        if pool_name == "jemalloc":
+            try:
+                pool = pa.jemalloc_memory_pool()
+                pa.set_memory_pool(pool)
+                return "jemalloc"
+            except Exception as e:
+                raise ValueError(f"jemalloc memory pool not available: {e}") from e
+
+        if pool_name == "mimalloc":
+            try:
+                pool = pa.mimalloc_memory_pool()
+                pa.set_memory_pool(pool)
+                return "mimalloc"
+            except Exception as e:
+                raise ValueError(f"mimalloc memory pool not available: {e}") from e
+
+        raise ValueError(
+            f"Unknown memory pool: {self.arrow_memory_pool}. "
+            f"Options: default, system, jemalloc, mimalloc"
+        )

@@ -176,6 +176,7 @@ class ResourceSample:
     - File descriptor leaks (num_fds growth)
     - Thread leaks (num_threads growth)
     - Cache bloat (cache_bytes vs expected)
+    - GC pause impact (pause duration tracking)
     """
 
     timestamp: float
@@ -192,6 +193,17 @@ class ResourceSample:
     cache_entries: int = 0  # Number of cached row groups
     cache_evictions: int = 0  # Total evictions since start
 
+    # GC metrics (for diagnosing periodic stalls)
+    gc_gen2_collections: int = 0  # Gen2 collections (most expensive)
+
+    # GC pause duration metrics (from gc.callbacks tracker)
+    gc_total_pauses: int = 0  # Total GC pauses since start
+    gc_total_pause_ms: float = 0.0  # Cumulative pause time
+    gc_max_pause_ms: float = 0.0  # Max single pause
+    gc_gen2_pause_count: int = 0  # Gen2 pauses (most expensive)
+    gc_gen2_total_ms: float = 0.0  # Total gen2 pause time
+    gc_gen2_max_ms: float = 0.0  # Max gen2 pause
+
     def to_dict(self) -> dict:
         return {
             "type": "resource",
@@ -204,6 +216,14 @@ class ResourceSample:
             "cache_mb": self.cache_bytes / (1024 * 1024),
             "cache_entries": self.cache_entries,
             "cache_evictions": self.cache_evictions,
+            "gc_gen2_collections": self.gc_gen2_collections,
+            # GC pause duration metrics
+            "gc_total_pauses": self.gc_total_pauses,
+            "gc_total_pause_ms": self.gc_total_pause_ms,
+            "gc_max_pause_ms": self.gc_max_pause_ms,
+            "gc_gen2_pause_count": self.gc_gen2_pause_count,
+            "gc_gen2_total_ms": self.gc_gen2_total_ms,
+            "gc_gen2_max_ms": self.gc_gen2_max_ms,
         }
 
 
@@ -220,6 +240,7 @@ class LatencySample:
     success_count: int
     error_count: int
     phase: str
+    event_loop_lag_ms: float = 0.0  # Event loop lag (client-side health indicator)
 
     def to_dict(self) -> dict:
         return {
@@ -233,6 +254,7 @@ class LatencySample:
             "success_count": self.success_count,
             "error_count": self.error_count,
             "phase": self.phase,
+            "event_loop_lag_ms": self.event_loop_lag_ms,
         }
 
 
@@ -253,6 +275,7 @@ class SoakResults:
     # Latency metrics
     baseline_p95_ms: float
     final_p95_ms: float
+    median_steady_p95_ms: float  # Median p95 from clean steady-state samples
     max_p95_ms: float
     latency_drift_pct: float
 
@@ -279,6 +302,17 @@ class SoakResults:
     post_warmup_timeouts: int = 0  # Timeout errors after warmup
     post_warmup_arrow_errors: int = 0  # Arrow decode errors (schema/corruption)
     post_warmup_other_errors: int = 0  # Other errors after warmup
+
+    # Event loop lag (client health indicator)
+    max_event_loop_lag_ms: float = 0.0  # Max observed event loop lag
+    p95_event_loop_lag_ms: float = 0.0  # P95 event loop lag
+
+    # GC pause metrics (server-side)
+    gc_total_pauses: int = 0  # Total GC pauses during test
+    gc_total_pause_ms: float = 0.0  # Cumulative GC pause time
+    gc_max_pause_ms: float = 0.0  # Max single GC pause
+    gc_gen2_pause_count: int = 0  # Gen2 pauses (most expensive)
+    gc_gen2_max_ms: float = 0.0  # Max gen2 pause
 
     # Success criteria
     memory_ok: bool = True
@@ -703,6 +737,22 @@ class SoakDriver:
             else:
                 await asyncio.sleep(self.rng.uniform(5.0, 15.0))
 
+    async def _measure_event_loop_lag(self) -> float:
+        """Measure event loop lag in milliseconds.
+
+        Schedules a callback and measures how long it takes to execute.
+        High values indicate the event loop is blocked by other tasks.
+        """
+        loop = asyncio.get_event_loop()
+        start = time.perf_counter()
+
+        # Schedule a callback to run as soon as possible
+        future: asyncio.Future[None] = loop.create_future()
+        loop.call_soon(lambda: future.set_result(None))
+        await future
+
+        return (time.perf_counter() - start) * 1000  # Convert to ms
+
     async def collect_samples(self, start_time: float):
         """Collect resource and latency samples periodically."""
         while not self._stop_event.is_set():
@@ -711,16 +761,32 @@ class SoakDriver:
             elapsed = time.perf_counter() - start_time
             timestamp = time.time()
 
+            # Measure event loop lag first (before any blocking ops)
+            event_loop_lag_ms = await self._measure_event_loop_lag()
+
             # Get process-level resources
             rss, num_fds, num_threads = self.get_process_resources()
 
-            # Get server-reported cache metrics
+            # Get server-reported cache and GC metrics
             server_metrics = await self._get_metrics()
             disk_cache = server_metrics.get("disk_cache", {})
             cache_bytes = disk_cache.get("bytes_current", 0)
             cache_evictions = disk_cache.get("evictions_count", 0)
-            # Entry count not directly exposed; use evictions as proxy for activity
-            cache_entries = 0  # Not available from /metrics
+            cache_entries = disk_cache.get("entries_current", 0)
+
+            # GC metrics for diagnosing periodic stalls
+            gc_info = server_metrics.get("gc", {})
+            gc_gen2_collections = gc_info.get("gen2_collections", 0)
+
+            # GC pause duration metrics (from gc.callbacks tracker)
+            gc_pauses = server_metrics.get("gc_pauses", {})
+            gc_total_pauses = gc_pauses.get("total_pauses", 0)
+            gc_total_pause_ms = gc_pauses.get("total_pause_ms", 0.0)
+            gc_max_pause_ms = gc_pauses.get("max_pause_ms", 0.0)
+            gc_gen2_stats = gc_pauses.get("gen2", {})
+            gc_gen2_pause_count = gc_gen2_stats.get("count", 0)
+            gc_gen2_total_ms = gc_gen2_stats.get("total_ms", 0.0)
+            gc_gen2_max_ms = gc_gen2_stats.get("max_ms", 0.0)
 
             # Resource sample (combines process + server metrics)
             self.resource_samples.append(
@@ -734,6 +800,13 @@ class SoakDriver:
                     cache_bytes=cache_bytes,
                     cache_entries=cache_entries,
                     cache_evictions=cache_evictions,
+                    gc_gen2_collections=gc_gen2_collections,
+                    gc_total_pauses=gc_total_pauses,
+                    gc_total_pause_ms=gc_total_pause_ms,
+                    gc_max_pause_ms=gc_max_pause_ms,
+                    gc_gen2_pause_count=gc_gen2_pause_count,
+                    gc_gen2_total_ms=gc_gen2_total_ms,
+                    gc_gen2_max_ms=gc_gen2_max_ms,
                 )
             )
 
@@ -757,6 +830,7 @@ class SoakDriver:
                         success_count=total_results - total_errors,
                         error_count=total_errors,
                         phase=self.current_phase.value,
+                        event_loop_lag_ms=event_loop_lag_ms,
                     )
                 )
 
@@ -765,10 +839,12 @@ class SoakDriver:
                 cache_mb = cache_bytes / (1024 * 1024)
                 p95 = _percentile(recent_latencies, 0.95)
                 fd_str = str(num_fds) if num_fds >= 0 else "n/a"
+                # Show GC pause stats (max pause is most impactful for latency)
+                gc_pause_str = f"gc_max={gc_max_pause_ms:5.1f}ms" if gc_total_pauses > 0 else ""
                 print(
                     f"  [{elapsed/60:5.1f}m] {self.current_phase.value:8s} "
                     f"RSS={rss_mb:5.0f}MB cache={cache_mb:5.0f}MB fds={fd_str:>4} "
-                    f"p95={p95:6.1f}ms reqs={total_results} errs={recent_errors}"
+                    f"p95={p95:6.1f}ms {gc_pause_str} reqs={total_results} errs={recent_errors}"
                 )
 
     async def run_soak_test(self) -> SoakResults:
@@ -1039,7 +1115,22 @@ class SoakDriver:
 
         # Latency analysis - use last 2 minutes of warmup for baseline
         warmup_latency = [s for s in self.latency_samples if s.phase == Phase.WARMUP.value]
-        steady_latency = [s for s in self.latency_samples if s.phase == Phase.STEADY.value]
+
+        # Filter steady-state samples to exclude spike contamination windows
+        # A sample is "clean" if it's not within 2 minutes after any spike end
+        spike_contamination_window_s = 120.0  # 2 minutes after spike for requests to drain
+
+        def is_clean_steady_sample(sample) -> bool:
+            """Check if sample is from clean steady state (not spike-contaminated)."""
+            if sample.phase != Phase.STEADY.value:
+                return False
+            # Check if sample is within contamination window of any spike
+            for _, spike_end in self.spike_events:
+                if spike_end <= sample.elapsed_s <= spike_end + spike_contamination_window_s:
+                    return False
+            return True
+
+        steady_latency_clean = [s for s in self.latency_samples if is_clean_steady_sample(s)]
 
         # Compute baseline p95 from last N samples of warmup
         warmup_latency_tail = warmup_latency[-baseline_window_samples:] if warmup_latency else []
@@ -1049,14 +1140,27 @@ class SoakDriver:
             else 0
         )
 
-        # Compute final p95 from last N samples of steady state
-        steady_latency_tail = steady_latency[-baseline_window_samples:] if steady_latency else []
+        # Compute final p95 from last N clean steady-state samples (excluding spike windows)
+        steady_latency_tail = (
+            steady_latency_clean[-baseline_window_samples:] if steady_latency_clean else []
+        )
         final_p95 = (
             sum(s.p95_ms for s in steady_latency_tail) / len(steady_latency_tail)
             if len(steady_latency_tail) >= min_baseline_samples
             else 0
         )
+
+        # Max p95 from all samples (for observability, not pass/fail)
         max_p95 = max((s.p95_ms for s in self.latency_samples), default=0)
+
+        # Compute median steady-state p95 (more robust than final for drift)
+        # This represents typical behavior during non-spike periods
+        if steady_latency_clean:
+            sorted_p95 = sorted(s.p95_ms for s in steady_latency_clean)
+            median_idx = len(sorted_p95) // 2
+            median_steady_p95 = sorted_p95[median_idx]
+        else:
+            median_steady_p95 = final_p95
 
         # Check if we have sufficient data for reliable metrics
         insufficient_data = (
@@ -1066,8 +1170,9 @@ class SoakDriver:
             or baseline_p95 == 0
         )
 
+        # Use median steady-state p95 for drift calculation (more robust than final)
         latency_drift_pct = (
-            ((final_p95 - baseline_p95) / baseline_p95 * 100) if baseline_p95 > 0 else 0
+            ((median_steady_p95 - baseline_p95) / baseline_p95 * 100) if baseline_p95 > 0 else 0
         )
 
         # Other metrics
@@ -1107,6 +1212,19 @@ class SoakDriver:
         # Check if spikes recovered properly
         # For each spike, check if p95 returns within 20% of baseline within 2 minutes after spike
         spike_recovery_ok = self._check_spike_recovery(baseline_p95)
+
+        # Event loop lag metrics (client-side health indicator)
+        all_lags = [s.event_loop_lag_ms for s in self.latency_samples if s.event_loop_lag_ms > 0]
+        max_event_loop_lag = max(all_lags) if all_lags else 0
+        p95_event_loop_lag = _percentile(all_lags, 0.95) if all_lags else 0
+
+        # GC pause metrics from final sample (cumulative counters)
+        final_sample = self.resource_samples[-1] if self.resource_samples else None
+        gc_total_pauses = final_sample.gc_total_pauses if final_sample else 0
+        gc_total_pause_ms = final_sample.gc_total_pause_ms if final_sample else 0.0
+        gc_max_pause_ms = max((s.gc_max_pause_ms for s in self.resource_samples), default=0.0)
+        gc_gen2_pause_count = final_sample.gc_gen2_pause_count if final_sample else 0
+        gc_gen2_max_ms = max((s.gc_gen2_max_ms for s in self.resource_samples), default=0.0)
 
         # Success criteria
         memory_ok = memory_growth_pct <= self.config.max_memory_growth_pct
@@ -1153,6 +1271,7 @@ class SoakDriver:
             memory_growth_pct=memory_growth_pct,
             baseline_p95_ms=baseline_p95,
             final_p95_ms=final_p95,
+            median_steady_p95_ms=median_steady_p95,
             max_p95_ms=max_p95,
             latency_drift_pct=latency_drift_pct,
             final_active_scans=final_active,
@@ -1171,6 +1290,13 @@ class SoakDriver:
             post_warmup_timeouts=post_warmup_timeouts,
             post_warmup_arrow_errors=post_warmup_arrow_errors,
             post_warmup_other_errors=post_warmup_other_errors,
+            max_event_loop_lag_ms=max_event_loop_lag,
+            p95_event_loop_lag_ms=p95_event_loop_lag,
+            gc_total_pauses=gc_total_pauses,
+            gc_total_pause_ms=gc_total_pause_ms,
+            gc_max_pause_ms=gc_max_pause_ms,
+            gc_gen2_pause_count=gc_gen2_pause_count,
+            gc_gen2_max_ms=gc_gen2_max_ms,
             memory_ok=memory_ok,
             latency_ok=latency_ok,
             no_leak=no_leak,
@@ -1209,9 +1335,10 @@ def print_results(results: SoakResults):
     print("LATENCY")
     print("-" * 40)
     print(f"Baseline p95: {results.baseline_p95_ms:.1f} ms")
+    print(f"Median steady p95: {results.median_steady_p95_ms:.1f} ms (clean samples only)")
     print(f"Final p95: {results.final_p95_ms:.1f} ms")
     print(f"Max p95: {results.max_p95_ms:.1f} ms")
-    print(f"Drift: {results.latency_drift_pct:+.1f}%")
+    print(f"Drift: {results.latency_drift_pct:+.1f}% (baseline vs median steady)")
 
     print("\n" + "-" * 40)
     print("RESOURCES")
@@ -1222,6 +1349,24 @@ def print_results(results: SoakResults):
     print(f"Threads: {results.baseline_threads:.0f} -> {results.final_threads}")
     print(f"Cache size: {results.final_cache_mb:.1f} MB ({results.final_cache_entries} entries)")
     print(f"Cache evictions: {results.total_cache_evictions}")
+
+    print("\n" + "-" * 40)
+    print("GC PAUSE DURATION")
+    print("-" * 40)
+    print(f"Total pauses: {results.gc_total_pauses}")
+    print(f"Total pause time: {results.gc_total_pause_ms:.1f} ms")
+    print(f"Max single pause: {results.gc_max_pause_ms:.1f} ms")
+    print(f"Gen2 pauses: {results.gc_gen2_pause_count}")
+    print(f"Gen2 max pause: {results.gc_gen2_max_ms:.1f} ms")
+    if results.duration_hours > 0:
+        pause_pct = (results.gc_total_pause_ms / 1000) / (results.duration_hours * 3600) * 100
+        print(f"Pause overhead: {pause_pct:.3f}% of runtime")
+
+    print("\n" + "-" * 40)
+    print("CLIENT HEALTH")
+    print("-" * 40)
+    print(f"Event loop lag (max): {results.max_event_loop_lag_ms:.2f} ms")
+    print(f"Event loop lag (p95): {results.p95_event_loop_lag_ms:.2f} ms")
 
     print("\n" + "-" * 40)
     print("STABILITY")

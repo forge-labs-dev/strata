@@ -13,6 +13,8 @@ from fastapi.responses import Response, StreamingResponse
 from strata import fast_io
 from strata.cache import CachedFetcher
 from strata.config import StrataConfig
+from strata.gc_tracker import get_gc_stats, get_recent_gc_pauses, install_gc_tracker
+from strata.slow_ops import get_latency_stats, record_latency
 from strata.logging import (
     RequestContext,
     configure_logging,
@@ -46,14 +48,30 @@ def _eager_warmup(config: StrataConfig) -> dict:
     """Eagerly warm up expensive resources at startup.
 
     This eliminates cold-start latency by pre-initializing:
-    1. Heavy module imports (pyiceberg, pyarrow)
-    2. SQLite metadata store (connection + schema validation)
-    3. Memory-resident caches
+    1. GC pause tracking (must be first to catch early GC events)
+    2. Arrow memory pool configuration (must be done before any Arrow ops)
+    3. Heavy module imports (pyiceberg, pyarrow)
+    4. SQLite metadata store (connection + schema validation)
+    5. Memory-resident caches
 
     Returns timing information for observability.
     """
     warmup_times = {}
     total_start = time.perf_counter()
+
+    # 0. Install GC pause tracker FIRST (to catch all GC events including during warmup)
+    # This gives us precise pause duration measurements for diagnosing latency stalls.
+    install_gc_tracker()
+    warmup_times["gc_tracker"] = True
+
+    # 1. Configure Arrow memory pool BEFORE any Arrow allocations
+    # This must happen before importing pyarrow.parquet which triggers allocations
+    try:
+        pool_name = config.configure_arrow_memory_pool()
+        if pool_name:
+            warmup_times["arrow_memory_pool"] = pool_name
+    except ValueError as e:
+        warmup_times["arrow_memory_pool_error"] = str(e)
 
     # 1. Pre-import heavy modules (these are already imported at module level,
     #    but we explicitly touch them to ensure all submodules are loaded)
@@ -253,6 +271,16 @@ def _get_cache_size_bytes(state: ServerState) -> int:
     return 0
 
 
+def _get_cache_entry_count(state: ServerState) -> int:
+    """Get current number of cache entries."""
+    from strata.cache import DiskCache
+
+    cache = state.fetcher.cache
+    if isinstance(cache, DiskCache):
+        return len(cache.list_entries())
+    return 0
+
+
 def _update_saturation_tracking(state: ServerState) -> None:
     """Update saturation tracking based on current semaphore state.
 
@@ -434,6 +462,7 @@ async def lifespan(app: FastAPI):
         sqlite_entries=warmup_times.get("sqlite_entries", 0),
         stale_entries_removed=stale_removed,
         tracing_enabled=tracing_enabled,
+        arrow_memory_pool=warmup_times.get("arrow_memory_pool"),
     )
 
     yield
@@ -533,9 +562,39 @@ async def health_ready():
 async def metrics():
     """Get aggregate metrics including resource utilization."""
     import asyncio
+    import gc
 
     state = get_state()
     stats = state.metrics.get_aggregate_stats()
+
+    # Add Arrow memory pool info
+    pool = pa.default_memory_pool()
+    stats["arrow_memory"] = {
+        "pool_backend": pool.backend_name,
+        "bytes_allocated": pool.bytes_allocated(),
+        "max_memory": pool.max_memory(),
+    }
+
+    # Add GC stats for diagnosing periodic stalls
+    # Include both gc.get_stats() (collection counts) and gc_tracker (pause durations)
+    gc_builtin = gc.get_stats()
+    stats["gc"] = {
+        # Built-in GC stats (counts only)
+        "gen0_collections": gc_builtin[0]["collections"],
+        "gen1_collections": gc_builtin[1]["collections"],
+        "gen2_collections": gc_builtin[2]["collections"],
+        "gen0_collected": gc_builtin[0]["collected"],
+        "gen1_collected": gc_builtin[1]["collected"],
+        "gen2_collected": gc_builtin[2]["collected"],
+        "gen0_uncollectable": gc_builtin[0]["uncollectable"],
+        "gen1_uncollectable": gc_builtin[1]["uncollectable"],
+        "gen2_uncollectable": gc_builtin[2]["uncollectable"],
+    }
+
+    # Add GC pause duration tracking (from gc.callbacks)
+    gc_pause_stats = get_gc_stats()
+    if gc_pause_stats:
+        stats["gc_pauses"] = gc_pause_stats
     # Add resource utilization info
     stats["resource_limits"] = {
         "max_concurrent_scans": state.config.max_concurrent_scans,
@@ -555,12 +614,16 @@ async def metrics():
     }
     # Add QoS tier metrics
     stats["qos"] = _get_qos_metrics(state)
-    # Get cache size in thread pool to avoid blocking (involves filesystem ops)
+    # Get cache size and entry count in thread pool to avoid blocking (involves filesystem ops)
     loop = asyncio.get_event_loop()
-    cache_bytes = await loop.run_in_executor(None, _get_cache_size_bytes, state)
+    cache_bytes, cache_entries = await asyncio.gather(
+        loop.run_in_executor(None, _get_cache_size_bytes, state),
+        loop.run_in_executor(None, _get_cache_entry_count, state),
+    )
     # Add disk cache metrics
     stats["disk_cache"] = {
         "bytes_current": cache_bytes,
+        "entries_current": cache_entries,
         "bytes_max": state.config.max_cache_size_bytes,
         "evictions_count": stats.get("cache_evictions_count", 0),
         "evicted_bytes": stats.get("cache_evicted_bytes", 0),
@@ -653,6 +716,10 @@ async def metrics_prometheus():
         "# TYPE strata_cache_bytes_current gauge",
         f"strata_cache_bytes_current {_get_cache_size_bytes(state)}",
         "",
+        "# HELP strata_cache_entries_current Current number of cache entries",
+        "# TYPE strata_cache_entries_current gauge",
+        f"strata_cache_entries_current {_get_cache_entry_count(state)}",
+        "",
         "# HELP strata_cache_max_bytes Maximum cache size limit in bytes",
         "# TYPE strata_cache_max_bytes gauge",
         f"strata_cache_max_bytes {state.config.max_cache_size_bytes}",
@@ -677,6 +744,67 @@ async def metrics_prometheus():
         "# TYPE strata_prefetch_in_flight gauge",
         f"strata_prefetch_in_flight {len(state._prefetch_futures)}",
     ]
+
+    # Add GC stats for diagnosing periodic stalls
+    import gc
+
+    gc_stats = gc.get_stats()
+    lines.extend(
+        [
+            "",
+            "# HELP strata_gc_collections_total GC collections by generation",
+            "# TYPE strata_gc_collections_total counter",
+            f'strata_gc_collections_total{{generation="0"}} {gc_stats[0]["collections"]}',
+            f'strata_gc_collections_total{{generation="1"}} {gc_stats[1]["collections"]}',
+            f'strata_gc_collections_total{{generation="2"}} {gc_stats[2]["collections"]}',
+            "",
+            "# HELP strata_gc_collected_total Objects collected by generation",
+            "# TYPE strata_gc_collected_total counter",
+            f'strata_gc_collected_total{{generation="0"}} {gc_stats[0]["collected"]}',
+            f'strata_gc_collected_total{{generation="1"}} {gc_stats[1]["collected"]}',
+            f'strata_gc_collected_total{{generation="2"}} {gc_stats[2]["collected"]}',
+        ]
+    )
+
+    # Add GC pause duration metrics (from gc.callbacks tracker)
+    gc_pause_stats = get_gc_stats()
+    if gc_pause_stats:
+        lines.extend(
+            [
+                "",
+                "# HELP strata_gc_pause_total_ms Total GC pause time in milliseconds",
+                "# TYPE strata_gc_pause_total_ms counter",
+                f"strata_gc_pause_total_ms {gc_pause_stats.get('total_pause_ms', 0)}",
+                "",
+                "# HELP strata_gc_pause_max_ms Maximum single GC pause in milliseconds",
+                "# TYPE strata_gc_pause_max_ms gauge",
+                f"strata_gc_pause_max_ms {gc_pause_stats.get('max_pause_ms', 0)}",
+                "",
+                "# HELP strata_gc_pauses_total Total number of GC pauses",
+                "# TYPE strata_gc_pauses_total counter",
+                f"strata_gc_pauses_total {gc_pause_stats.get('total_pauses', 0)}",
+            ]
+        )
+        # Per-generation pause stats
+        for gen in ["gen0", "gen1", "gen2"]:
+            gen_stats = gc_pause_stats.get(gen, {})
+            gen_num = gen[-1]  # "0", "1", or "2"
+            lines.extend(
+                [
+                    "",
+                    f"# HELP strata_gc_pause_count GC pause count by generation",
+                    f"# TYPE strata_gc_pause_count counter",
+                    f'strata_gc_pause_count{{generation="{gen_num}"}} {gen_stats.get("count", 0)}',
+                    f"# HELP strata_gc_pause_total_ms_by_gen Total pause time by generation",
+                    f"# TYPE strata_gc_pause_total_ms_by_gen counter",
+                    f'strata_gc_pause_total_ms_by_gen{{generation="{gen_num}"}} '
+                    f'{gen_stats.get("total_ms", 0)}',
+                    f"# HELP strata_gc_pause_max_ms_by_gen Max pause time by generation",
+                    f"# TYPE strata_gc_pause_max_ms_by_gen gauge",
+                    f'strata_gc_pause_max_ms_by_gen{{generation="{gen_num}"}} '
+                    f'{gen_stats.get("max_ms", 0)}',
+                ]
+            )
 
     # Add metadata store stats if available
     try:
@@ -905,6 +1033,20 @@ async def create_scan_v1(request: ScanRequest):
 
         # Add scan_id to request context for downstream logging
         set_request_context(scan_id=plan.scan_id)
+
+        # Record planning latency to histogram
+        record_latency("plan", timer.elapsed_ms)
+
+        # Log slow planning (>100ms threshold)
+        if timer.elapsed_ms > 100:
+            logger.warning(
+                "Slow planning detected",
+                scan_id=plan.scan_id,
+                table_uri=request.table_uri,
+                planning_ms=round(timer.elapsed_ms, 2),
+                tasks=len(plan.tasks),
+                total_row_groups=plan.total_row_groups,
+            )
 
         # Log scan creation with structured data
         logger.info(
@@ -1173,6 +1315,9 @@ async def get_batches_v1(scan_id: str, request: Request):
         state._active_scans += 1
 
         start_time = time.perf_counter()
+        first_byte_sent = False  # Track TTFB
+        ttfb_ms = 0.0  # Time to first byte
+        max_fetch_ms = 0.0  # Max single fetch time
 
         # Register scan for progress tracking (used by /health/ready)
         state._scan_progress[scan_id] = (time.time(), 0)
@@ -1197,9 +1342,40 @@ async def get_batches_v1(scan_id: str, request: Request):
             Every scan should have exactly one terminal log entry for operational
             visibility. Outcomes: 'complete', 'client_disconnect', 'timeout', 'size_exceeded'.
             """
+            nonlocal ttfb_ms, max_fetch_ms
             scan_metrics.total_time_ms = (time.perf_counter() - start_time) * 1000
             scan_metrics.fetch_time_ms = scan_metrics.total_time_ms - scan_metrics.planning_time_ms
             scan_metrics.rows_returned = sum(t.num_rows for t in plan.tasks[:tasks_completed])
+
+            # Record latencies to histogram for percentile tracking
+            record_latency("total_request", scan_metrics.total_time_ms)
+            if ttfb_ms > 0:
+                record_latency("ttfb", ttfb_ms)
+            if max_fetch_ms > 0:
+                record_latency("fetch", max_fetch_ms)
+
+            # Log slow operations (thresholds: total>500ms, ttfb>250ms, fetch>200ms)
+            slow_stages = []
+            if scan_metrics.total_time_ms > 500:
+                slow_stages.append(f"total={scan_metrics.total_time_ms:.0f}ms")
+            if ttfb_ms > 250:
+                slow_stages.append(f"ttfb={ttfb_ms:.0f}ms")
+            if max_fetch_ms > 200:
+                slow_stages.append(f"max_fetch={max_fetch_ms:.0f}ms")
+
+            if slow_stages and outcome == "complete":
+                logger.warning(
+                    "Slow scan detected",
+                    scan_id=scan_id,
+                    table_id=str(plan.table_identity),
+                    slow_stages=", ".join(slow_stages),
+                    total_ms=round(scan_metrics.total_time_ms, 1),
+                    ttfb_ms=round(ttfb_ms, 1),
+                    max_fetch_ms=round(max_fetch_ms, 1),
+                    tasks=len(plan.tasks),
+                    bytes_out=bytes_out,
+                    tier=tier_name,
+                )
 
             if outcome == "complete":
                 # Normal completion - use structured scan_complete event
@@ -1226,12 +1402,12 @@ async def get_batches_v1(scan_id: str, request: Request):
             # are yielded in order to maintain Arrow IPC stream correctness.
             # This maximizes I/O parallelism while preserving output order.
             async def fetch_segments_async():
-                nonlocal tasks_completed, stop_flag
+                nonlocal tasks_completed, stop_flag, max_fetch_ms
                 bytes_in_estimate = 0  # Track estimated input bytes
 
-                # In-flight fetches: dict[idx -> (task, Future)]
+                # In-flight fetches: dict[idx -> (task, Future, start_time)]
                 # Using dict allows O(1) lookup when any fetch completes
-                in_flight: dict[int, tuple["Task", asyncio.Future]] = {}
+                in_flight: dict[int, tuple["Task", asyncio.Future, float]] = {}
 
                 # Reordering buffer: completed segments waiting to be yielded
                 # Holds out-of-order completions until earlier ones finish
@@ -1240,16 +1416,18 @@ async def get_batches_v1(scan_id: str, request: Request):
                 # Next index to yield (maintains output order)
                 next_yield_idx = 0
 
-                def start_fetch(idx: int, task: "Task") -> asyncio.Future:
-                    """Start a fetch in the dedicated thread pool, return Future."""
+                def start_fetch(idx: int, task: "Task") -> tuple[asyncio.Future, float]:
+                    """Start a fetch in the dedicated thread pool, return Future and start time."""
                     loop = asyncio.get_event_loop()
-                    return loop.run_in_executor(
+                    fetch_start = time.perf_counter()
+                    future = loop.run_in_executor(
                         state._fetch_executor, state.fetcher.fetch_as_stream_bytes, task
                     )
+                    return future, fetch_start
 
-                def record_metrics(task: "Task") -> None:
+                def record_metrics(task: "Task", fetch_duration_ms: float = 0.0) -> None:
                     """Record cache hit/miss metrics for a task."""
-                    nonlocal tasks_completed
+                    nonlocal tasks_completed, max_fetch_ms
                     tasks_completed += 1
                     if task.cached:
                         scan_metrics.cache_hits += 1
@@ -1257,6 +1435,20 @@ async def get_batches_v1(scan_id: str, request: Request):
                     else:
                         scan_metrics.cache_misses += 1
                         scan_metrics.bytes_from_storage += task.bytes_read
+
+                    # Track max fetch time
+                    if fetch_duration_ms > 0:
+                        max_fetch_ms = max(max_fetch_ms, fetch_duration_ms)
+                        # Log slow fetches (>200ms threshold)
+                        if fetch_duration_ms > 200:
+                            logger.warning(
+                                "Slow fetch detected",
+                                scan_id=scan_id,
+                                fetch_ms=round(fetch_duration_ms, 1),
+                                task_idx=tasks_completed,
+                                cached=task.cached,
+                                bytes_read=task.bytes_read,
+                            )
 
                 # Iterate through all tasks
                 task_iter = iter(enumerate(plan.tasks))
@@ -1282,8 +1474,8 @@ async def get_batches_v1(scan_id: str, request: Request):
                         continue
 
                     # Start fetch in thread pool
-                    future = start_fetch(idx, task)
-                    in_flight[idx] = (task, future)
+                    future, fetch_start = start_fetch(idx, task)
+                    in_flight[idx] = (task, future, fetch_start)
 
                     # Once we hit parallelism limit, wait for any to complete
                     while len(in_flight) >= fetch_parallelism:
@@ -1295,7 +1487,7 @@ async def get_batches_v1(scan_id: str, request: Request):
 
                         # Wait for ANY in-flight fetch to complete (out-of-order)
                         done, _ = await asyncio.wait(
-                            [f for _, f in in_flight.values()],
+                            [f for _, f, _ in in_flight.values()],
                             return_when=asyncio.FIRST_COMPLETED,
                         )
 
@@ -1303,7 +1495,7 @@ async def get_batches_v1(scan_id: str, request: Request):
                         for future in done:
                             # Find which idx completed
                             completed_idx = None
-                            for i, (t, f) in in_flight.items():
+                            for i, (t, f, _) in in_flight.items():
                                 if f is future:
                                     completed_idx = i
                                     break
@@ -1311,10 +1503,11 @@ async def get_batches_v1(scan_id: str, request: Request):
                             if completed_idx is None:
                                 continue
 
-                            task_completed, _ = in_flight.pop(completed_idx)
+                            task_completed, _, fetch_start = in_flight.pop(completed_idx)
+                            fetch_duration_ms = (time.perf_counter() - fetch_start) * 1000
                             try:
                                 segment = future.result()
-                                record_metrics(task_completed)
+                                record_metrics(task_completed, fetch_duration_ms)
                                 # Store in reorder buffer
                                 completed[completed_idx] = (task_completed, segment)
                             except Exception:
@@ -1343,14 +1536,14 @@ async def get_batches_v1(scan_id: str, request: Request):
 
                     # Wait for ANY remaining fetch to complete
                     done, _ = await asyncio.wait(
-                        [f for _, f in in_flight.values()],
+                        [f for _, f, _ in in_flight.values()],
                         return_when=asyncio.FIRST_COMPLETED,
                     )
 
                     for future in done:
                         # Find which idx completed
                         completed_idx = None
-                        for i, (t, f) in in_flight.items():
+                        for i, (t, f, _) in in_flight.items():
                             if f is future:
                                 completed_idx = i
                                 break
@@ -1358,10 +1551,11 @@ async def get_batches_v1(scan_id: str, request: Request):
                         if completed_idx is None:
                             continue
 
-                        task_completed, _ = in_flight.pop(completed_idx)
+                        task_completed, _, fetch_start = in_flight.pop(completed_idx)
+                        fetch_duration_ms = (time.perf_counter() - fetch_start) * 1000
                         try:
                             segment = future.result()
-                            record_metrics(task_completed)
+                            record_metrics(task_completed, fetch_duration_ms)
                             completed[completed_idx] = (task_completed, segment)
                         except Exception:
                             stop_flag = True
@@ -1383,7 +1577,7 @@ async def get_batches_v1(scan_id: str, request: Request):
                     yield segment
 
                 # Cancel any remaining in-flight futures on early exit
-                for _, future in in_flight.values():
+                for _, future, _ in in_flight.values():
                     future.cancel()
 
             # Stream chunks from the IPC concatenator
@@ -1415,6 +1609,20 @@ async def get_batches_v1(scan_id: str, request: Request):
 
                     # Track bytes actually sent to client
                     bytes_out += len(chunk)
+
+                    # Track TTFB (time to first byte)
+                    if not first_byte_sent:
+                        first_byte_sent = True
+                        ttfb_ms = (time.perf_counter() - start_time) * 1000
+                        # Log slow TTFB (>250ms threshold)
+                        if ttfb_ms > 250:
+                            logger.warning(
+                                "Slow TTFB detected",
+                                scan_id=scan_id,
+                                ttfb_ms=round(ttfb_ms, 1),
+                                tasks=len(plan.tasks),
+                                tier=tier_name,
+                            )
 
                     # Update progress tracking (for /health/ready stuck scan detection)
                     state._scan_progress[scan_id] = (time.time(), bytes_out)
@@ -1555,6 +1763,68 @@ async def get_metadata_stats_v1():
         result["metadata_store"] = None
 
     return result
+
+
+@app.get("/v1/debug/latency")
+async def get_latency_histograms_v1():
+    """Get latency histograms for each operation stage.
+
+    Returns latency distribution data for:
+    - plan: Table planning (catalog + metadata)
+    - ttfb: Time to first byte
+    - fetch: Individual row group fetch
+    - total_request: End-to-end request time
+
+    Each stage includes:
+    - Histogram buckets with counts
+    - Estimated percentiles (p50, p95, p99)
+    - Count, sum, avg, max
+
+    This is useful for:
+    - Identifying which stage dominates tail latency
+    - Understanding latency distribution over time
+    - Detecting bimodal latency patterns
+    """
+    stats = get_latency_stats()
+
+    # Add percentile estimates for key stages
+    from strata.slow_ops import get_latency_percentiles
+
+    result = {"histograms": stats}
+
+    for stage in ["plan", "ttfb", "fetch", "total_request"]:
+        if stage in stats:
+            result["histograms"][stage]["percentiles"] = get_latency_percentiles(stage)
+
+    return result
+
+
+@app.get("/v1/debug/gc/pauses")
+async def get_gc_pauses_v1(
+    limit: Annotated[int, Query(description="Maximum pauses to return", ge=1, le=1000)] = 100,
+):
+    """Get recent GC pause events for debugging.
+
+    Returns detailed timing information about recent garbage collection pauses.
+    This is useful for:
+    - Correlating latency spikes with GC activity
+    - Understanding GC pause duration distribution
+    - Diagnosing periodic latency stalls
+
+    Returns:
+    - pauses: List of recent GC pauses (most recent first)
+      - timestamp: Unix timestamp when GC completed
+      - generation: GC generation (0, 1, or 2)
+      - duration_ms: Pause duration in milliseconds
+    - stats: Aggregate statistics (p50, p95, p99 if enough data)
+    """
+    pauses = get_recent_gc_pauses(limit=limit)
+    stats = get_gc_stats()
+
+    return {
+        "pauses": pauses,
+        "stats": stats,
+    }
 
 
 @app.post("/v1/metadata/cleanup")
