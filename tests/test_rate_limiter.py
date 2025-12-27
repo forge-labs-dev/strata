@@ -1,0 +1,433 @@
+"""Tests for rate limiting functionality."""
+
+import pytest
+
+
+class MockClock:
+    """Mock clock for testing time-dependent behavior."""
+
+    def __init__(self, start_time: float = 0.0):
+        self._time = start_time
+
+    def time(self) -> float:
+        return self._time
+
+    def advance(self, seconds: float) -> None:
+        self._time += seconds
+
+
+class TestTokenBucket:
+    """Tests for TokenBucket."""
+
+    def test_initial_tokens(self):
+        """Test bucket starts with full capacity."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0, _clock=clock)
+
+        assert bucket.tokens_available() == 10.0
+
+    def test_acquire_success(self):
+        """Test acquiring tokens when available."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0, _clock=clock)
+
+        assert bucket.acquire() is True
+        assert bucket.tokens_available() == 9.0
+
+    def test_acquire_multiple(self):
+        """Test acquiring multiple tokens."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0, _clock=clock)
+
+        assert bucket.acquire(5.0) is True
+        assert bucket.tokens_available() == 5.0
+
+    def test_acquire_failure(self):
+        """Test acquiring fails when not enough tokens."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=1.0, _clock=clock)
+
+        # Exhaust tokens
+        for _ in range(10):
+            bucket.acquire()
+
+        assert bucket.acquire() is False
+        assert bucket.tokens_available() == 0.0
+
+    def test_refill_over_time(self):
+        """Test tokens refill over time."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=2.0, _clock=clock)
+
+        # Exhaust tokens
+        bucket.acquire(10.0)
+        assert bucket.tokens_available() == 0.0
+
+        # Advance time by 3 seconds (should add 6 tokens at 2/s)
+        clock.advance(3.0)
+        assert bucket.tokens_available() == 6.0
+
+    def test_refill_caps_at_capacity(self):
+        """Test refill doesn't exceed capacity."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=100.0, _clock=clock)
+
+        bucket.acquire(5.0)
+        clock.advance(10.0)  # Would add 1000 tokens
+
+        assert bucket.tokens_available() == 10.0
+
+    def test_time_until_available(self):
+        """Test calculating time until tokens available."""
+        from strata.rate_limiter import TokenBucket
+
+        clock = MockClock()
+        bucket = TokenBucket(capacity=10.0, refill_rate=2.0, _clock=clock)
+
+        bucket.acquire(10.0)
+        # Need 1 token, refill rate is 2/s, so 0.5s
+        assert bucket.time_until_available(1.0) == pytest.approx(0.5)
+
+        # Need 4 tokens, so 2s
+        assert bucket.time_until_available(4.0) == pytest.approx(2.0)
+
+
+class TestRateLimiter:
+    """Tests for RateLimiter."""
+
+    def test_default_allows_requests(self):
+        """Test default config allows requests."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        config = RateLimitConfig()
+        limiter = RateLimiter(config)
+
+        result = limiter.check("client1")
+        assert result.allowed is True
+
+    def test_disabled_always_allows(self):
+        """Test disabled limiter always allows."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        config = RateLimitConfig(enabled=False)
+        limiter = RateLimiter(config)
+
+        # Even with aggressive limits, disabled should allow
+        for _ in range(1000):
+            result = limiter.check("client1")
+            assert result.allowed is True
+
+    def test_global_limit_rejection(self):
+        """Test global limit rejects requests."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(
+            global_requests_per_second=1.0,
+            global_burst=2.0,
+            client_requests_per_second=1000.0,  # High to not interfere
+            client_burst=1000.0,
+        )
+        limiter = RateLimiter(config, clock=clock)
+
+        # First 2 requests allowed (burst)
+        assert limiter.check("client1").allowed is True
+        assert limiter.check("client1").allowed is True
+
+        # Third request rejected
+        result = limiter.check("client1")
+        assert result.allowed is False
+        assert result.limit_type == "global"
+
+    def test_client_limit_rejection(self):
+        """Test per-client limit rejects requests."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(
+            global_requests_per_second=1000.0,  # High to not interfere
+            global_burst=1000.0,
+            client_requests_per_second=1.0,
+            client_burst=2.0,
+        )
+        limiter = RateLimiter(config, clock=clock)
+
+        # First 2 requests from client1 allowed
+        assert limiter.check("client1").allowed is True
+        assert limiter.check("client1").allowed is True
+
+        # Third request from client1 rejected
+        result = limiter.check("client1")
+        assert result.allowed is False
+        assert result.limit_type == "client"
+
+        # Different client still allowed
+        assert limiter.check("client2").allowed is True
+
+    def test_endpoint_limit_rejection(self):
+        """Test per-endpoint limit rejects requests."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(
+            global_requests_per_second=1000.0,
+            global_burst=1000.0,
+            client_requests_per_second=1000.0,
+            client_burst=1000.0,
+            scan_requests_per_second=1.0,
+            scan_burst=2.0,
+        )
+        limiter = RateLimiter(config, clock=clock)
+
+        # First 2 scan requests allowed
+        assert limiter.check("client1", endpoint="/v1/scan").allowed is True
+        assert limiter.check("client1", endpoint="/v1/scan").allowed is True
+
+        # Third scan request rejected
+        result = limiter.check("client1", endpoint="/v1/scan")
+        assert result.allowed is False
+        assert result.limit_type == "endpoint"
+
+        # Other endpoints still allowed
+        assert limiter.check("client1", endpoint="/health").allowed is True
+
+    def test_retry_after_header(self):
+        """Test retry-after is calculated correctly."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(
+            client_requests_per_second=2.0,
+            client_burst=1.0,
+        )
+        limiter = RateLimiter(config, clock=clock)
+
+        limiter.check("client1")  # Use the one token
+        result = limiter.check("client1")  # Rejected
+
+        assert result.allowed is False
+        assert result.retry_after_seconds == pytest.approx(0.5)  # 1 token / 2 per sec
+
+    def test_stats_tracking(self):
+        """Test statistics are tracked correctly."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(
+            client_requests_per_second=1.0,
+            client_burst=1.0,
+        )
+        limiter = RateLimiter(config, clock=clock)
+
+        limiter.check("client1")  # Allowed
+        limiter.check("client2")  # Allowed
+        limiter.check("client1")  # Rejected (client limit)
+
+        stats = limiter.get_stats()
+        assert stats["total_requests"] == 3
+        assert stats["allowed_requests"] == 2
+        assert stats["rejected_client"] == 1
+        assert stats["active_clients"] == 2
+
+    def test_cleanup_stale_clients(self):
+        """Test stale client cleanup."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        clock = MockClock()
+        config = RateLimitConfig(client_ttl_seconds=60.0)
+        limiter = RateLimiter(config, clock=clock)
+
+        limiter.check("client1")
+        limiter.check("client2")
+        assert limiter.get_stats()["active_clients"] == 2
+
+        # Advance time past TTL
+        clock.advance(61.0)
+
+        # Add a new client
+        limiter.check("client3")
+
+        # Cleanup should remove client1 and client2
+        removed = limiter.cleanup_stale_clients()
+        assert removed == 2
+        assert limiter.get_stats()["active_clients"] == 1
+
+    def test_reset_stats(self):
+        """Test resetting statistics."""
+        from strata.rate_limiter import RateLimitConfig, RateLimiter
+
+        config = RateLimitConfig()
+        limiter = RateLimiter(config)
+
+        limiter.check("client1")
+        limiter.check("client2")
+
+        limiter.reset_stats()
+        stats = limiter.get_stats()
+        assert stats["total_requests"] == 0
+        assert stats["allowed_requests"] == 0
+
+
+class TestRateLimiterGlobals:
+    """Tests for global rate limiter functions."""
+
+    def test_init_and_get(self):
+        """Test initializing and getting global rate limiter."""
+        from strata.rate_limiter import (
+            RateLimitConfig,
+            get_rate_limiter,
+            init_rate_limiter,
+            reset_rate_limiter,
+        )
+
+        reset_rate_limiter()
+        assert get_rate_limiter() is None
+
+        config = RateLimitConfig()
+        limiter = init_rate_limiter(config)
+
+        assert get_rate_limiter() is limiter
+        assert limiter.config == config
+
+        reset_rate_limiter()
+        assert get_rate_limiter() is None
+
+
+class TestRateLimiterIntegration:
+    """Integration tests for rate limiting with server."""
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_endpoint(self, tmp_path):
+        """Test /v1/debug/rate-limits endpoint."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.rate_limiter import reset_rate_limiter
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        reset_rate_limiter()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+
+        # Initialize rate limiter manually for test
+        from strata.rate_limiter import RateLimitConfig, init_rate_limiter
+
+        init_rate_limiter(RateLimitConfig())
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                response = await client.get("/v1/debug/rate-limits")
+                assert response.status_code == 200
+                data = response.json()
+                assert "total_requests" in data
+                assert "allowed_requests" in data
+                assert "enabled" in data
+                assert data["enabled"] is True
+        finally:
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+            reset_rate_limiter()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_middleware_allows(self, tmp_path):
+        """Test middleware allows requests under limit."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.rate_limiter import RateLimitConfig, init_rate_limiter, reset_rate_limiter
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        reset_rate_limiter()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+        init_rate_limiter(RateLimitConfig())
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # Multiple requests should be allowed
+                for _ in range(5):
+                    response = await client.get("/health")
+                    # Health endpoint skips rate limiting
+                    assert response.status_code == 200
+
+                # Check rate limit stats endpoint (not skipped)
+                response = await client.get("/v1/debug/rate-limits")
+                assert response.status_code == 200
+                assert "X-RateLimit-Remaining" in response.headers
+        finally:
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+            reset_rate_limiter()
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_middleware_rejects(self, tmp_path):
+        """Test middleware rejects requests over limit."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.rate_limiter import RateLimitConfig, init_rate_limiter, reset_rate_limiter
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        reset_rate_limiter()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+
+        # Very restrictive config
+        init_rate_limiter(
+            RateLimitConfig(
+                client_requests_per_second=1.0,
+                client_burst=1.0,
+            )
+        )
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # First request allowed
+                response = await client.get("/v1/debug/rate-limits")
+                assert response.status_code == 200
+
+                # Second request should be rate limited
+                response = await client.get("/v1/debug/rate-limits")
+                assert response.status_code == 429
+                assert "Retry-After" in response.headers
+                assert "Rate limit exceeded" in response.text
+        finally:
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+            reset_rate_limiter()

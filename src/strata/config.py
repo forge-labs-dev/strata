@@ -193,6 +193,15 @@ class StrataConfig:
     # - mimalloc: Lower latency allocation (if available)
     arrow_memory_pool: str | None = None  # None means don't change the default
 
+    # Rate limiting settings
+    rate_limit_enabled: bool = True
+    rate_limit_global_rps: float = 1000.0  # Global requests per second
+    rate_limit_global_burst: float = 100.0  # Max burst above rate
+    rate_limit_client_rps: float = 100.0  # Per-client requests per second
+    rate_limit_client_burst: float = 20.0  # Per-client burst
+    rate_limit_scan_rps: float = 50.0  # Scan endpoint requests per second
+    rate_limit_warm_rps: float = 10.0  # Warm endpoint requests per second
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)

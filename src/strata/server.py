@@ -25,6 +25,11 @@ from strata.memory_profiler import get_detailed_memory_report, get_memory_snapsh
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
+from strata.rate_limiter import (
+    RateLimitConfig,
+    get_rate_limiter,
+    init_rate_limiter,
+)
 from strata.slow_ops import get_latency_stats, record_latency
 from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
@@ -458,6 +463,18 @@ async def lifespan(app: FastAPI):
 
     _state = ServerState(config)
 
+    # Initialize rate limiter
+    rate_limit_config = RateLimitConfig(
+        enabled=config.rate_limit_enabled,
+        global_requests_per_second=config.rate_limit_global_rps,
+        global_burst=config.rate_limit_global_burst,
+        client_requests_per_second=config.rate_limit_client_rps,
+        client_burst=config.rate_limit_client_burst,
+        scan_requests_per_second=config.rate_limit_scan_rps,
+        warm_requests_per_second=config.rate_limit_warm_rps,
+    )
+    init_rate_limiter(rate_limit_config)
+
     # Initialize cache warmer for background warming jobs
     _state._cache_warmer = CacheWarmer(
         planner=_state.planner,
@@ -531,6 +548,47 @@ async def connection_tracking_middleware(request: Request, call_next):
         return response
     finally:
         connection_metrics.request_completed()
+
+
+# Rate limiting middleware
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Apply rate limiting to incoming requests."""
+    rate_limiter = get_rate_limiter()
+
+    # Skip rate limiting if not initialized or for health/metrics endpoints
+    if rate_limiter is None:
+        return await call_next(request)
+
+    path = request.url.path
+    if path in ("/health", "/ready", "/metrics", "/v1/debug/pools", "/v1/debug/memory"):
+        return await call_next(request)
+
+    # Use client IP as identifier (X-Forwarded-For if behind proxy)
+    client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+    if not client_ip:
+        client_ip = request.client.host if request.client else "unknown"
+
+    result = rate_limiter.check(client_id=client_ip, endpoint=path)
+
+    if not result.allowed:
+        retry_after = int(result.retry_after_seconds or 1)
+        return Response(
+            content=f"Rate limit exceeded ({result.limit_type}). Retry after {retry_after}s.",
+            status_code=429,
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit-Type": result.limit_type or "unknown",
+            },
+        )
+
+    response = await call_next(request)
+
+    # Add rate limit headers to response
+    if result.tokens_remaining is not None:
+        response.headers["X-RateLimit-Remaining"] = str(int(result.tokens_remaining))
+
+    return response
 
 
 # Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
@@ -1944,6 +2002,26 @@ async def get_memory_debug_v1(
     else:
         snapshot = get_memory_snapshot()
         return snapshot.to_dict()
+
+
+@app.get("/v1/debug/rate-limits")
+async def get_rate_limits_debug_v1():
+    """Get rate limiter statistics for debugging.
+
+    Returns:
+    - total_requests: Total requests processed
+    - allowed_requests: Requests that passed rate limiting
+    - rejected_global: Requests rejected by global limit
+    - rejected_client: Requests rejected by per-client limit
+    - rejected_endpoint: Requests rejected by per-endpoint limit
+    - active_clients: Number of tracked client buckets
+    - global_tokens_available: Current global bucket tokens
+    - enabled: Whether rate limiting is enabled
+    """
+    rate_limiter = get_rate_limiter()
+    if rate_limiter is None:
+        return {"error": "Rate limiter not initialized", "enabled": False}
+    return rate_limiter.get_stats()
 
 
 @app.post("/v1/metadata/cleanup")
