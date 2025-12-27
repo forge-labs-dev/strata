@@ -60,7 +60,7 @@ hash(table_identity | snapshot_id | file_path | row_group_id | projection_finger
 - **planner.py** - `ReadPlanner` resolves snapshots, applies pruning, builds plans; S3 path normalization utilities
 - **cache.py** - `DiskCache` + `CachedFetcher` for row-group caching with LRU eviction
 - **server.py** - FastAPI endpoints, streaming responses, two-tier QoS admission control, prefetch
-- **config.py** - Configuration with S3 support (`s3_region`, `s3_endpoint_url`, etc.)
+- **config.py** - Configuration with S3 support (`s3_region`, `s3_endpoint_url`, etc.) and timeout settings
 - **metadata_cache.py** - Two-level `ManifestCache` (filtered + unfiltered) and `ParquetMetadataCache`
 - **metadata_store.py** - SQLite-backed persistent metadata storage
 - **fetcher.py** - `PyArrowFetcher` reads Parquet row groups with S3 filesystem support
@@ -68,6 +68,15 @@ hash(table_identity | snapshot_id | file_path | row_group_id | projection_finger
 - **tracing.py** - OpenTelemetry integration (optional, requires `strata[otel]`)
 - **logging.py** - Structured JSON logging with correlation IDs (request_id, scan_id, trace_id)
 - **rust/src/lib.rs** - Arrow IPC stream manipulation (concatenation, format conversion)
+
+### Observability Modules
+
+- **rate_limiter.py** - Token bucket rate limiting with global, per-client, per-endpoint limits
+- **health.py** - Comprehensive health checks for disk, metadata, memory, thread pools
+- **circuit_breaker.py** - Circuit breaker pattern for external dependency protection
+- **cache_metrics.py** - Cache eviction tracking with pressure levels
+- **cache_stats.py** - Time-windowed cache hit/miss histogram
+- **pool_metrics.py** - Thread pool utilization metrics
 
 ### Rust Extension
 
@@ -103,6 +112,8 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 - QoS: `interactive_slots`, `bulk_slots`, `interactive_max_bytes`, `interactive_max_columns`
 - Tracing: `STRATA_TRACING_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`
 - Logging: `STRATA_LOG_LEVEL`, `STRATA_LOG_FORMAT` (json or text)
+- Timeouts: `plan_timeout_seconds`, `scan_timeout_seconds`, `fetch_timeout_seconds`, `s3_connect_timeout_seconds`, `s3_request_timeout_seconds`
+- Rate limiting: `rate_limit_enabled`, `rate_limit_global_rps`, `rate_limit_client_rps`, `rate_limit_scan_rps`
 
 ## Important Invariants
 
@@ -128,6 +139,13 @@ Key test files:
 - `test_s3_config.py` - S3 configuration and filesystem creation
 - `test_s3_moto.py` - S3 path handling (uses moto for mocking)
 - `test_semaphore_leak.py` - Resource cleanup on errors
+- `test_rate_limiter.py` - Token bucket rate limiting
+- `test_health.py` - Dependency health checks
+- `test_circuit_breaker.py` - Circuit breaker pattern
+- `test_cache_metrics.py` - Cache eviction tracking
+- `test_cache_stats.py` - Cache hit/miss histogram
+- `test_timeout_config.py` - Timeout configuration
+- `test_tracing.py` - OpenTelemetry integration
 
 Benchmarks in `benchmarks/`:
 - `stress_test.py` - Multi-user load testing with QoS validation

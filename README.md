@@ -216,10 +216,13 @@ Or, more bluntly:
 - **Two-tier QoS**: Separate admission control for interactive (dashboard) and bulk (ETL) queries, preventing starvation
 - **Parallel row group fetching**: Configurable parallelism with out-of-order completion and reordering buffer for maximum I/O throughput
 - **Prefetch**: Background prefetching of first row group during scan creation for lower latency
-- **S3 support**: Native S3 storage backend via PyArrow S3FileSystem
+- **S3 support**: Native S3 storage backend via PyArrow S3FileSystem with configurable timeouts
 - **DuckDB integration**: Query cached data directly with DuckDB SQL
 - **Polars integration**: Zero-copy DataFrame access via Arrow
-- **Metrics**: Structured JSON logging with Prometheus export for cache, QoS, and prefetch metrics
+- **Rate limiting**: Token bucket rate limiting with global, per-client, and per-endpoint limits
+- **Health checks**: Comprehensive dependency health monitoring (disk, metadata store, memory, thread pools)
+- **Circuit breaker**: Protection against cascading failures from external dependencies
+- **Metrics**: Structured JSON logging with Prometheus export for cache, QoS, rate limiting, and health metrics
 - **OpenTelemetry tracing**: Optional distributed tracing for observability (install with `pip install strata[otel]`)
 
 ## Installation
@@ -435,6 +438,81 @@ Example log output:
 
 The `X-Request-ID` header is echoed back in responses for client-side correlation.
 
+### Rate Limiting
+
+Strata includes token bucket rate limiting to protect against overload:
+
+```python
+from strata.config import StrataConfig
+
+config = StrataConfig(
+    rate_limit_enabled=True,
+    rate_limit_global_rps=1000.0,      # Global requests/sec
+    rate_limit_global_burst=100.0,      # Max burst above rate
+    rate_limit_client_rps=100.0,        # Per-client requests/sec
+    rate_limit_client_burst=20.0,       # Per-client burst
+    rate_limit_scan_rps=50.0,           # Scan endpoint limit
+    rate_limit_warm_rps=10.0,           # Cache warm endpoint limit
+)
+```
+
+When rate limited, clients receive HTTP 429 with a `Retry-After` header.
+
+### Health Checks
+
+The `/health/dependencies` endpoint provides detailed health status for all dependencies:
+
+```json
+{
+  "status": "healthy",
+  "checks": [
+    {"name": "disk_cache", "status": "healthy", "latency_ms": 0.5},
+    {"name": "metadata_store", "status": "healthy", "latency_ms": 1.2},
+    {"name": "arrow_memory", "status": "healthy", "latency_ms": 0.1},
+    {"name": "thread_pools", "status": "healthy", "latency_ms": 0.1},
+    {"name": "rate_limiter", "status": "healthy", "latency_ms": 0.0},
+    {"name": "cache_evictions", "status": "healthy", "latency_ms": 0.0}
+  ],
+  "summary": {"total": 6, "healthy": 6, "degraded": 0, "unhealthy": 0}
+}
+```
+
+Health status levels:
+- **healthy**: All systems operating normally
+- **degraded**: System functional but performance may be impacted (e.g., disk >90% full)
+- **unhealthy**: Critical issues that may prevent operation
+
+### Circuit Breaker
+
+Strata uses circuit breakers to protect against cascading failures from external dependencies:
+
+```python
+from strata.circuit_breaker import get_circuit_breaker, CircuitBreakerConfig
+
+# Get or create a circuit breaker for S3 operations
+breaker = get_circuit_breaker("s3", CircuitBreakerConfig(
+    failure_threshold=5,        # Open after 5 failures
+    success_threshold=3,        # Close after 3 successes in half-open
+    reset_timeout_seconds=30.0, # Try half-open after 30s
+))
+
+# Use as context manager
+with breaker:
+    result = call_s3_operation()
+
+# Or as decorator
+@breaker
+def fetch_from_s3():
+    ...
+```
+
+Circuit breaker states:
+- **CLOSED**: Normal operation, requests pass through
+- **OPEN**: Dependency is failing, requests fail fast with `CircuitOpenError`
+- **HALF_OPEN**: Testing if dependency has recovered
+
+Monitor circuit breakers via `/v1/debug/circuit-breakers` endpoint.
+
 ## Architecture
 
 ```
@@ -487,6 +565,12 @@ Since Iceberg snapshots are immutable, cached objects never need invalidation.
 - `metadata_cache.py` - In-memory metadata caching
 - `duckdb_ext.py` - DuckDB integration
 - `polars_ext.py` - Polars integration
+- `rate_limiter.py` - Token bucket rate limiting
+- `health.py` - Dependency health checks
+- `circuit_breaker.py` - Circuit breaker for external dependencies
+- `cache_metrics.py` - Cache eviction tracking
+- `cache_stats.py` - Cache hit/miss histogram
+- `pool_metrics.py` - Thread pool metrics
 
 ## API
 
@@ -498,10 +582,18 @@ GET  /v1/scan/{id}/batches Stream Arrow IPC batches
 DELETE /v1/scan/{id}       Delete scan resources
 POST /v1/cache/warm        Warm cache for specified tables
 POST /v1/cache/clear       Clear disk cache
+GET  /v1/cache/histogram   Cache hit/miss statistics with time windows
+GET  /v1/cache/evictions   Cache eviction metrics and pressure level
 GET  /health               Liveness check
 GET  /health/ready         Readiness check (capacity, stuck scans)
+GET  /health/dependencies  Detailed dependency health checks
+GET  /v1/config/timeouts   View all timeout configuration
 GET  /metrics              Aggregate metrics (JSON)
 GET  /metrics/prometheus   Prometheus format metrics
+GET  /v1/debug/rate-limits Rate limiter statistics
+GET  /v1/debug/circuit-breakers Circuit breaker status
+GET  /v1/debug/pools       Thread pool metrics
+GET  /v1/debug/memory      Memory profiling (requires tracemalloc)
 ```
 
 ### Cache Warming
