@@ -137,7 +137,7 @@ for batch in client.scan(
 ### DuckDB Integration
 
 ```python
-from strata.duckdb_ext import StrataScanner
+from strata.integration.duckdb import StrataScanner
 
 scanner = StrataScanner()
 scanner.register("events", "file:///warehouse#db.events")
@@ -154,7 +154,7 @@ print(result.to_pandas())
 
 ```python
 import polars as pl
-from strata.polars_ext import scan_to_polars
+from strata.integration.polars import scan_to_polars
 
 df = scan_to_polars(
     "file:///warehouse#db.events",

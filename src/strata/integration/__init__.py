@@ -1,0 +1,50 @@
+"""Integration modules for Arrow, DataFusion, DuckDB, pandas, and Polars."""
+
+from strata.integration.arrow import (
+    StrataDataset,
+    StrataScanner as StrataArrowScanner,
+    dataset,
+)
+from strata.integration.datafusion import (
+    StrataDataFusionContext,
+    register_strata_table,
+    strata_query as datafusion_query,
+)
+from strata.integration.duckdb import (
+    StrataScanner,
+    StrataTableParams,
+    register_strata_scan,
+    strata_query,
+)
+from strata.integration.pandas import (
+    StrataPandasScanner,
+    scan_to_pandas,
+)
+from strata.integration.polars import (
+    StrataPolarsScanner,
+    scan_to_lazy,
+    scan_to_polars,
+)
+
+__all__ = [
+    # Arrow (foundation)
+    "StrataDataset",
+    "StrataArrowScanner",
+    "dataset",
+    # DataFusion
+    "StrataDataFusionContext",
+    "register_strata_table",
+    "datafusion_query",
+    # DuckDB
+    "StrataScanner",
+    "StrataTableParams",
+    "register_strata_scan",
+    "strata_query",
+    # pandas
+    "StrataPandasScanner",
+    "scan_to_pandas",
+    # Polars
+    "StrataPolarsScanner",
+    "scan_to_lazy",
+    "scan_to_polars",
+]
