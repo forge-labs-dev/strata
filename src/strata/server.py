@@ -14,6 +14,8 @@ from strata import fast_io
 from strata.cache import CachedFetcher
 from strata.config import StrataConfig
 from strata.gc_tracker import get_gc_stats, get_recent_gc_pauses, install_gc_tracker
+from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
+from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.slow_ops import get_latency_stats, record_latency
 from strata.logging import (
     RequestContext,
@@ -194,6 +196,11 @@ class ServerState:
         self._bulk_saturated_since: float | None = None
         # Track scan progress: scan_id -> (start_time, last_bytes_streamed)
         self._scan_progress: dict[str, tuple[float, int]] = {}
+
+        # Register thread pools for metrics tracking
+        pool_tracker = get_pool_tracker()
+        pool_tracker.register_pool("planning", self._planning_executor)
+        pool_tracker.register_pool("fetch", self._fetch_executor)
 
 
 # Global state (initialized in lifespan)
@@ -484,6 +491,25 @@ app = FastAPI(
 # Add request context middleware (sets request_id, adds to response headers)
 app.middleware("http")(request_context_middleware)
 
+
+# Connection tracking middleware
+@app.middleware("http")
+async def connection_tracking_middleware(request: Request, call_next):
+    """Track HTTP connection metrics."""
+    connection_metrics = get_connection_metrics()
+
+    # Check for Connection: keep-alive header
+    connection_header = request.headers.get("connection", "").lower()
+    has_keepalive = connection_header != "close"
+
+    connection_metrics.request_started(has_keepalive=has_keepalive)
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        connection_metrics.request_completed()
+
+
 # Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
 instrument_fastapi(app)
 
@@ -628,6 +654,17 @@ async def metrics():
         "evictions_count": stats.get("cache_evictions_count", 0),
         "evicted_bytes": stats.get("cache_evicted_bytes", 0),
     }
+
+    # Add thread pool metrics
+    pool_tracker = get_pool_tracker()
+    stats["thread_pools"] = {
+        name: s.to_dict() for name, s in pool_tracker.get_all_stats().items()
+    }
+
+    # Add connection metrics
+    connection_metrics = get_connection_metrics()
+    stats["connections"] = connection_metrics.get_stats()
+
     return stats
 
 
@@ -1825,6 +1862,71 @@ async def get_gc_pauses_v1(
         "pauses": pauses,
         "stats": stats,
     }
+
+
+@app.get("/v1/debug/pools")
+async def get_pool_metrics_v1():
+    """Get thread pool metrics for debugging.
+
+    Returns utilization and queue depth for server thread pools:
+    - planning: Thread pool for Iceberg catalog/metadata operations
+    - fetch: Thread pool for Parquet row group I/O
+
+    Each pool includes:
+    - max_workers: Pool capacity
+    - active_workers: Currently executing workers
+    - queue_depth: Tasks waiting for a worker
+    - utilization_pct: (active_workers / max_workers) * 100
+
+    High queue_depth indicates pool saturation (bottleneck).
+    """
+    pool_tracker = get_pool_tracker()
+    return pool_tracker.get_summary()
+
+
+@app.get("/v1/debug/connections")
+async def get_connection_metrics_v1():
+    """Get HTTP connection metrics for debugging.
+
+    Returns:
+    - active_requests: Currently in-flight requests
+    - total_requests: Total requests since server start
+    - max_concurrent_requests: Peak concurrency observed
+    - request_rate_per_sec: Average request rate
+    - keepalive_pct: Percentage of requests using keep-alive
+
+    High active_requests with low throughput may indicate connection issues.
+    """
+    connection_metrics = get_connection_metrics()
+    return connection_metrics.get_stats()
+
+
+@app.get("/v1/debug/memory")
+async def get_memory_debug_v1(
+    detailed: Annotated[
+        bool,
+        Query(description="Include detailed breakdown (slower, includes object type counts)"),
+    ] = False,
+):
+    """Get memory profiling information for debugging.
+
+    Returns memory statistics across multiple levels:
+    - Arrow: Memory pool allocations (bytes_allocated, max_memory, pool_backend)
+    - Python: GC tracked objects, objects by generation
+    - Process: RSS and VMS memory (if available)
+
+    Use detailed=true for comprehensive analysis including:
+    - Top object types by count
+    - GC thresholds and collection stats
+    - Memory recommendations
+
+    Note: detailed=true is more expensive and enumerates all GC objects.
+    """
+    if detailed:
+        return get_detailed_memory_report()
+    else:
+        snapshot = get_memory_snapshot()
+        return snapshot.to_dict()
 
 
 @app.post("/v1/metadata/cleanup")
