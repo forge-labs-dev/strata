@@ -1076,6 +1076,122 @@ async def metrics_prometheus():
         ]
     )
 
+    # Add rate limiter metrics
+    rate_limiter = get_rate_limiter()
+    if rate_limiter is not None:
+        rl_stats = rate_limiter.get_stats()
+        rl_rejected_global = rl_stats.get("rejected_global", 0)
+        rl_rejected_client = rl_stats.get("rejected_client", 0)
+        rl_rejected_endpoint = rl_stats.get("rejected_endpoint", 0)
+        lines.extend(
+            [
+                "",
+                "# HELP strata_rate_limit_requests_total Total requests processed",
+                "# TYPE strata_rate_limit_requests_total counter",
+                f"strata_rate_limit_requests_total {rl_stats.get('total_requests', 0)}",
+                "",
+                "# HELP strata_rate_limit_allowed_total Requests allowed",
+                "# TYPE strata_rate_limit_allowed_total counter",
+                f"strata_rate_limit_allowed_total {rl_stats.get('allowed_requests', 0)}",
+                "",
+                "# HELP strata_rate_limit_rejected_total Requests rejected by reason",
+                "# TYPE strata_rate_limit_rejected_total counter",
+                f'strata_rate_limit_rejected_total{{reason="global"}} {rl_rejected_global}',
+                f'strata_rate_limit_rejected_total{{reason="client"}} {rl_rejected_client}',
+                f'strata_rate_limit_rejected_total{{reason="endpoint"}} {rl_rejected_endpoint}',
+                "",
+                "# HELP strata_rate_limit_active_clients Tracked clients",
+                "# TYPE strata_rate_limit_active_clients gauge",
+                f"strata_rate_limit_active_clients {rl_stats.get('active_clients', 0)}",
+            ]
+        )
+
+    # Add cache eviction metrics
+    eviction_tracker = get_eviction_tracker()
+    eviction_stats = eviction_tracker.get_stats()
+    pressure_map = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+    pressure_value = pressure_map.get(eviction_stats.pressure_level, 0)
+    lines.extend(
+        [
+            "",
+            "# HELP strata_cache_eviction_events_total Total eviction events",
+            "# TYPE strata_cache_eviction_events_total counter",
+            f"strata_cache_eviction_events_total {eviction_stats.total_evictions}",
+            "",
+            "# HELP strata_cache_files_evicted_total Total files evicted",
+            "# TYPE strata_cache_files_evicted_total counter",
+            f"strata_cache_files_evicted_total {eviction_stats.total_files_evicted}",
+            "",
+            "# HELP strata_cache_eviction_bytes_total Total bytes evicted",
+            "# TYPE strata_cache_eviction_bytes_total counter",
+            f"strata_cache_eviction_bytes_total {eviction_stats.total_bytes_evicted}",
+            "",
+            "# HELP strata_cache_eviction_rate Evictions per minute",
+            "# TYPE strata_cache_eviction_rate gauge",
+            f"strata_cache_eviction_rate {eviction_stats.eviction_rate_per_minute}",
+            "",
+            "# HELP strata_cache_eviction_pressure Pressure level (0-3)",
+            "# TYPE strata_cache_eviction_pressure gauge",
+            f"strata_cache_eviction_pressure {pressure_value}",
+        ]
+    )
+
+    # Add thread pool metrics
+    pool_tracker = get_pool_tracker()
+    for pool_name, pool_stats in pool_tracker.get_all_stats().items():
+        active = pool_stats.active_workers
+        max_w = pool_stats.max_workers
+        util = pool_stats.utilization_pct / 100.0  # Convert percentage to ratio
+        lines.extend(
+            [
+                "",
+                "# HELP strata_thread_pool_active_workers Active workers",
+                "# TYPE strata_thread_pool_active_workers gauge",
+                f'strata_thread_pool_active_workers{{pool="{pool_name}"}} {active}',
+                "# HELP strata_thread_pool_max_workers Max workers",
+                "# TYPE strata_thread_pool_max_workers gauge",
+                f'strata_thread_pool_max_workers{{pool="{pool_name}"}} {max_w}',
+                "# HELP strata_thread_pool_utilization Utilization ratio",
+                "# TYPE strata_thread_pool_utilization gauge",
+                f'strata_thread_pool_utilization{{pool="{pool_name}"}} {util}',
+            ]
+        )
+
+    # Add connection metrics
+    conn_metrics = get_connection_metrics()
+    conn_stats = conn_metrics.get_stats()
+    lines.extend(
+        [
+            "",
+            "# HELP strata_http_requests_total Total HTTP requests",
+            "# TYPE strata_http_requests_total counter",
+            f"strata_http_requests_total {conn_stats.get('total_requests', 0)}",
+            "",
+            "# HELP strata_http_connections_active Current active HTTP connections",
+            "# TYPE strata_http_connections_active gauge",
+            f"strata_http_connections_active {conn_stats.get('concurrent_requests', 0)}",
+            "",
+            "# HELP strata_http_connections_keepalive Requests with keep-alive",
+            "# TYPE strata_http_connections_keepalive counter",
+            f"strata_http_connections_keepalive {conn_stats.get('keepalive_requests', 0)}",
+        ]
+    )
+
+    # Add Arrow memory metrics
+    pool = pa.default_memory_pool()
+    lines.extend(
+        [
+            "",
+            "# HELP strata_arrow_memory_bytes_allocated Current Arrow memory allocated",
+            "# TYPE strata_arrow_memory_bytes_allocated gauge",
+            f"strata_arrow_memory_bytes_allocated {pool.bytes_allocated()}",
+            "",
+            "# HELP strata_arrow_memory_max_bytes Maximum Arrow memory ever allocated",
+            "# TYPE strata_arrow_memory_max_bytes gauge",
+            f"strata_arrow_memory_max_bytes {pool.max_memory()}",
+        ]
+    )
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
