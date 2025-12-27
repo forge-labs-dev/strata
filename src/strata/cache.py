@@ -10,6 +10,7 @@ from typing import Protocol
 import pyarrow as pa
 import pyarrow.ipc as ipc
 
+from strata.cache_metrics import get_eviction_tracker
 from strata.config import StrataConfig
 from strata.fetcher import Fetcher, create_fetcher
 from strata.metrics import MetricsCollector
@@ -385,6 +386,8 @@ class DiskCache:
         if current_size <= self.max_size_bytes:
             return
 
+        size_before = current_size
+
         # Get all cache files sorted by modification time (oldest first)
         versioned_dir = self.cache_dir / f"v{CACHE_VERSION}"
         if not versioned_dir.exists():
@@ -410,6 +413,15 @@ class DiskCache:
         # Record eviction metrics
         if evicted_count > 0:
             self.metrics.record_cache_eviction(evicted_count, evicted_bytes)
+            # Record detailed eviction event
+            tracker = get_eviction_tracker()
+            tracker.record_eviction(
+                files_evicted=evicted_count,
+                bytes_evicted=evicted_bytes,
+                cache_size_before=size_before,
+                cache_size_after=current_size,
+                reason="size_limit",
+            )
 
 
 class CachedFetcher:

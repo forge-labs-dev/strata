@@ -24,6 +24,7 @@ from strata.logging import (
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
+from strata.cache_metrics import get_eviction_tracker
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
     RateLimitConfig,
@@ -1843,6 +1844,43 @@ async def get_cache_stats_v1():
     state = get_state()
     stats = state.fetcher.cache.get_stats()
     return stats.to_dict()
+
+
+@app.get("/v1/cache/evictions")
+async def get_cache_evictions_v1(
+    include_events: Annotated[
+        bool,
+        Query(description="Include recent eviction events"),
+    ] = False,
+    limit: Annotated[
+        int,
+        Query(description="Max number of recent events to include", ge=1, le=100),
+    ] = 10,
+):
+    """Get cache eviction metrics and monitoring data.
+
+    Returns eviction statistics including:
+    - Total evictions and bytes evicted (lifetime)
+    - Evictions in last minute/hour
+    - Eviction rate (per minute)
+    - Pressure level indicator (low/medium/high/critical)
+
+    Use include_events=true to get recent eviction events for debugging.
+
+    Pressure levels:
+    - low: < 1 eviction per minute (healthy)
+    - medium: 1-5 evictions per minute (monitor)
+    - high: 5-10 evictions per minute (consider increasing cache size)
+    - critical: 10+ evictions per minute (cache is thrashing)
+    """
+    tracker = get_eviction_tracker()
+    stats = tracker.get_stats()
+    result = stats.to_dict()
+
+    if include_events:
+        result["recent_events"] = tracker.get_recent_events(limit)
+
+    return result
 
 
 @app.get("/v1/metadata/stats")
