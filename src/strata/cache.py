@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.ipc as ipc
 
 from strata.cache_metrics import get_eviction_tracker
+from strata.cache_stats import get_cache_histogram
 from strata.config import StrataConfig
 from strata.fetcher import Fetcher, create_fetcher
 from strata.metrics import MetricsCollector
@@ -453,6 +454,8 @@ class CachedFetcher:
 
     def fetch(self, task: Task) -> pa.RecordBatch:
         """Fetch a row group, using cache if available."""
+        histogram = get_cache_histogram()
+
         # Check cache first
         cached_batch = self.cache.get(task.cache_key)
         if cached_batch is not None:
@@ -463,6 +466,11 @@ class CachedFetcher:
                 rows_read=cached_batch.num_rows,
                 elapsed_ms=0.0,
                 from_cache=True,
+            )
+            # Record hit in histogram
+            histogram.record_hit(
+                bytes_accessed=cached_batch.nbytes,
+                table_id=task.cache_key.table_id,
             )
             return cached_batch
 
@@ -476,6 +484,12 @@ class CachedFetcher:
             batch = self.fetcher.fetch(task)
             span.set_attribute("bytes_read", batch.nbytes)
             span.set_attribute("num_rows", batch.num_rows)
+
+        # Record miss in histogram
+        histogram.record_miss(
+            bytes_accessed=batch.nbytes,
+            table_id=task.cache_key.table_id,
+        )
 
         # Store in cache
         self.cache.put(task.cache_key, batch)
@@ -518,6 +532,8 @@ class CachedFetcher:
         Returns:
             bytes: Arrow IPC stream format, ready for network transfer
         """
+        histogram = get_cache_histogram()
+
         # Check if DiskCache (not just Cache protocol) for optimized path
         if isinstance(self.cache, DiskCache):
             stream_bytes = self.cache.get_as_stream_bytes(task.cache_key)
@@ -529,6 +545,11 @@ class CachedFetcher:
                     rows_read=0,  # We don't parse the batch, so row count unknown
                     elapsed_ms=0.0,
                     from_cache=True,
+                )
+                # Record hit in histogram
+                histogram.record_hit(
+                    bytes_accessed=len(stream_bytes),
+                    table_id=task.cache_key.table_id,
                 )
                 return stream_bytes
 

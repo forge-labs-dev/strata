@@ -25,6 +25,7 @@ from strata.memory_profiler import get_detailed_memory_report, get_memory_snapsh
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
 from strata.cache_metrics import get_eviction_tracker
+from strata.cache_stats import get_cache_histogram
 from strata.health import HealthStatus, run_health_checks
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
@@ -2040,6 +2041,29 @@ async def get_cache_evictions_v1(
         result["recent_events"] = tracker.get_recent_events(limit)
 
     return result
+
+
+@app.get("/v1/cache/histogram")
+async def get_cache_histogram_v1():
+    """Get cache hit/miss statistics over time windows.
+
+    Returns hit rate trends for understanding cache effectiveness:
+    - lifetime: Total hits, misses, hit rate, bytes served
+    - windows: Statistics for 1 minute, 5 minutes, and 1 hour windows
+    - top_tables: Top 5 tables by cache access count
+
+    Each window includes:
+    - hits/misses: Access counts
+    - hit_rate: Hits / total (0.0 to 1.0)
+    - bytes_from_cache/bytes_from_storage: Data served from each source
+
+    Use this to:
+    - Track cache warm-up progress (watch hit rate climb)
+    - Identify cache thrashing (sudden hit rate drops)
+    - Find hot tables that dominate cache usage
+    """
+    histogram = get_cache_histogram()
+    return histogram.get_summary()
 
 
 @app.get("/v1/metadata/stats")
