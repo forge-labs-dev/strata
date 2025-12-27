@@ -25,6 +25,7 @@ from strata.memory_profiler import get_detailed_memory_report, get_memory_snapsh
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
 from strata.cache_metrics import get_eviction_tracker
+from strata.health import HealthStatus, run_health_checks
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
     RateLimitConfig,
@@ -604,6 +605,48 @@ async def health():
     Use /health/ready for readiness checks that verify dependencies.
     """
     return {"status": "ok"}
+
+
+@app.get("/health/dependencies")
+async def health_dependencies():
+    """Comprehensive health check for all dependencies.
+
+    Checks the health of:
+    - disk_cache: Cache directory accessibility and disk space
+    - metadata_store: SQLite connectivity and entry counts
+    - arrow_memory: PyArrow memory pool usage
+    - thread_pools: Planning and fetch executor utilization
+    - rate_limiter: Rate limiting status and rejection rate
+    - cache_evictions: Cache eviction pressure level
+
+    Each check returns:
+    - status: healthy, degraded, or unhealthy
+    - latency_ms: Time taken to perform the check
+    - details: Check-specific information
+
+    Overall status is the worst of all individual checks.
+
+    Returns:
+    - 200 if all dependencies are healthy
+    - 200 with degraded status if some checks show degraded state
+    - 503 if any dependency is unhealthy
+    """
+    state = get_state()
+
+    report = run_health_checks(
+        cache_dir=state.config.cache_dir,
+        max_cache_size_bytes=state.config.max_cache_size_bytes,
+        planning_executor=state._planning_executor,
+        fetch_executor=state._fetch_executor,
+    )
+
+    status_code = 503 if report.status == HealthStatus.UNHEALTHY else 200
+
+    return Response(
+        content=__import__("json").dumps(report.to_dict()),
+        status_code=status_code,
+        media_type="application/json",
+    )
 
 
 @app.get("/health/ready")
