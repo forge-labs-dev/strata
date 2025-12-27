@@ -24,8 +24,9 @@ Strata-specific:
 """
 
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 # Check if OpenTelemetry is available
 _OTEL_AVAILABLE = False

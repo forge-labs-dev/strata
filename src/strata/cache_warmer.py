@@ -310,9 +310,7 @@ class CacheWarmer:
 
                 try:
                     loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(
-                        None, self._fetcher.fetch_as_stream_bytes, task
-                    )
+                    await loop.run_in_executor(None, self._fetcher.fetch_as_stream_bytes, task)
                     if task.cached:
                         return (True, 0)
                     else:

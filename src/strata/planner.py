@@ -53,9 +53,7 @@ def _build_column_index_map(schema) -> dict[str, int]:
     return col_map
 
 
-def _compile_filters(
-    filters: list[Filter], col_index_map: dict[str, int]
-) -> CompiledFilters:
+def _compile_filters(filters: list[Filter], col_index_map: dict[str, int]) -> CompiledFilters:
     """Compile filters into (column_index, filter) pairs for fast evaluation.
 
     Filters referencing columns not in the map (nested or missing) are dropped.

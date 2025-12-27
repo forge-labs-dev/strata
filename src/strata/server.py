@@ -15,20 +15,18 @@ from strata.cache import CachedFetcher
 from strata.cache_warmer import CacheWarmer
 from strata.config import StrataConfig
 from strata.gc_tracker import get_gc_stats, get_recent_gc_pauses, install_gc_tracker
-from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
-from strata.pool_metrics import get_connection_metrics, get_pool_tracker
-from strata.slow_ops import get_latency_stats, record_latency
 from strata.logging import (
-    RequestContext,
     configure_logging,
     get_logger,
-    get_request_context,
     request_context_middleware,
     set_request_context,
 )
+from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
-from strata.tracing import init_tracing, instrument_fastapi, is_tracing_enabled, trace_span
+from strata.pool_metrics import get_connection_metrics, get_pool_tracker
+from strata.slow_ops import get_latency_stats, record_latency
+from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
     ReadPlan,
     ScanRequest,
@@ -215,7 +213,7 @@ class ServerState:
         pool_tracker.register_pool("fetch", self._fetch_executor)
 
         # Cache warmer for background warming jobs (initialized async in lifespan)
-        self._cache_warmer: "CacheWarmer | None" = None
+        self._cache_warmer: CacheWarmer | None = None
 
 
 # Global state (initialized in lifespan)
@@ -356,9 +354,7 @@ def _check_readiness(state: ServerState) -> tuple[bool, dict]:
 
     # Check 2: Capacity - fail if BOTH tiers saturated for too long
     interactive_saturated_duration = (
-        now - state._interactive_saturated_since
-        if state._interactive_saturated_since
-        else 0.0
+        now - state._interactive_saturated_since if state._interactive_saturated_since else 0.0
     )
     bulk_saturated_duration = (
         now - state._bulk_saturated_since if state._bulk_saturated_since else 0.0
@@ -684,9 +680,7 @@ async def metrics():
 
     # Add thread pool metrics
     pool_tracker = get_pool_tracker()
-    stats["thread_pools"] = {
-        name: s.to_dict() for name, s in pool_tracker.get_all_stats().items()
-    }
+    stats["thread_pools"] = {name: s.to_dict() for name, s in pool_tracker.get_all_stats().items()}
 
     # Add connection metrics
     connection_metrics = get_connection_metrics()
@@ -856,17 +850,17 @@ async def metrics_prometheus():
             lines.extend(
                 [
                     "",
-                    f"# HELP strata_gc_pause_count GC pause count by generation",
-                    f"# TYPE strata_gc_pause_count counter",
+                    "# HELP strata_gc_pause_count GC pause count by generation",
+                    "# TYPE strata_gc_pause_count counter",
                     f'strata_gc_pause_count{{generation="{gen_num}"}} {gen_stats.get("count", 0)}',
-                    f"# HELP strata_gc_pause_total_ms_by_gen Total pause time by generation",
-                    f"# TYPE strata_gc_pause_total_ms_by_gen counter",
+                    "# HELP strata_gc_pause_total_ms_by_gen Total pause time by generation",
+                    "# TYPE strata_gc_pause_total_ms_by_gen counter",
                     f'strata_gc_pause_total_ms_by_gen{{generation="{gen_num}"}} '
-                    f'{gen_stats.get("total_ms", 0)}',
-                    f"# HELP strata_gc_pause_max_ms_by_gen Max pause time by generation",
-                    f"# TYPE strata_gc_pause_max_ms_by_gen gauge",
+                    f"{gen_stats.get('total_ms', 0)}",
+                    "# HELP strata_gc_pause_max_ms_by_gen Max pause time by generation",
+                    "# TYPE strata_gc_pause_max_ms_by_gen gauge",
                     f'strata_gc_pause_max_ms_by_gen{{generation="{gen_num}"}} '
-                    f'{gen_stats.get("max_ms", 0)}',
+                    f"{gen_stats.get('max_ms', 0)}",
                 ]
             )
 
@@ -1053,9 +1047,7 @@ async def create_scan_v1(request: ScanRequest):
                 # Using a dedicated executor (64 workers) instead of the default
                 # (8-16 workers) prevents thread pool starvation under high concurrency.
                 plan = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(
-                        state._planning_executor, do_plan
-                    ),
+                    asyncio.get_event_loop().run_in_executor(state._planning_executor, do_plan),
                     timeout=plan_timeout,
                 )
             except TimeoutError:
@@ -1141,9 +1133,8 @@ async def create_scan_v1(request: ScanRequest):
         # - All QoS slots are nearly exhausted (interactive + bulk - 1)
         # - OR prefetch semaphore queue is building up
         total_slots = state.config.interactive_slots + state.config.bulk_slots
-        used_slots = (
-            (state.config.interactive_slots - state._interactive_semaphore._value)
-            + (state.config.bulk_slots - state._bulk_semaphore._value)
+        used_slots = (state.config.interactive_slots - state._interactive_semaphore._value) + (
+            state.config.bulk_slots - state._bulk_semaphore._value
         )
         server_busy = used_slots >= total_slots - 1
 
@@ -1155,7 +1146,6 @@ async def create_scan_v1(request: ScanRequest):
                 try:
                     # Acquire semaphore (blocking in thread pool)
                     # This is synchronous because we're in a thread
-                    import threading
 
                     # Use a simple lock approach since we're in a thread
                     # The semaphore check above is a fast-path optimization
@@ -1471,11 +1461,11 @@ async def get_batches_v1(scan_id: str, request: Request):
 
                 # In-flight fetches: dict[idx -> (task, Future, start_time)]
                 # Using dict allows O(1) lookup when any fetch completes
-                in_flight: dict[int, tuple["Task", asyncio.Future, float]] = {}
+                in_flight: dict[int, tuple[Task, asyncio.Future, float]] = {}
 
                 # Reordering buffer: completed segments waiting to be yielded
                 # Holds out-of-order completions until earlier ones finish
-                completed: dict[int, tuple["Task", bytes]] = {}
+                completed: dict[int, tuple[Task, bytes]] = {}
 
                 # Next index to yield (maintains output order)
                 next_yield_idx = 0
@@ -2214,9 +2204,7 @@ async def warm_cache_v1(request: WarmRequest):
             try:
                 # Run fetch in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None, state.fetcher.fetch_as_stream_bytes, task
-                )
+                await loop.run_in_executor(None, state.fetcher.fetch_as_stream_bytes, task)
                 if task.cached:
                     return (True, 0)  # Already cached
                 else:
@@ -2330,9 +2318,7 @@ async def warm_cache_async_v1(request: WarmAsyncRequest):
 
 @app.get("/v1/cache/warm/jobs")
 async def list_warm_jobs_v1(
-    include_completed: Annotated[
-        bool, Query(description="Include completed/failed jobs")
-    ] = False,
+    include_completed: Annotated[bool, Query(description="Include completed/failed jobs")] = False,
 ):
     """List all cache warming jobs.
 

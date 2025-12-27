@@ -11,7 +11,6 @@ These are exposed via /v1/debug/memory for operational diagnostics.
 """
 
 import gc
-import sys
 from dataclasses import dataclass
 from typing import Any
 
@@ -97,7 +96,7 @@ def get_memory_snapshot() -> MemorySnapshot:
     except ImportError:
         # psutil not available - try /proc/self/statm on Linux
         try:
-            with open("/proc/self/statm", "r") as f:
+            with open("/proc/self/statm") as f:
                 parts = f.read().split()
                 page_size = 4096  # Typical page size
                 vms_bytes = int(parts[0]) * page_size
@@ -150,11 +149,13 @@ def get_arrow_allocations() -> dict[str, Any]:
     for name, pool_fn in pools_to_check:
         try:
             pool = pool_fn()
-            result["available_pools"].append({
-                "name": name,
-                "bytes_allocated": pool.bytes_allocated(),
-                "max_memory": pool.max_memory(),
-            })
+            result["available_pools"].append(
+                {
+                    "name": name,
+                    "bytes_allocated": pool.bytes_allocated(),
+                    "max_memory": pool.max_memory(),
+                }
+            )
         except Exception:
             pass
 
@@ -228,9 +229,7 @@ def get_detailed_memory_report() -> dict[str, Any]:
     }
 
 
-def _get_memory_recommendations(
-    snapshot: MemorySnapshot, python_stats: dict
-) -> list[str]:
+def _get_memory_recommendations(snapshot: MemorySnapshot, python_stats: dict) -> list[str]:
     """Generate memory-related recommendations based on current state."""
     recommendations = []
 

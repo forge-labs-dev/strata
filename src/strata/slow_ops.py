@@ -27,7 +27,6 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Any
 
 logger = logging.getLogger("strata.slow_ops")
 
@@ -324,7 +323,10 @@ class SlowOpTracker:
 
         if slow_stages:
             # Build slow stages summary
-            slow_summary = {stage: f"{actual:.1f}ms (>{threshold:.0f}ms)" for stage, actual, threshold in slow_stages}
+            slow_summary = {
+                stage: f"{actual:.1f}ms (>{threshold:.0f}ms)"
+                for stage, actual, threshold in slow_stages
+            }
 
             logger.warning(
                 "Slow operation detected",
