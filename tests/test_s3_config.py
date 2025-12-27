@@ -107,7 +107,11 @@ class TestS3FilesystemFactory:
         with patch("pyarrow.fs.S3FileSystem") as mock_s3:
             mock_s3.return_value = MagicMock()
             config.get_s3_filesystem()
-            mock_s3.assert_called_once_with(region="us-east-1")
+            mock_s3.assert_called_once_with(
+                region="us-east-1",
+                connect_timeout=10.0,
+                request_timeout=30.0,
+            )
 
     def test_get_s3_filesystem_with_credentials(self, tmp_path):
         """S3FileSystem is created with credentials."""
@@ -123,6 +127,8 @@ class TestS3FilesystemFactory:
             mock_s3.assert_called_once_with(
                 access_key="my-key",
                 secret_key="my-secret",
+                connect_timeout=10.0,
+                request_timeout=30.0,
             )
 
     def test_get_s3_filesystem_with_endpoint(self, tmp_path):
@@ -137,6 +143,8 @@ class TestS3FilesystemFactory:
             config.get_s3_filesystem()
             mock_s3.assert_called_once_with(
                 endpoint_override="http://localhost:9000",
+                connect_timeout=10.0,
+                request_timeout=30.0,
             )
 
     def test_get_s3_filesystem_with_anonymous(self, tmp_path):
@@ -149,7 +157,11 @@ class TestS3FilesystemFactory:
         with patch("pyarrow.fs.S3FileSystem") as mock_s3:
             mock_s3.return_value = MagicMock()
             config.get_s3_filesystem()
-            mock_s3.assert_called_once_with(anonymous=True)
+            mock_s3.assert_called_once_with(
+                anonymous=True,
+                connect_timeout=10.0,
+                request_timeout=30.0,
+            )
 
     def test_get_s3_filesystem_all_options(self, tmp_path):
         """S3FileSystem is created with all options."""
@@ -169,6 +181,8 @@ class TestS3FilesystemFactory:
                 access_key="key",
                 secret_key="secret",
                 endpoint_override="http://minio:9000",
+                connect_timeout=10.0,
+                request_timeout=30.0,
             )
 
 

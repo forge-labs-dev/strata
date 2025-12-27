@@ -1077,6 +1077,37 @@ async def metrics_prometheus():
         ]
     )
 
+    # Add timeout configuration metrics
+    lines.extend(
+        [
+            "",
+            "# HELP strata_timeout_plan_seconds Planning timeout in seconds",
+            "# TYPE strata_timeout_plan_seconds gauge",
+            f"strata_timeout_plan_seconds {state.config.plan_timeout_seconds}",
+            "",
+            "# HELP strata_timeout_scan_seconds Scan timeout in seconds",
+            "# TYPE strata_timeout_scan_seconds gauge",
+            f"strata_timeout_scan_seconds {state.config.scan_timeout_seconds}",
+            "",
+            "# HELP strata_timeout_fetch_seconds Fetch timeout in seconds",
+            "# TYPE strata_timeout_fetch_seconds gauge",
+            f"strata_timeout_fetch_seconds {state.config.fetch_timeout_seconds}",
+            "",
+            "# HELP strata_timeout_queue_seconds Queue wait timeout by tier",
+            "# TYPE strata_timeout_queue_seconds gauge",
+            f'strata_timeout_queue_seconds{{tier="interactive"}} '
+            f"{state.config.interactive_queue_timeout}",
+            f'strata_timeout_queue_seconds{{tier="bulk"}} {state.config.bulk_queue_timeout}',
+            "",
+            "# HELP strata_timeout_s3_seconds S3 timeout by type",
+            "# TYPE strata_timeout_s3_seconds gauge",
+            f'strata_timeout_s3_seconds{{type="connect"}} '
+            f"{state.config.s3_connect_timeout_seconds}",
+            f'strata_timeout_s3_seconds{{type="request"}} '
+            f"{state.config.s3_request_timeout_seconds}",
+        ]
+    )
+
     # Add rate limiter metrics
     rate_limiter = get_rate_limiter()
     if rate_limiter is not None:
@@ -1192,6 +1223,63 @@ async def metrics_prometheus():
             f"strata_arrow_memory_max_bytes {pool.max_memory()}",
         ]
     )
+
+    # Add circuit breaker metrics
+    from strata.circuit_breaker import get_circuit_breaker_registry
+
+    cb_registry = get_circuit_breaker_registry()
+    cb_all_stats = cb_registry.get_all_stats()
+    if cb_all_stats:
+        lines.extend(
+            [
+                "",
+                "# HELP strata_circuit_breaker_state Circuit breaker state (0=closed, 1=open, 2=half_open)",
+                "# TYPE strata_circuit_breaker_state gauge",
+            ]
+        )
+        state_map = {"closed": 0, "open": 1, "half_open": 2}
+        for cb_name, cb_stats in cb_all_stats.items():
+            cb_state_val = state_map.get(cb_stats.get("state", "closed"), 0)
+            lines.append(f'strata_circuit_breaker_state{{name="{cb_name}"}} {cb_state_val}')
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_circuit_breaker_calls_total Total calls by circuit breaker",
+                "# TYPE strata_circuit_breaker_calls_total counter",
+            ]
+        )
+        for cb_name, cb_stats in cb_all_stats.items():
+            lines.append(
+                f'strata_circuit_breaker_calls_total{{name="{cb_name}"}} '
+                f'{cb_stats.get("total_calls", 0)}'
+            )
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_circuit_breaker_failures_total Total failures by circuit breaker",
+                "# TYPE strata_circuit_breaker_failures_total counter",
+            ]
+        )
+        for cb_name, cb_stats in cb_all_stats.items():
+            lines.append(
+                f'strata_circuit_breaker_failures_total{{name="{cb_name}"}} '
+                f'{cb_stats.get("total_failures", 0)}'
+            )
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_circuit_breaker_rejections_total Rejected calls by circuit breaker",
+                "# TYPE strata_circuit_breaker_rejections_total counter",
+            ]
+        )
+        for cb_name, cb_stats in cb_all_stats.items():
+            lines.append(
+                f'strata_circuit_breaker_rejections_total{{name="{cb_name}"}} '
+                f'{cb_stats.get("total_rejections", 0)}'
+            )
 
     return Response(
         content="\n".join(lines) + "\n",
@@ -2243,6 +2331,40 @@ async def get_rate_limits_debug_v1():
     if rate_limiter is None:
         return {"error": "Rate limiter not initialized", "enabled": False}
     return rate_limiter.get_stats()
+
+
+@app.get("/v1/config/timeouts")
+async def get_timeout_config_v1():
+    """Get all timeout configuration settings.
+
+    Returns timeout configuration organized by category:
+    - planning: Plan timeout settings
+    - scanning: Scan timeout settings
+    - qos_queue: QoS queue wait timeouts
+    - fetching: Row group fetch timeouts
+    - s3: S3 connection and request timeouts
+    """
+    state = get_state()
+    return state.config.get_timeout_config()
+
+
+@app.get("/v1/debug/circuit-breakers")
+async def get_circuit_breakers_v1():
+    """Get circuit breaker status for all dependencies.
+
+    Returns status for each registered circuit breaker:
+    - state: Current state (closed, open, half_open)
+    - failure_count: Current consecutive failures
+    - success_count: Current consecutive successes (in half_open)
+    - total_calls: Lifetime call count
+    - total_failures: Lifetime failure count
+    - total_successes: Lifetime success count
+    - total_rejections: Requests rejected when open
+    """
+    from strata.circuit_breaker import get_circuit_breaker_registry
+
+    registry = get_circuit_breaker_registry()
+    return {"breakers": registry.get_all_stats()}
 
 
 @app.post("/v1/metadata/cleanup")

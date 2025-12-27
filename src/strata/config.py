@@ -202,6 +202,13 @@ class StrataConfig:
     rate_limit_scan_rps: float = 50.0  # Scan endpoint requests per second
     rate_limit_warm_rps: float = 10.0  # Warm endpoint requests per second
 
+    # S3 timeout settings (passed to PyArrow S3FileSystem)
+    s3_connect_timeout_seconds: float = 10.0  # Connection timeout
+    s3_request_timeout_seconds: float = 30.0  # Per-request timeout
+
+    # Fetch timeout settings
+    fetch_timeout_seconds: float = 60.0  # Timeout for fetching a single row group
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -241,6 +248,32 @@ class StrataConfig:
     def server_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
+    def get_timeout_config(self) -> dict:
+        """Get all timeout-related configuration as a dictionary.
+
+        Returns:
+            Dictionary with all timeout settings organized by category.
+        """
+        return {
+            "planning": {
+                "plan_timeout_seconds": self.plan_timeout_seconds,
+            },
+            "scanning": {
+                "scan_timeout_seconds": self.scan_timeout_seconds,
+            },
+            "qos_queue": {
+                "interactive_queue_timeout": self.interactive_queue_timeout,
+                "bulk_queue_timeout": self.bulk_queue_timeout,
+            },
+            "fetching": {
+                "fetch_timeout_seconds": self.fetch_timeout_seconds,
+            },
+            "s3": {
+                "s3_connect_timeout_seconds": self.s3_connect_timeout_seconds,
+                "s3_request_timeout_seconds": self.s3_request_timeout_seconds,
+            },
+        }
+
     def get_s3_filesystem(self):
         """Create a PyArrow S3FileSystem from configuration.
 
@@ -266,6 +299,10 @@ class StrataConfig:
 
         if self.s3_anonymous:
             kwargs["anonymous"] = True
+
+        # Apply timeout settings
+        kwargs["connect_timeout"] = self.s3_connect_timeout_seconds
+        kwargs["request_timeout"] = self.s3_request_timeout_seconds
 
         return pafs.S3FileSystem(**kwargs)
 

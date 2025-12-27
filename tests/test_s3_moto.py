@@ -265,12 +265,16 @@ class TestS3ConfigIntegration:
             # Endpoint only
             (
                 {"s3_endpoint_url": "http://localhost:9000"},
-                {"endpoint_override": "http://localhost:9000"},
+                {
+                    "endpoint_override": "http://localhost:9000",
+                    "connect_timeout": 10.0,
+                    "request_timeout": 30.0,
+                },
             ),
             # Anonymous
             (
                 {"s3_anonymous": True},
-                {"anonymous": True},
+                {"anonymous": True, "connect_timeout": 10.0, "request_timeout": 30.0},
             ),
             # All options
             (
@@ -285,6 +289,8 @@ class TestS3ConfigIntegration:
                     "access_key": "access",
                     "secret_key": "secret",
                     "endpoint_override": "http://localhost:9000",
+                    "connect_timeout": 10.0,
+                    "request_timeout": 30.0,
                 },
             ),
         ],
