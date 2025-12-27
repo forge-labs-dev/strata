@@ -137,6 +137,17 @@ class TestTracingContextManager:
             assert isinstance(span, NoOpSpan)
 
 
+def _is_otel_available() -> bool:
+    """Check if OpenTelemetry is installed."""
+    try:
+        import opentelemetry.trace  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+@pytest.mark.skipif(not _is_otel_available(), reason="OpenTelemetry not installed")
 class TestTracingWithOTelEnabled:
     """Tests for tracing when OpenTelemetry is installed and enabled."""
 

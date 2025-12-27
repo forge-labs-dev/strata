@@ -2,8 +2,13 @@
 
 import asyncio
 import time
+from datetime import UTC, datetime
 
+import pyarrow as pa
 import pytest
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import DoubleType, LongType, NestedField, StringType
 
 
 class TestCacheWarmer:
@@ -65,6 +70,61 @@ class TestCacheWarmer:
         assert progress.bytes_written == 1024
         assert progress.current_table == "table1"
         assert progress.elapsed_ms >= 1000  # At least 1 second
+
+
+@pytest.fixture
+def temp_warehouse(tmp_path):
+    """Create a temporary warehouse with a sample Iceberg table."""
+    warehouse_path = tmp_path / "warehouse"
+    warehouse_path.mkdir()
+
+    # Create a SQL catalog
+    catalog = SqlCatalog(
+        "strata",
+        **{
+            "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
+            "warehouse": str(warehouse_path),
+        },
+    )
+
+    # Create namespace
+    catalog.create_namespace("test_db")
+
+    # Define schema
+    schema = Schema(
+        NestedField(1, "id", LongType(), required=False),
+        NestedField(2, "value", DoubleType(), required=False),
+        NestedField(3, "name", StringType(), required=False),
+        NestedField(4, "timestamp", LongType(), required=False),
+    )
+
+    # Create table
+    table = catalog.create_table("test_db.events", schema)
+
+    # Create sample data
+    num_rows = 100
+    base_ts = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000)
+    data = pa.table(
+        {
+            "id": pa.array(range(num_rows), type=pa.int64()),
+            "value": pa.array([float(i * 1.5) for i in range(num_rows)], type=pa.float64()),
+            "name": pa.array([f"item_{i}" for i in range(num_rows)], type=pa.string()),
+            "timestamp": pa.array(
+                [base_ts + i * 3600_000_000 for i in range(num_rows)],
+                type=pa.int64(),
+            ),
+        }
+    )
+
+    # Append data to table
+    table.append(data)
+
+    return {
+        "warehouse_path": warehouse_path,
+        "table_uri": f"file://{warehouse_path}#test_db.events",
+        "catalog": catalog,
+        "table": table,
+    }
 
 
 class TestCacheWarmerIntegration:
@@ -342,3 +402,285 @@ class TestWarmTypes:
         assert response.status == WarmJobStatus.PENDING
         assert response.tables_count == 3
         assert response.message == "Job started"
+
+
+class TestCacheWarmingRealTables:
+    """Integration tests for cache warming with real Iceberg tables."""
+
+    @pytest.mark.asyncio
+    async def test_warm_real_table(self, tmp_path, temp_warehouse):
+        """Test warming a real Iceberg table caches row groups."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.cache_warmer import CacheWarmer
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+        server_module._state._cache_warmer = CacheWarmer(
+            planner=server_module._state.planner,
+            fetcher=server_module._state.fetcher,
+            metrics=server_module._state.metrics,
+        )
+        await server_module._state._cache_warmer.start()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # Start warming job on real table
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={"tables": [temp_warehouse["table_uri"]]},
+                )
+                assert response.status_code == 200
+                job_id = response.json()["job_id"]
+
+                # Wait for job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id}")
+                    progress = response.json()
+                    if progress["status"] in ["completed", "failed"]:
+                        break
+
+                # Job should complete successfully
+                assert progress["status"] == "completed"
+                assert progress["tables_completed"] == 1
+                assert progress["row_groups_total"] >= 1
+                assert progress["row_groups_cached"] >= 1
+                assert progress["bytes_written"] > 0
+                assert len(progress.get("errors", [])) == 0
+
+        finally:
+            await server_module._state._cache_warmer.stop()
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+
+    @pytest.mark.asyncio
+    async def test_warm_already_cached_table(self, tmp_path, temp_warehouse):
+        """Test warming an already cached table skips row groups."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.cache_warmer import CacheWarmer
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+        server_module._state._cache_warmer = CacheWarmer(
+            planner=server_module._state.planner,
+            fetcher=server_module._state.fetcher,
+            metrics=server_module._state.metrics,
+        )
+        await server_module._state._cache_warmer.start()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # First warming job
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={"tables": [temp_warehouse["table_uri"]]},
+                )
+                job_id1 = response.json()["job_id"]
+
+                # Wait for first job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id1}")
+                    progress1 = response.json()
+                    if progress1["status"] in ["completed", "failed"]:
+                        break
+
+                assert progress1["status"] == "completed"
+                first_cached = progress1["row_groups_cached"]
+                first_skipped = progress1["row_groups_skipped"]
+
+                # Second warming job on same table
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={"tables": [temp_warehouse["table_uri"]]},
+                )
+                job_id2 = response.json()["job_id"]
+
+                # Wait for second job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id2}")
+                    progress2 = response.json()
+                    if progress2["status"] in ["completed", "failed"]:
+                        break
+
+                assert progress2["status"] == "completed"
+                # Second run should skip all row groups (already cached)
+                assert progress2["row_groups_skipped"] >= first_cached
+                # No new row groups should be cached
+                assert progress2["row_groups_cached"] == 0
+
+        finally:
+            await server_module._state._cache_warmer.stop()
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+
+    @pytest.mark.asyncio
+    async def test_warm_with_column_projection(self, tmp_path, temp_warehouse):
+        """Test warming with column projection creates separate cache entries."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.cache_warmer import CacheWarmer
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.server import ServerState, app
+
+        reset_metrics()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+        server_module._state._cache_warmer = CacheWarmer(
+            planner=server_module._state.planner,
+            fetcher=server_module._state.fetcher,
+            metrics=server_module._state.metrics,
+        )
+        await server_module._state._cache_warmer.start()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # Warm with subset of columns
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={
+                        "tables": [temp_warehouse["table_uri"]],
+                        "columns": ["id", "name"],
+                    },
+                )
+                job_id1 = response.json()["job_id"]
+
+                # Wait for job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id1}")
+                    progress1 = response.json()
+                    if progress1["status"] in ["completed", "failed"]:
+                        break
+
+                assert progress1["status"] == "completed"
+                first_cached = progress1["row_groups_cached"]
+                assert first_cached >= 1
+
+                # Warm with different columns - should cache again (different projection)
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={
+                        "tables": [temp_warehouse["table_uri"]],
+                        "columns": ["id", "value"],
+                    },
+                )
+                job_id2 = response.json()["job_id"]
+
+                # Wait for job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id2}")
+                    progress2 = response.json()
+                    if progress2["status"] in ["completed", "failed"]:
+                        break
+
+                assert progress2["status"] == "completed"
+                # Different projection means new cache entries
+                assert progress2["row_groups_cached"] >= 1
+                assert progress2["row_groups_skipped"] == 0
+
+        finally:
+            await server_module._state._cache_warmer.stop()
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
+
+    @pytest.mark.asyncio
+    async def test_warm_multiple_tables(self, tmp_path, temp_warehouse):
+        """Test warming multiple tables in a single job."""
+        from httpx import ASGITransport, AsyncClient
+
+        import strata.server as server_module
+        from strata.cache_warmer import CacheWarmer
+        from strata.config import StrataConfig
+        from strata.pool_metrics import reset_metrics
+        from strata.server import ServerState, app
+
+        # Create a second table
+        catalog = temp_warehouse["catalog"]
+        schema = Schema(
+            NestedField(1, "id", LongType(), required=False),
+            NestedField(2, "count", LongType(), required=False),
+        )
+        table2 = catalog.create_table("test_db.metrics", schema)
+        data2 = pa.table({
+            "id": pa.array(range(50), type=pa.int64()),
+            "count": pa.array(range(50), type=pa.int64()),
+        })
+        table2.append(data2)
+        table2_uri = f"file://{temp_warehouse['warehouse_path']}#test_db.metrics"
+
+        reset_metrics()
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        config = StrataConfig(cache_dir=str(cache_dir))
+        server_module._state = ServerState(config)
+        server_module._state._cache_warmer = CacheWarmer(
+            planner=server_module._state.planner,
+            fetcher=server_module._state.fetcher,
+            metrics=server_module._state.metrics,
+        )
+        await server_module._state._cache_warmer.start()
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                # Warm both tables
+                response = await client.post(
+                    "/v1/cache/warm/async",
+                    json={"tables": [temp_warehouse["table_uri"], table2_uri]},
+                )
+                assert response.status_code == 200
+                data = response.json()
+                assert data["tables_count"] == 2
+                job_id = data["job_id"]
+
+                # Wait for job to complete
+                for _ in range(50):
+                    await asyncio.sleep(0.1)
+                    response = await client.get(f"/v1/cache/warm/jobs/{job_id}")
+                    progress = response.json()
+                    if progress["status"] in ["completed", "failed"]:
+                        break
+
+                assert progress["status"] == "completed"
+                assert progress["tables_total"] == 2
+                assert progress["tables_completed"] == 2
+                assert progress["row_groups_cached"] >= 2  # At least 1 per table
+
+        finally:
+            await server_module._state._cache_warmer.stop()
+            server_module._state._planning_executor.shutdown(wait=False)
+            server_module._state._fetch_executor.shutdown(wait=False)
+            server_module._state = None
