@@ -12,6 +12,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from strata import fast_io
 from strata.cache import CachedFetcher
+from strata.cache_warmer import CacheWarmer
 from strata.config import StrataConfig
 from strata.gc_tracker import get_gc_stats, get_recent_gc_pauses, install_gc_tracker
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
@@ -28,7 +29,18 @@ from strata.logging import (
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
 from strata.tracing import init_tracing, instrument_fastapi, is_tracing_enabled, trace_span
-from strata.types import ReadPlan, ScanRequest, ScanResponse, Task, WarmRequest, WarmResponse
+from strata.types import (
+    ReadPlan,
+    ScanRequest,
+    ScanResponse,
+    Task,
+    WarmAsyncRequest,
+    WarmAsyncResponse,
+    WarmJobProgress,
+    WarmJobStatus,
+    WarmRequest,
+    WarmResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -201,6 +213,9 @@ class ServerState:
         pool_tracker = get_pool_tracker()
         pool_tracker.register_pool("planning", self._planning_executor)
         pool_tracker.register_pool("fetch", self._fetch_executor)
+
+        # Cache warmer for background warming jobs (initialized async in lifespan)
+        self._cache_warmer: "CacheWarmer | None" = None
 
 
 # Global state (initialized in lifespan)
@@ -447,6 +462,14 @@ async def lifespan(app: FastAPI):
 
     _state = ServerState(config)
 
+    # Initialize cache warmer for background warming jobs
+    _state._cache_warmer = CacheWarmer(
+        planner=_state.planner,
+        fetcher=_state.fetcher,
+        metrics=_state.metrics,
+    )
+    await _state._cache_warmer.start()
+
     # Cleanup stale metadata entries on startup
     stale_removed = 0
     try:
@@ -473,6 +496,10 @@ async def lifespan(app: FastAPI):
     )
 
     yield
+
+    # Stop cache warmer (cancel background jobs)
+    if _state._cache_warmer:
+        await _state._cache_warmer.stop()
 
     # Graceful shutdown: wait for active scans to complete
     await _graceful_shutdown(_state)
@@ -2258,6 +2285,131 @@ async def warm_cache_v1(request: WarmRequest):
         elapsed_ms=elapsed_ms,
         errors=errors,
     )
+
+
+@app.post("/v1/cache/warm/async", response_model=WarmAsyncResponse)
+async def warm_cache_async_v1(request: WarmAsyncRequest):
+    """Start an async/background cache warming job.
+
+    Unlike POST /v1/cache/warm (which blocks until complete), this endpoint
+    starts a background job and returns immediately with a job ID for tracking.
+
+    This is useful for:
+    - Warming large tables without blocking the request
+    - Scheduling warmup before batch operations
+    - Warming specific snapshots (not just current)
+
+    Request body:
+    - tables: List of table URIs to warm
+    - columns: Optional column projection (None = all columns)
+    - snapshot_id: Optional specific snapshot (None = current)
+    - max_row_groups: Optional limit per table (None = all)
+    - concurrent: Max concurrent fetches within job (default 4)
+    - priority: Job priority (higher = more urgent, default 0)
+
+    Returns:
+    - job_id: Unique ID for tracking progress via GET /v1/cache/warm/jobs/{id}
+    - status: Initial job status (pending or running)
+    - tables_count: Number of tables in the job
+    - message: Human-readable status message
+    """
+    state = get_state()
+
+    if state._cache_warmer is None:
+        raise HTTPException(status_code=503, detail="Cache warmer not initialized")
+
+    job_id = await state._cache_warmer.start_job(request)
+
+    return WarmAsyncResponse(
+        job_id=job_id,
+        status=WarmJobStatus.PENDING,
+        tables_count=len(request.tables),
+        message=f"Warming job started with {len(request.tables)} tables",
+    )
+
+
+@app.get("/v1/cache/warm/jobs")
+async def list_warm_jobs_v1(
+    include_completed: Annotated[
+        bool, Query(description="Include completed/failed jobs")
+    ] = False,
+):
+    """List all cache warming jobs.
+
+    Returns a list of all warming jobs with their current status and progress.
+    By default only shows pending and running jobs.
+
+    Query params:
+    - include_completed: Include completed/failed/cancelled jobs (default false)
+
+    Returns:
+    - jobs: List of job progress objects
+    """
+    state = get_state()
+
+    if state._cache_warmer is None:
+        return {"jobs": []}
+
+    jobs = state._cache_warmer.list_jobs(include_completed=include_completed)
+    return {"jobs": [j.model_dump() for j in jobs]}
+
+
+@app.get("/v1/cache/warm/jobs/{job_id}", response_model=WarmJobProgress)
+async def get_warm_job_v1(job_id: str):
+    """Get progress for a specific warming job.
+
+    Returns detailed progress information for a warming job including:
+    - Current status (pending, running, completed, failed, cancelled)
+    - Tables completed vs total
+    - Row groups cached vs skipped
+    - Bytes written
+    - Elapsed time
+    - Current table being warmed
+    - Any errors encountered
+
+    Path params:
+    - job_id: Job ID returned from POST /v1/cache/warm/async
+    """
+    state = get_state()
+
+    if state._cache_warmer is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    progress = state._cache_warmer.get_progress(job_id)
+    if progress is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return progress
+
+
+@app.delete("/v1/cache/warm/jobs/{job_id}")
+async def cancel_warm_job_v1(job_id: str):
+    """Cancel a running warming job.
+
+    Cancels the job and stops any in-progress warming operations.
+    Already-cached data is not removed.
+
+    Path params:
+    - job_id: Job ID to cancel
+
+    Returns:
+    - cancelled: True if job was cancelled
+    - message: Human-readable result message
+    """
+    state = get_state()
+
+    if state._cache_warmer is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    cancelled = await state._cache_warmer.cancel_job(job_id)
+
+    if cancelled:
+        return {"cancelled": True, "message": f"Job {job_id} cancelled"}
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or already completed",
+        )
 
 
 def main():

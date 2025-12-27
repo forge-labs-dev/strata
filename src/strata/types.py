@@ -410,6 +410,59 @@ class WarmResponse(BaseModel):
     errors: list[str]  # Any errors encountered (table URI -> error message)
 
 
+class WarmAsyncRequest(BaseModel):
+    """Request to start an async/background cache warming job.
+
+    Similar to WarmRequest but runs in the background and returns a job ID
+    for tracking progress.
+    """
+
+    tables: list[str]  # Table URIs to warm
+    columns: list[str] | None = None  # Columns to cache (None = all)
+    snapshot_id: int | None = None  # Specific snapshot (None = current)
+    max_row_groups: int | None = None  # Limit row groups per table
+    concurrent: int = 4  # Max concurrent fetches
+    priority: int = 0  # Higher = more urgent (affects queue order)
+
+
+class WarmJobStatus(str, Enum):
+    """Status of a background warming job."""
+
+    PENDING = "pending"  # Queued, not started
+    RUNNING = "running"  # Currently executing
+    COMPLETED = "completed"  # Finished successfully
+    FAILED = "failed"  # Finished with errors
+    CANCELLED = "cancelled"  # Cancelled by user
+
+
+class WarmJobProgress(BaseModel):
+    """Progress information for a warming job."""
+
+    job_id: str  # Unique job identifier
+    status: WarmJobStatus  # Current status
+    tables_total: int  # Total tables to warm
+    tables_completed: int  # Tables fully warmed
+    row_groups_total: int  # Total row groups across all tables
+    row_groups_completed: int  # Row groups fetched (cached + skipped)
+    row_groups_cached: int  # Row groups written to cache
+    row_groups_skipped: int  # Row groups already cached
+    bytes_written: int  # Bytes written so far
+    started_at: float | None  # Unix timestamp when job started
+    completed_at: float | None  # Unix timestamp when job completed
+    elapsed_ms: float  # Time elapsed so far
+    current_table: str | None  # Table currently being warmed
+    errors: list[str]  # Errors encountered
+
+
+class WarmAsyncResponse(BaseModel):
+    """Response when starting an async warming job."""
+
+    job_id: str  # Unique job ID for tracking
+    status: WarmJobStatus  # Initial status (pending or running)
+    tables_count: int  # Number of tables in the job
+    message: str  # Human-readable status message
+
+
 def _deserialize_value(value: Any) -> Any:
     """Deserialize filter values from JSON."""
     if isinstance(value, str) and value.startswith("__datetime__:"):
