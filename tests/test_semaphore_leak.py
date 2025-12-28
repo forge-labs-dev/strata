@@ -190,22 +190,26 @@ class TestSemaphoreLeakRegression:
             # We should have had some timeouts
             assert timeout_count > 0, "Expected some client timeouts"
 
-            # Give server time to clean up
-            time.sleep(0.5)
-
             # Phase 2: Verify server is still healthy
             # If semaphores leaked, this would eventually fail with 503
+            # Poll with retries to handle cleanup timing under load
             with httpx.Client(timeout=30.0) as client:
                 # Health check should pass
                 resp = client.get(f"{base_url}/health")
                 assert resp.status_code == 200
 
                 # Metrics should show reasonable active_scans
-                resp = client.get(f"{base_url}/metrics")
-                assert resp.status_code == 200
-                metrics = resp.json()
-                limits = metrics.get("resource_limits", {})
-                active_scans = limits.get("active_scans", 0)
+                # Poll with retries - cleanup may be delayed under load
+                active_scans = None
+                for attempt in range(10):  # Up to 5 seconds total
+                    time.sleep(0.5)
+                    resp = client.get(f"{base_url}/metrics")
+                    assert resp.status_code == 200
+                    metrics = resp.json()
+                    limits = metrics.get("resource_limits", {})
+                    active_scans = limits.get("active_scans", 0)
+                    if active_scans == 0:
+                        break
 
                 # Key invariant: active_scans should be 0 after all requests complete
                 assert active_scans == 0, (

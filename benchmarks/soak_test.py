@@ -260,80 +260,162 @@ class LatencySample:
 
 
 @dataclass
+class RequestResult:
+    """Result of a single scan request with per-phase classification.
+
+    Tracks status codes for each phase (POST, GET stream, DELETE) to enable
+    precise failure classification:
+    - success: All phases succeeded (2xx)
+    - rate_limited: Got 429 at any phase
+    - failed_post: POST failed with non-429 error
+    - failed_stream: GET stream failed with non-429 error
+    - cleanup_failed: DELETE failed (tracked but not considered failure)
+    """
+
+    latency_ms: float
+    phase: str  # warmup, steady, spike, cooldown
+    user_type: str  # dashboard, analyst, bulk
+
+    # Status codes by request phase (0 means phase not reached)
+    post_status: int = 0
+    stream_status: int = 0
+    delete_status: int = 0
+
+    # Error details (for diagnostics)
+    error_type: str | None = None  # timeout, arrow_decode, connection, etc.
+    error_detail: str | None = None
+
+    @property
+    def is_success(self) -> bool:
+        """True if request completed successfully (2xx on POST and stream)."""
+        return (
+            200 <= self.post_status < 300
+            and 200 <= self.stream_status < 300
+        )
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """True if request was rate limited (429)."""
+        return self.post_status == 429 or self.stream_status == 429
+
+    @property
+    def is_timeout(self) -> bool:
+        """True if request timed out."""
+        return self.error_type == "timeout"
+
+    @property
+    def is_5xx(self) -> bool:
+        """True if server returned 5xx error."""
+        return (500 <= self.post_status < 600) or (500 <= self.stream_status < 600)
+
+
+@dataclass
 class SoakResults:
     """Aggregated soak test results."""
 
     duration_hours: float
     total_requests: int
-    success_rate: float
 
-    # Memory metrics
-    baseline_rss_mb: float
-    peak_rss_mb: float
-    final_rss_mb: float
-    memory_growth_pct: float
+    # Request classification (per user feedback: separate 2xx vs 429 vs other)
+    success_2xx_count: int = 0  # Fully successful requests
+    rate_limited_429_count: int = 0  # Rate limited (QoS working as designed)
+    other_fail_count: int = 0  # Real failures (5xx, timeouts, etc.)
 
-    # Latency metrics
-    baseline_p95_ms: float
-    final_p95_ms: float
-    median_steady_p95_ms: float  # Median p95 from clean steady-state samples
-    max_p95_ms: float
-    latency_drift_pct: float
+    # Derived rates
+    success_2xx_rate: float = 0.0  # success_2xx_count / total
+    rate_limited_429_rate: float = 0.0  # rate_limited / total
+    other_fail_rate: float = 0.0  # other_fail / total
+
+    # Legacy field for compatibility
+    success_rate: float = 0.0
+
+    # Memory metrics (uses median RSS in steady window per user feedback)
+    baseline_rss_mb: float = 0.0  # Median RSS during warmup tail
+    steady_median_rss_mb: float = 0.0  # Median RSS during clean steady state
+    peak_rss_mb: float = 0.0
+    min_rss_mb: float = 0.0  # Min RSS (shows GC floor)
+    final_rss_mb: float = 0.0
+    memory_growth_pct: float = 0.0  # Based on steady median vs baseline
+
+    # Latency metrics (measured on successful 2xx requests only per user feedback)
+    baseline_p95_ms: float = 0.0
+    final_p95_ms: float = 0.0
+    median_steady_p95_ms: float = 0.0  # Median p95 from clean steady-state samples
+    max_p95_ms: float = 0.0
+    latency_drift_pct: float = 0.0
+    # Spike latency (separate from steady)
+    spike_p95_ms: float = 0.0  # p95 during spikes (expected to be higher)
+    spike_recovery_time_s: float = 0.0  # Avg time to recover after spike
 
     # Stability metrics
-    final_active_scans: int
-    cache_hit_rate: float
-    prefetch_efficiency: float
+    final_active_scans: int = 0
+    cache_hit_rate: float = 0.0
+    prefetch_efficiency: float = 0.0
 
     # Spike behavior
-    spike_count: int
-    spike_recovery_ok: bool
+    spike_count: int = 0
+    spike_recovery_ok: bool = True
 
     # Resource metrics (fds, threads, cache)
     baseline_fds: float = -1  # -1 means unavailable
     final_fds: int = -1
-    baseline_threads: float = 0
+    baseline_threads: float = 0.0
     final_threads: int = 0
-    final_cache_mb: float = 0
+    final_cache_mb: float = 0.0
     final_cache_entries: int = 0
     total_cache_evictions: int = 0
 
-    # Error breakdown (post-warmup)
-    post_warmup_5xx: int = 0  # HTTP 5xx errors after warmup
-    post_warmup_429: int = 0  # HTTP 429 rate limit errors after warmup
-    post_warmup_timeouts: int = 0  # Timeout errors after warmup
-    post_warmup_arrow_errors: int = 0  # Arrow decode errors (schema/corruption)
-    post_warmup_other_errors: int = 0  # Other errors after warmup
+    # Error breakdown by phase (POST, GET stream, DELETE)
+    post_success_count: int = 0
+    post_429_count: int = 0
+    post_5xx_count: int = 0
+    post_other_fail_count: int = 0
+
+    stream_success_count: int = 0
+    stream_429_count: int = 0
+    stream_5xx_count: int = 0
+    stream_other_fail_count: int = 0
+
+    delete_success_count: int = 0
+    delete_fail_count: int = 0  # Cleanup failures (informational only)
+
+    # Post-warmup error breakdown (for success criteria)
+    post_warmup_5xx: int = 0
+    post_warmup_429: int = 0
+    post_warmup_timeouts: int = 0
+    post_warmup_arrow_errors: int = 0
+    post_warmup_other_errors: int = 0
 
     # Event loop lag (client health indicator)
-    max_event_loop_lag_ms: float = 0.0  # Max observed event loop lag
-    p95_event_loop_lag_ms: float = 0.0  # P95 event loop lag
+    max_event_loop_lag_ms: float = 0.0
+    p95_event_loop_lag_ms: float = 0.0
 
     # GC pause metrics (server-side)
-    gc_total_pauses: int = 0  # Total GC pauses during test
-    gc_total_pause_ms: float = 0.0  # Cumulative GC pause time
-    gc_max_pause_ms: float = 0.0  # Max single GC pause
-    gc_gen2_pause_count: int = 0  # Gen2 pauses (most expensive)
-    gc_gen2_max_ms: float = 0.0  # Max gen2 pause
+    gc_total_pauses: int = 0
+    gc_total_pause_ms: float = 0.0
+    gc_max_pause_ms: float = 0.0
+    gc_gen2_pause_count: int = 0
+    gc_gen2_max_ms: float = 0.0
 
-    # Success criteria
-    server_alive: bool = True  # Server process still running at end
+    # Success criteria (updated per user specifications)
+    server_alive: bool = True
     memory_ok: bool = True
     latency_ok: bool = True
     no_leak: bool = True
-    no_fd_leak: bool = True  # FDs didn't grow significantly
-    no_thread_leak: bool = True  # Threads didn't grow significantly
-    no_errors_post_warmup: bool = True  # Zero 5xx/timeouts after warmup
-    success_rate_ok: bool = True  # Success rate >= min_success_rate
+    no_fd_leak: bool = True
+    no_thread_leak: bool = True
+    no_errors_post_warmup: bool = True  # Zero 5xx/timeouts (429 OK)
+    other_fail_rate_ok: bool = True  # other_fail_rate <= 0.1%
+    rate_429_in_band: bool = True  # 429 rate within expected range
     overall_pass: bool = True
 
     # Crash info
-    server_crash_time_min: float | None = None  # When crash occurred (minutes)
-    server_crash_signal: str | None = None  # Signal that killed server
-    server_crash_exit_code: int | None = None  # Exit code if not signal
+    server_crash_time_min: float | None = None
+    server_crash_signal: str | None = None
+    server_crash_exit_code: int | None = None
 
     # Data quality
-    insufficient_data: bool = False  # True if not enough samples for reliable metrics
+    insufficient_data: bool = False
 
     def to_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -670,9 +752,8 @@ class SoakDriver:
         self.bulk_columns = ["id", "ts", "user_id", "category", "value", "payload"]
         self.categories = ["electronics", "clothing", "food", "books", "sports", "home", "auto"]
 
-        # Results collection
-        # Each request is tracked as (latency_ms, error_or_none, phase) to enable per-phase analysis
-        self.request_results: list[tuple[float, str | None, str]] = []
+        # Results collection - now uses RequestResult for per-phase tracking
+        self.request_results: list[RequestResult] = []
         self.resource_samples: list[ResourceSample] = []
         self.latency_samples: list[LatencySample] = []
         self._lock = asyncio.Lock()
@@ -741,8 +822,15 @@ class SoakDriver:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             return 0, -1, 0
 
-    async def execute_scan(self, user_type: str) -> tuple[float, str | None]:
-        """Execute a single scan and return (latency_ms, error).
+    async def execute_scan(self, user_type: str) -> RequestResult:
+        """Execute a single scan and return RequestResult with per-phase status codes.
+
+        Tracks status codes for each phase (POST, GET stream, DELETE) to enable
+        precise failure classification per user feedback:
+        - success: All phases succeeded (2xx)
+        - rate_limited: Got 429 at any phase
+        - failed_post: POST failed with non-429 error
+        - failed_stream: GET stream failed with non-429 error
 
         For dashboard users, randomly decodes 10-20% of responses using
         pyarrow.ipc.open_stream to catch schema issues and simulate
@@ -750,7 +838,13 @@ class SoakDriver:
         """
         start = time.perf_counter()
         scan_id = None
-        error = None
+
+        # Per-phase status tracking
+        post_status = 0
+        stream_status = 0
+        delete_status = 0
+        error_type = None
+        error_detail = None
 
         # Decide whether to decode Arrow for this request (dashboard only, 15% of requests)
         should_decode = user_type == "dashboard" and self.rng.random() < 0.15
@@ -785,55 +879,83 @@ class SoakDriver:
                     "filters": filters,
                 },
             )
+            post_status = response.status_code
 
             if response.status_code != 200:
-                error = f"HTTP {response.status_code}"
+                error_type = "http_error"
+                error_detail = f"POST returned {response.status_code}"
             else:
                 scan_id = response.json()["scan_id"]
 
                 # Stream response
                 async with self._client.stream("GET", f"/v1/scan/{scan_id}/batches") as stream:
-                    stream.raise_for_status()
+                    stream_status = stream.status_code
 
-                    if should_decode:
-                        # Collect bytes and decode Arrow to catch schema issues
-                        # and simulate client-side parsing costs
-                        chunks = []
-                        async for chunk in stream.aiter_bytes(chunk_size=1024 * 1024):
-                            chunks.append(chunk)
-
-                        if chunks:
-                            # Decode the Arrow IPC stream
-                            data = b"".join(chunks)
-                            reader = ipc.open_stream(pa.BufferReader(data))
-                            # Read all batches to simulate full client processing
-                            total_rows = 0
-                            for batch in reader:
-                                total_rows += batch.num_rows
-                            # Schema validation happens implicitly during read
+                    if stream_status != 200:
+                        error_type = "http_error"
+                        error_detail = f"GET stream returned {stream_status}"
                     else:
-                        # Just drain bytes without decoding
-                        async for _ in stream.aiter_bytes(chunk_size=1024 * 1024):
-                            pass
+                        if should_decode:
+                            # Collect bytes and decode Arrow to catch schema issues
+                            # and simulate client-side parsing costs
+                            chunks = []
+                            async for chunk in stream.aiter_bytes(chunk_size=1024 * 1024):
+                                chunks.append(chunk)
 
-        except httpx.TimeoutException:
-            error = "timeout"
+                            if chunks:
+                                # Decode the Arrow IPC stream
+                                data = b"".join(chunks)
+                                reader = ipc.open_stream(pa.BufferReader(data))
+                                # Read all batches to simulate full client processing
+                                total_rows = 0
+                                for batch in reader:
+                                    total_rows += batch.num_rows
+                                # Schema validation happens implicitly during read
+                        else:
+                            # Just drain bytes without decoding
+                            async for _ in stream.aiter_bytes(chunk_size=1024 * 1024):
+                                pass
+
+        except httpx.TimeoutException as e:
+            error_type = "timeout"
+            error_detail = str(e)[:80]
         except httpx.HTTPStatusError as e:
-            error = f"HTTP {e.response.status_code}"
+            error_type = "http_error"
+            error_detail = f"HTTP {e.response.status_code}"
+            # Update status code from exception
+            if post_status == 0:
+                post_status = e.response.status_code
+            elif stream_status == 0:
+                stream_status = e.response.status_code
         except pa.ArrowInvalid as e:
             # Arrow decoding error - schema issue or corrupt data
-            error = f"arrow_decode: {str(e)[:80]}"
+            error_type = "arrow_decode"
+            error_detail = str(e)[:80]
+        except httpx.ConnectError as e:
+            error_type = "connection"
+            error_detail = str(e)[:80]
         except Exception as e:
-            error = str(e)[:100]
+            error_type = "other"
+            error_detail = str(e)[:100]
         finally:
             if scan_id:
                 try:
-                    await self._client.delete(f"/v1/scan/{scan_id}")
+                    delete_resp = await self._client.delete(f"/v1/scan/{scan_id}")
+                    delete_status = delete_resp.status_code
                 except Exception:
-                    pass
+                    delete_status = 0  # Cleanup failed
 
         latency_ms = (time.perf_counter() - start) * 1000
-        return latency_ms, error
+        return RequestResult(
+            latency_ms=latency_ms,
+            phase=self.current_phase.value,
+            user_type=user_type,
+            post_status=post_status,
+            stream_status=stream_status,
+            delete_status=delete_status,
+            error_type=error_type,
+            error_detail=error_detail,
+        )
 
     async def user_loop(self, user_id: int, user_type: str, get_duration: callable):
         """Run user loop."""
@@ -845,10 +967,10 @@ class SoakDriver:
             if duration <= 0:
                 break
 
-            latency_ms, error = await self.execute_scan(user_type)
+            result = await self.execute_scan(user_type)
 
             async with self._lock:
-                self.request_results.append((latency_ms, error, self.current_phase.value))
+                self.request_results.append(result)
 
             # Think time
             if user_type == "dashboard":
@@ -943,24 +1065,32 @@ class SoakDriver:
             )
 
             # Latency sample from recent requests
+            # Per user feedback: measure latency only on successful (2xx) requests
             async with self._lock:
                 recent_results = self.request_results[-1000:]  # Last 1000
                 total_results = len(self.request_results)
 
             if recent_results:
-                recent_latencies = [r[0] for r in recent_results]
-                recent_errors = sum(1 for r in recent_results if r[1] is not None)
-                total_errors = sum(1 for r in self.request_results if r[1] is not None)
+                # Filter to successful requests for latency measurement
+                recent_success_latencies = [r.latency_ms for r in recent_results if r.is_success]
+                # Count error types
+                recent_2xx = sum(1 for r in recent_results if r.is_success)
+                recent_429 = sum(1 for r in recent_results if r.is_rate_limited)
+                recent_other = len(recent_results) - recent_2xx - recent_429
+
+                # Use successful latencies for percentiles, fall back to all if none
+                latencies_for_pct = recent_success_latencies if recent_success_latencies else [r.latency_ms for r in recent_results]
+
                 self.latency_samples.append(
                     LatencySample(
                         timestamp=timestamp,
                         elapsed_s=elapsed,
-                        p50_ms=_percentile(recent_latencies, 0.5),
-                        p95_ms=_percentile(recent_latencies, 0.95),
-                        p99_ms=_percentile(recent_latencies, 0.99),
+                        p50_ms=_percentile(latencies_for_pct, 0.5),
+                        p95_ms=_percentile(latencies_for_pct, 0.95),
+                        p99_ms=_percentile(latencies_for_pct, 0.99),
                         request_count=total_results,
-                        success_count=total_results - total_errors,
-                        error_count=total_errors,
+                        success_count=recent_2xx,
+                        error_count=recent_429 + recent_other,
                         phase=self.current_phase.value,
                         event_loop_lag_ms=event_loop_lag_ms,
                     )
@@ -969,14 +1099,18 @@ class SoakDriver:
                 # Print status with extended resource info
                 rss_mb = rss / (1024 * 1024)
                 cache_mb = cache_bytes / (1024 * 1024)
-                p95 = _percentile(recent_latencies, 0.95)
+                p95 = _percentile(latencies_for_pct, 0.95)
                 fd_str = str(num_fds) if num_fds >= 0 else "n/a"
                 # Show GC pause stats (max pause is most impactful for latency)
                 gc_pause_str = f"gc_max={gc_max_pause_ms:5.1f}ms" if gc_total_pauses > 0 else ""
+                # Show request breakdown: 2xx/429/other
+                total_all = sum(1 for r in self.request_results)
+                total_2xx = sum(1 for r in self.request_results if r.is_success)
+                total_429 = sum(1 for r in self.request_results if r.is_rate_limited)
                 print(
                     f"  [{elapsed/60:5.1f}m] {self.current_phase.value:8s} "
                     f"RSS={rss_mb:5.0f}MB cache={cache_mb:5.0f}MB fds={fd_str:>4} "
-                    f"p95={p95:6.1f}ms {gc_pause_str} reqs={total_results} errs={recent_errors}"
+                    f"p95={p95:6.1f}ms {gc_pause_str} 2xx={total_2xx} 429={total_429} other={total_all-total_2xx-total_429}"
                 )
 
     async def run_soak_test(self) -> SoakResults:
@@ -1191,80 +1325,194 @@ class SoakDriver:
         return True
 
     def _compute_results(self, start_time: float, final_metrics: dict) -> SoakResults:
-        """Compute soak test results."""
+        """Compute soak test results with improved metrics per user feedback.
+
+        Key improvements:
+        1. Separate 2xx vs 429 vs other failures (429 is QoS working, not failure)
+        2. Track status codes per phase (POST, GET stream, DELETE)
+        3. Use median RSS in steady-state window for memory baseline
+        4. Measure latency only on successful (2xx) requests
+        5. Production-ready success criteria
+        """
         duration_hours = (time.perf_counter() - start_time) / 3600
 
         # Minimum samples required for reliable baseline (at least 2 samples)
         min_baseline_samples = 2
 
-        # Resource analysis - use last 2 minutes of warmup for baseline
+        # =================================================================
+        # Request classification (per user feedback: 2xx vs 429 vs other)
+        # =================================================================
+        total_requests = len(self.request_results)
+
+        # Classify all requests
+        success_2xx_count = sum(1 for r in self.request_results if r.is_success)
+        rate_limited_429_count = sum(1 for r in self.request_results if r.is_rate_limited)
+        other_fail_count = total_requests - success_2xx_count - rate_limited_429_count
+
+        # Compute rates
+        success_2xx_rate = success_2xx_count / total_requests if total_requests > 0 else 0
+        rate_limited_429_rate = rate_limited_429_count / total_requests if total_requests > 0 else 0
+        other_fail_rate = other_fail_count / total_requests if total_requests > 0 else 0
+
+        # Legacy success rate (includes 429 as failure for backwards compat)
+        success_rate = success_2xx_count / total_requests if total_requests > 0 else 0
+
+        # =================================================================
+        # Per-phase status code breakdown
+        # =================================================================
+        post_success_count = 0
+        post_429_count = 0
+        post_5xx_count = 0
+        post_other_fail_count = 0
+
+        stream_success_count = 0
+        stream_429_count = 0
+        stream_5xx_count = 0
+        stream_other_fail_count = 0
+
+        delete_success_count = 0
+        delete_fail_count = 0
+
+        for r in self.request_results:
+            # POST phase
+            if 200 <= r.post_status < 300:
+                post_success_count += 1
+            elif r.post_status == 429:
+                post_429_count += 1
+            elif 500 <= r.post_status < 600:
+                post_5xx_count += 1
+            elif r.post_status != 0:  # 0 means not reached
+                post_other_fail_count += 1
+
+            # Stream phase (only if POST succeeded)
+            if r.post_status == 200:
+                if 200 <= r.stream_status < 300:
+                    stream_success_count += 1
+                elif r.stream_status == 429:
+                    stream_429_count += 1
+                elif 500 <= r.stream_status < 600:
+                    stream_5xx_count += 1
+                elif r.stream_status != 0:
+                    stream_other_fail_count += 1
+
+            # DELETE phase
+            if 200 <= r.delete_status < 300:
+                delete_success_count += 1
+            elif r.delete_status != 0:
+                delete_fail_count += 1
+
+        # =================================================================
+        # Post-warmup error breakdown (for success criteria)
+        # =================================================================
+        post_warmup_5xx = 0
+        post_warmup_429 = 0
+        post_warmup_timeouts = 0
+        post_warmup_arrow_errors = 0
+        post_warmup_other_errors = 0
+
+        for r in self.request_results:
+            if r.phase == Phase.WARMUP.value:
+                continue  # Only count post-warmup
+
+            if r.is_5xx:
+                post_warmup_5xx += 1
+            elif r.is_rate_limited:
+                post_warmup_429 += 1
+            elif r.is_timeout:
+                post_warmup_timeouts += 1
+            elif r.error_type == "arrow_decode":
+                post_warmup_arrow_errors += 1
+            elif r.error_type is not None:
+                post_warmup_other_errors += 1
+
+        # =================================================================
+        # Memory analysis - use median RSS in steady-state window
+        # =================================================================
         warmup_samples = [s for s in self.resource_samples if s.phase == Phase.WARMUP.value]
         steady_samples = [s for s in self.resource_samples if s.phase == Phase.STEADY.value]
 
-        # Compute baseline from last N samples of warmup (covering ~2 min window)
-        baseline_window_samples = 4  # ~2 min at 30s interval
-        warmup_tail = warmup_samples[-baseline_window_samples:] if warmup_samples else []
-        baseline_rss = (
-            sum(s.rss_bytes for s in warmup_tail) / len(warmup_tail)
-            if len(warmup_tail) >= min_baseline_samples
-            else 0
-        )
-        peak_rss = max((s.rss_bytes for s in self.resource_samples), default=0)
-        final_rss = self.resource_samples[-1].rss_bytes if self.resource_samples else 0
+        # Filter steady samples to exclude spike contamination windows
+        spike_contamination_window_s = 120.0
 
-        memory_growth_pct = (
-            ((final_rss - baseline_rss) / baseline_rss * 100) if baseline_rss > 0 else 0
-        )
-
-        # FD and thread analysis - check for leaks (monotonic growth)
-        baseline_fds = (
-            sum(s.num_fds for s in warmup_tail if s.num_fds >= 0) / len(warmup_tail)
-            if warmup_tail and all(s.num_fds >= 0 for s in warmup_tail)
-            else -1
-        )
-        final_fds = (
-            self.resource_samples[-1].num_fds if self.resource_samples else -1
-        )
-        baseline_threads = (
-            sum(s.num_threads for s in warmup_tail) / len(warmup_tail)
-            if len(warmup_tail) >= min_baseline_samples
-            else 0
-        )
-        final_threads = (
-            self.resource_samples[-1].num_threads if self.resource_samples else 0
-        )
-
-        # Cache metrics from final sample
-        final_cache_bytes = (
-            self.resource_samples[-1].cache_bytes if self.resource_samples else 0
-        )
-        final_cache_entries = (
-            self.resource_samples[-1].cache_entries if self.resource_samples else 0
-        )
-        total_evictions = (
-            self.resource_samples[-1].cache_evictions if self.resource_samples else 0
-        )
-
-        # Latency analysis - use last 2 minutes of warmup for baseline
-        warmup_latency = [s for s in self.latency_samples if s.phase == Phase.WARMUP.value]
-
-        # Filter steady-state samples to exclude spike contamination windows
-        # A sample is "clean" if it's not within 2 minutes after any spike end
-        spike_contamination_window_s = 120.0  # 2 minutes after spike for requests to drain
-
-        def is_clean_steady_sample(sample) -> bool:
-            """Check if sample is from clean steady state (not spike-contaminated)."""
+        def is_clean_steady_resource_sample(sample) -> bool:
             if sample.phase != Phase.STEADY.value:
                 return False
-            # Check if sample is within contamination window of any spike
             for _, spike_end in self.spike_events:
                 if spike_end <= sample.elapsed_s <= spike_end + spike_contamination_window_s:
                     return False
             return True
 
-        steady_latency_clean = [s for s in self.latency_samples if is_clean_steady_sample(s)]
+        clean_steady_samples = [s for s in self.resource_samples if is_clean_steady_resource_sample(s)]
 
-        # Compute baseline p95 from last N samples of warmup
+        # Baseline: median RSS from warmup tail (last 2 min)
+        baseline_window_samples = 4  # ~2 min at 30s interval
+        warmup_tail = warmup_samples[-baseline_window_samples:] if warmup_samples else []
+
+        if len(warmup_tail) >= min_baseline_samples:
+            warmup_rss_values = sorted(s.rss_bytes for s in warmup_tail)
+            baseline_rss = warmup_rss_values[len(warmup_rss_values) // 2]  # Median
+        else:
+            baseline_rss = 0
+
+        # Steady-state: median RSS from clean steady samples (not spike windows)
+        if clean_steady_samples:
+            steady_rss_values = sorted(s.rss_bytes for s in clean_steady_samples)
+            steady_median_rss = steady_rss_values[len(steady_rss_values) // 2]
+        else:
+            steady_median_rss = baseline_rss
+
+        # Peak and min RSS (for observability - shows GC fluctuation range)
+        all_rss = [s.rss_bytes for s in self.resource_samples if s.rss_bytes > 0]
+        peak_rss = max(all_rss) if all_rss else 0
+        min_rss = min(all_rss) if all_rss else 0
+        final_rss = self.resource_samples[-1].rss_bytes if self.resource_samples else 0
+
+        # Memory growth: compare steady-state median vs baseline median
+        # This avoids comparing cold start to final (GC fluctuation)
+        memory_growth_pct = (
+            ((steady_median_rss - baseline_rss) / baseline_rss * 100)
+            if baseline_rss > 0
+            else 0
+        )
+
+        # FD and thread analysis
+        baseline_fds = -1
+        if warmup_tail and all(s.num_fds >= 0 for s in warmup_tail):
+            fd_values = sorted(s.num_fds for s in warmup_tail)
+            baseline_fds = fd_values[len(fd_values) // 2]
+
+        final_fds = self.resource_samples[-1].num_fds if self.resource_samples else -1
+
+        baseline_threads = 0.0
+        if len(warmup_tail) >= min_baseline_samples:
+            thread_values = sorted(s.num_threads for s in warmup_tail)
+            baseline_threads = thread_values[len(thread_values) // 2]
+
+        final_threads = self.resource_samples[-1].num_threads if self.resource_samples else 0
+
+        # Cache metrics from final sample
+        final_cache_bytes = self.resource_samples[-1].cache_bytes if self.resource_samples else 0
+        final_cache_entries = self.resource_samples[-1].cache_entries if self.resource_samples else 0
+        total_evictions = self.resource_samples[-1].cache_evictions if self.resource_samples else 0
+
+        # =================================================================
+        # Latency analysis - measured on successful (2xx) requests only
+        # =================================================================
+        warmup_latency = [s for s in self.latency_samples if s.phase == Phase.WARMUP.value]
+        spike_latency = [s for s in self.latency_samples if s.phase == Phase.SPIKE.value]
+
+        # Filter steady-state latency samples to exclude spike contamination
+        def is_clean_steady_latency(sample) -> bool:
+            if sample.phase != Phase.STEADY.value:
+                return False
+            for _, spike_end in self.spike_events:
+                if spike_end <= sample.elapsed_s <= spike_end + spike_contamination_window_s:
+                    return False
+            return True
+
+        steady_latency_clean = [s for s in self.latency_samples if is_clean_steady_latency(s)]
+
+        # Baseline p95 from warmup tail
         warmup_latency_tail = warmup_latency[-baseline_window_samples:] if warmup_latency else []
         baseline_p95 = (
             sum(s.p95_ms for s in warmup_latency_tail) / len(warmup_latency_tail)
@@ -1272,27 +1520,37 @@ class SoakDriver:
             else 0
         )
 
-        # Compute final p95 from last N clean steady-state samples (excluding spike windows)
-        steady_latency_tail = (
-            steady_latency_clean[-baseline_window_samples:] if steady_latency_clean else []
-        )
+        # Final p95 from clean steady-state samples tail
+        steady_latency_tail = steady_latency_clean[-baseline_window_samples:] if steady_latency_clean else []
         final_p95 = (
             sum(s.p95_ms for s in steady_latency_tail) / len(steady_latency_tail)
             if len(steady_latency_tail) >= min_baseline_samples
             else 0
         )
 
-        # Max p95 from all samples (for observability, not pass/fail)
-        max_p95 = max((s.p95_ms for s in self.latency_samples), default=0)
-
-        # Compute median steady-state p95 (more robust than final for drift)
-        # This represents typical behavior during non-spike periods
+        # Median steady p95 (robust measure)
         if steady_latency_clean:
             sorted_p95 = sorted(s.p95_ms for s in steady_latency_clean)
-            median_idx = len(sorted_p95) // 2
-            median_steady_p95 = sorted_p95[median_idx]
+            median_steady_p95 = sorted_p95[len(sorted_p95) // 2]
         else:
             median_steady_p95 = final_p95
+
+        # Max p95 from all samples
+        max_p95 = max((s.p95_ms for s in self.latency_samples), default=0)
+
+        # Spike p95 (expected to be higher during spikes)
+        spike_p95 = (
+            sum(s.p95_ms for s in spike_latency) / len(spike_latency)
+            if spike_latency
+            else 0
+        )
+
+        # Latency drift: compare median steady vs baseline
+        latency_drift_pct = (
+            ((median_steady_p95 - baseline_p95) / baseline_p95 * 100)
+            if baseline_p95 > 0
+            else 0
+        )
 
         # Check if we have sufficient data for reliable metrics
         insufficient_data = (
@@ -1302,45 +1560,36 @@ class SoakDriver:
             or baseline_p95 == 0
         )
 
-        # Use median steady-state p95 for drift calculation (more robust than final)
-        latency_drift_pct = (
-            ((median_steady_p95 - baseline_p95) / baseline_p95 * 100) if baseline_p95 > 0 else 0
-        )
+        # =================================================================
+        # Spike recovery analysis
+        # =================================================================
+        spike_recovery_ok = self._check_spike_recovery(baseline_p95)
 
-        # Other metrics
-        total_requests = len(self.request_results)
-        total_errors = sum(1 for r in self.request_results if r[1] is not None)
-        success_rate = (total_requests - total_errors) / total_requests if total_requests > 0 else 0
+        # Compute average recovery time across all spikes
+        recovery_times = []
+        for spike_start, spike_end in self.spike_events:
+            recovery_window_s = 120.0
+            recovery_samples = [
+                s for s in self.latency_samples
+                if spike_end <= s.elapsed_s <= spike_end + recovery_window_s
+                and s.phase == Phase.STEADY.value
+            ]
+            if recovery_samples and baseline_p95 > 0:
+                for sample in recovery_samples:
+                    if sample.p95_ms <= baseline_p95 * 1.20:
+                        recovery_times.append(sample.elapsed_s - spike_end)
+                        break
 
-        # Count errors by phase and type (post-warmup = steady, spike, cooldown)
-        post_warmup_5xx = 0
-        post_warmup_429 = 0  # Rate limiting (QoS rejection)
-        post_warmup_timeouts = 0
-        post_warmup_arrow_errors = 0
-        post_warmup_other_errors = 0
-        for latency, error, phase in self.request_results:
-            if error is None or phase == Phase.WARMUP.value:
-                continue
-            # Classify error type
-            if "HTTP 5" in error:
-                post_warmup_5xx += 1
-            elif "HTTP 429" in error or "Too Many Requests" in error:
-                post_warmup_429 += 1
-            elif "timeout" in error.lower():
-                post_warmup_timeouts += 1
-            elif "arrow_decode" in error:
-                post_warmup_arrow_errors += 1
-            else:
-                post_warmup_other_errors += 1
+        spike_recovery_time_s = sum(recovery_times) / len(recovery_times) if recovery_times else 0
 
-        # Check if we got valid metrics (empty dict means server unreachable)
+        # =================================================================
+        # Server metrics
+        # =================================================================
         metrics_available = bool(final_metrics)
-
         final_active = final_metrics.get("resource_limits", {}).get("active_scans", 0)
 
         cache_hits = final_metrics.get("cache_hits", 0)
         cache_misses = final_metrics.get("cache_misses", 0)
-        # Only compute cache hit rate if we have data; -1 signals unavailable
         if cache_hits + cache_misses > 0:
             cache_hit_rate = cache_hits / (cache_hits + cache_misses)
         else:
@@ -1349,25 +1598,17 @@ class SoakDriver:
         prefetch = final_metrics.get("prefetch", {})
         prefetch_started = prefetch.get("started", 0)
         prefetch_used = prefetch.get("used", 0)
-        # Only compute prefetch efficiency if we have data; -1 signals unavailable
         if prefetch_started > 0:
             prefetch_efficiency = prefetch_used / prefetch_started
         else:
             prefetch_efficiency = -1.0 if not metrics_available else 0.0
 
-        # Check if spikes recovered properly
-        # For each spike, check if p95 returns within 20% of baseline within 2 minutes after spike
-        spike_recovery_ok = self._check_spike_recovery(baseline_p95)
-
-        # Event loop lag metrics (client-side health indicator)
+        # Event loop lag metrics
         all_lags = [s.event_loop_lag_ms for s in self.latency_samples if s.event_loop_lag_ms > 0]
         max_event_loop_lag = max(all_lags) if all_lags else 0
         p95_event_loop_lag = _percentile(all_lags, 0.95) if all_lags else 0
 
-        # GC pause metrics - use last valid sample for cumulative counters
-        # (final sample may have zeros if server died)
-        final_sample = self.resource_samples[-1] if self.resource_samples else None
-        # Find last sample where server was alive (rss > 0) for cumulative metrics
+        # GC pause metrics
         valid_samples = [s for s in self.resource_samples if s.rss_bytes > 0]
         last_valid = valid_samples[-1] if valid_samples else None
         gc_total_pauses = last_valid.gc_total_pauses if last_valid else 0
@@ -1376,35 +1617,40 @@ class SoakDriver:
         gc_gen2_pause_count = last_valid.gc_gen2_pause_count if last_valid else 0
         gc_gen2_max_ms = max((s.gc_gen2_max_ms for s in valid_samples), default=0.0)
 
-        # Success criteria
-        # Server must still be alive (final_rss > 0 means process was measurable)
+        # =================================================================
+        # Success criteria (updated per user specifications)
+        # =================================================================
         server_alive = final_rss > 0 and final_threads > 0
-        # Memory check only valid if server is alive
         memory_ok = server_alive and memory_growth_pct <= self.config.max_memory_growth_pct
-        # Latency drift: only fail if latency INCREASED beyond threshold
-        # Improvement (negative drift) is always acceptable
         latency_ok = latency_drift_pct <= self.config.max_latency_drift_pct
-        # Active scan leak check requires valid metrics
         no_leak = metrics_available and final_active == 0
-        # Zero 5xx, timeouts, and Arrow decode errors after warmup
-        no_errors_post_warmup = (
-            post_warmup_5xx == 0 and post_warmup_timeouts == 0 and post_warmup_arrow_errors == 0
-        )
-        # Success rate must meet minimum threshold (catches "other" errors)
-        success_rate_ok = success_rate >= self.config.min_success_rate
 
-        # FD leak check: if we have baseline, final shouldn't exceed 2x baseline
-        # (accounts for normal fluctuation during load)
+        # Zero 5xx, timeouts, and Arrow decode errors after warmup (429 OK)
+        no_errors_post_warmup = (
+            post_warmup_5xx == 0
+            and post_warmup_timeouts == 0
+            and post_warmup_arrow_errors == 0
+        )
+
+        # Other fail rate <= 0.1% (per user specification)
+        other_fail_rate_ok = other_fail_rate <= 0.001
+
+        # 429 rate within expected band (based on load vs capacity)
+        # For soak test with N users and M slots, expected 429 rate depends on load
+        # We consider it OK if 429 rate < 50% (server not completely saturated)
+        rate_429_in_band = rate_limited_429_rate <= 0.50
+
+        # FD leak check
         no_fd_leak = True
         if baseline_fds > 0 and final_fds > 0:
             no_fd_leak = final_fds <= baseline_fds * 2
 
-        # Thread leak check: final threads shouldn't exceed 2x baseline
+        # Thread leak check
         no_thread_leak = True
         if baseline_threads > 0 and final_threads > 0:
             no_thread_leak = final_threads <= baseline_threads * 2
 
-        # If insufficient data, we can't reliably pass - mark as fail
+        # Overall pass (updated criteria per user feedback)
         overall_pass = (
             server_alive
             and memory_ok
@@ -1413,7 +1659,8 @@ class SoakDriver:
             and no_fd_leak
             and no_thread_leak
             and no_errors_post_warmup
-            and success_rate_ok
+            and other_fail_rate_ok
+            and rate_429_in_band
             and spike_recovery_ok
             and not insufficient_data
         )
@@ -1421,9 +1668,17 @@ class SoakDriver:
         return SoakResults(
             duration_hours=duration_hours,
             total_requests=total_requests,
+            success_2xx_count=success_2xx_count,
+            rate_limited_429_count=rate_limited_429_count,
+            other_fail_count=other_fail_count,
+            success_2xx_rate=success_2xx_rate,
+            rate_limited_429_rate=rate_limited_429_rate,
+            other_fail_rate=other_fail_rate,
             success_rate=success_rate,
             baseline_rss_mb=baseline_rss / (1024 * 1024),
+            steady_median_rss_mb=steady_median_rss / (1024 * 1024),
             peak_rss_mb=peak_rss / (1024 * 1024),
+            min_rss_mb=min_rss / (1024 * 1024),
             final_rss_mb=final_rss / (1024 * 1024),
             memory_growth_pct=memory_growth_pct,
             baseline_p95_ms=baseline_p95,
@@ -1431,6 +1686,8 @@ class SoakDriver:
             median_steady_p95_ms=median_steady_p95,
             max_p95_ms=max_p95,
             latency_drift_pct=latency_drift_pct,
+            spike_p95_ms=spike_p95,
+            spike_recovery_time_s=spike_recovery_time_s,
             final_active_scans=final_active,
             cache_hit_rate=cache_hit_rate,
             prefetch_efficiency=prefetch_efficiency,
@@ -1443,6 +1700,16 @@ class SoakDriver:
             final_cache_mb=final_cache_bytes / (1024 * 1024),
             final_cache_entries=final_cache_entries,
             total_cache_evictions=total_evictions,
+            post_success_count=post_success_count,
+            post_429_count=post_429_count,
+            post_5xx_count=post_5xx_count,
+            post_other_fail_count=post_other_fail_count,
+            stream_success_count=stream_success_count,
+            stream_429_count=stream_429_count,
+            stream_5xx_count=stream_5xx_count,
+            stream_other_fail_count=stream_other_fail_count,
+            delete_success_count=delete_success_count,
+            delete_fail_count=delete_fail_count,
             post_warmup_5xx=post_warmup_5xx,
             post_warmup_429=post_warmup_429,
             post_warmup_timeouts=post_warmup_timeouts,
@@ -1462,7 +1729,8 @@ class SoakDriver:
             no_fd_leak=no_fd_leak,
             no_thread_leak=no_thread_leak,
             no_errors_post_warmup=no_errors_post_warmup,
-            success_rate_ok=success_rate_ok,
+            other_fail_rate_ok=other_fail_rate_ok,
+            rate_429_in_band=rate_429_in_band,
             overall_pass=overall_pass,
             server_crash_time_min=self.server_crash_time / 60 if self.server_crash_time else None,
             server_crash_signal=self.server_crash_info.get("signal_name") if self.server_crash_info else None,
@@ -1477,32 +1745,67 @@ class SoakDriver:
 
 
 def print_results(results: SoakResults):
-    """Print formatted results."""
+    """Print formatted results with improved metrics per user feedback."""
     print("\n" + "=" * 80)
     print("SOAK TEST RESULTS")
     print("=" * 80)
 
     print(f"\nDuration: {results.duration_hours:.2f} hours")
     print(f"Total requests: {results.total_requests:,}")
-    print(f"Success rate: {results.success_rate * 100:.1f}%")
 
+    # =================================================================
+    # Request Classification (new: 2xx vs 429 vs other)
+    # =================================================================
     print("\n" + "-" * 40)
-    print("MEMORY")
+    print("REQUEST CLASSIFICATION")
     print("-" * 40)
-    print(f"Baseline RSS: {results.baseline_rss_mb:.1f} MB")
-    print(f"Peak RSS: {results.peak_rss_mb:.1f} MB")
+    print(f"Success (2xx):     {results.success_2xx_count:>8,} ({results.success_2xx_rate * 100:5.1f}%)")
+    print(f"Rate limited (429):{results.rate_limited_429_count:>8,} ({results.rate_limited_429_rate * 100:5.1f}%)")
+    print(f"Other failures:    {results.other_fail_count:>8,} ({results.other_fail_rate * 100:5.2f}%)")
+
+    # =================================================================
+    # Per-Phase Status Codes (new: POST/GET/DELETE breakdown)
+    # =================================================================
+    print("\n" + "-" * 40)
+    print("STATUS CODES BY PHASE")
+    print("-" * 40)
+    print("POST /v1/scan:")
+    print(f"  2xx: {results.post_success_count:,}  429: {results.post_429_count:,}  5xx: {results.post_5xx_count}  other: {results.post_other_fail_count}")
+    print("GET /v1/scan/{id}/batches:")
+    print(f"  2xx: {results.stream_success_count:,}  429: {results.stream_429_count:,}  5xx: {results.stream_5xx_count}  other: {results.stream_other_fail_count}")
+    print("DELETE /v1/scan/{id}:")
+    print(f"  success: {results.delete_success_count:,}  failed: {results.delete_fail_count}")
+
+    # =================================================================
+    # Memory (updated: uses median RSS in steady window)
+    # =================================================================
+    print("\n" + "-" * 40)
+    print("MEMORY (median-based)")
+    print("-" * 40)
+    print(f"Baseline (warmup median): {results.baseline_rss_mb:.1f} MB")
+    print(f"Steady-state median:      {results.steady_median_rss_mb:.1f} MB")
+    print(f"Range: {results.min_rss_mb:.1f} MB - {results.peak_rss_mb:.1f} MB (shows GC fluctuation)")
     print(f"Final RSS: {results.final_rss_mb:.1f} MB")
-    print(f"Growth: {results.memory_growth_pct:+.1f}%")
+    print(f"Growth (steady vs baseline): {results.memory_growth_pct:+.1f}%")
 
+    # =================================================================
+    # Latency (updated: measured on 2xx only, separate spike/steady)
+    # =================================================================
     print("\n" + "-" * 40)
-    print("LATENCY")
+    print("LATENCY (2xx requests only)")
     print("-" * 40)
-    print(f"Baseline p95: {results.baseline_p95_ms:.1f} ms")
-    print(f"Median steady p95: {results.median_steady_p95_ms:.1f} ms (clean samples only)")
-    print(f"Final p95: {results.final_p95_ms:.1f} ms")
-    print(f"Max p95: {results.max_p95_ms:.1f} ms")
-    print(f"Drift: {results.latency_drift_pct:+.1f}% (baseline vs median steady)")
+    print(f"Baseline p95 (warmup):     {results.baseline_p95_ms:.1f} ms")
+    print(f"Steady p95 (median):       {results.median_steady_p95_ms:.1f} ms")
+    print(f"Steady p95 (final window): {results.final_p95_ms:.1f} ms")
+    print(f"Spike p95:                 {results.spike_p95_ms:.1f} ms")
+    print(f"Max p95 (any sample):      {results.max_p95_ms:.1f} ms")
+    print(f"Drift (baseline vs steady median): {results.latency_drift_pct:+.1f}%")
+    if results.spike_recovery_time_s > 0:
+        print(f"Avg spike recovery time:   {results.spike_recovery_time_s:.1f}s")
 
+    # =================================================================
+    # Resources
+    # =================================================================
     print("\n" + "-" * 40)
     print("RESOURCES")
     print("-" * 40)
@@ -1513,6 +1816,9 @@ def print_results(results: SoakResults):
     print(f"Cache size: {results.final_cache_mb:.1f} MB ({results.final_cache_entries} entries)")
     print(f"Cache evictions: {results.total_cache_evictions}")
 
+    # =================================================================
+    # GC Pause Duration
+    # =================================================================
     print("\n" + "-" * 40)
     print("GC PAUSE DURATION")
     print("-" * 40)
@@ -1525,35 +1831,42 @@ def print_results(results: SoakResults):
         pause_pct = (results.gc_total_pause_ms / 1000) / (results.duration_hours * 3600) * 100
         print(f"Pause overhead: {pause_pct:.3f}% of runtime")
 
+    # =================================================================
+    # Client Health
+    # =================================================================
     print("\n" + "-" * 40)
     print("CLIENT HEALTH")
     print("-" * 40)
     print(f"Event loop lag (max): {results.max_event_loop_lag_ms:.2f} ms")
     print(f"Event loop lag (p95): {results.p95_event_loop_lag_ms:.2f} ms")
 
+    # =================================================================
+    # Stability
+    # =================================================================
     print("\n" + "-" * 40)
     print("STABILITY")
     print("-" * 40)
     print(f"Final active scans: {results.final_active_scans}")
-    cache_str = f"{results.cache_hit_rate * 100:.1f}%" if results.cache_hit_rate >= 0 else "n/a (metrics unavailable)"
+    cache_str = f"{results.cache_hit_rate * 100:.1f}%" if results.cache_hit_rate >= 0 else "n/a"
     print(f"Cache hit rate: {cache_str}")
-    prefetch_str = f"{results.prefetch_efficiency * 100:.1f}%" if results.prefetch_efficiency >= 0 else "n/a (metrics unavailable)"
+    prefetch_str = f"{results.prefetch_efficiency * 100:.1f}%" if results.prefetch_efficiency >= 0 else "n/a"
     print(f"Prefetch efficiency: {prefetch_str}")
     print(f"Spikes completed: {results.spike_count}")
 
+    # =================================================================
+    # Post-Warmup Error Breakdown
+    # =================================================================
     print("\n" + "-" * 40)
-    print("POST-WARMUP ERRORS")
+    print("POST-WARMUP BREAKDOWN")
     print("-" * 40)
     print(f"5xx errors: {results.post_warmup_5xx}")
-    print(f"429 rate limit: {results.post_warmup_429}")
+    print(f"429 rate limited: {results.post_warmup_429}")
     print(f"Timeouts: {results.post_warmup_timeouts}")
     print(f"Arrow decode errors: {results.post_warmup_arrow_errors}")
     print(f"Other errors: {results.post_warmup_other_errors}")
 
-    if results.post_warmup_429 > 0:
-        total_post_warmup = results.post_warmup_5xx + results.post_warmup_429 + results.post_warmup_timeouts + results.post_warmup_arrow_errors + results.post_warmup_other_errors
-        pct_429 = results.post_warmup_429 / total_post_warmup * 100 if total_post_warmup > 0 else 0
-        print(f"\nNOTE: {pct_429:.0f}% of errors are 429 rate limits.")
+    if results.rate_limited_429_rate > 0.1:
+        print(f"\nNOTE: High 429 rate ({results.rate_limited_429_rate * 100:.1f}%).")
         print("      Consider increasing QoS slots or reducing concurrent users.")
 
     # Print crash info if server died
@@ -1570,34 +1883,49 @@ def print_results(results: SoakResults):
         print("  - benchmarks/results/server_stderr.log")
         print("  - benchmarks/results/server_stdout.log")
 
+    # =================================================================
+    # Success Criteria (updated per user feedback)
+    # =================================================================
     print("\n" + "-" * 40)
     print("SUCCESS CRITERIA")
     print("-" * 40)
+
     alive_status = "PASS" if results.server_alive else "FAIL"
     crash_info = ""
     if results.server_crash_time_min is not None:
         crash_info = f" (crashed at {results.server_crash_time_min:.1f} min)"
     print(f"Server alive at end: {alive_status}{crash_info}")
+
     mem_status = "PASS" if results.memory_ok else "FAIL"
-    print(f"Memory growth < 10%: {mem_status} ({results.memory_growth_pct:+.1f}%)")
+    print(f"Memory growth <= 10%: {mem_status} ({results.memory_growth_pct:+.1f}%)")
+
     lat_status = "PASS" if results.latency_ok else "FAIL"
-    print(f"Latency drift < 20%: {lat_status} ({results.latency_drift_pct:+.1f}%)")
+    print(f"Latency drift <= 20%: {lat_status} ({results.latency_drift_pct:+.1f}%)")
+
     leak_status = "PASS" if results.no_leak else "FAIL"
     print(f"No active scan leak: {leak_status} (active={results.final_active_scans})")
+
     fd_status = "PASS" if results.no_fd_leak else "FAIL"
     print(f"No FD leak: {fd_status} ({fd_baseline} -> {fd_final})")
+
     thread_status = "PASS" if results.no_thread_leak else "FAIL"
     threads_str = f"{results.baseline_threads:.0f} -> {results.final_threads}"
     print(f"No thread leak: {thread_status} ({threads_str})")
-    critical_errors = (
-        results.post_warmup_5xx + results.post_warmup_timeouts + results.post_warmup_arrow_errors
-    )
+
+    critical_errors = results.post_warmup_5xx + results.post_warmup_timeouts + results.post_warmup_arrow_errors
     err_status = "PASS" if results.no_errors_post_warmup else "FAIL"
-    print(f"Zero critical errors after warmup: {err_status} ({critical_errors})")
-    rate_status = "PASS" if results.success_rate_ok else "FAIL"
-    print(f"Success rate >= 95%: {rate_status} ({results.success_rate * 100:.1f}%)")
+    print(f"Zero critical errors (5xx/timeout/arrow): {err_status} ({critical_errors})")
+
+    # New criteria: other_fail_rate <= 0.1%
+    other_fail_status = "PASS" if results.other_fail_rate_ok else "FAIL"
+    print(f"Other fail rate <= 0.1%: {other_fail_status} ({results.other_fail_rate * 100:.2f}%)")
+
+    # New criteria: 429 rate in expected band
+    rate_429_status = "PASS" if results.rate_429_in_band else "FAIL"
+    print(f"429 rate <= 50%: {rate_429_status} ({results.rate_limited_429_rate * 100:.1f}%)")
+
     recovery_status = "PASS" if results.spike_recovery_ok else "FAIL"
-    print(f"Spike recovery (<2min to baseline): {recovery_status} ({results.spike_count} spikes)")
+    print(f"Spike recovery (<2min): {recovery_status} ({results.spike_count} spikes)")
 
     if results.insufficient_data:
         print("\nWARNING: Insufficient data for reliable baseline metrics")
