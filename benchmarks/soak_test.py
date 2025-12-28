@@ -39,7 +39,6 @@ import json
 import os
 import random
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -230,7 +229,10 @@ class ResourceSample:
 
 @dataclass
 class LatencySample:
-    """Latency sample for drift detection."""
+    """Latency sample for drift detection.
+
+    Includes GC metrics to correlate garbage collection with latency spikes.
+    """
 
     timestamp: float
     elapsed_s: float
@@ -242,6 +244,9 @@ class LatencySample:
     error_count: int
     phase: str
     event_loop_lag_ms: float = 0.0  # Event loop lag (client-side health indicator)
+    # GC correlation metrics (to identify if high latency correlates with gen2 GC)
+    gc_gen2_in_window: int = 0  # Gen2 collections since previous sample
+    gc_pause_ms_in_window: float = 0.0  # GC pause time since previous sample
 
     def to_dict(self) -> dict:
         return {
@@ -256,6 +261,8 @@ class LatencySample:
             "error_count": self.error_count,
             "phase": self.phase,
             "event_loop_lag_ms": self.event_loop_lag_ms,
+            "gc_gen2_in_window": self.gc_gen2_in_window,
+            "gc_pause_ms_in_window": self.gc_pause_ms_in_window,
         }
 
 
@@ -284,6 +291,9 @@ class RequestResult:
     # Error details (for diagnostics)
     error_type: str | None = None  # timeout, arrow_decode, connection, etc.
     error_detail: str | None = None
+
+    # DELETE-specific error tracking (separate from main request error)
+    delete_error_type: str | None = None  # timeout, connection, etc.
 
     @property
     def is_success(self) -> bool:
@@ -329,13 +339,22 @@ class SoakResults:
     # Legacy field for compatibility
     success_rate: float = 0.0
 
-    # Memory metrics (uses median RSS in steady window per user feedback)
-    baseline_rss_mb: float = 0.0  # Median RSS during warmup tail
-    steady_median_rss_mb: float = 0.0  # Median RSS during clean steady state
+    # Memory metrics (robust 3-window analysis per user feedback)
+    # Window 1: Baseline = median RSS in (warmup_end - 2min .. warmup_end)
+    baseline_rss_mb: float = 0.0
+    # Window 2: Early steady = median RSS in (warmup_end + 30min .. warmup_end + 90min)
+    early_steady_rss_mb: float = 0.0
+    # Window 3: Late steady = median RSS in last 30min (excluding cooldown/spikes)
+    late_steady_rss_mb: float = 0.0
+    # Legacy: overall steady median (for backwards compat)
+    steady_median_rss_mb: float = 0.0
     peak_rss_mb: float = 0.0
     min_rss_mb: float = 0.0  # Min RSS (shows GC floor)
     final_rss_mb: float = 0.0
-    memory_growth_pct: float = 0.0  # Based on steady median vs baseline
+    # Growth metrics
+    memory_growth_pct: float = 0.0  # early_steady vs baseline
+    memory_end_growth_pct: float = 0.0  # late_steady vs early_steady
+    memory_slope_mb_per_hour: float = 0.0  # Linear trend slope (0 = stable)
 
     # Latency metrics (measured on successful 2xx requests only per user feedback)
     baseline_p95_ms: float = 0.0
@@ -376,8 +395,12 @@ class SoakResults:
     stream_5xx_count: int = 0
     stream_other_fail_count: int = 0
 
-    delete_success_count: int = 0
-    delete_fail_count: int = 0  # Cleanup failures (informational only)
+    # DELETE outcomes (split by semantics)
+    delete_success_count: int = 0  # 2xx - successfully deleted
+    delete_already_gone_count: int = 0  # 404 - scan already cleaned up (harmless)
+    delete_5xx_count: int = 0  # 5xx - server error (real failure)
+    delete_timeout_count: int = 0  # Timeout during DELETE
+    delete_other_fail_count: int = 0  # Other failures
 
     # Post-warmup error breakdown (for success criteria)
     post_warmup_5xx: int = 0
@@ -396,6 +419,14 @@ class SoakResults:
     gc_max_pause_ms: float = 0.0
     gc_gen2_pause_count: int = 0
     gc_gen2_max_ms: float = 0.0
+
+    # GC-latency correlation metrics (per user feedback: correlate slow windows with gen2)
+    # A "slow window" is a latency sample with p95 > 2x baseline
+    slow_window_count: int = 0  # Number of slow windows (p95 > 2x baseline)
+    slow_window_with_gc_count: int = 0  # Slow windows that had gen2 GC activity
+    gc_latency_correlation: float = 0.0  # % of slow windows with gen2 activity (0-100)
+    slow_window_avg_gc_pause_ms: float = 0.0  # Avg GC pause time in slow windows
+    normal_window_avg_gc_pause_ms: float = 0.0  # Avg GC pause time in normal windows
 
     # Success criteria (updated per user specifications)
     server_alive: bool = True
@@ -768,6 +799,10 @@ class SoakDriver:
         self.server_crash_time: float | None = None  # Elapsed seconds when crash detected
         self.server_crash_info: dict | None = None
 
+        # GC tracking for delta calculation (to correlate GC with latency spikes)
+        self._prev_gc_gen2_count: int = 0
+        self._prev_gc_total_pause_ms: float = 0.0
+
         # HTTP client
         self._client: httpx.AsyncClient | None = None
 
@@ -938,12 +973,20 @@ class SoakDriver:
             error_type = "other"
             error_detail = str(e)[:100]
         finally:
+            delete_error_type = None
             if scan_id:
                 try:
                     delete_resp = await self._client.delete(f"/v1/scan/{scan_id}")
                     delete_status = delete_resp.status_code
+                except httpx.TimeoutException:
+                    delete_status = 0
+                    delete_error_type = "timeout"
+                except httpx.ConnectError:
+                    delete_status = 0
+                    delete_error_type = "connection"
                 except Exception:
-                    delete_status = 0  # Cleanup failed
+                    delete_status = 0
+                    delete_error_type = "other"
 
         latency_ms = (time.perf_counter() - start) * 1000
         return RequestResult(
@@ -955,6 +998,7 @@ class SoakDriver:
             delete_status=delete_status,
             error_type=error_type,
             error_detail=error_detail,
+            delete_error_type=delete_error_type,
         )
 
     async def user_loop(self, user_id: int, user_type: str, get_duration: callable):
@@ -1081,6 +1125,13 @@ class SoakDriver:
                 # Use successful latencies for percentiles, fall back to all if none
                 latencies_for_pct = recent_success_latencies if recent_success_latencies else [r.latency_ms for r in recent_results]
 
+                # Compute GC deltas for this window (to correlate with latency)
+                gc_gen2_delta = gc_gen2_pause_count - self._prev_gc_gen2_count
+                gc_pause_ms_delta = gc_total_pause_ms - self._prev_gc_total_pause_ms
+                # Update previous values for next sample
+                self._prev_gc_gen2_count = gc_gen2_pause_count
+                self._prev_gc_total_pause_ms = gc_total_pause_ms
+
                 self.latency_samples.append(
                     LatencySample(
                         timestamp=timestamp,
@@ -1093,6 +1144,8 @@ class SoakDriver:
                         error_count=recent_429 + recent_other,
                         phase=self.current_phase.value,
                         event_loop_lag_ms=event_loop_lag_ms,
+                        gc_gen2_in_window=gc_gen2_delta,
+                        gc_pause_ms_in_window=gc_pause_ms_delta,
                     )
                 )
 
@@ -1115,7 +1168,7 @@ class SoakDriver:
 
     async def run_soak_test(self) -> SoakResults:
         """Run the full soak test."""
-        print(f"\n  Starting soak test")
+        print("\n  Starting soak test")
         print(f"  Duration: {self.config.duration_hours}h")
         print(f"  Users: {self.config.base_users} ({self.config.dashboard_users} dashboard)")
         print(f"  Spikes: every {self.config.spike_interval_minutes}m")
@@ -1216,7 +1269,7 @@ class SoakDriver:
                             )
                     elif not in_spike and self.current_phase != Phase.STEADY:
                         if self.current_phase == Phase.WARMUP:
-                            print(f"\n  Phase: STEADY")
+                            print("\n  Phase: STEADY")
                         self.current_phase = Phase.STEADY
 
                 await asyncio.sleep(1.0)
@@ -1371,7 +1424,10 @@ class SoakDriver:
         stream_other_fail_count = 0
 
         delete_success_count = 0
-        delete_fail_count = 0
+        delete_already_gone_count = 0
+        delete_5xx_count = 0
+        delete_timeout_count = 0
+        delete_other_fail_count = 0
 
         for r in self.request_results:
             # POST phase
@@ -1395,11 +1451,21 @@ class SoakDriver:
                 elif r.stream_status != 0:
                     stream_other_fail_count += 1
 
-            # DELETE phase
+            # DELETE phase - split by semantics
             if 200 <= r.delete_status < 300:
                 delete_success_count += 1
-            elif r.delete_status != 0:
-                delete_fail_count += 1
+            elif r.delete_status == 404:
+                # 404 = scan already cleaned up (harmless)
+                delete_already_gone_count += 1
+            elif 500 <= r.delete_status < 600:
+                # 5xx = server error (real failure)
+                delete_5xx_count += 1
+            elif r.delete_error_type == "timeout":
+                # Timeout during DELETE
+                delete_timeout_count += 1
+            elif r.delete_status != 0 or r.delete_error_type is not None:
+                # Other failures (connection errors, etc.)
+                delete_other_fail_count += 1
 
         # =================================================================
         # Post-warmup error breakdown (for success criteria)
@@ -1426,25 +1492,41 @@ class SoakDriver:
                 post_warmup_other_errors += 1
 
         # =================================================================
-        # Memory analysis - use median RSS in steady-state window
+        # Memory analysis - robust 3-window comparison per user feedback
         # =================================================================
-        warmup_samples = [s for s in self.resource_samples if s.phase == Phase.WARMUP.value]
-        steady_samples = [s for s in self.resource_samples if s.phase == Phase.STEADY.value]
+        # Window definitions (in seconds from test start):
+        # - Baseline: last 2min of warmup (warmup_end - 2min .. warmup_end)
+        # - Early steady: 30min to 90min after warmup (warmup_end + 30min .. warmup_end + 90min)
+        # - Late steady: last 30min of test (excluding cooldown and spikes)
+        #
+        # Success criteria:
+        # - early_steady/baseline <= 1.10 (initial growth OK)
+        # - late_steady/early_steady <= 1.10 (no continued growth)
+        # - slope of RSS over time ≈ 0 (no upward drift)
 
-        # Filter steady samples to exclude spike contamination windows
+        warmup_samples = [s for s in self.resource_samples if s.phase == Phase.WARMUP.value]
+
+        # Filter samples to exclude spike contamination windows
         spike_contamination_window_s = 120.0
 
-        def is_clean_steady_resource_sample(sample) -> bool:
-            if sample.phase != Phase.STEADY.value:
-                return False
+        def is_clean_sample(sample) -> bool:
+            """Check if sample is not contaminated by spike recovery."""
             for _, spike_end in self.spike_events:
                 if spike_end <= sample.elapsed_s <= spike_end + spike_contamination_window_s:
                     return False
             return True
 
+        def is_clean_steady_resource_sample(sample) -> bool:
+            if sample.phase != Phase.STEADY.value:
+                return False
+            return is_clean_sample(sample)
+
         clean_steady_samples = [s for s in self.resource_samples if is_clean_steady_resource_sample(s)]
 
-        # Baseline: median RSS from warmup tail (last 2 min)
+        # Get warmup end time (when warmup phase ends)
+        warmup_end_s = warmup_samples[-1].elapsed_s if warmup_samples else 0
+
+        # Window 1: Baseline - median RSS from warmup tail (last 2 min)
         baseline_window_samples = 4  # ~2 min at 30s interval
         warmup_tail = warmup_samples[-baseline_window_samples:] if warmup_samples else []
 
@@ -1454,7 +1536,40 @@ class SoakDriver:
         else:
             baseline_rss = 0
 
-        # Steady-state: median RSS from clean steady samples (not spike windows)
+        # Window 2: Early steady - median RSS from (warmup_end + 30min) to (warmup_end + 90min)
+        early_steady_start_s = warmup_end_s + 30 * 60  # 30 min after warmup
+        early_steady_end_s = warmup_end_s + 90 * 60  # 90 min after warmup
+        early_steady_samples = [
+            s for s in clean_steady_samples
+            if early_steady_start_s <= s.elapsed_s <= early_steady_end_s
+        ]
+
+        if len(early_steady_samples) >= min_baseline_samples:
+            early_rss_values = sorted(s.rss_bytes for s in early_steady_samples)
+            early_steady_rss = early_rss_values[len(early_rss_values) // 2]
+        else:
+            # Fall back to all clean steady samples if not enough in window
+            early_steady_rss = baseline_rss
+
+        # Window 3: Late steady - median RSS from last 30min (excluding cooldown)
+        # Find samples in last 30 min that are clean steady (not cooldown, not spike recovery)
+        if clean_steady_samples:
+            max_elapsed_s = max(s.elapsed_s for s in clean_steady_samples)
+            late_window_start_s = max_elapsed_s - 30 * 60  # Last 30 min
+            late_steady_samples = [
+                s for s in clean_steady_samples
+                if s.elapsed_s >= late_window_start_s
+            ]
+
+            if len(late_steady_samples) >= min_baseline_samples:
+                late_rss_values = sorted(s.rss_bytes for s in late_steady_samples)
+                late_steady_rss = late_rss_values[len(late_rss_values) // 2]
+            else:
+                late_steady_rss = early_steady_rss
+        else:
+            late_steady_rss = early_steady_rss
+
+        # Legacy: overall steady median (for backwards compat)
         if clean_steady_samples:
             steady_rss_values = sorted(s.rss_bytes for s in clean_steady_samples)
             steady_median_rss = steady_rss_values[len(steady_rss_values) // 2]
@@ -1467,13 +1582,40 @@ class SoakDriver:
         min_rss = min(all_rss) if all_rss else 0
         final_rss = self.resource_samples[-1].rss_bytes if self.resource_samples else 0
 
-        # Memory growth: compare steady-state median vs baseline median
-        # This avoids comparing cold start to final (GC fluctuation)
+        # Memory growth metrics
+        # Primary: early_steady vs baseline (initial stabilization)
         memory_growth_pct = (
-            ((steady_median_rss - baseline_rss) / baseline_rss * 100)
+            ((early_steady_rss - baseline_rss) / baseline_rss * 100)
             if baseline_rss > 0
             else 0
         )
+
+        # Secondary: late_steady vs early_steady (continued growth = leak)
+        memory_end_growth_pct = (
+            ((late_steady_rss - early_steady_rss) / early_steady_rss * 100)
+            if early_steady_rss > 0
+            else 0
+        )
+
+        # Trend: compute linear regression slope of RSS over time (clean steady only)
+        # Slope in bytes/second, convert to MB/hour for readability
+        memory_slope_mb_per_hour = 0.0
+        if len(clean_steady_samples) >= 10:
+            # Simple linear regression: y = mx + b
+            # We want slope m (in bytes/second)
+            times = [s.elapsed_s for s in clean_steady_samples]
+            rss_values = [s.rss_bytes for s in clean_steady_samples]
+            n = len(times)
+            sum_t = sum(times)
+            sum_rss = sum(rss_values)
+            sum_t_rss = sum(t * r for t, r in zip(times, rss_values))
+            sum_t2 = sum(t * t for t in times)
+
+            denominator = n * sum_t2 - sum_t * sum_t
+            if denominator != 0:
+                slope_bytes_per_sec = (n * sum_t_rss - sum_t * sum_rss) / denominator
+                # Convert to MB/hour
+                memory_slope_mb_per_hour = slope_bytes_per_sec * 3600 / (1024 * 1024)
 
         # FD and thread analysis
         baseline_fds = -1
@@ -1618,10 +1760,68 @@ class SoakDriver:
         gc_gen2_max_ms = max((s.gc_gen2_max_ms for s in valid_samples), default=0.0)
 
         # =================================================================
+        # GC-latency correlation analysis (per user feedback)
+        # =================================================================
+        # Identify "slow windows" where p95 > 2x baseline, then check if they
+        # correlate with gen2 GC activity in that window. High correlation
+        # suggests GC pauses are causing latency spikes.
+        slow_window_threshold = baseline_p95 * 2.0 if baseline_p95 > 0 else 1000.0
+        slow_window_count = 0
+        slow_window_with_gc_count = 0
+        slow_window_gc_pause_total = 0.0
+        normal_window_gc_pause_total = 0.0
+        normal_window_count = 0
+
+        # Use steady-state latency samples only (exclude warmup/cooldown)
+        steady_latency_for_gc = [
+            s for s in self.latency_samples
+            if s.phase == Phase.STEADY.value
+        ]
+
+        for sample in steady_latency_for_gc:
+            if sample.p95_ms > slow_window_threshold:
+                slow_window_count += 1
+                slow_window_gc_pause_total += sample.gc_pause_ms_in_window
+                if sample.gc_gen2_in_window > 0:
+                    slow_window_with_gc_count += 1
+            else:
+                normal_window_count += 1
+                normal_window_gc_pause_total += sample.gc_pause_ms_in_window
+
+        # Compute correlation: % of slow windows that had gen2 activity
+        gc_latency_correlation = (
+            (slow_window_with_gc_count / slow_window_count * 100)
+            if slow_window_count > 0
+            else 0.0
+        )
+
+        # Average GC pause time in slow vs normal windows
+        slow_window_avg_gc_pause_ms = (
+            slow_window_gc_pause_total / slow_window_count
+            if slow_window_count > 0
+            else 0.0
+        )
+        normal_window_avg_gc_pause_ms = (
+            normal_window_gc_pause_total / normal_window_count
+            if normal_window_count > 0
+            else 0.0
+        )
+
+        # =================================================================
         # Success criteria (updated per user specifications)
         # =================================================================
         server_alive = final_rss > 0 and final_threads > 0
-        memory_ok = server_alive and memory_growth_pct <= self.config.max_memory_growth_pct
+
+        # Memory OK requires all three conditions (robust 3-window check):
+        # 1. early_steady/baseline <= 1.10 (initial growth acceptable)
+        # 2. late_steady/early_steady <= 1.10 (no continued growth)
+        # 3. slope ≈ 0 (allow up to 5 MB/hour drift for noise tolerance)
+        max_slope_mb_per_hour = 5.0  # Allow small drift due to noise
+        memory_ok = server_alive and (
+            memory_growth_pct <= self.config.max_memory_growth_pct
+            and memory_end_growth_pct <= self.config.max_memory_growth_pct
+            and abs(memory_slope_mb_per_hour) <= max_slope_mb_per_hour
+        )
         latency_ok = latency_drift_pct <= self.config.max_latency_drift_pct
         no_leak = metrics_available and final_active == 0
 
@@ -1676,11 +1876,15 @@ class SoakDriver:
             other_fail_rate=other_fail_rate,
             success_rate=success_rate,
             baseline_rss_mb=baseline_rss / (1024 * 1024),
+            early_steady_rss_mb=early_steady_rss / (1024 * 1024),
+            late_steady_rss_mb=late_steady_rss / (1024 * 1024),
             steady_median_rss_mb=steady_median_rss / (1024 * 1024),
             peak_rss_mb=peak_rss / (1024 * 1024),
             min_rss_mb=min_rss / (1024 * 1024),
             final_rss_mb=final_rss / (1024 * 1024),
             memory_growth_pct=memory_growth_pct,
+            memory_end_growth_pct=memory_end_growth_pct,
+            memory_slope_mb_per_hour=memory_slope_mb_per_hour,
             baseline_p95_ms=baseline_p95,
             final_p95_ms=final_p95,
             median_steady_p95_ms=median_steady_p95,
@@ -1709,7 +1913,10 @@ class SoakDriver:
             stream_5xx_count=stream_5xx_count,
             stream_other_fail_count=stream_other_fail_count,
             delete_success_count=delete_success_count,
-            delete_fail_count=delete_fail_count,
+            delete_already_gone_count=delete_already_gone_count,
+            delete_5xx_count=delete_5xx_count,
+            delete_timeout_count=delete_timeout_count,
+            delete_other_fail_count=delete_other_fail_count,
             post_warmup_5xx=post_warmup_5xx,
             post_warmup_429=post_warmup_429,
             post_warmup_timeouts=post_warmup_timeouts,
@@ -1722,6 +1929,11 @@ class SoakDriver:
             gc_max_pause_ms=gc_max_pause_ms,
             gc_gen2_pause_count=gc_gen2_pause_count,
             gc_gen2_max_ms=gc_gen2_max_ms,
+            slow_window_count=slow_window_count,
+            slow_window_with_gc_count=slow_window_with_gc_count,
+            gc_latency_correlation=gc_latency_correlation,
+            slow_window_avg_gc_pause_ms=slow_window_avg_gc_pause_ms,
+            normal_window_avg_gc_pause_ms=normal_window_avg_gc_pause_ms,
             server_alive=server_alive,
             memory_ok=memory_ok,
             latency_ok=latency_ok,
@@ -1774,19 +1986,25 @@ def print_results(results: SoakResults):
     print("GET /v1/scan/{id}/batches:")
     print(f"  2xx: {results.stream_success_count:,}  429: {results.stream_429_count:,}  5xx: {results.stream_5xx_count}  other: {results.stream_other_fail_count}")
     print("DELETE /v1/scan/{id}:")
-    print(f"  success: {results.delete_success_count:,}  failed: {results.delete_fail_count}")
+    print(f"  2xx: {results.delete_success_count:,}  404 (already gone): {results.delete_already_gone_count:,}")
+    delete_real_errors = results.delete_5xx_count + results.delete_timeout_count + results.delete_other_fail_count
+    if delete_real_errors > 0:
+        print(f"  5xx: {results.delete_5xx_count}  timeout: {results.delete_timeout_count}  other: {results.delete_other_fail_count}")
 
     # =================================================================
-    # Memory (updated: uses median RSS in steady window)
+    # Memory (robust 3-window analysis)
     # =================================================================
     print("\n" + "-" * 40)
-    print("MEMORY (median-based)")
+    print("MEMORY (3-window analysis)")
     print("-" * 40)
-    print(f"Baseline (warmup median): {results.baseline_rss_mb:.1f} MB")
-    print(f"Steady-state median:      {results.steady_median_rss_mb:.1f} MB")
+    print(f"Baseline (warmup tail):   {results.baseline_rss_mb:.1f} MB")
+    print(f"Early steady (30-90min):  {results.early_steady_rss_mb:.1f} MB")
+    print(f"Late steady (last 30min): {results.late_steady_rss_mb:.1f} MB")
     print(f"Range: {results.min_rss_mb:.1f} MB - {results.peak_rss_mb:.1f} MB (shows GC fluctuation)")
     print(f"Final RSS: {results.final_rss_mb:.1f} MB")
-    print(f"Growth (steady vs baseline): {results.memory_growth_pct:+.1f}%")
+    print(f"Growth (early vs baseline):  {results.memory_growth_pct:+.1f}%")
+    print(f"Growth (late vs early):      {results.memory_end_growth_pct:+.1f}%")
+    print(f"Trend (slope):               {results.memory_slope_mb_per_hour:+.2f} MB/hour")
 
     # =================================================================
     # Latency (updated: measured on 2xx only, separate spike/steady)
@@ -1830,6 +2048,28 @@ def print_results(results: SoakResults):
     if results.duration_hours > 0:
         pause_pct = (results.gc_total_pause_ms / 1000) / (results.duration_hours * 3600) * 100
         print(f"Pause overhead: {pause_pct:.3f}% of runtime")
+
+    # =================================================================
+    # GC-Latency Correlation
+    # =================================================================
+    print("\n" + "-" * 40)
+    print("GC-LATENCY CORRELATION")
+    print("-" * 40)
+    print(f"Slow windows (p95 > 2x baseline): {results.slow_window_count}")
+    if results.slow_window_count > 0:
+        print(f"Slow windows with gen2 GC:        {results.slow_window_with_gc_count}")
+        print(f"Correlation:                      {results.gc_latency_correlation:.1f}%")
+        print(f"Avg GC pause in slow windows:     {results.slow_window_avg_gc_pause_ms:.1f} ms")
+        print(f"Avg GC pause in normal windows:   {results.normal_window_avg_gc_pause_ms:.1f} ms")
+        # Interpret the correlation
+        if results.gc_latency_correlation > 50:
+            print("\n  NOTE: High GC-latency correlation. Gen2 GC pauses are likely")
+            print("        contributing to tail latency. Consider:")
+            print("        - Reducing object allocations in hot paths")
+            print("        - Increasing gen2 threshold (gc.set_threshold)")
+            print("        - Upgrading to Python 3.12+ for improved GC")
+    else:
+        print("No slow windows detected - latency stable throughout test")
 
     # =================================================================
     # Client Health
@@ -1897,7 +2137,10 @@ def print_results(results: SoakResults):
     print(f"Server alive at end: {alive_status}{crash_info}")
 
     mem_status = "PASS" if results.memory_ok else "FAIL"
-    print(f"Memory growth <= 10%: {mem_status} ({results.memory_growth_pct:+.1f}%)")
+    print(f"Memory stable: {mem_status}")
+    print(f"  - Early growth <= 10%: {results.memory_growth_pct:+.1f}%")
+    print(f"  - Late growth <= 10%:  {results.memory_end_growth_pct:+.1f}%")
+    print(f"  - Trend <= 5 MB/hr:    {results.memory_slope_mb_per_hour:+.2f} MB/hr")
 
     lat_status = "PASS" if results.latency_ok else "FAIL"
     print(f"Latency drift <= 20%: {lat_status} ({results.latency_drift_pct:+.1f}%)")
@@ -2019,7 +2262,7 @@ async def main():
 
         # Start server
         if config.start_server:
-            print(f"\n[2/3] Starting Strata server...")
+            print("\n[2/3] Starting Strata server...")
             # Calculate QoS slots based on user count:
             # - Interactive slots for dashboard users (fast queries)
             # - Bulk slots for analyst + bulk users (slower queries)
@@ -2044,7 +2287,7 @@ async def main():
             print(f"  Logs: {config.results_dir}/server_*.log")
 
         # Run test
-        print(f"\n[3/3] Running soak test...")
+        print("\n[3/3] Running soak test...")
         if config.dry_run:
             print("  (dry run - 5 min)")
 
