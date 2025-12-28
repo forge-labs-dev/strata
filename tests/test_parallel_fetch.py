@@ -45,35 +45,32 @@ class TestFetchExecutor:
         config = StrataConfig(
             cache_dir=tmp_path / "cache",
             fetch_parallelism=4,
-            interactive_slots=8,
-            bulk_slots=4,
+            max_fetch_workers=48,  # Explicit worker count
         )
         state = ServerState(config)
 
-        # Verify fetch executor exists and has correct worker count
-        # Workers = fetch_parallelism * (interactive_slots + bulk_slots)
+        # Verify fetch executor exists and uses max_fetch_workers
         assert hasattr(state, "_fetch_executor")
-        assert state._fetch_executor._max_workers == 4 * (8 + 4)  # 48
+        assert state._fetch_executor._max_workers == 48
 
         # Cleanup
         state._fetch_executor.shutdown(wait=False)
         state._planning_executor.shutdown(wait=False)
 
-    def test_fetch_executor_sizing_scales_with_parallelism(self, tmp_path):
-        """Test fetch executor scales with fetch_parallelism setting."""
+    def test_fetch_executor_sizing_uses_max_fetch_workers(self, tmp_path):
+        """Test fetch executor uses max_fetch_workers config."""
         from strata.config import StrataConfig
         from strata.server import ServerState
 
         config = StrataConfig(
             cache_dir=tmp_path / "cache",
-            fetch_parallelism=8,  # Higher parallelism
-            interactive_slots=4,
-            bulk_slots=2,
+            fetch_parallelism=8,  # Per-scan parallelism
+            max_fetch_workers=64,  # Total thread pool size
         )
         state = ServerState(config)
 
-        # Workers = 8 * (4 + 2) = 48
-        assert state._fetch_executor._max_workers == 48
+        # Workers = max_fetch_workers (decoupled from interactive/bulk slots)
+        assert state._fetch_executor._max_workers == 64
 
         # Cleanup
         state._fetch_executor.shutdown(wait=False)
@@ -134,8 +131,8 @@ class TestPrometheusMetrics:
 
             # Check for fetch executor workers metric
             assert "strata_fetch_executor_workers" in content
-            # Workers = 4 * (8 + 4) = 48 (default slots)
-            assert "strata_fetch_executor_workers 48" in content
+            # Workers = max_fetch_workers (default 32)
+            assert "strata_fetch_executor_workers 32" in content
         finally:
             server_module._state._fetch_executor.shutdown(wait=False)
             server_module._state._planning_executor.shutdown(wait=False)

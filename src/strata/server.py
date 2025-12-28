@@ -8,7 +8,7 @@ from typing import Annotated
 import pyarrow as pa
 import pyarrow.ipc as ipc
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from strata import fast_io
 from strata.cache import CachedFetcher
@@ -148,13 +148,11 @@ class ServerState:
         )
 
         # Dedicated thread pool for row group fetch operations.
-        # Sized based on fetch_parallelism * expected concurrent scans.
-        # Each scan can have up to fetch_parallelism concurrent fetches.
-        # With default 4 parallelism and 12 concurrent scans (8 interactive + 4 bulk),
-        # we need at most 48 workers to avoid queuing.
-        fetch_workers = config.fetch_parallelism * (config.interactive_slots + config.bulk_slots)
+        # Capped by max_fetch_workers to bound total I/O concurrency.
+        # Default 32 workers is tuned for typical 8-16 core boxes.
+        # Increase to 64 for high-core-count servers with fast storage.
         self._fetch_executor = ThreadPoolExecutor(
-            max_workers=fetch_workers,
+            max_workers=config.max_fetch_workers,
             thread_name_prefix="strata-fetch",
         )
         # Check if metrics logging is disabled via environment
@@ -166,15 +164,21 @@ class ServerState:
         # Active scans (scan_id -> ReadPlan)
         self.scans: dict[str, ReadPlan] = {}
 
-        # QoS: Two-tier admission control with separate semaphores
+        # QoS: Two-tier admission control with ResizableLimiters
         # This prevents bulk queries from starving interactive (dashboard) queries.
         # Interactive: small, fast queries (dashboards) - get dedicated slots
         # Bulk: large, slow queries (ETL, exports) - separate pool
-        self._interactive_semaphore = asyncio.Semaphore(config.interactive_slots)
-        self._bulk_semaphore = asyncio.Semaphore(config.bulk_slots)
+        # Using ResizableLimiter instead of Semaphore for correct dynamic resizing
+        from strata.adaptive_concurrency import ResizableLimiter
+
+        self._interactive_limiter = ResizableLimiter(config.interactive_slots)
+        self._bulk_limiter = ResizableLimiter(config.bulk_slots)
 
         # Track which tier each scan is using for proper cleanup
         self._scan_tier: dict[str, str] = {}  # scan_id -> "interactive" | "bulk"
+        # Track per-client semaphore association for cleanup
+        # scan_id -> (client_id, semaphore_acquired)
+        self._scan_client: dict[str, tuple[str, bool]] = {}
 
         # Legacy semaphore kept for backwards compatibility in metrics
         # but no longer used for admission control
@@ -192,9 +196,23 @@ class ServerState:
         self._draining = False  # True when server is shutting down
         self._shutdown_event = asyncio.Event()  # Signaled when shutdown begins
 
-        # QoS rejection counters (fast-fail when slots unavailable)
-        self._interactive_rejected = 0  # Interactive queries rejected (503)
-        self._bulk_rejected = 0  # Bulk queries rejected (503)
+        # QoS rejection counters (when queue deadline exceeded)
+        self._interactive_rejected = 0  # Interactive queries rejected (429)
+        self._bulk_rejected = 0  # Bulk queries rejected (429)
+
+        # QoS queue wait tracking (for observability)
+        self._interactive_queue_wait_total_ms = 0.0  # Cumulative wait time
+        self._interactive_queue_wait_count = 0  # Number of requests that waited
+        self._bulk_queue_wait_total_ms = 0.0
+        self._bulk_queue_wait_count = 0
+
+        # Per-client fairness: prevent one client from monopolizing capacity
+        # Uses LRU dict of client_id -> Semaphore for each tier
+        # Clients must acquire their per-client semaphore BEFORE global semaphore
+        self._client_interactive_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._client_bulk_semaphores: dict[str, asyncio.Semaphore] = {}
+        self._client_semaphore_max_entries = 10000  # LRU eviction threshold
+        self._client_rejected = 0  # Rejections due to per-client cap
 
         # Prefetch management: limit concurrent prefetches to avoid resource exhaustion
         # when clients spam POST /scan without consuming the streams.
@@ -223,6 +241,9 @@ class ServerState:
         # Cache warmer for background warming jobs (initialized async in lifespan)
         self._cache_warmer: CacheWarmer | None = None
 
+        # Adaptive concurrency controller (initialized async in lifespan)
+        self._adaptive_controller: "AdaptiveConcurrencyController | None" = None
+
 
 # Global state (initialized in lifespan)
 _state: ServerState | None = None
@@ -241,8 +262,8 @@ def _get_active_scan_count(state: ServerState) -> int:
     """
     interactive_max = state.config.interactive_slots
     bulk_max = state.config.bulk_slots
-    interactive_active = interactive_max - state._interactive_semaphore._value
-    bulk_active = bulk_max - state._bulk_semaphore._value
+    interactive_active = state._interactive_limiter.in_use
+    bulk_active = state._bulk_limiter.in_use
     return interactive_active + bulk_active
 
 
@@ -272,21 +293,85 @@ def _classify_query(plan) -> str:
 
 
 def _get_qos_metrics(state: ServerState) -> dict:
-    """Get QoS tier metrics."""
-    interactive_max = state.config.interactive_slots
-    bulk_max = state.config.bulk_slots
-    interactive_active = interactive_max - state._interactive_semaphore._value
-    bulk_active = bulk_max - state._bulk_semaphore._value
+    """Get QoS tier metrics including queue wait times."""
+    # Get limiter stats for accurate capacity/in_use tracking
+    interactive_stats = state._interactive_limiter.get_stats()
+    bulk_stats = state._bulk_limiter.get_stats()
+
+    # Calculate average queue wait times
+    interactive_avg_wait_ms = (
+        state._interactive_queue_wait_total_ms / state._interactive_queue_wait_count
+        if state._interactive_queue_wait_count > 0
+        else 0.0
+    )
+    bulk_avg_wait_ms = (
+        state._bulk_queue_wait_total_ms / state._bulk_queue_wait_count
+        if state._bulk_queue_wait_count > 0
+        else 0.0
+    )
+
     return {
-        "interactive_slots": interactive_max,
-        "interactive_active": interactive_active,
-        "interactive_available": state._interactive_semaphore._value,
+        "interactive_slots": interactive_stats["capacity"],
+        "interactive_active": interactive_stats["in_use"],
+        "interactive_available": interactive_stats["available"],
         "interactive_rejected": state._interactive_rejected,
-        "bulk_slots": bulk_max,
-        "bulk_active": bulk_active,
-        "bulk_available": state._bulk_semaphore._value,
+        "interactive_queue_timeout_seconds": state.config.interactive_queue_timeout,
+        "interactive_queue_wait_avg_ms": round(interactive_avg_wait_ms, 2),
+        "interactive_queue_wait_total_ms": round(state._interactive_queue_wait_total_ms, 2),
+        "interactive_queue_wait_count": state._interactive_queue_wait_count,
+        "bulk_slots": bulk_stats["capacity"],
+        "bulk_active": bulk_stats["in_use"],
+        "bulk_available": bulk_stats["available"],
         "bulk_rejected": state._bulk_rejected,
+        "bulk_queue_timeout_seconds": state.config.bulk_queue_timeout,
+        "bulk_queue_wait_avg_ms": round(bulk_avg_wait_ms, 2),
+        "bulk_queue_wait_total_ms": round(state._bulk_queue_wait_total_ms, 2),
+        "bulk_queue_wait_count": state._bulk_queue_wait_count,
+        # Per-client fairness metrics
+        "per_client_interactive": state.config.per_client_interactive,
+        "per_client_bulk": state.config.per_client_bulk,
+        "client_rejected": state._client_rejected,
+        "tracked_clients": len(state._client_interactive_semaphores),
     }
+
+
+def _get_client_semaphore(
+    state: ServerState, client_id: str, tier: str
+) -> asyncio.Semaphore | None:
+    """Get or create a per-client semaphore for the given tier.
+
+    Returns None if per-client caps are disabled (set to 0).
+    Uses simple LRU eviction when cache exceeds max entries.
+    """
+    if tier == "interactive":
+        max_concurrent = state.config.per_client_interactive
+        client_semaphores = state._client_interactive_semaphores
+    else:
+        max_concurrent = state.config.per_client_bulk
+        client_semaphores = state._client_bulk_semaphores
+
+    # 0 = disabled
+    if max_concurrent <= 0:
+        return None
+
+    # Get existing or create new semaphore
+    if client_id in client_semaphores:
+        # Move to end for LRU (dict maintains insertion order in Python 3.7+)
+        sem = client_semaphores.pop(client_id)
+        client_semaphores[client_id] = sem
+        return sem
+
+    # Create new semaphore
+    sem = asyncio.Semaphore(max_concurrent)
+    client_semaphores[client_id] = sem
+
+    # LRU eviction if too many clients tracked
+    while len(client_semaphores) > state._client_semaphore_max_entries:
+        # Remove oldest (first) entry
+        oldest_client = next(iter(client_semaphores))
+        del client_semaphores[oldest_client]
+
+    return sem
 
 
 def _get_cache_size_bytes(state: ServerState) -> int:
@@ -319,7 +404,7 @@ def _update_saturation_tracking(state: ServerState) -> None:
     now = time.time()
 
     # Check interactive tier saturation
-    interactive_available = state._interactive_semaphore._value
+    interactive_available = state._interactive_limiter.available
     if interactive_available == 0:
         if state._interactive_saturated_since is None:
             state._interactive_saturated_since = now
@@ -327,7 +412,7 @@ def _update_saturation_tracking(state: ServerState) -> None:
         state._interactive_saturated_since = None
 
     # Check bulk tier saturation
-    bulk_available = state._bulk_semaphore._value
+    bulk_available = state._bulk_limiter.available
     if bulk_available == 0:
         if state._bulk_saturated_since is None:
             state._bulk_saturated_since = now
@@ -452,7 +537,13 @@ async def _graceful_shutdown(state: ServerState) -> None:
 async def lifespan(app: FastAPI):
     """Initialize server state on startup, graceful shutdown on exit."""
     global _state
-    config = StrataConfig.load()
+
+    # Allow tests to pre-configure state before uvicorn starts
+    # If state is already set, use its config instead of loading fresh
+    if _state is not None:
+        config = _state.config
+    else:
+        config = StrataConfig.load()
 
     # Configure structured logging first
     configure_logging()
@@ -464,7 +555,9 @@ async def lifespan(app: FastAPI):
     # This makes the first request as fast as subsequent "warm" requests
     warmup_times = _eager_warmup(config)
 
-    _state = ServerState(config)
+    # Create state only if not pre-configured (allows tests to inject custom state)
+    if _state is None:
+        _state = ServerState(config)
 
     # Initialize rate limiter
     rate_limit_config = RateLimitConfig(
@@ -485,6 +578,26 @@ async def lifespan(app: FastAPI):
         metrics=_state.metrics,
     )
     await _state._cache_warmer.start()
+
+    # Initialize adaptive concurrency controller (if enabled)
+    from strata.adaptive_concurrency import AdaptiveConfig, AdaptiveConcurrencyController
+
+    adaptive_config = AdaptiveConfig(
+        enabled=config.adaptive_enabled,
+        adjustment_interval_seconds=config.adaptive_interval_seconds,
+        latency_target_p95_ms=config.adaptive_target_p95_ms,
+        min_slots_interactive=config.adaptive_min_interactive,
+        max_slots_interactive=config.adaptive_max_interactive,
+        min_slots_bulk=config.adaptive_min_bulk,
+        max_slots_bulk=config.adaptive_max_bulk,
+        hysteresis_count=config.adaptive_hysteresis,
+    )
+    _state._adaptive_controller = AdaptiveConcurrencyController(
+        config=adaptive_config,
+        interactive_limiter=_state._interactive_limiter,
+        bulk_limiter=_state._bulk_limiter,
+    )
+    await _state._adaptive_controller.start()
 
     # Cleanup stale metadata entries on startup
     stale_removed = 0
@@ -512,6 +625,10 @@ async def lifespan(app: FastAPI):
     )
 
     yield
+
+    # Stop adaptive controller (cancel background loop)
+    if _state._adaptive_controller:
+        await _state._adaptive_controller.stop()
 
     # Stop cache warmer (cancel background jobs)
     if _state._cache_warmer:
@@ -789,6 +906,10 @@ async def metrics():
     connection_metrics = get_connection_metrics()
     stats["connections"] = connection_metrics.get_stats()
 
+    # Add adaptive concurrency control metrics
+    if state._adaptive_controller is not None:
+        stats["adaptive_concurrency"] = state._adaptive_controller.get_metrics()
+
     return stats
 
 
@@ -1045,6 +1166,14 @@ async def metrics_prometheus():
             "# TYPE strata_qos_interactive_active gauge",
             f"strata_qos_interactive_active {qos['interactive_active']}",
             "",
+            "# HELP strata_qos_interactive_rejected_total Interactive queries rejected (429)",
+            "# TYPE strata_qos_interactive_rejected_total counter",
+            f"strata_qos_interactive_rejected_total {qos['interactive_rejected']}",
+            "",
+            "# HELP strata_qos_interactive_queue_wait_avg_ms Average queue wait time (ms)",
+            "# TYPE strata_qos_interactive_queue_wait_avg_ms gauge",
+            f"strata_qos_interactive_queue_wait_avg_ms {qos['interactive_queue_wait_avg_ms']}",
+            "",
             "# HELP strata_qos_bulk_slots Max bulk query slots",
             "# TYPE strata_qos_bulk_slots gauge",
             f"strata_qos_bulk_slots {qos['bulk_slots']}",
@@ -1053,13 +1182,26 @@ async def metrics_prometheus():
             "# TYPE strata_qos_bulk_active gauge",
             f"strata_qos_bulk_active {qos['bulk_active']}",
             "",
-            "# HELP strata_qos_interactive_rejected_total Interactive queries rejected (503)",
-            "# TYPE strata_qos_interactive_rejected_total counter",
-            f"strata_qos_interactive_rejected_total {qos['interactive_rejected']}",
-            "",
-            "# HELP strata_qos_bulk_rejected_total Bulk queries rejected (503)",
+            "# HELP strata_qos_bulk_rejected_total Bulk queries rejected (429)",
             "# TYPE strata_qos_bulk_rejected_total counter",
             f"strata_qos_bulk_rejected_total {qos['bulk_rejected']}",
+            "",
+            "# HELP strata_qos_bulk_queue_wait_avg_ms Average queue wait time (ms)",
+            "# TYPE strata_qos_bulk_queue_wait_avg_ms gauge",
+            f"strata_qos_bulk_queue_wait_avg_ms {qos['bulk_queue_wait_avg_ms']}",
+            "",
+            "# HELP strata_qos_per_client_limit Per-client concurrent query limit",
+            "# TYPE strata_qos_per_client_limit gauge",
+            f'strata_qos_per_client_limit{{tier="interactive"}} {qos["per_client_interactive"]}',
+            f'strata_qos_per_client_limit{{tier="bulk"}} {qos["per_client_bulk"]}',
+            "",
+            "# HELP strata_qos_client_rejected_total Queries rejected due to per-client limit",
+            "# TYPE strata_qos_client_rejected_total counter",
+            f"strata_qos_client_rejected_total {qos['client_rejected']}",
+            "",
+            "# HELP strata_qos_tracked_clients Number of clients with active semaphores",
+            "# TYPE strata_qos_tracked_clients gauge",
+            f"strata_qos_tracked_clients {qos['tracked_clients']}",
         ]
     )
 
@@ -1294,7 +1436,8 @@ async def metrics_prometheus():
 # - Response types are stable (ScanResponse, error format)
 # - One Arrow IPC stream per scan (schema in first message)
 # - Error codes: 400 (bad request), 404 (not found), 413 (too large),
-#                503 (capacity/draining), 504 (timeout)
+#                429 (rate limited, includes Retry-After header),
+#                503 (draining/unhealthy), 504 (timeout)
 # - Cache key format is versioned (CACHE_VERSION in cache.py)
 # =============================================================================
 
@@ -1439,10 +1582,8 @@ async def create_scan_v1(request: ScanRequest):
         # Server is "busy" when:
         # - All QoS slots are nearly exhausted (interactive + bulk - 1)
         # - OR prefetch semaphore queue is building up
-        total_slots = state.config.interactive_slots + state.config.bulk_slots
-        used_slots = (state.config.interactive_slots - state._interactive_semaphore._value) + (
-            state.config.bulk_slots - state._bulk_semaphore._value
-        )
+        total_slots = state._interactive_limiter.capacity + state._bulk_limiter.capacity
+        used_slots = state._interactive_limiter.in_use + state._bulk_limiter.in_use
         server_busy = used_slots >= total_slots - 1
 
         if plan.tasks and state._prefetch_semaphore._value > 0 and not server_busy:
@@ -1542,7 +1683,7 @@ async def get_batches_v1(scan_id: str, request: Request):
 
     Error codes:
     - 404: Scan not found
-    - 503: Server at capacity (too many concurrent scans)
+    - 429: Server at capacity (QoS rate limiting, includes Retry-After header)
     - Transport error: Timeout or size limit exceeded during streaming
     """
     state = get_state()
@@ -1552,44 +1693,119 @@ async def get_batches_v1(scan_id: str, request: Request):
 
     plan = state.scans[scan_id]
 
-    # QoS: Classify query and acquire appropriate tier semaphore
+    # QoS: Classify query and acquire appropriate tier limiter
     # This prevents bulk queries from starving interactive (dashboard) queries.
     tier = _classify_query(plan)
     if tier == "interactive":
-        semaphore = state._interactive_semaphore
+        limiter = state._interactive_limiter
         tier_name = "interactive"
-        max_slots = state.config.interactive_slots
         queue_timeout = state.config.interactive_queue_timeout
     else:
-        semaphore = state._bulk_semaphore
+        limiter = state._bulk_limiter
         tier_name = "bulk"
-        max_slots = state.config.bulk_slots
         queue_timeout = state.config.bulk_queue_timeout
 
-    # Try to acquire tier-specific semaphore with fast-fail timeout
-    # Interactive queries get longer wait (dashboards should succeed)
-    # Bulk queries fail fast (2s default) to prevent 30s tail latencies
-    try:
-        await asyncio.wait_for(
-            semaphore.acquire(),
-            timeout=queue_timeout,
-        )
-    except TimeoutError:
+    # Per-client fairness: prevent one client from monopolizing capacity
+    # Acquire client semaphore BEFORE global semaphore (release in reverse order)
+    client_id = request.client.host if request.client else "unknown"
+    client_semaphore = _get_client_semaphore(state, client_id, tier)
+    client_semaphore_acquired = False
+
+    if client_semaphore is not None:
+        # Use a short timeout for per-client cap - if a client is already at their
+        # limit, fail fast rather than queue behind themselves
+        per_client_timeout = 1.0  # 1 second - fail fast if client is at cap
+        try:
+            await asyncio.wait_for(
+                client_semaphore.acquire(),
+                timeout=per_client_timeout,
+            )
+            client_semaphore_acquired = True
+        except TimeoutError:
+            # Client is at their per-client cap
+            state._client_rejected += 1
+            per_client_cap = (
+                state.config.per_client_interactive
+                if tier == "interactive"
+                else state.config.per_client_bulk
+            )
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "error": "per_client_limit",
+                    "message": f"Client at capacity ({per_client_cap} concurrent {tier_name} queries)",
+                    "tier": tier_name,
+                    "per_client_limit": per_client_cap,
+                    "retry_after_seconds": 1,
+                },
+                headers={
+                    "Retry-After": "1",
+                    "X-Strata-QoS-Tier": tier_name,
+                    "X-Strata-Per-Client-Limit": str(per_client_cap),
+                },
+            )
+
+    # Queue with deadline: wait up to queue_timeout for a global slot
+    # This gives predictable UX: "you'll either start within N seconds or get 429"
+    queue_start = time.time()
+    acquired = await limiter.acquire(timeout=queue_timeout)
+    queue_wait_ms = (time.time() - queue_start) * 1000
+
+    if acquired:
+        # Track queue wait for observability
+        if tier == "interactive":
+            state._interactive_queue_wait_total_ms += queue_wait_ms
+            state._interactive_queue_wait_count += 1
+        else:
+            state._bulk_queue_wait_total_ms += queue_wait_ms
+            state._bulk_queue_wait_count += 1
+
+        # Record queue wait for adaptive concurrency control
+        # This is the signal that indicates demand (requests waiting for slots)
+        if state._adaptive_controller is not None:
+            state._adaptive_controller.record_queue_wait(tier_name, queue_wait_ms)
+    else:
+        # Failed to acquire within timeout
+        # Release client semaphore if we acquired it (reverse order cleanup)
+        if client_semaphore_acquired and client_semaphore is not None:
+            client_semaphore.release()
+
         # Track rejection for metrics
         if tier == "interactive":
             state._interactive_rejected += 1
         else:
             state._bulk_rejected += 1
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Server at capacity ({max_slots} {tier_name} slots, "
-                f"waited {queue_timeout:.1f}s). Try again later."
-            ),
+
+        # Use 429 (Too Many Requests) not 503 (Service Unavailable)
+        # 429 = healthy server doing load shedding (expected under load)
+        # 503 = broken server (triggers LB/K8s to mark backend unhealthy)
+        #
+        # Retry-After: suggest waiting ~half the queue timeout before retry
+        # This spreads out retries and avoids thundering herd
+        retry_after = max(1, int(queue_timeout / 2))
+        max_slots = limiter.capacity
+
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "too_many_requests",
+                "message": f"Server at capacity ({max_slots} {tier_name} slots)",
+                "tier": tier_name,
+                "queue_timeout_seconds": queue_timeout,
+                "queue_wait_ms": round(queue_wait_ms, 1),
+                "retry_after_seconds": retry_after,
+            },
+            headers={
+                "Retry-After": str(retry_after),
+                "X-Strata-QoS-Tier": tier_name,
+                "X-Strata-Queue-Timeout": str(queue_timeout),
+                "X-Strata-Queue-Wait-Ms": str(round(queue_wait_ms, 1)),
+            },
         )
 
-    # Track which tier this scan is using for proper cleanup
+    # Track which tier and client this scan is using for proper cleanup
     state._scan_tier[scan_id] = tier
+    state._scan_client[scan_id] = (client_id, client_semaphore_acquired)
 
     # Increment tier-specific active counter
     if tier == "interactive":
@@ -1597,10 +1813,19 @@ async def get_batches_v1(scan_id: str, request: Request):
     else:
         state._active_bulk += 1
 
-    # Empty scan - release tier semaphore and return valid empty IPC stream
+    # Empty scan - release limiters and return valid empty IPC stream
+    # Release order: global tier first, then client (reverse of acquisition)
     if not plan.tasks:
-        semaphore.release()
+        await limiter.release()
         state._scan_tier.pop(scan_id, None)
+        # Release client semaphore if acquired
+        scan_client = state._scan_client.pop(scan_id, None)
+        if scan_client is not None:
+            client_id_cleanup, client_sem_acquired = scan_client
+            if client_sem_acquired:
+                client_sem = _get_client_semaphore(state, client_id_cleanup, tier)
+                if client_sem is not None:
+                    client_sem.release()
         if tier == "interactive":
             state._active_interactive -= 1
         else:
@@ -1625,11 +1850,11 @@ async def get_batches_v1(scan_id: str, request: Request):
         return Response(content=empty_stream, media_type="application/vnd.apache.arrow.stream")
 
     # Track resources for this scan.
-    # IMPORTANT: We track _active_scans and hold the semaphore for the duration
+    # IMPORTANT: We track _active_scans and hold the limiter for the duration
     # of streaming. The generator's finally block handles cleanup.
     #
     # Resource lifecycle:
-    # 1. Semaphore acquired above (line ~622)
+    # 1. Limiter acquired above
     # 2. _active_scans incremented when generator STARTS (first iteration)
     # 3. Both released in generator's finally block
     #
@@ -1644,7 +1869,7 @@ async def get_batches_v1(scan_id: str, request: Request):
     #
     # We use a mutable flag to track whether the generator has started.
     # If it hasn't started when finally runs, we know we need to release
-    # the semaphore but NOT decrement _active_scans (since we never incremented it).
+    # the limiter but NOT decrement _active_scans (since we never incremented it).
     generator_started = False
 
     async def stream_batches():
@@ -1714,6 +1939,10 @@ async def get_batches_v1(scan_id: str, request: Request):
                 record_latency("ttfb", ttfb_ms)
             if max_fetch_ms > 0:
                 record_latency("fetch", max_fetch_ms)
+
+            # Record latency to adaptive controller for dynamic slot adjustment
+            if state._adaptive_controller is not None:
+                state._adaptive_controller.record_latency(tier_name, scan_metrics.total_time_ms)
 
             # Log slow operations (thresholds: total>500ms, ttfb>250ms, fetch>200ms)
             slow_stages = []
@@ -2034,17 +2263,24 @@ async def get_batches_v1(scan_id: str, request: Request):
             # Remove from progress tracking
             state._scan_progress.pop(scan_id, None)
 
-            # Release the tier-specific semaphore
+            # Release the tier-specific limiter (global)
             scan_tier = state._scan_tier.pop(scan_id, None)
             if scan_tier == "interactive":
                 state._active_interactive -= 1
-                state._interactive_semaphore.release()
+                await state._interactive_limiter.release()
             elif scan_tier == "bulk":
                 state._active_bulk -= 1
-                state._bulk_semaphore.release()
-            else:
-                # Fallback: shouldn't happen but release legacy semaphore if tier unknown
-                state._scan_semaphore.release()
+                await state._bulk_limiter.release()
+            # Note: if scan_tier is None, we never acquired the limiter (early error path)
+
+            # Release per-client semaphore (after global, reverse of acquisition order)
+            scan_client = state._scan_client.pop(scan_id, None)
+            if scan_client is not None:
+                client_id_cleanup, client_sem_acquired = scan_client
+                if client_sem_acquired and scan_tier is not None:
+                    client_sem = _get_client_semaphore(state, client_id_cleanup, scan_tier)
+                    if client_sem is not None:
+                        client_sem.release()
 
     return StreamingResponse(
         stream_batches(),

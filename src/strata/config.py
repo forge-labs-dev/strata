@@ -26,7 +26,12 @@ def _get_env_overrides() -> dict:
     - OTEL_EXPORTER_OTLP_ENDPOINT: OpenTelemetry OTLP endpoint
     - OTEL_SERVICE_NAME: Service name for tracing (default: strata)
     - STRATA_FETCH_PARALLELISM: Max concurrent row group fetches per scan
+    - STRATA_MAX_FETCH_WORKERS: Max threads in fetch pool (32-64 recommended)
     - STRATA_ARROW_MEMORY_POOL: PyArrow memory pool (default, system, jemalloc, mimalloc)
+    - STRATA_INTERACTIVE_SLOTS: QoS slots for interactive/dashboard queries
+    - STRATA_BULK_SLOTS: QoS slots for bulk/ETL queries
+    - STRATA_PER_CLIENT_INTERACTIVE: Max concurrent interactive queries per client
+    - STRATA_PER_CLIENT_BULK: Max concurrent bulk queries per client
     """
     overrides = {}
 
@@ -68,8 +73,35 @@ def _get_env_overrides() -> dict:
     if fetch_parallelism := os.environ.get("STRATA_FETCH_PARALLELISM"):
         overrides["fetch_parallelism"] = int(fetch_parallelism)
 
+    if max_fetch_workers := os.environ.get("STRATA_MAX_FETCH_WORKERS"):
+        overrides["max_fetch_workers"] = int(max_fetch_workers)
+
     if arrow_memory_pool := os.environ.get("STRATA_ARROW_MEMORY_POOL"):
         overrides["arrow_memory_pool"] = arrow_memory_pool
+
+    # QoS slot configuration
+    if interactive_slots := os.environ.get("STRATA_INTERACTIVE_SLOTS"):
+        overrides["interactive_slots"] = int(interactive_slots)
+
+    if bulk_slots := os.environ.get("STRATA_BULK_SLOTS"):
+        overrides["bulk_slots"] = int(bulk_slots)
+
+    # Per-client fairness caps
+    if per_client_interactive := os.environ.get("STRATA_PER_CLIENT_INTERACTIVE"):
+        overrides["per_client_interactive"] = int(per_client_interactive)
+
+    if per_client_bulk := os.environ.get("STRATA_PER_CLIENT_BULK"):
+        overrides["per_client_bulk"] = int(per_client_bulk)
+
+    # Adaptive concurrency control
+    if os.environ.get("STRATA_ADAPTIVE_ENABLED", "").lower() == "true":
+        overrides["adaptive_enabled"] = True
+
+    if adaptive_interval := os.environ.get("STRATA_ADAPTIVE_INTERVAL"):
+        overrides["adaptive_interval_seconds"] = float(adaptive_interval)
+
+    if adaptive_target := os.environ.get("STRATA_ADAPTIVE_TARGET_P95_MS"):
+        overrides["adaptive_target_p95_ms"] = float(adaptive_target)
 
     return overrides
 
@@ -150,6 +182,9 @@ class StrataConfig:
     # Fetcher settings
     batch_size: int = 65536  # rows per batch when reading Parquet
     fetch_parallelism: int = 4  # Max concurrent row group fetches per scan
+    # Thread pool for fetch operations - caps total I/O concurrency
+    # Sized for typical 8-16 core box; increase for high-core-count servers
+    max_fetch_workers: int = 32  # Max threads in fetch pool (32-64 recommended)
 
     # Catalog settings (for pyiceberg)
     catalog_name: str = "default"
@@ -164,15 +199,20 @@ class StrataConfig:
 
     # QoS: Two-tier admission control
     # Interactive queries (dashboards) get dedicated slots to avoid bulk query starvation
-    interactive_slots: int = 8  # Slots for small/fast queries
-    bulk_slots: int = 4  # Slots for large/slow queries
+    # Defaults tuned for typical 8-16 core box supporting bursts of many users
+    interactive_slots: int = 32  # Slots for small/fast queries (dashboard bursts)
+    bulk_slots: int = 8  # Slots for large/slow queries (ETL workloads)
     # Classification thresholds: query is "interactive" if BOTH conditions met
     interactive_max_bytes: int = 10 * 1024 * 1024  # 10 MB estimated response
     interactive_max_columns: int = 10  # Max columns for interactive
-    # Queue timeouts: how long to wait for a slot before fast-failing with 503
-    # Interactive gets longer wait (dashboards should succeed), bulk fails fast
-    interactive_queue_timeout: float = 10.0  # 10s wait for interactive slot
-    bulk_queue_timeout: float = 2.0  # 2s wait for bulk slot (fast-fail)
+    # Queue timeouts: how long to wait for a slot before returning 429
+    # These provide predictable UX: "start within N seconds or get clean retry signal"
+    interactive_queue_timeout: float = 10.0  # 10s - dashboards should wait and succeed
+    bulk_queue_timeout: float = 30.0  # 30s - bulk queries are patient, queue properly
+    # Per-client fairness: prevent one client from monopolizing capacity
+    # Set to 0 to disable per-client caps (only use global slots)
+    per_client_interactive: int = 2  # Max concurrent interactive queries per client
+    per_client_bulk: int = 1  # Max concurrent bulk queries per client
 
     # Metadata database (for catalog metadata persistence)
     metadata_db: Path | None = None  # Defaults to ~/.strata/meta.sqlite
@@ -208,6 +248,18 @@ class StrataConfig:
 
     # Fetch timeout settings
     fetch_timeout_seconds: float = 60.0  # Timeout for fetching a single row group
+
+    # Adaptive concurrency control (Netflix-style)
+    # Dynamically adjusts slot counts based on p95 latency and queue pressure.
+    # Disabled by default - enable for production workloads with variable load.
+    adaptive_enabled: bool = False  # Enable adaptive concurrency control
+    adaptive_interval_seconds: float = 5.0  # How often to check and adjust
+    adaptive_target_p95_ms: float = 500.0  # Target p95 latency in milliseconds
+    adaptive_min_interactive: int = 4  # Minimum interactive slots (floor)
+    adaptive_max_interactive: int = 64  # Maximum interactive slots (ceiling)
+    adaptive_min_bulk: int = 2  # Minimum bulk slots (floor)
+    adaptive_max_bulk: int = 32  # Maximum bulk slots (ceiling)
+    adaptive_hysteresis: int = 3  # Consecutive signals needed before adjustment
 
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):

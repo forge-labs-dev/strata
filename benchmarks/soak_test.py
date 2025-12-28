@@ -123,6 +123,7 @@ class SoakConfig:
     max_memory_growth_pct: float = 10.0  # Max 10% memory growth after warmup
     max_latency_drift_pct: float = 20.0  # Max 20% p95 drift from baseline
     min_prefetch_efficiency: float = 0.5  # Min 50% prefetch used
+    min_success_rate: float = 0.95  # Min 95% request success rate
 
     # Misc
     seed: int = 42
@@ -299,6 +300,7 @@ class SoakResults:
 
     # Error breakdown (post-warmup)
     post_warmup_5xx: int = 0  # HTTP 5xx errors after warmup
+    post_warmup_429: int = 0  # HTTP 429 rate limit errors after warmup
     post_warmup_timeouts: int = 0  # Timeout errors after warmup
     post_warmup_arrow_errors: int = 0  # Arrow decode errors (schema/corruption)
     post_warmup_other_errors: int = 0  # Other errors after warmup
@@ -315,13 +317,20 @@ class SoakResults:
     gc_gen2_max_ms: float = 0.0  # Max gen2 pause
 
     # Success criteria
+    server_alive: bool = True  # Server process still running at end
     memory_ok: bool = True
     latency_ok: bool = True
     no_leak: bool = True
     no_fd_leak: bool = True  # FDs didn't grow significantly
     no_thread_leak: bool = True  # Threads didn't grow significantly
     no_errors_post_warmup: bool = True  # Zero 5xx/timeouts after warmup
+    success_rate_ok: bool = True  # Success rate >= min_success_rate
     overall_pass: bool = True
+
+    # Crash info
+    server_crash_time_min: float | None = None  # When crash occurred (minutes)
+    server_crash_signal: str | None = None  # Signal that killed server
+    server_crash_exit_code: int | None = None  # Exit code if not signal
 
     # Data quality
     insufficient_data: bool = False  # True if not enough samples for reliable metrics
@@ -344,12 +353,23 @@ class ServerProcess:
         port: int,
         cache_dir: Path,
         max_cache_size_bytes: int | None = None,
+        log_dir: Path | None = None,
+        interactive_slots: int | None = None,
+        bulk_slots: int | None = None,
     ):
         self.host = host
         self.port = port
         self.cache_dir = cache_dir
         self.max_cache_size_bytes = max_cache_size_bytes
+        self.log_dir = log_dir
+        self.interactive_slots = interactive_slots
+        self.bulk_slots = bulk_slots
         self._process: subprocess.Popen | None = None
+        self._stdout_file: Any = None
+        self._stderr_file: Any = None
+        self.exit_code: int | None = None
+        self.exit_signal: int | None = None
+        self.crash_detected: bool = False
 
     def start(self, timeout: float = 30.0):
         """Start the server as a subprocess."""
@@ -358,15 +378,35 @@ class ServerProcess:
         env["STRATA_PORT"] = str(self.port)
         env["STRATA_CACHE_DIR"] = str(self.cache_dir)
         env["STRATA_METRICS_ENABLED"] = "true"
+        # Use JSON logging for structured output
+        env["STRATA_LOG_FORMAT"] = "json"
+        env["STRATA_LOG_LEVEL"] = "INFO"
 
         if self.max_cache_size_bytes is not None:
             env["STRATA_MAX_CACHE_SIZE_BYTES"] = str(self.max_cache_size_bytes)
 
+        # QoS slots - sized appropriately for the load test
+        if self.interactive_slots is not None:
+            env["STRATA_INTERACTIVE_SLOTS"] = str(self.interactive_slots)
+        if self.bulk_slots is not None:
+            env["STRATA_BULK_SLOTS"] = str(self.bulk_slots)
+
+        # Capture stdout/stderr to log files if log_dir provided
+        if self.log_dir:
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+            self._stdout_file = open(self.log_dir / "server_stdout.log", "w")
+            self._stderr_file = open(self.log_dir / "server_stderr.log", "w")
+            stdout_dest = self._stdout_file
+            stderr_dest = self._stderr_file
+        else:
+            stdout_dest = subprocess.DEVNULL
+            stderr_dest = subprocess.DEVNULL
+
         self._process = subprocess.Popen(
             [sys.executable, "-m", "strata.server"],
             env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=stdout_dest,
+            stderr=stderr_dest,
         )
 
         self._wait_for_ready(timeout)
@@ -387,16 +427,92 @@ class ServerProcess:
 
         raise TimeoutError(f"Server did not start within {timeout}s")
 
+    def check_alive(self) -> bool:
+        """Check if server process is still running. Updates crash info if dead."""
+        if not self._process:
+            return False
+
+        poll = self._process.poll()
+        if poll is None:
+            return True  # Still running
+
+        # Process exited - capture exit info
+        self.crash_detected = True
+        self.exit_code = poll
+
+        # Negative exit code means killed by signal
+        if poll < 0:
+            self.exit_signal = -poll
+
+        return False
+
+    def get_crash_info(self) -> dict:
+        """Get information about server crash."""
+        info = {
+            "crashed": self.crash_detected,
+            "exit_code": self.exit_code,
+            "exit_signal": self.exit_signal,
+            "signal_name": None,
+            "last_stderr_lines": [],
+            "last_stdout_lines": [],
+        }
+
+        # Decode signal name
+        if self.exit_signal:
+            signal_names = {
+                9: "SIGKILL (likely OOM killer)",
+                11: "SIGSEGV (segmentation fault)",
+                6: "SIGABRT (abort)",
+                15: "SIGTERM (terminated)",
+                2: "SIGINT (interrupted)",
+            }
+            info["signal_name"] = signal_names.get(self.exit_signal, f"signal {self.exit_signal}")
+
+        # Read last lines from log files
+        if self.log_dir:
+            try:
+                stderr_path = self.log_dir / "server_stderr.log"
+                if stderr_path.exists():
+                    with open(stderr_path) as f:
+                        lines = f.readlines()
+                        info["last_stderr_lines"] = [l.rstrip() for l in lines[-50:]]
+            except Exception:
+                pass
+
+            try:
+                stdout_path = self.log_dir / "server_stdout.log"
+                if stdout_path.exists():
+                    with open(stdout_path) as f:
+                        lines = f.readlines()
+                        info["last_stdout_lines"] = [l.rstrip() for l in lines[-50:]]
+            except Exception:
+                pass
+
+        return info
+
     def stop(self):
         """Stop the server subprocess."""
         if self._process:
-            self._process.terminate()
-            try:
-                self._process.wait(timeout=5.0)
-            except subprocess.TimeoutExpired:
-                self._process.kill()
-                self._process.wait()
+            # Check if already dead before terminating
+            self.check_alive()
+
+            if self._process.poll() is None:
+                self._process.terminate()
+                try:
+                    self._process.wait(timeout=5.0)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait()
+
             self._process = None
+
+        # Close log files
+        if self._stdout_file:
+            self._stdout_file.close()
+            self._stdout_file = None
+        if self._stderr_file:
+            self._stderr_file.close()
+            self._stderr_file = None
 
     @property
     def pid(self) -> int | None:
@@ -541,10 +657,11 @@ def _percentile(data: list[float], p: float) -> float:
 class SoakDriver:
     """Drives soak test workload."""
 
-    def __init__(self, config: SoakConfig, tables_info: list[dict], server_pid: int | None):
+    def __init__(self, config: SoakConfig, tables_info: list[dict], server: ServerProcess | None):
         self.config = config
         self.tables_info = tables_info
-        self.server_pid = server_pid
+        self.server = server
+        self.server_pid = server.pid if server else None
         self.rng = random.Random(config.seed)
 
         # Column sets
@@ -565,6 +682,10 @@ class SoakDriver:
         self.spike_count = 0
         # Track spike events: list of (spike_start_elapsed_s, spike_end_elapsed_s)
         self.spike_events: list[tuple[float, float]] = []
+
+        # Crash detection
+        self.server_crash_time: float | None = None  # Elapsed seconds when crash detected
+        self.server_crash_info: dict | None = None
 
         # HTTP client
         self._client: httpx.AsyncClient | None = None
@@ -760,6 +881,17 @@ class SoakDriver:
 
             elapsed = time.perf_counter() - start_time
             timestamp = time.time()
+
+            # Check if server crashed (only once)
+            if self.server and self.server_crash_time is None:
+                if not self.server.check_alive():
+                    self.server_crash_time = elapsed
+                    self.server_crash_info = self.server.get_crash_info()
+                    print(f"\n*** SERVER CRASHED at {elapsed/60:.1f} min ***")
+                    if self.server_crash_info.get("signal_name"):
+                        print(f"    Signal: {self.server_crash_info['signal_name']}")
+                    elif self.server_crash_info.get("exit_code") is not None:
+                        print(f"    Exit code: {self.server_crash_info['exit_code']}")
 
             # Measure event loop lag first (before any blocking ops)
             event_loop_lag_ms = await self._measure_event_loop_lag()
@@ -1182,6 +1314,7 @@ class SoakDriver:
 
         # Count errors by phase and type (post-warmup = steady, spike, cooldown)
         post_warmup_5xx = 0
+        post_warmup_429 = 0  # Rate limiting (QoS rejection)
         post_warmup_timeouts = 0
         post_warmup_arrow_errors = 0
         post_warmup_other_errors = 0
@@ -1191,6 +1324,8 @@ class SoakDriver:
             # Classify error type
             if "HTTP 5" in error:
                 post_warmup_5xx += 1
+            elif "HTTP 429" in error or "Too Many Requests" in error:
+                post_warmup_429 += 1
             elif "timeout" in error.lower():
                 post_warmup_timeouts += 1
             elif "arrow_decode" in error:
@@ -1198,16 +1333,27 @@ class SoakDriver:
             else:
                 post_warmup_other_errors += 1
 
+        # Check if we got valid metrics (empty dict means server unreachable)
+        metrics_available = bool(final_metrics)
+
         final_active = final_metrics.get("resource_limits", {}).get("active_scans", 0)
 
         cache_hits = final_metrics.get("cache_hits", 0)
         cache_misses = final_metrics.get("cache_misses", 0)
-        cache_hit_rate = cache_hits / (cache_hits + cache_misses) if (cache_hits + cache_misses) > 0 else 0
+        # Only compute cache hit rate if we have data; -1 signals unavailable
+        if cache_hits + cache_misses > 0:
+            cache_hit_rate = cache_hits / (cache_hits + cache_misses)
+        else:
+            cache_hit_rate = -1.0 if not metrics_available else 0.0
 
         prefetch = final_metrics.get("prefetch", {})
         prefetch_started = prefetch.get("started", 0)
         prefetch_used = prefetch.get("used", 0)
-        prefetch_efficiency = prefetch_used / prefetch_started if prefetch_started > 0 else 0
+        # Only compute prefetch efficiency if we have data; -1 signals unavailable
+        if prefetch_started > 0:
+            prefetch_efficiency = prefetch_used / prefetch_started
+        else:
+            prefetch_efficiency = -1.0 if not metrics_available else 0.0
 
         # Check if spikes recovered properly
         # For each spike, check if p95 returns within 20% of baseline within 2 minutes after spike
@@ -1218,25 +1364,34 @@ class SoakDriver:
         max_event_loop_lag = max(all_lags) if all_lags else 0
         p95_event_loop_lag = _percentile(all_lags, 0.95) if all_lags else 0
 
-        # GC pause metrics from final sample (cumulative counters)
+        # GC pause metrics - use last valid sample for cumulative counters
+        # (final sample may have zeros if server died)
         final_sample = self.resource_samples[-1] if self.resource_samples else None
-        gc_total_pauses = final_sample.gc_total_pauses if final_sample else 0
-        gc_total_pause_ms = final_sample.gc_total_pause_ms if final_sample else 0.0
-        gc_max_pause_ms = max((s.gc_max_pause_ms for s in self.resource_samples), default=0.0)
-        gc_gen2_pause_count = final_sample.gc_gen2_pause_count if final_sample else 0
-        gc_gen2_max_ms = max((s.gc_gen2_max_ms for s in self.resource_samples), default=0.0)
+        # Find last sample where server was alive (rss > 0) for cumulative metrics
+        valid_samples = [s for s in self.resource_samples if s.rss_bytes > 0]
+        last_valid = valid_samples[-1] if valid_samples else None
+        gc_total_pauses = last_valid.gc_total_pauses if last_valid else 0
+        gc_total_pause_ms = last_valid.gc_total_pause_ms if last_valid else 0.0
+        gc_max_pause_ms = max((s.gc_max_pause_ms for s in valid_samples), default=0.0)
+        gc_gen2_pause_count = last_valid.gc_gen2_pause_count if last_valid else 0
+        gc_gen2_max_ms = max((s.gc_gen2_max_ms for s in valid_samples), default=0.0)
 
         # Success criteria
-        memory_ok = memory_growth_pct <= self.config.max_memory_growth_pct
+        # Server must still be alive (final_rss > 0 means process was measurable)
+        server_alive = final_rss > 0 and final_threads > 0
+        # Memory check only valid if server is alive
+        memory_ok = server_alive and memory_growth_pct <= self.config.max_memory_growth_pct
         # Latency drift: only fail if latency INCREASED beyond threshold
         # Improvement (negative drift) is always acceptable
         latency_ok = latency_drift_pct <= self.config.max_latency_drift_pct
-        no_leak = final_active == 0
+        # Active scan leak check requires valid metrics
+        no_leak = metrics_available and final_active == 0
         # Zero 5xx, timeouts, and Arrow decode errors after warmup
-        # (other errors like client disconnects are tolerated)
         no_errors_post_warmup = (
             post_warmup_5xx == 0 and post_warmup_timeouts == 0 and post_warmup_arrow_errors == 0
         )
+        # Success rate must meet minimum threshold (catches "other" errors)
+        success_rate_ok = success_rate >= self.config.min_success_rate
 
         # FD leak check: if we have baseline, final shouldn't exceed 2x baseline
         # (accounts for normal fluctuation during load)
@@ -1251,12 +1406,14 @@ class SoakDriver:
 
         # If insufficient data, we can't reliably pass - mark as fail
         overall_pass = (
-            memory_ok
+            server_alive
+            and memory_ok
             and latency_ok
             and no_leak
             and no_fd_leak
             and no_thread_leak
             and no_errors_post_warmup
+            and success_rate_ok
             and spike_recovery_ok
             and not insufficient_data
         )
@@ -1287,6 +1444,7 @@ class SoakDriver:
             final_cache_entries=final_cache_entries,
             total_cache_evictions=total_evictions,
             post_warmup_5xx=post_warmup_5xx,
+            post_warmup_429=post_warmup_429,
             post_warmup_timeouts=post_warmup_timeouts,
             post_warmup_arrow_errors=post_warmup_arrow_errors,
             post_warmup_other_errors=post_warmup_other_errors,
@@ -1297,13 +1455,18 @@ class SoakDriver:
             gc_max_pause_ms=gc_max_pause_ms,
             gc_gen2_pause_count=gc_gen2_pause_count,
             gc_gen2_max_ms=gc_gen2_max_ms,
+            server_alive=server_alive,
             memory_ok=memory_ok,
             latency_ok=latency_ok,
             no_leak=no_leak,
             no_fd_leak=no_fd_leak,
             no_thread_leak=no_thread_leak,
             no_errors_post_warmup=no_errors_post_warmup,
+            success_rate_ok=success_rate_ok,
             overall_pass=overall_pass,
+            server_crash_time_min=self.server_crash_time / 60 if self.server_crash_time else None,
+            server_crash_signal=self.server_crash_info.get("signal_name") if self.server_crash_info else None,
+            server_crash_exit_code=self.server_crash_info.get("exit_code") if self.server_crash_info else None,
             insufficient_data=insufficient_data,
         )
 
@@ -1372,21 +1535,49 @@ def print_results(results: SoakResults):
     print("STABILITY")
     print("-" * 40)
     print(f"Final active scans: {results.final_active_scans}")
-    print(f"Cache hit rate: {results.cache_hit_rate * 100:.1f}%")
-    print(f"Prefetch efficiency: {results.prefetch_efficiency * 100:.1f}%")
+    cache_str = f"{results.cache_hit_rate * 100:.1f}%" if results.cache_hit_rate >= 0 else "n/a (metrics unavailable)"
+    print(f"Cache hit rate: {cache_str}")
+    prefetch_str = f"{results.prefetch_efficiency * 100:.1f}%" if results.prefetch_efficiency >= 0 else "n/a (metrics unavailable)"
+    print(f"Prefetch efficiency: {prefetch_str}")
     print(f"Spikes completed: {results.spike_count}")
 
     print("\n" + "-" * 40)
     print("POST-WARMUP ERRORS")
     print("-" * 40)
     print(f"5xx errors: {results.post_warmup_5xx}")
+    print(f"429 rate limit: {results.post_warmup_429}")
     print(f"Timeouts: {results.post_warmup_timeouts}")
     print(f"Arrow decode errors: {results.post_warmup_arrow_errors}")
     print(f"Other errors: {results.post_warmup_other_errors}")
 
+    if results.post_warmup_429 > 0:
+        total_post_warmup = results.post_warmup_5xx + results.post_warmup_429 + results.post_warmup_timeouts + results.post_warmup_arrow_errors + results.post_warmup_other_errors
+        pct_429 = results.post_warmup_429 / total_post_warmup * 100 if total_post_warmup > 0 else 0
+        print(f"\nNOTE: {pct_429:.0f}% of errors are 429 rate limits.")
+        print("      Consider increasing QoS slots or reducing concurrent users.")
+
+    # Print crash info if server died
+    if results.server_crash_time_min is not None:
+        print("\n" + "-" * 40)
+        print("SERVER CRASH DETECTED")
+        print("-" * 40)
+        print(f"Crash time: {results.server_crash_time_min:.1f} min into test")
+        if results.server_crash_signal:
+            print(f"Signal: {results.server_crash_signal}")
+        elif results.server_crash_exit_code is not None:
+            print(f"Exit code: {results.server_crash_exit_code}")
+        print("\nCheck server logs for details:")
+        print("  - benchmarks/results/server_stderr.log")
+        print("  - benchmarks/results/server_stdout.log")
+
     print("\n" + "-" * 40)
     print("SUCCESS CRITERIA")
     print("-" * 40)
+    alive_status = "PASS" if results.server_alive else "FAIL"
+    crash_info = ""
+    if results.server_crash_time_min is not None:
+        crash_info = f" (crashed at {results.server_crash_time_min:.1f} min)"
+    print(f"Server alive at end: {alive_status}{crash_info}")
     mem_status = "PASS" if results.memory_ok else "FAIL"
     print(f"Memory growth < 10%: {mem_status} ({results.memory_growth_pct:+.1f}%)")
     lat_status = "PASS" if results.latency_ok else "FAIL"
@@ -1403,6 +1594,8 @@ def print_results(results: SoakResults):
     )
     err_status = "PASS" if results.no_errors_post_warmup else "FAIL"
     print(f"Zero critical errors after warmup: {err_status} ({critical_errors})")
+    rate_status = "PASS" if results.success_rate_ok else "FAIL"
+    print(f"Success rate >= 95%: {rate_status} ({results.success_rate * 100:.1f}%)")
     recovery_status = "PASS" if results.spike_recovery_ok else "FAIL"
     print(f"Spike recovery (<2min to baseline): {recovery_status} ({results.spike_count} spikes)")
 
@@ -1499,23 +1692,35 @@ async def main():
         # Start server
         if config.start_server:
             print(f"\n[2/3] Starting Strata server...")
+            # Calculate QoS slots based on user count:
+            # - Interactive slots for dashboard users (fast queries)
+            # - Bulk slots for analyst + bulk users (slower queries)
+            # Add ~20% headroom to avoid excessive 429s during spikes
+            interactive_slots = max(8, int(config.dashboard_users * 1.2))
+            bulk_slots = max(4, int((config.analyst_users + config.bulk_users) * 1.2))
+            total_slots = interactive_slots + bulk_slots
             server = ServerProcess(
                 config.server_host,
                 config.server_port,
                 config.cache_dir,
                 config.cache_size_bytes,
+                log_dir=config.results_dir,  # Capture server logs
+                interactive_slots=interactive_slots,
+                bulk_slots=bulk_slots,
             )
             server.start()
             config.base_url = f"http://{config.server_host}:{config.server_port}"
             print(f"  Server running at {config.base_url}")
+            print(f"  QoS slots: {interactive_slots} interactive + {bulk_slots} bulk = {total_slots} total")
             print(f"  Cache limit: {config.cache_size_bytes // (1024 * 1024)} MB")
+            print(f"  Logs: {config.results_dir}/server_*.log")
 
         # Run test
         print(f"\n[3/3] Running soak test...")
         if config.dry_run:
             print("  (dry run - 5 min)")
 
-        driver = SoakDriver(config, warehouse["tables"], server.pid if server else None)
+        driver = SoakDriver(config, warehouse["tables"], server)
         await driver.start()
 
         try:

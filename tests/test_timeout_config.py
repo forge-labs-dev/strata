@@ -15,7 +15,7 @@ class TestTimeoutConfig:
         assert config.plan_timeout_seconds == 30.0
         assert config.scan_timeout_seconds == 300.0
         assert config.interactive_queue_timeout == 10.0
-        assert config.bulk_queue_timeout == 2.0
+        assert config.bulk_queue_timeout == 30.0
         assert config.fetch_timeout_seconds == 60.0
         assert config.s3_connect_timeout_seconds == 10.0
         assert config.s3_request_timeout_seconds == 30.0
@@ -60,7 +60,7 @@ class TestTimeoutConfig:
         assert timeout_config["planning"]["plan_timeout_seconds"] == 30.0
         assert timeout_config["scanning"]["scan_timeout_seconds"] == 300.0
         assert timeout_config["qos_queue"]["interactive_queue_timeout"] == 10.0
-        assert timeout_config["qos_queue"]["bulk_queue_timeout"] == 2.0
+        assert timeout_config["qos_queue"]["bulk_queue_timeout"] == 30.0
         assert timeout_config["fetching"]["fetch_timeout_seconds"] == 60.0
         assert timeout_config["s3"]["s3_connect_timeout_seconds"] == 10.0
         assert timeout_config["s3"]["s3_request_timeout_seconds"] == 30.0
@@ -116,7 +116,7 @@ class TestTimeoutEndpointIntegration:
                 assert "interactive_queue_timeout" in data["qos_queue"]
                 assert "bulk_queue_timeout" in data["qos_queue"]
                 assert data["qos_queue"]["interactive_queue_timeout"] == 10.0
-                assert data["qos_queue"]["bulk_queue_timeout"] == 2.0
+                assert data["qos_queue"]["bulk_queue_timeout"] == 30.0
 
                 # Check fetch timeouts
                 assert "fetch_timeout_seconds" in data["fetching"]

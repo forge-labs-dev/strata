@@ -1,0 +1,550 @@
+"""Tests for adaptive concurrency control."""
+
+import asyncio
+
+import pytest
+
+from strata.adaptive_concurrency import (
+    AdaptiveConfig,
+    AdaptiveConcurrencyController,
+    ResizableLimiter,
+    RollingLatencyWindow,
+    TierState,
+)
+
+
+class TestResizableLimiter:
+    """Tests for ResizableLimiter."""
+
+    @pytest.mark.asyncio
+    async def test_basic_acquire_release(self):
+        """Basic acquire and release should work."""
+        limiter = ResizableLimiter(2)
+        assert limiter.capacity == 2
+        assert limiter.in_use == 0
+        assert limiter.available == 2
+
+        # Acquire first slot
+        result = await limiter.acquire()
+        assert result is True
+        assert limiter.in_use == 1
+        assert limiter.available == 1
+
+        # Acquire second slot
+        result = await limiter.acquire()
+        assert result is True
+        assert limiter.in_use == 2
+        assert limiter.available == 0
+
+        # Release one
+        await limiter.release()
+        assert limiter.in_use == 1
+        assert limiter.available == 1
+
+        # Release second
+        await limiter.release()
+        assert limiter.in_use == 0
+        assert limiter.available == 2
+
+    @pytest.mark.asyncio
+    async def test_acquire_timeout(self):
+        """Acquire should respect timeout."""
+        limiter = ResizableLimiter(1)
+
+        # Fill the limiter
+        await limiter.acquire()
+        assert limiter.available == 0
+
+        # Try to acquire with short timeout - should fail
+        result = await limiter.acquire(timeout=0.05)
+        assert result is False
+        assert limiter.in_use == 1  # Still just one
+
+    @pytest.mark.asyncio
+    async def test_resize_increase(self):
+        """Resize should allow increasing capacity."""
+        limiter = ResizableLimiter(2)
+
+        # Fill the limiter
+        await limiter.acquire()
+        await limiter.acquire()
+        assert limiter.available == 0
+
+        # Resize to allow more
+        await limiter.resize(4)
+        assert limiter.capacity == 4
+        assert limiter.available == 2  # 4 - 2 in use
+
+        # Now we can acquire more
+        result = await limiter.acquire()
+        assert result is True
+        assert limiter.in_use == 3
+
+    @pytest.mark.asyncio
+    async def test_resize_decrease(self):
+        """Resize should allow decreasing capacity."""
+        limiter = ResizableLimiter(4)
+
+        # Use 2 slots
+        await limiter.acquire()
+        await limiter.acquire()
+        assert limiter.in_use == 2
+
+        # Resize down to 3
+        await limiter.resize(3)
+        assert limiter.capacity == 3
+        assert limiter.available == 1  # 3 - 2 in use
+
+        # Release one
+        await limiter.release()
+        assert limiter.in_use == 1
+        assert limiter.available == 2  # 3 - 1 in use
+
+    @pytest.mark.asyncio
+    async def test_resize_below_in_use(self):
+        """Resize below in_use should work, just block new acquires."""
+        limiter = ResizableLimiter(4)
+
+        # Use all 4 slots
+        for _ in range(4):
+            await limiter.acquire()
+        assert limiter.in_use == 4
+
+        # Resize down to 2 (below current in_use)
+        await limiter.resize(2)
+        assert limiter.capacity == 2
+        assert limiter.available == 0  # max(0, 2 - 4) = 0
+
+        # Can't acquire more
+        result = await limiter.acquire(timeout=0.01)
+        assert result is False
+
+        # Release 3 - now we have capacity again
+        for _ in range(3):
+            await limiter.release()
+        assert limiter.in_use == 1
+        assert limiter.available == 1  # 2 - 1
+
+    @pytest.mark.asyncio
+    async def test_resize_wakes_waiters(self):
+        """Resize increase should wake waiting acquirers."""
+        limiter = ResizableLimiter(1)
+        await limiter.acquire()
+
+        acquired = False
+
+        async def try_acquire():
+            nonlocal acquired
+            acquired = await limiter.acquire(timeout=1.0)
+
+        # Start a waiter
+        task = asyncio.create_task(try_acquire())
+        await asyncio.sleep(0.01)  # Let it start waiting
+
+        # Resize to allow the waiter through
+        await limiter.resize(2)
+        await asyncio.sleep(0.01)  # Let it acquire
+
+        await task
+        assert acquired is True
+        assert limiter.in_use == 2
+
+    @pytest.mark.asyncio
+    async def test_release_without_acquire_raises(self):
+        """Release without acquire should raise."""
+        limiter = ResizableLimiter(2)
+        with pytest.raises(RuntimeError, match="release.*without"):
+            await limiter.release()
+
+    @pytest.mark.asyncio
+    async def test_resize_to_zero_raises(self):
+        """Resize to zero should raise."""
+        limiter = ResizableLimiter(2)
+        with pytest.raises(ValueError, match="capacity must be >= 1"):
+            await limiter.resize(0)
+
+    def test_get_stats(self):
+        """get_stats should return accurate info."""
+        limiter = ResizableLimiter(5)
+        stats = limiter.get_stats()
+        assert stats["capacity"] == 5
+        assert stats["in_use"] == 0
+        assert stats["available"] == 5
+
+
+class TestRollingLatencyWindow:
+    """Tests for RollingLatencyWindow percentile calculation."""
+
+    def test_empty_window_returns_none(self):
+        """Empty window should return None for p95."""
+        window = RollingLatencyWindow(size=100)
+        assert window.get_p95() is None
+
+    def test_few_samples_returns_none(self):
+        """Need at least 10 samples for meaningful percentile."""
+        window = RollingLatencyWindow(size=100)
+        for i in range(9):
+            window.record(float(i))
+        assert window.get_p95() is None
+
+    def test_exactly_10_samples(self):
+        """10 samples should give a valid p95."""
+        window = RollingLatencyWindow(size=100)
+        for i in range(10):
+            window.record(float(i))
+        p95 = window.get_p95()
+        assert p95 is not None
+        # With 10 samples [0-9], p95 should be the 9th or 10th value
+        assert p95 >= 8.0
+
+    def test_rolling_behavior(self):
+        """Window should drop old values when full."""
+        window = RollingLatencyWindow(size=10)
+
+        # Fill with low latencies
+        for _ in range(10):
+            window.record(10.0)
+
+        p95_low = window.get_p95()
+        assert p95_low == 10.0
+
+        # Now add high latencies
+        for _ in range(10):
+            window.record(100.0)
+
+        p95_high = window.get_p95()
+        assert p95_high == 100.0  # Old values should be gone
+
+    def test_get_stats(self):
+        """Test comprehensive stats output."""
+        window = RollingLatencyWindow(size=100)
+        for i in range(1, 101):
+            window.record(float(i))
+
+        stats = window.get_stats()
+        assert stats["count"] == 100
+        assert stats["window_size"] == 100
+        assert stats["min_ms"] == 1.0
+        assert stats["max_ms"] == 100.0
+        assert stats["avg_ms"] == 50.5  # Sum 1..100 / 100
+        assert stats["p50_ms"] == pytest.approx(50.0, abs=1)
+        assert stats["p95_ms"] == pytest.approx(95.0, abs=1)
+        assert stats["p99_ms"] == pytest.approx(99.0, abs=1)
+
+    def test_reset(self):
+        """Reset should clear all samples."""
+        window = RollingLatencyWindow(size=100)
+        for i in range(50):
+            window.record(float(i))
+
+        window.reset()
+        assert window.get_p95() is None
+        stats = window.get_stats()
+        assert stats["count"] == 0
+        assert stats["window_size"] == 0
+
+
+class TestAdaptiveConfig:
+    """Tests for AdaptiveConfig defaults."""
+
+    def test_default_values(self):
+        """Test sensible defaults."""
+        config = AdaptiveConfig()
+        assert config.enabled is False  # Disabled by default
+        assert config.adjustment_interval_seconds == 5.0
+        assert config.latency_target_p95_ms == 500.0
+        assert config.hysteresis_count == 3
+        assert config.min_slots_interactive == 4
+        assert config.max_slots_interactive == 64
+        assert config.min_slots_bulk == 2
+        assert config.max_slots_bulk == 32
+
+    def test_custom_values(self):
+        """Test custom configuration."""
+        config = AdaptiveConfig(
+            enabled=True,
+            latency_target_p95_ms=200.0,
+            hysteresis_count=5,
+        )
+        assert config.enabled is True
+        assert config.latency_target_p95_ms == 200.0
+        assert config.hysteresis_count == 5
+
+
+class TestAdaptiveConcurrencyController:
+    """Tests for AdaptiveConcurrencyController."""
+
+    @pytest.fixture
+    def limiters(self):
+        """Create test limiters."""
+        interactive = ResizableLimiter(10)
+        bulk = ResizableLimiter(4)
+        return interactive, bulk
+
+    @pytest.fixture
+    def controller(self, limiters):
+        """Create a controller with test config."""
+        interactive, bulk = limiters
+        config = AdaptiveConfig(
+            enabled=True,
+            adjustment_interval_seconds=0.1,  # Fast for tests
+            latency_target_p95_ms=100.0,  # 100ms target
+            hysteresis_count=2,  # Only need 2 consecutive signals
+            min_slots_interactive=4,
+            max_slots_interactive=20,
+            min_slots_bulk=2,
+            max_slots_bulk=10,
+            window_size=20,
+        )
+        return AdaptiveConcurrencyController(
+            config=config,
+            interactive_limiter=interactive,
+            bulk_limiter=bulk,
+        )
+
+    def test_record_latency(self, controller):
+        """Test latency recording to appropriate tier."""
+        controller.record_latency("interactive", 50.0)
+        controller.record_latency("bulk", 150.0)
+
+        # Check latencies are recorded in correct windows
+        interactive_stats = controller._interactive.latency_window.get_stats()
+        bulk_stats = controller._bulk.latency_window.get_stats()
+
+        assert interactive_stats["count"] == 1
+        assert bulk_stats["count"] == 1
+
+    def test_get_metrics(self, controller):
+        """Test metrics output."""
+        # Record some latencies
+        for i in range(20):
+            controller.record_latency("interactive", float(50 + i))
+            controller.record_latency("bulk", float(100 + i))
+
+        metrics = controller.get_metrics()
+
+        assert metrics["enabled"] is True
+        assert metrics["target_p95_ms"] == 100.0
+        assert metrics["hysteresis_count"] == 2
+
+        assert metrics["interactive"]["current_slots"] == 10
+        assert metrics["interactive"]["min_slots"] == 4
+        assert metrics["interactive"]["max_slots"] == 20
+        assert metrics["interactive"]["latency_stats"]["count"] == 20
+
+        assert metrics["bulk"]["current_slots"] == 4
+        assert metrics["bulk"]["min_slots"] == 2
+        assert metrics["bulk"]["max_slots"] == 10
+        assert metrics["bulk"]["latency_stats"]["count"] == 20
+
+    @pytest.mark.asyncio
+    async def test_disabled_controller_does_nothing(self, limiters):
+        """Disabled controller should not start background task."""
+        interactive, bulk = limiters
+        config = AdaptiveConfig(enabled=False)
+        controller = AdaptiveConcurrencyController(
+            config=config,
+            interactive_limiter=interactive,
+            bulk_limiter=bulk,
+        )
+
+        await controller.start()
+        assert controller._task is None
+        await controller.stop()
+
+    @pytest.mark.asyncio
+    async def test_start_stop_lifecycle(self, controller):
+        """Test controller start/stop lifecycle."""
+        await controller.start()
+        assert controller._task is not None
+
+        await controller.stop()
+        assert controller._task is None
+
+    @pytest.mark.asyncio
+    async def test_decrease_slots_on_high_latency(self, controller, limiters):
+        """Controller should decrease slots when p95 > target."""
+        interactive, bulk = limiters
+
+        # Record high latencies (above 100ms target)
+        for _ in range(20):
+            controller.record_latency("interactive", 200.0)
+
+        # Manually trigger evaluation (don't wait for control loop)
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        # First signal
+        assert controller._interactive.consecutive_decrease_signals == 1
+
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        # Second signal should trigger adjustment (hysteresis=2)
+        # Slots should decrease from 10 to 9
+        assert controller._interactive.current_slots == 9
+        assert controller._interactive.decrease_events == 1
+
+    @pytest.mark.asyncio
+    async def test_increase_slots_on_low_latency_with_queue_pressure(self, controller, limiters):
+        """Controller should increase slots when p95 < 80% of target AND queue pressure exists."""
+        interactive, bulk = limiters
+
+        # Record low latencies (below 80ms = 80% of 100ms target)
+        for _ in range(20):
+            controller.record_latency("interactive", 50.0)
+
+        # Record queue wait above threshold (100ms default) to indicate demand
+        for _ in range(20):
+            controller.record_queue_wait("interactive", 150.0)
+
+        # Trigger evaluations
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+
+        # Slots should increase from 10 to 11
+        assert controller._interactive.current_slots == 11
+        assert controller._interactive.increase_events == 1
+
+    @pytest.mark.asyncio
+    async def test_no_increase_without_queue_pressure(self, controller, limiters):
+        """Controller should NOT increase slots when latency is low but no queue pressure."""
+        interactive, bulk = limiters
+
+        # Record low latencies (below 80ms = 80% of 100ms target)
+        for _ in range(20):
+            controller.record_latency("interactive", 50.0)
+
+        # Record LOW queue wait (below 100ms threshold) - no pressure
+        for _ in range(20):
+            controller.record_queue_wait("interactive", 10.0)
+
+        # Trigger evaluations multiple times
+        for _ in range(5):
+            await controller._evaluate_and_adjust(
+                controller._interactive, interactive
+            )
+
+        # Slots should NOT increase - no queue pressure means no demand
+        assert controller._interactive.current_slots == 10
+        assert controller._interactive.increase_events == 0
+
+    @pytest.mark.asyncio
+    async def test_slots_bounded_by_min(self, controller, limiters):
+        """Slots should not go below minimum."""
+        interactive, bulk = limiters
+
+        # Set slots near minimum - also resize the limiter
+        controller._interactive.current_slots = 5
+        await interactive.resize(5)
+
+        # Record high latencies
+        for _ in range(20):
+            controller.record_latency("interactive", 200.0)
+
+        # Try to decrease multiple times
+        for _ in range(10):
+            await controller._evaluate_and_adjust(
+                controller._interactive, interactive
+            )
+
+        # Should not go below min_slots_interactive=4
+        assert controller._interactive.current_slots >= 4
+
+    @pytest.mark.asyncio
+    async def test_slots_bounded_by_max(self, controller, limiters):
+        """Slots should not go above maximum."""
+        interactive, bulk = limiters
+
+        # Set slots near maximum - also resize the limiter
+        controller._interactive.current_slots = 19
+        await interactive.resize(19)
+
+        # Record low latencies and high queue wait (to trigger increase attempts)
+        for _ in range(20):
+            controller.record_latency("interactive", 50.0)
+            controller.record_queue_wait("interactive", 150.0)
+
+        # Try to increase multiple times
+        for _ in range(10):
+            await controller._evaluate_and_adjust(
+                controller._interactive, interactive
+            )
+
+        # Should not go above max_slots_interactive=20
+        assert controller._interactive.current_slots <= 20
+
+    @pytest.mark.asyncio
+    async def test_hysteresis_prevents_flapping(self, controller, limiters):
+        """Hysteresis should prevent rapid changes."""
+        interactive, bulk = limiters
+
+        # Record high latency
+        for _ in range(20):
+            controller.record_latency("interactive", 200.0)
+
+        # Single evaluation shouldn't change slots
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        assert controller._interactive.current_slots == 10  # No change yet
+        assert controller._interactive.consecutive_decrease_signals == 1
+
+        # Now record low latency (resets signals)
+        controller._interactive.latency_window.reset()
+        for _ in range(20):
+            controller.record_latency("interactive", 85.0)  # Between 80% and 100% of target
+
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        # Signals should reset (latency in acceptable range)
+        assert controller._interactive.consecutive_decrease_signals == 0
+        assert controller._interactive.consecutive_increase_signals == 0
+        assert controller._interactive.current_slots == 10  # Still no change
+
+    @pytest.mark.asyncio
+    async def test_bulk_tier_independent(self, controller, limiters):
+        """Bulk tier should be adjusted independently."""
+        interactive, bulk = limiters
+
+        # Only record high latencies for bulk
+        for _ in range(20):
+            controller.record_latency("bulk", 200.0)
+
+        # Trigger evaluations for both tiers
+        await controller._evaluate_and_adjust(
+            controller._interactive, interactive
+        )
+        await controller._evaluate_and_adjust(
+            controller._bulk, bulk
+        )
+        await controller._evaluate_and_adjust(
+            controller._bulk, bulk
+        )
+
+        # Only bulk should have decreased
+        assert controller._interactive.current_slots == 10  # No change
+        assert controller._bulk.current_slots == 3  # Decreased from 4
+
+
+class TestTierState:
+    """Tests for TierState dataclass."""
+
+    def test_default_values(self):
+        """Test TierState defaults."""
+        state = TierState(
+            name="interactive",
+            current_slots=10,
+            min_slots=4,
+            max_slots=20,
+        )
+        assert state.consecutive_increase_signals == 0
+        assert state.consecutive_decrease_signals == 0
+        assert state.increase_events == 0
+        assert state.decrease_events == 0
+        assert state.last_adjustment_direction == ""

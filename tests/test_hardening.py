@@ -967,10 +967,10 @@ class TestStreamAbortMetrics:
 
 
 class TestActiveScanCount:
-    """Tests for active scan counting and semaphore management."""
+    """Tests for active scan counting and limiter management."""
 
-    def test_get_active_scan_count_matches_semaphore(self, temp_warehouse, tmp_path):
-        """_get_active_scan_count returns correct count based on QoS tier semaphores."""
+    def test_get_active_scan_count_matches_limiter(self, temp_warehouse, tmp_path):
+        """_get_active_scan_count returns correct count based on QoS tier limiters."""
 
         cache_dir = tmp_path / "cache"
         config = StrataConfig(
@@ -986,32 +986,32 @@ class TestActiveScanCount:
         # Initially no active scans
         assert _get_active_scan_count(state) == 0
 
-        # Acquire semaphore slots manually from both tiers
+        # Acquire limiter slots manually from both tiers
         async def test_counting():
             assert _get_active_scan_count(state) == 0
 
             # Acquire from interactive tier
-            await state._interactive_semaphore.acquire()
+            await state._interactive_limiter.acquire()
             assert _get_active_scan_count(state) == 1
 
             # Acquire from bulk tier
-            await state._bulk_semaphore.acquire()
+            await state._bulk_limiter.acquire()
             assert _get_active_scan_count(state) == 2
 
             # Acquire another from interactive
-            await state._interactive_semaphore.acquire()
+            await state._interactive_limiter.acquire()
             assert _get_active_scan_count(state) == 3
 
             # Release from interactive
-            state._interactive_semaphore.release()
+            await state._interactive_limiter.release()
             assert _get_active_scan_count(state) == 2
 
             # Release from bulk
-            state._bulk_semaphore.release()
+            await state._bulk_limiter.release()
             assert _get_active_scan_count(state) == 1
 
             # Release remaining interactive
-            state._interactive_semaphore.release()
+            await state._interactive_limiter.release()
             assert _get_active_scan_count(state) == 0
 
         asyncio.run(test_counting())
