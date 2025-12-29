@@ -115,6 +115,7 @@ class TestCacheKey:
     def test_to_hex(self):
         identity = TableIdentity.from_table_id("test_db.events")
         key = CacheKey(
+            tenant_id="_default",
             table_identity=identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -174,6 +175,7 @@ class TestDiskCache:
         cache = DiskCache(strata_config)
         identity = TableIdentity.from_table_id("test_db.events")
         key = CacheKey(
+            tenant_id="_default",
             table_identity=identity,
             snapshot_id=1,
             file_path="/test.parquet",
@@ -201,6 +203,7 @@ class TestDiskCache:
         cache = DiskCache(strata_config)
         identity = TableIdentity.from_table_id("test_db.events")
         key = CacheKey(
+            tenant_id="_default",
             table_identity=identity,
             snapshot_id=1,
             file_path="/test.parquet",

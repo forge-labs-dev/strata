@@ -310,18 +310,28 @@ async def request_context_middleware(request, call_next):
     - request_id: Generated unique ID for this request (or from X-Request-ID header)
     - method: HTTP method
     - path: Request path
+    - tenant_id: Tenant identifier (from tenant context, for multi-tenancy)
 
     When OpenTelemetry tracing is enabled, trace_id and span_id are automatically
     included in log entries via get_trace_context().
     """
+    # Import tenant context (lazy import to avoid circular dependencies)
+    from strata.tenant import get_tenant_id
+
     # Get or generate request ID
     request_id = request.headers.get("X-Request-ID") or generate_request_id()
+
+    # Get tenant_id from tenant context (set by tenant middleware)
+    # Note: tenant middleware runs AFTER this middleware in the stack,
+    # so we access the context at response time for accurate tenant_id
+    tenant_id = get_tenant_id()
 
     # Set up request context
     token = set_request_context(
         request_id=request_id,
         method=request.method,
         path=request.url.path,
+        tenant_id=tenant_id,
     )
 
     # Add request_id to response headers for client correlation

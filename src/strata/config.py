@@ -103,6 +103,22 @@ def _get_env_overrides() -> dict:
     if adaptive_target := os.environ.get("STRATA_ADAPTIVE_TARGET_P95_MS"):
         overrides["adaptive_target_p95_ms"] = float(adaptive_target)
 
+    # Multi-tenancy configuration
+    if os.environ.get("STRATA_MULTI_TENANT_ENABLED", "").lower() == "true":
+        overrides["multi_tenant_enabled"] = True
+
+    if tenant_header := os.environ.get("STRATA_TENANT_HEADER"):
+        overrides["tenant_header"] = tenant_header
+
+    if os.environ.get("STRATA_REQUIRE_TENANT_HEADER", "").lower() == "true":
+        overrides["require_tenant_header"] = True
+
+    if default_tenant_interactive := os.environ.get("STRATA_DEFAULT_TENANT_INTERACTIVE_SLOTS"):
+        overrides["default_tenant_interactive_slots"] = int(default_tenant_interactive)
+
+    if default_tenant_bulk := os.environ.get("STRATA_DEFAULT_TENANT_BULK_SLOTS"):
+        overrides["default_tenant_bulk_slots"] = int(default_tenant_bulk)
+
     return overrides
 
 
@@ -260,6 +276,15 @@ class StrataConfig:
     adaptive_min_bulk: int = 2  # Minimum bulk slots (floor)
     adaptive_max_bulk: int = 32  # Maximum bulk slots (ceiling)
     adaptive_hysteresis: int = 3  # Consecutive signals needed before adjustment
+
+    # Multi-tenancy settings
+    # When enabled, tenant context is extracted from request headers for isolation
+    multi_tenant_enabled: bool = False  # Enable multi-tenancy mode
+    tenant_header: str = "X-Tenant-ID"  # HTTP header to extract tenant ID from
+    require_tenant_header: bool = False  # If True, reject requests without tenant header
+    # Per-tenant default QoS quotas (used when tenant has no custom config)
+    default_tenant_interactive_slots: int = 32  # Default interactive slots per tenant
+    default_tenant_bulk_slots: int = 8  # Default bulk slots per tenant
 
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):

@@ -49,6 +49,7 @@ class TestCacheKeyGranularity:
     def test_row_group_projection_includes_projection(self, table_identity):
         """Test that ROW_GROUP_PROJECTION includes projection in key."""
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -56,6 +57,7 @@ class TestCacheKeyGranularity:
             projection_fingerprint="abc123",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -71,6 +73,7 @@ class TestCacheKeyGranularity:
     def test_row_group_ignores_projection(self, table_identity):
         """Test that ROW_GROUP ignores projection in key."""
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -78,6 +81,7 @@ class TestCacheKeyGranularity:
             projection_fingerprint="abc123",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -93,6 +97,7 @@ class TestCacheKeyGranularity:
     def test_row_group_still_differentiates_row_groups(self, table_identity):
         """Test that ROW_GROUP still differentiates different row groups."""
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -100,6 +105,7 @@ class TestCacheKeyGranularity:
             projection_fingerprint="abc123",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -125,6 +131,7 @@ class TestDiskCacheGranularity:
         cache = DiskCache(config)
 
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -132,6 +139,7 @@ class TestDiskCacheGranularity:
             projection_fingerprint="proj1",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -157,6 +165,7 @@ class TestDiskCacheGranularity:
         cache = DiskCache(config)
 
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -164,6 +173,7 @@ class TestDiskCacheGranularity:
             projection_fingerprint="proj1",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -189,6 +199,7 @@ class TestDiskCacheGranularity:
         cache = DiskCache(config)
 
         key1 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",
@@ -196,6 +207,7 @@ class TestDiskCacheGranularity:
             projection_fingerprint="proj1",
         )
         key2 = CacheKey(
+            tenant_id="_default",
             table_identity=table_identity,
             snapshot_id=123,
             file_path="/data/file.parquet",

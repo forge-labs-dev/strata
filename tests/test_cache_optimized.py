@@ -35,6 +35,7 @@ def cache_key():
     """Create a sample cache key."""
     identity = TableIdentity.from_table_id("test_db.events")
     return CacheKey(
+        tenant_id="_default",
         table_identity=identity,
         snapshot_id=123,
         file_path="/data/file.parquet",

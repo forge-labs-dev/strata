@@ -49,10 +49,23 @@ Filters are applied at two levels:
 ### Cache Key Structure
 
 ```
-hash(table_identity | snapshot_id | file_path | row_group_id | projection_fingerprint)
+hash(tenant_id | table_identity | snapshot_id | file_path | row_group_id | projection_fingerprint)
 ```
 
 `TableIdentity` is canonical (`catalog.namespace.table`) to avoid cache duplication from URI variations.
+
+### Multi-Tenancy
+
+Strata supports multi-tenant deployments with complete cache isolation between tenants:
+
+- **Tenant identification**: `X-Tenant-ID` header (injected by API gateway after JWT validation)
+- **Cache isolation**: Tenant ID is hashed into cache keys and directory paths
+- **Per-tenant metrics**: Scans, cache hits, bytes tracked per tenant
+- **Validation**: Tenant IDs must be 1-64 chars, alphanumeric with `_` and `-`
+
+Key modules:
+- **tenant.py** - `TenantConfig`, `TenantQuotas`, context management (`get_tenant_id()`, `set_tenant_id()`)
+- **tenant_registry.py** - `TenantRegistry` with LRU eviction (max 1000 tenants tracked)
 
 ### Key Modules
 
@@ -114,6 +127,7 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 - Logging: `STRATA_LOG_LEVEL`, `STRATA_LOG_FORMAT` (json or text)
 - Timeouts: `plan_timeout_seconds`, `scan_timeout_seconds`, `fetch_timeout_seconds`, `s3_connect_timeout_seconds`, `s3_request_timeout_seconds`
 - Rate limiting: `rate_limit_enabled`, `rate_limit_global_rps`, `rate_limit_client_rps`, `rate_limit_scan_rps`
+- Multi-tenancy: `STRATA_MULTI_TENANT_ENABLED`, `STRATA_TENANT_HEADER`, `STRATA_REQUIRE_TENANT_HEADER`
 
 ## Important Invariants
 
@@ -146,6 +160,7 @@ Key test files:
 - `test_cache_stats.py` - Cache hit/miss histogram
 - `test_timeout_config.py` - Timeout configuration
 - `test_tracing.py` - OpenTelemetry integration
+- `test_multitenancy.py` - Tenant context, registry, cache isolation, validation
 
 Benchmarks in `benchmarks/`:
 - `stress_test.py` - Multi-user load testing with QoS validation

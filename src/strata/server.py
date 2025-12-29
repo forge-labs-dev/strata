@@ -34,6 +34,14 @@ from strata.rate_limiter import (
     init_rate_limiter,
 )
 from strata.slow_ops import get_latency_stats, record_latency
+from strata.tenant import (
+    DEFAULT_TENANT_ID,
+    clear_tenant_context,
+    get_tenant_id,
+    set_tenant_id,
+    validate_tenant_id,
+)
+from strata.tenant_registry import get_tenant_registry, init_tenant_registry
 from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
     ReadPlan,
@@ -711,6 +719,77 @@ async def rate_limit_middleware(request: Request, call_next):
     return response
 
 
+# Tenant context middleware - sets tenant_id for multi-tenancy
+@app.middleware("http")
+async def tenant_context_middleware(request: Request, call_next):
+    """Extract tenant ID and set up tenant context for multi-tenancy.
+
+    Tenant identification priority:
+    1. X-Tenant-ID header (simple header-based auth for MVP)
+    2. Default tenant "_default" (backward compatibility)
+
+    Returns 403 if tenant is disabled.
+    Skips tenant setup for health/metrics endpoints.
+    """
+    # Skip tenant setup for health/metrics endpoints
+    path = request.url.path
+    if path in ("/health", "/health/ready", "/health/dependencies", "/metrics", "/metrics/prometheus"):
+        return await call_next(request)
+
+    state = get_state()
+    config = state.config
+
+    # Only apply tenant context if multi-tenancy is enabled
+    if not getattr(config, "multi_tenant_enabled", False):
+        # Single-tenant mode: use default tenant
+        token = set_tenant_id(DEFAULT_TENANT_ID)
+        try:
+            response = await call_next(request)
+            return response
+        finally:
+            clear_tenant_context()
+
+    # Multi-tenant mode: extract tenant from header
+    tenant_header = getattr(config, "tenant_header", "X-Tenant-ID")
+    tenant_id = request.headers.get(tenant_header)
+
+    if not tenant_id:
+        # Check if tenant header is required
+        if getattr(config, "require_tenant_header", False):
+            return Response(
+                content=f"Missing required header: {tenant_header}",
+                status_code=400,
+            )
+        # Use default tenant for backward compatibility
+        tenant_id = DEFAULT_TENANT_ID
+    else:
+        # Validate tenant ID format (only for explicitly provided headers)
+        is_valid, error_msg = validate_tenant_id(tenant_id)
+        if not is_valid:
+            return Response(
+                content=f"Invalid tenant ID: {error_msg}",
+                status_code=400,
+            )
+
+    # Validate tenant is enabled
+    registry = get_tenant_registry()
+    if not registry.is_tenant_enabled(tenant_id):
+        return Response(
+            content=f"Tenant '{tenant_id}' is not enabled",
+            status_code=403,
+        )
+
+    # Set tenant context for this request
+    token = set_tenant_id(tenant_id)
+    try:
+        response = await call_next(request)
+        # Echo tenant ID back in response header for debugging
+        response.headers["X-Tenant-ID"] = tenant_id
+        return response
+    finally:
+        clear_tenant_context()
+
+
 # Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
 instrument_fastapi(app)
 
@@ -947,6 +1026,47 @@ async def metrics_table(table_id: str):
         raise HTTPException(status_code=404, detail=f"No metrics found for table: {table_id}")
 
     return table_metrics.to_dict()
+
+
+@app.get("/v1/admin/tenants")
+async def list_tenants():
+    """List all tracked tenants with their metrics.
+
+    Admin endpoint for multi-tenant observability.
+    Returns metrics for all tenants that have made requests.
+    """
+    registry = get_tenant_registry()
+    return {"tenants": registry.get_all_tenant_metrics()}
+
+
+@app.get("/v1/admin/tenants/{tenant_id}")
+async def get_tenant_info(tenant_id: str):
+    """Get configuration and metrics for a specific tenant.
+
+    Path params:
+    - tenant_id: The tenant identifier
+    """
+    registry = get_tenant_registry()
+    config = registry.get_config(tenant_id)
+    metrics = registry.get_tenant_metrics(tenant_id)
+
+    if config is None and metrics is None:
+        raise HTTPException(status_code=404, detail=f"Tenant not found: {tenant_id}")
+
+    return {
+        "tenant_id": tenant_id,
+        "registered": config is not None,
+        "enabled": config.enabled if config else True,
+        "metrics": metrics,
+        "config": {
+            "interactive_slots": config.interactive_slots if config else None,
+            "bulk_slots": config.bulk_slots if config else None,
+            "per_client_interactive": config.per_client_interactive if config else None,
+            "per_client_bulk": config.per_client_bulk if config else None,
+        }
+        if config
+        else None,
+    }
 
 
 @app.get("/metrics/prometheus")
@@ -1496,6 +1616,44 @@ async def metrics_prometheus():
             table_id = tm["table_id"]
             lines.append(f'strata_table_cache_hit_rate{{table="{table_id}"}} {tm["cache_hit_rate"]}')
 
+    # Add per-tenant metrics (multi-tenancy support)
+    tenant_registry = get_tenant_registry()
+    tenant_metrics = tenant_registry.get_all_tenant_metrics()
+    if tenant_metrics:
+        lines.extend(
+            [
+                "",
+                "# HELP strata_tenant_scans_total Total scans by tenant",
+                "# TYPE strata_tenant_scans_total counter",
+            ]
+        )
+        for tm in tenant_metrics:
+            tenant_id = tm["tenant_id"]
+            lines.append(f'strata_tenant_scans_total{{tenant="{tenant_id}"}} {tm["total_scans"]}')
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_tenant_cache_hit_rate Cache hit rate by tenant",
+                "# TYPE strata_tenant_cache_hit_rate gauge",
+            ]
+        )
+        for tm in tenant_metrics:
+            tenant_id = tm["tenant_id"]
+            lines.append(f'strata_tenant_cache_hit_rate{{tenant="{tenant_id}"}} {tm["cache_hit_rate"]}')
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_tenant_bytes_total Total bytes processed by tenant",
+                "# TYPE strata_tenant_bytes_total counter",
+            ]
+        )
+        for tm in tenant_metrics:
+            tenant_id = tm["tenant_id"]
+            total_bytes = tm["bytes_from_cache"] + tm["bytes_from_storage"]
+            lines.append(f'strata_tenant_bytes_total{{tenant="{tenant_id}"}} {total_bytes}')
+
     return Response(
         content="\n".join(lines) + "\n",
         media_type="text/plain; version=0.0.4; charset=utf-8",
@@ -1913,6 +2071,17 @@ async def get_batches_v1(scan_id: str, request: Request):
         )
         state.metrics.log_scan_complete(scan_metrics)
 
+        # Record tenant metrics for multi-tenancy tracking
+        tenant_registry = get_tenant_registry()
+        tenant_registry.record_scan(
+            tenant_id=get_tenant_id(),
+            cache_hits=0,
+            cache_misses=0,
+            bytes_from_cache=0,
+            bytes_from_storage=0,
+            rows_returned=0,
+        )
+
         # Return valid empty Arrow IPC stream (schema + EOS, no batches)
         # This ensures clients can parse the stream without special-casing
         sink = pa.BufferOutputStream()
@@ -2043,6 +2212,17 @@ async def get_batches_v1(scan_id: str, request: Request):
             if outcome == "complete":
                 # Normal completion - use structured scan_complete event
                 state.metrics.log_scan_complete(scan_metrics)
+
+                # Record tenant metrics for multi-tenancy tracking
+                tenant_registry = get_tenant_registry()
+                tenant_registry.record_scan(
+                    tenant_id=get_tenant_id(),
+                    cache_hits=scan_metrics.cache_hits,
+                    cache_misses=scan_metrics.cache_misses,
+                    bytes_from_cache=scan_metrics.bytes_from_cache,
+                    bytes_from_storage=scan_metrics.bytes_from_storage,
+                    rows_returned=scan_metrics.rows_returned,
+                )
             else:
                 # Abnormal termination - log with outcome and partial metrics
                 state.metrics.log_event(

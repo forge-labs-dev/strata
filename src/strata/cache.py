@@ -27,7 +27,8 @@ CACHE_META_EXTENSION = ".meta.json"
 # This is baked into the cache directory structure so old and new caches coexist.
 # Version history:
 #   1: Initial version (Arrow IPC stream format, SHA-256 keyed)
-CACHE_VERSION = 1
+#   2: Multi-tenancy support (tenant_id in cache key, tenant-prefixed directories)
+CACHE_VERSION = 2
 
 
 @dataclass
@@ -145,16 +146,31 @@ class DiskCache:
     def _key_path(self, key: CacheKey) -> Path:
         """Get the file path for a cache key.
 
-        Directory structure: cache_dir/v{VERSION}/{hash[:2]}/{hash[2:4]}/{hash}.arrowstream
+        Directory structure: cache_dir/v{VERSION}/{tenant_prefix}/{hash[:2]}/{hash[2:4]}/{hash}.arrowstream
+
+        Tenant isolation:
+        - Each tenant's cache entries are stored under a tenant-prefixed directory
+        - Tenant prefix is first 8 chars of SHA-256(tenant_id) for even distribution
+        - This prevents one tenant from accessing another tenant's cached data
 
         The version prefix ensures cache format changes don't cause corruption:
         - Old server instances continue reading from v1/
         - New instances with v2 write to v2/, ignoring v1/
         - Clear old versions manually or via cleanup scripts
         """
+        import hashlib
+
         hex_digest = key.to_hex(self.granularity)
-        # Version prefix + two-level directory structure
-        subdir = self.cache_dir / f"v{CACHE_VERSION}" / hex_digest[:2] / hex_digest[2:4]
+        # Tenant prefix for isolation (hash first 8 chars for consistent directory naming)
+        tenant_prefix = hashlib.sha256(key.tenant_id.encode()).hexdigest()[:8]
+        # Version prefix + tenant prefix + two-level directory structure
+        subdir = (
+            self.cache_dir
+            / f"v{CACHE_VERSION}"
+            / tenant_prefix
+            / hex_digest[:2]
+            / hex_digest[2:4]
+        )
         subdir.mkdir(parents=True, exist_ok=True)
         return subdir / f"{hex_digest}{CACHE_FILE_EXTENSION}"
 

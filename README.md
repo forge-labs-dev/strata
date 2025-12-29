@@ -104,6 +104,7 @@ For multi-scale comparison: `uv run python benchmarks/bench_restart.py --scale`
 - Two-tier QoS (interactive vs bulk query isolation)
 - Rate limiting, health checks, pre-flight size limits
 - Prometheus metrics, structured JSON logging
+- Multi-tenancy with cache isolation
 
 **Optional** — enable if needed:
 - OpenTelemetry tracing (`pip install strata[otel]`)
@@ -228,10 +229,10 @@ Because Iceberg snapshots and Parquet row groups are immutable, Strata can safel
 ### Cache Key Structure
 
 ```
-hash(table_uri, snapshot_id, file_path, row_group_id, projection_fingerprint)
+hash(tenant_id, table_uri, snapshot_id, file_path, row_group_id, projection_fingerprint)
 ```
 
-Since Iceberg snapshots are immutable, cached objects never need invalidation.
+Since Iceberg snapshots are immutable, cached objects never need invalidation. In multi-tenant mode, tenant ID is included in the cache key for complete isolation.
 
 ### Design Principles
 
@@ -295,6 +296,8 @@ GET  /health/ready         Readiness check
 GET  /health/dependencies  Detailed dependency health
 GET  /metrics              Aggregate metrics (JSON)
 GET  /metrics/prometheus   Prometheus format
+GET  /v1/admin/tenants     List all tenants (multi-tenant mode)
+GET  /v1/admin/tenants/{id} Get tenant metrics
 ```
 
 ### Cache Warming
@@ -317,7 +320,7 @@ curl -X POST http://localhost:8765/v1/cache/warm \
 
 ### Security
 
-Strata has no built-in authentication. Run it behind a reverse proxy (nginx, Envoy) or within a private network boundary. Rate limiting is enabled by default to protect against abuse.
+Strata has no built-in authentication. Run it behind a reverse proxy or API gateway (nginx, Envoy, Kong) that handles JWT/OAuth validation and injects the `X-Tenant-ID` header. Rate limiting is enabled by default to protect against abuse.
 
 ### Environment Variables
 
@@ -335,6 +338,9 @@ Strata has no built-in authentication. Run it behind a reverse proxy (nginx, Env
 | `STRATA_S3_ANONYMOUS` | Public bucket access |
 | `STRATA_LOG_FORMAT` | json or text |
 | `STRATA_LOG_LEVEL` | DEBUG, INFO, WARNING, ERROR |
+| `STRATA_MULTI_TENANT_ENABLED` | Enable multi-tenancy (default: false) |
+| `STRATA_TENANT_HEADER` | Header name for tenant ID (default: X-Tenant-ID) |
+| `STRATA_REQUIRE_TENANT_HEADER` | Reject requests without tenant header |
 
 ### OpenTelemetry Tracing
 
@@ -381,6 +387,33 @@ with breaker:
 
 Monitor via `GET /v1/debug/circuit-breakers`.
 
+### Multi-Tenancy
+
+Enable multi-tenant mode for SaaS deployments with complete cache isolation:
+
+```bash
+export STRATA_MULTI_TENANT_ENABLED=true
+export STRATA_REQUIRE_TENANT_HEADER=true  # Optional: reject requests without tenant header
+```
+
+**How it works:**
+1. API gateway authenticates requests (JWT, OAuth, API key)
+2. Gateway extracts tenant ID from token and injects `X-Tenant-ID` header
+3. Strata validates header format and isolates cache per tenant
+
+```
+Client → API Gateway → Strata
+         (validates   (trusts header,
+          JWT, adds    isolates cache)
+          X-Tenant-ID)
+```
+
+**Cache isolation:** Each tenant gets a separate cache namespace. Same data queried by different tenants produces different cache keys.
+
+**Per-tenant metrics:** Track scans, cache hits, and bytes per tenant via `/v1/admin/tenants`.
+
+**Tenant ID validation:** IDs must be 1-64 characters, alphanumeric with underscores and hyphens. Invalid IDs return HTTP 400.
+
 ---
 
 ## Development
@@ -416,6 +449,8 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 | `iceberg.py` | Iceberg catalog integration |
 | `config.py` | Configuration |
 | `types.py` | Core types (CacheKey, ReadPlan, Task) |
+| `tenant.py` | Multi-tenancy context and config |
+| `tenant_registry.py` | Per-tenant metrics tracking |
 | `rate_limiter.py` | Token bucket rate limiting |
 | `health.py` | Dependency health checks |
 | `circuit_breaker.py` | Circuit breaker pattern |

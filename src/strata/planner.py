@@ -16,6 +16,7 @@ from strata.metadata_cache import (
     get_manifest_cache,
     get_parquet_cache,
 )
+from strata.tenant import get_tenant_id
 from strata.tracing import trace_span
 from strata.types import (
     CacheKey,
@@ -302,6 +303,7 @@ class ReadPlanner:
                     continue
 
                 cache_key = CacheKey(
+                    tenant_id=get_tenant_id(),
                     table_identity=table_identity,
                     snapshot_id=resolved_snapshot_id,
                     file_path=file_path,
