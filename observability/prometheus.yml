@@ -1,0 +1,12 @@
+# Prometheus configuration for Strata
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Strata server metrics
+  - job_name: 'strata'
+    static_configs:
+      - targets: ['strata:8765']
+    metrics_path: '/metrics/prometheus'
+    scrape_interval: 5s

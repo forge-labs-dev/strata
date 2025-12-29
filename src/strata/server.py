@@ -913,6 +913,42 @@ async def metrics():
     return stats
 
 
+@app.get("/metrics/tables")
+async def metrics_tables(limit: int = 10):
+    """Get per-table metrics for the most accessed tables.
+
+    Returns metrics aggregated by table including:
+    - scan_count: Number of scans for this table
+    - avg_latency_ms: Average scan latency
+    - p50_ms, p95_ms, p99_ms: Latency percentiles
+    - cache_hit_rate: Cache hit ratio for this table
+    - bytes_from_cache/storage: Data transfer breakdown
+    - rows_returned: Total rows returned
+    - row_groups_pruned: Total row groups skipped by filters
+
+    Query params:
+    - limit: Max number of tables to return (default 10)
+    """
+    state = get_state()
+    return {"tables": state.metrics.get_top_tables(limit)}
+
+
+@app.get("/metrics/tables/{table_id:path}")
+async def metrics_table(table_id: str):
+    """Get metrics for a specific table.
+
+    Path params:
+    - table_id: The canonical table identity (e.g., "catalog.namespace.table")
+    """
+    state = get_state()
+    table_metrics = state.metrics.get_table_metrics(table_id)
+
+    if table_metrics is None:
+        raise HTTPException(status_code=404, detail=f"No metrics found for table: {table_id}")
+
+    return table_metrics.to_dict()
+
+
 @app.get("/metrics/prometheus")
 async def metrics_prometheus():
     """Prometheus-format metrics endpoint.
@@ -1422,6 +1458,43 @@ async def metrics_prometheus():
                 f'strata_circuit_breaker_rejections_total{{name="{cb_name}"}} '
                 f'{cb_stats.get("total_rejections", 0)}'
             )
+
+    # Add per-table metrics (top 20 most accessed tables)
+    table_metrics = state.metrics.get_top_tables(20)
+    if table_metrics:
+        lines.extend(
+            [
+                "",
+                "# HELP strata_table_scans_total Total scans by table",
+                "# TYPE strata_table_scans_total counter",
+            ]
+        )
+        for tm in table_metrics:
+            # Escape table_id for Prometheus label (replace dots with underscores for label)
+            table_id = tm["table_id"]
+            lines.append(f'strata_table_scans_total{{table="{table_id}"}} {tm["scan_count"]}')
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_table_latency_p95_ms P95 latency by table (ms)",
+                "# TYPE strata_table_latency_p95_ms gauge",
+            ]
+        )
+        for tm in table_metrics:
+            table_id = tm["table_id"]
+            lines.append(f'strata_table_latency_p95_ms{{table="{table_id}"}} {tm["p95_ms"]}')
+
+        lines.extend(
+            [
+                "",
+                "# HELP strata_table_cache_hit_rate Cache hit rate by table",
+                "# TYPE strata_table_cache_hit_rate gauge",
+            ]
+        )
+        for tm in table_metrics:
+            table_id = tm["table_id"]
+            lines.append(f'strata_table_cache_hit_rate{{table="{table_id}"}} {tm["cache_hit_rate"]}')
 
     return Response(
         content="\n".join(lines) + "\n",

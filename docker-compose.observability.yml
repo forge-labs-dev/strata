@@ -1,0 +1,90 @@
+# Strata Observability Stack
+#
+# Quick start:
+#   docker compose -f docker-compose.observability.yml up -d
+#
+# Access:
+#   - Strata API: http://localhost:8765
+#   - Jaeger UI:  http://localhost:16686  (traces)
+#   - Prometheus: http://localhost:9090   (metrics)
+#   - Grafana:    http://localhost:3000   (dashboards, login: admin/admin)
+#
+# Test it:
+#   curl http://localhost:8765/metrics/prometheus
+#   curl http://localhost:8765/health
+#
+# Run load test to generate traces:
+#   uv run python benchmarks/capacity_sweep.py --quick --no-server --base-url http://localhost:8765
+
+services:
+  # Strata server with tracing enabled
+  strata:
+    build: .
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./demo-warehouse:/data/warehouse:ro
+      - strata-cache:/home/strata/.strata/cache
+    environment:
+      - STRATA_HOST=0.0.0.0
+      - STRATA_PORT=8765
+      - STRATA_CACHE_DIR=/home/strata/.strata/cache
+      # Enable OpenTelemetry tracing
+      - STRATA_TRACING_ENABLED=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_SERVICE_NAME=strata
+      # Structured JSON logging for better observability
+      - STRATA_LOG_FORMAT=json
+      - STRATA_LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8765/health').raise_for_status()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    depends_on:
+      - jaeger
+
+  # Jaeger - Distributed tracing backend
+  jaeger:
+    image: jaegertracing/all-in-one:1.54
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - strata
+
+  # Grafana - Dashboards and visualization
+  grafana:
+    image: grafana/grafana:10.3.1
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+      - jaeger
+
+volumes:
+  strata-cache:
+  grafana-data:

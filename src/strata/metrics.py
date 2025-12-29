@@ -2,15 +2,115 @@
 
 import atexit
 import json
+import math
 import queue
 import sys
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TextIO
 
 # Default queue size - logs are dropped if queue is full to prevent blocking
 DEFAULT_LOG_QUEUE_SIZE = 1000
+
+# Max tables to track individually (LRU eviction after this)
+MAX_TRACKED_TABLES = 100
+
+# Latency histogram buckets in milliseconds
+LATENCY_BUCKETS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+
+
+@dataclass
+class TableMetrics:
+    """Per-table aggregated metrics."""
+
+    table_id: str
+    scan_count: int = 0
+    total_latency_ms: float = 0.0
+    cache_hits: int = 0
+    cache_misses: int = 0
+    bytes_from_cache: int = 0
+    bytes_from_storage: int = 0
+    rows_returned: int = 0
+    row_groups_pruned: int = 0
+
+    # Latency tracking for percentiles (circular buffer of recent values)
+    _latencies: list[float] = field(default_factory=list, repr=False)
+    _max_latency_samples: int = field(default=1000, repr=False)
+
+    # Last access time for LRU eviction
+    last_access: float = field(default_factory=time.time, repr=False)
+
+    def record_scan(self, metrics: "ScanMetrics") -> None:
+        """Record a scan completion for this table."""
+        self.scan_count += 1
+        self.total_latency_ms += metrics.total_time_ms
+        self.cache_hits += metrics.cache_hits
+        self.cache_misses += metrics.cache_misses
+        self.bytes_from_cache += metrics.bytes_from_cache
+        self.bytes_from_storage += metrics.bytes_from_storage
+        self.rows_returned += metrics.rows_returned
+        self.row_groups_pruned += metrics.pruned_row_groups
+        self.last_access = time.time()
+
+        # Track latency for percentile calculation
+        if len(self._latencies) >= self._max_latency_samples:
+            self._latencies.pop(0)
+        self._latencies.append(metrics.total_time_ms)
+
+    def get_latency_percentiles(self) -> dict[str, float]:
+        """Calculate latency percentiles from recent samples."""
+        if not self._latencies:
+            return {"p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0}
+
+        sorted_latencies = sorted(self._latencies)
+        n = len(sorted_latencies)
+
+        def percentile(p: float) -> float:
+            idx = max(0, math.ceil(n * p) - 1)
+            return round(sorted_latencies[idx], 2)
+
+        return {
+            "p50_ms": percentile(0.50),
+            "p95_ms": percentile(0.95),
+            "p99_ms": percentile(0.99),
+        }
+
+    def get_latency_histogram(self) -> dict[str, int]:
+        """Get latency distribution as histogram buckets."""
+        buckets = {f"le_{b}ms": 0 for b in LATENCY_BUCKETS}
+        buckets["le_inf"] = 0
+
+        for latency in self._latencies:
+            for bucket in LATENCY_BUCKETS:
+                if latency <= bucket:
+                    buckets[f"le_{bucket}ms"] += 1
+                    break
+            else:
+                buckets["le_inf"] += 1
+
+        return buckets
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for API response."""
+        total_requests = self.cache_hits + self.cache_misses
+        avg_latency = self.total_latency_ms / self.scan_count if self.scan_count > 0 else 0.0
+
+        result = {
+            "table_id": self.table_id,
+            "scan_count": self.scan_count,
+            "avg_latency_ms": round(avg_latency, 2),
+            "cache_hit_rate": round(self.cache_hits / total_requests, 3) if total_requests > 0 else 0.0,
+            "cache_hits": self.cache_hits,
+            "cache_misses": self.cache_misses,
+            "bytes_from_cache": self.bytes_from_cache,
+            "bytes_from_storage": self.bytes_from_storage,
+            "rows_returned": self.rows_returned,
+            "row_groups_pruned": self.row_groups_pruned,
+            **self.get_latency_percentiles(),
+        }
+        return result
 
 
 @dataclass
@@ -106,6 +206,9 @@ class MetricsCollector:
 
     # Logging metrics
     dropped_logs: int = 0
+
+    # Per-table metrics (table_id -> TableMetrics)
+    _table_metrics: dict[str, TableMetrics] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         """Initialize the background writer thread."""
@@ -205,10 +308,14 @@ class MetricsCollector:
 
     def log_scan_complete(self, metrics: ScanMetrics) -> None:
         """Log completion of a scan operation."""
-        # Update aggregate counters
+        # Update aggregate counters and per-table metrics
         with self._counter_lock:
             self.total_scans += 1
             self.total_row_groups_pruned += metrics.pruned_row_groups
+
+            # Update per-table metrics
+            if metrics.table_id:
+                self._record_table_metrics(metrics)
 
         if not self.enabled:
             return
@@ -219,6 +326,43 @@ class MetricsCollector:
             **metrics.to_dict(),
         }
         self._write_log(log_entry)
+
+    def _record_table_metrics(self, metrics: ScanMetrics) -> None:
+        """Record metrics for a specific table. Must be called with _counter_lock held."""
+        table_id = metrics.table_id
+
+        if table_id not in self._table_metrics:
+            # Check if we need to evict old entries (LRU)
+            if len(self._table_metrics) >= MAX_TRACKED_TABLES:
+                # Find and remove the least recently accessed table
+                oldest_table = min(
+                    self._table_metrics.keys(),
+                    key=lambda t: self._table_metrics[t].last_access,
+                )
+                del self._table_metrics[oldest_table]
+
+            self._table_metrics[table_id] = TableMetrics(table_id=table_id)
+
+        self._table_metrics[table_id].record_scan(metrics)
+
+    def get_table_metrics(self, table_id: str) -> TableMetrics | None:
+        """Get metrics for a specific table."""
+        with self._counter_lock:
+            return self._table_metrics.get(table_id)
+
+    def get_all_table_metrics(self) -> list[dict]:
+        """Get metrics for all tracked tables, sorted by scan count descending."""
+        with self._counter_lock:
+            tables = list(self._table_metrics.values())
+
+        # Sort by scan count (hottest tables first)
+        tables.sort(key=lambda t: t.scan_count, reverse=True)
+        return [t.to_dict() for t in tables]
+
+    def get_top_tables(self, limit: int = 10) -> list[dict]:
+        """Get the top N most accessed tables."""
+        all_tables = self.get_all_table_metrics()
+        return all_tables[:limit]
 
     def log_event(self, event: str, **kwargs) -> None:
         """Log a generic event."""
@@ -287,6 +431,7 @@ class MetricsCollector:
             self.cache_evictions_count = 0
             self.cache_evicted_bytes = 0
             self.dropped_logs = 0
+            self._table_metrics.clear()
 
 
 class Timer:
