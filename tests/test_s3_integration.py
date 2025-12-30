@@ -106,6 +106,18 @@ def minio_container():
         yield minio
 
 
+def _get_s3_endpoint(config: dict) -> str:
+    """Get S3 endpoint with HTTP scheme for MinIO.
+
+    MinIO container returns endpoint without scheme; PyArrow and pyiceberg
+    default to HTTPS which causes SSL errors. Ensure we use HTTP for local MinIO.
+    """
+    endpoint = config["endpoint"]
+    if not endpoint.startswith(("http://", "https://")):
+        endpoint = f"http://{endpoint}"
+    return endpoint
+
+
 @pytest.fixture(scope="module")
 def s3_config(minio_container, tmp_path_factory):
     """Create StrataConfig for MinIO."""
@@ -114,7 +126,7 @@ def s3_config(minio_container, tmp_path_factory):
 
     return StrataConfig(
         cache_dir=cache_dir,
-        s3_endpoint_url=config["endpoint"],
+        s3_endpoint_url=_get_s3_endpoint(config),
         s3_access_key=config["access_key"],
         s3_secret_key=config["secret_key"],
         s3_region="us-east-1",
@@ -140,7 +152,7 @@ def s3_table(minio_container, s3_config, tmp_path_factory):
         uri=f"sqlite:///{catalog_db}",
         warehouse=warehouse_path,
         **{
-            "s3.endpoint": config["endpoint"],
+            "s3.endpoint": _get_s3_endpoint(config),
             "s3.access-key-id": config["access_key"],
             "s3.secret-access-key": config["secret_key"],
             "s3.region": "us-east-1",
@@ -255,7 +267,7 @@ class TestS3EndToEnd:
             uri=f"sqlite:///{catalog_db}",
             warehouse=warehouse_path,
             **{
-                "s3.endpoint": config["endpoint"],
+                "s3.endpoint": _get_s3_endpoint(config),
                 "s3.access-key-id": config["access_key"],
                 "s3.secret-access-key": config["secret_key"],
                 "s3.region": "us-east-1",
@@ -312,7 +324,7 @@ class TestS3PathHandling:
             uri=f"sqlite:///{catalog_db}",
             warehouse=warehouse_path,
             **{
-                "s3.endpoint": config["endpoint"],
+                "s3.endpoint": _get_s3_endpoint(config),
                 "s3.access-key-id": config["access_key"],
                 "s3.secret-access-key": config["secret_key"],
                 "s3.region": "us-east-1",
