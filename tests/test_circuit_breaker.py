@@ -428,9 +428,7 @@ class TestCircuitBreakerRegistry:
 
         assert cb1 is cb2  # Same instance
 
-        cb3 = registry.get_or_create(
-            "test2", CircuitBreakerConfig(failure_threshold=10)
-        )
+        cb3 = registry.get_or_create("test2", CircuitBreakerConfig(failure_threshold=10))
         assert cb3 is not cb1
         assert cb3.config.failure_threshold == 10
 

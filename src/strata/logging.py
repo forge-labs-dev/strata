@@ -252,7 +252,8 @@ def configure_logging(
     """Configure structured logging for the application.
 
     Args:
-        level: Log level (DEBUG, INFO, WARNING, ERROR). Defaults to STRATA_LOG_LEVEL env var or INFO.
+        level: Log level (DEBUG, INFO, WARNING, ERROR). Defaults to
+            STRATA_LOG_LEVEL env var or INFO.
         format: "json" or "text". Defaults to STRATA_LOG_FORMAT env var or "json".
     """
     global _configured, _log_format

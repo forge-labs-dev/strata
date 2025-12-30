@@ -274,9 +274,7 @@ class TestStrataScanner:
             scanner.register("events", table_uri)
 
             all_rows = scanner.query("SELECT COUNT(*) as cnt FROM events")
-            filtered_rows = scanner.query(
-                "SELECT COUNT(*) as cnt FROM events WHERE id < 50"
-            )
+            filtered_rows = scanner.query("SELECT COUNT(*) as cnt FROM events WHERE id < 50")
 
             # Filtered should have fewer rows
             all_count = all_rows.to_pydict()["cnt"][0]

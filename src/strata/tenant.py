@@ -95,11 +95,7 @@ class TenantConfig:
 
     def effective_per_client_interactive(self, default: int) -> int:
         """Get per-client interactive limit, falling back to default if not set."""
-        return (
-            self.per_client_interactive
-            if self.per_client_interactive is not None
-            else default
-        )
+        return self.per_client_interactive if self.per_client_interactive is not None else default
 
     def effective_per_client_bulk(self, default: int) -> int:
         """Get per-client bulk limit, falling back to default if not set."""

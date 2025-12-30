@@ -1,9 +1,14 @@
 """FastAPI server for Strata."""
 
+from __future__ import annotations
+
 import asyncio
 import time
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
+
+if TYPE_CHECKING:
+    from strata.adaptive_concurrency import AdaptiveConcurrencyController
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
@@ -277,8 +282,6 @@ def _get_active_scan_count(state: ServerState) -> int:
 
     With two-tier QoS, active scans = interactive_active + bulk_active.
     """
-    interactive_max = state.config.interactive_slots
-    bulk_max = state.config.bulk_slots
     interactive_active = state._interactive_limiter.in_use
     bulk_active = state._bulk_limiter.in_use
     return interactive_active + bulk_active
@@ -772,7 +775,7 @@ async def tenant_context_middleware(request: Request, call_next):
     # Only apply tenant context if multi-tenancy is enabled
     if not getattr(config, "multi_tenant_enabled", False):
         # Single-tenant mode: use default tenant
-        token = set_tenant_id(DEFAULT_TENANT_ID)
+        set_tenant_id(DEFAULT_TENANT_ID)
         try:
             response = await call_next(request)
             return response
@@ -810,7 +813,7 @@ async def tenant_context_middleware(request: Request, call_next):
         )
 
     # Set tenant context for this request
-    token = set_tenant_id(tenant_id)
+    set_tenant_id(tenant_id)
     try:
         response = await call_next(request)
         # Echo tenant ID back in response header for debugging
@@ -1632,7 +1635,8 @@ async def metrics_prometheus():
         lines.extend(
             [
                 "",
-                "# HELP strata_circuit_breaker_state Circuit breaker state (0=closed, 1=open, 2=half_open)",
+                # Circuit breaker state: 0=closed, 1=open, 2=half_open
+                "# HELP strata_circuit_breaker_state Circuit breaker state",
                 "# TYPE strata_circuit_breaker_state gauge",
             ]
         )
@@ -2125,11 +2129,12 @@ async def get_batches_v1(scan_id: str, request: Request):
                 if tier == "interactive"
                 else state.config.per_client_bulk
             )
+            msg = f"Client at capacity ({per_client_cap} concurrent {tier_name} queries)"
             return JSONResponse(
                 status_code=429,
                 content={
                     "error": "per_client_limit",
-                    "message": f"Client at capacity ({per_client_cap} concurrent {tier_name} queries)",
+                    "message": msg,
                     "tier": tier_name,
                     "per_client_limit": per_client_cap,
                     "retry_after_seconds": 1,
@@ -2424,7 +2429,7 @@ async def get_batches_v1(scan_id: str, request: Request):
                 # Next index to yield (maintains output order)
                 next_yield_idx = 0
 
-                def start_fetch(idx: int, task: "Task") -> tuple[asyncio.Future, float]:
+                def start_fetch(idx: int, task: Task) -> tuple[asyncio.Future, float]:
                     """Start a fetch in the dedicated thread pool, return Future and start time."""
                     loop = asyncio.get_event_loop()
                     fetch_start = time.perf_counter()
@@ -2433,7 +2438,7 @@ async def get_batches_v1(scan_id: str, request: Request):
                     )
                     return future, fetch_start
 
-                def record_metrics(task: "Task", fetch_duration_ms: float = 0.0) -> None:
+                def record_metrics(task: Task, fetch_duration_ms: float = 0.0) -> None:
                     """Record cache hit/miss metrics for a task."""
                     nonlocal tasks_completed, max_fetch_ms
                     tasks_completed += 1

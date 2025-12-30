@@ -2,12 +2,16 @@
 
 from strata.integration.arrow import (
     StrataDataset,
-    StrataScanner as StrataArrowScanner,
     dataset,
+)
+from strata.integration.arrow import (
+    StrataScanner as StrataArrowScanner,
 )
 from strata.integration.datafusion import (
     StrataDataFusionContext,
     register_strata_table,
+)
+from strata.integration.datafusion import (
     strata_query as datafusion_query,
 )
 from strata.integration.duckdb import (

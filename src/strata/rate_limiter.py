@@ -6,7 +6,6 @@ request-rate throttling to prevent abuse and ensure fair usage.
 """
 
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Protocol

@@ -43,7 +43,7 @@ class TestScanToPolars:
 
     def test_returns_expected_row_count(self, server_with_client):
         """Returns all rows from the table."""
-        pl = pytest.importorskip("polars")
+        pytest.importorskip("polars")
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
@@ -125,7 +125,7 @@ class TestStrataPolarsScanner:
 
     def test_scan_with_columns(self, server_with_client):
         """scan() respects column projection."""
-        pl = pytest.importorskip("polars")
+        pytest.importorskip("polars")
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
@@ -177,9 +177,7 @@ class TestStrataPolarsScanner:
 
         scanner = StrataPolarsScanner(base_url=f"http://127.0.0.1:{config.port}")
         try:
-            total_rows = sum(
-                batch.num_rows for batch in scanner.scan_batches(table_uri)
-            )
+            total_rows = sum(batch.num_rows for batch in scanner.scan_batches(table_uri))
             assert total_rows == 500
         finally:
             scanner.close()
@@ -205,7 +203,7 @@ class TestStrataPolarsScanner:
 
     def test_multiple_scans_same_scanner(self, server_with_client):
         """Multiple scans can use the same scanner."""
-        pl = pytest.importorskip("polars")
+        pytest.importorskip("polars")
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]

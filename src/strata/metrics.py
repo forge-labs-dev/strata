@@ -7,7 +7,6 @@ import queue
 import sys
 import threading
 import time
-from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import TextIO
 
@@ -101,7 +100,9 @@ class TableMetrics:
             "table_id": self.table_id,
             "scan_count": self.scan_count,
             "avg_latency_ms": round(avg_latency, 2),
-            "cache_hit_rate": round(self.cache_hits / total_requests, 3) if total_requests > 0 else 0.0,
+            "cache_hit_rate": round(self.cache_hits / total_requests, 3)
+            if total_requests > 0
+            else 0.0,
             "cache_hits": self.cache_hits,
             "cache_misses": self.cache_misses,
             "bytes_from_cache": self.bytes_from_cache,

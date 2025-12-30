@@ -559,7 +559,7 @@ class TestMemoryProfiler:
 
     def test_memory_recommendations_healthy(self):
         """Test that healthy memory state gets appropriate recommendation."""
-        from strata.memory_profiler import _get_memory_recommendations, MemorySnapshot
+        from strata.memory_profiler import MemorySnapshot, _get_memory_recommendations
 
         # Create a healthy snapshot
         snapshot = MemorySnapshot(
@@ -579,7 +579,7 @@ class TestMemoryProfiler:
 
     def test_memory_recommendations_high_arrow(self):
         """Test recommendation for high Arrow memory."""
-        from strata.memory_profiler import _get_memory_recommendations, MemorySnapshot
+        from strata.memory_profiler import MemorySnapshot, _get_memory_recommendations
 
         # Create snapshot with high Arrow allocation
         snapshot = MemorySnapshot(
@@ -604,7 +604,6 @@ class TestDebugEndpoints:
     @pytest.fixture
     def client(self, tmp_path):
         """Create test client with initialized server state."""
-        import asyncio
 
         from httpx import ASGITransport, AsyncClient
 

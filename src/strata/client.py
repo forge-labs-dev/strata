@@ -179,9 +179,7 @@ class StrataClient:
         # All retries exhausted
         if last_response is not None:
             last_response.raise_for_status()
-        raise httpx.HTTPStatusError(
-            "Max retries exceeded", request=None, response=last_response
-        )
+        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
 
     def scan(
         self,
@@ -347,9 +345,7 @@ class AsyncStrataClient:
         last_response = None
         for attempt in range(self.retry_config.max_retries + 1):
             # Use streaming to accumulate response
-            async with self._client.stream(
-                "GET", f"/v1/scan/{scan_id}/batches"
-            ) as response:
+            async with self._client.stream("GET", f"/v1/scan/{scan_id}/batches") as response:
                 if response.status_code != 429:
                     response.raise_for_status()
                     chunks = []
@@ -380,9 +376,7 @@ class AsyncStrataClient:
         # All retries exhausted
         if last_response is not None:
             last_response.raise_for_status()
-        raise httpx.HTTPStatusError(
-            "Max retries exceeded", request=None, response=last_response
-        )
+        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
 
     async def scan(
         self,

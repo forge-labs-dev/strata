@@ -6,7 +6,7 @@ providing insight into cache effectiveness over time.
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
 from typing import Any
 
@@ -186,13 +186,15 @@ class CacheStatsHistogram:
             for table_id, stats in self._table_stats.items():
                 total = stats["hits"] + stats["misses"]
                 hit_rate = stats["hits"] / total if total > 0 else 0.0
-                table_list.append({
-                    "table_id": table_id,
-                    "hits": stats["hits"],
-                    "misses": stats["misses"],
-                    "total": total,
-                    "hit_rate": round(hit_rate, 4),
-                })
+                table_list.append(
+                    {
+                        "table_id": table_id,
+                        "hits": stats["hits"],
+                        "misses": stats["misses"],
+                        "total": total,
+                        "hit_rate": round(hit_rate, 4),
+                    }
+                )
 
         # Sort by total accesses descending
         table_list.sort(key=lambda x: x["total"], reverse=True)

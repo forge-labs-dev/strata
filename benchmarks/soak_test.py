@@ -298,10 +298,7 @@ class RequestResult:
     @property
     def is_success(self) -> bool:
         """True if request completed successfully (2xx on POST and stream)."""
-        return (
-            200 <= self.post_status < 300
-            and 200 <= self.stream_status < 300
-        )
+        return 200 <= self.post_status < 300 and 200 <= self.stream_status < 300
 
     @property
     def is_rate_limited(self) -> bool:
@@ -588,7 +585,7 @@ class ServerProcess:
                 if stderr_path.exists():
                     with open(stderr_path) as f:
                         lines = f.readlines()
-                        info["last_stderr_lines"] = [l.rstrip() for l in lines[-50:]]
+                        info["last_stderr_lines"] = [line.rstrip() for line in lines[-50:]]
             except Exception:
                 pass
 
@@ -597,7 +594,7 @@ class ServerProcess:
                 if stdout_path.exists():
                     with open(stdout_path) as f:
                         lines = f.readlines()
-                        info["last_stdout_lines"] = [l.rstrip() for l in lines[-50:]]
+                        info["last_stdout_lines"] = [line.rstrip() for line in lines[-50:]]
             except Exception:
                 pass
 
@@ -1053,7 +1050,7 @@ class SoakDriver:
                 if not self.server.check_alive():
                     self.server_crash_time = elapsed
                     self.server_crash_info = self.server.get_crash_info()
-                    print(f"\n*** SERVER CRASHED at {elapsed/60:.1f} min ***")
+                    print(f"\n*** SERVER CRASHED at {elapsed / 60:.1f} min ***")
                     if self.server_crash_info.get("signal_name"):
                         print(f"    Signal: {self.server_crash_info['signal_name']}")
                     elif self.server_crash_info.get("exit_code") is not None:
@@ -1123,7 +1120,11 @@ class SoakDriver:
                 recent_other = len(recent_results) - recent_2xx - recent_429
 
                 # Use successful latencies for percentiles, fall back to all if none
-                latencies_for_pct = recent_success_latencies if recent_success_latencies else [r.latency_ms for r in recent_results]
+                latencies_for_pct = (
+                    recent_success_latencies
+                    if recent_success_latencies
+                    else [r.latency_ms for r in recent_results]
+                )
 
                 # Compute GC deltas for this window (to correlate with latency)
                 gc_gen2_delta = gc_gen2_pause_count - self._prev_gc_gen2_count
@@ -1160,10 +1161,12 @@ class SoakDriver:
                 total_all = sum(1 for r in self.request_results)
                 total_2xx = sum(1 for r in self.request_results if r.is_success)
                 total_429 = sum(1 for r in self.request_results if r.is_rate_limited)
+                other_count = total_all - total_2xx - total_429
                 print(
-                    f"  [{elapsed/60:5.1f}m] {self.current_phase.value:8s} "
+                    f"  [{elapsed / 60:5.1f}m] {self.current_phase.value:8s} "
                     f"RSS={rss_mb:5.0f}MB cache={cache_mb:5.0f}MB fds={fd_str:>4} "
-                    f"p95={p95:6.1f}ms {gc_pause_str} 2xx={total_2xx} 429={total_429} other={total_all-total_2xx-total_429}"
+                    f"p95={p95:6.1f}ms {gc_pause_str} "
+                    f"2xx={total_2xx} 429={total_429} other={other_count}"
                 )
 
     async def run_soak_test(self) -> SoakResults:
@@ -1260,7 +1263,9 @@ class SoakDriver:
                         self.current_phase = Phase.SPIKE
                         print(f"\n  Phase: SPIKE #{self.spike_count} (2x load for 30s)")
                         # Add spike users
-                        extra_users = int(self.config.base_users * (self.config.spike_multiplier - 1))
+                        extra_users = int(
+                            self.config.base_users * (self.config.spike_multiplier - 1)
+                        )
                         for i in range(extra_users):
                             spike_users.append(
                                 asyncio.create_task(
@@ -1521,7 +1526,9 @@ class SoakDriver:
                 return False
             return is_clean_sample(sample)
 
-        clean_steady_samples = [s for s in self.resource_samples if is_clean_steady_resource_sample(s)]
+        clean_steady_samples = [
+            s for s in self.resource_samples if is_clean_steady_resource_sample(s)
+        ]
 
         # Get warmup end time (when warmup phase ends)
         warmup_end_s = warmup_samples[-1].elapsed_s if warmup_samples else 0
@@ -1540,7 +1547,8 @@ class SoakDriver:
         early_steady_start_s = warmup_end_s + 30 * 60  # 30 min after warmup
         early_steady_end_s = warmup_end_s + 90 * 60  # 90 min after warmup
         early_steady_samples = [
-            s for s in clean_steady_samples
+            s
+            for s in clean_steady_samples
             if early_steady_start_s <= s.elapsed_s <= early_steady_end_s
         ]
 
@@ -1557,8 +1565,7 @@ class SoakDriver:
             max_elapsed_s = max(s.elapsed_s for s in clean_steady_samples)
             late_window_start_s = max_elapsed_s - 30 * 60  # Last 30 min
             late_steady_samples = [
-                s for s in clean_steady_samples
-                if s.elapsed_s >= late_window_start_s
+                s for s in clean_steady_samples if s.elapsed_s >= late_window_start_s
             ]
 
             if len(late_steady_samples) >= min_baseline_samples:
@@ -1585,9 +1592,7 @@ class SoakDriver:
         # Memory growth metrics
         # Primary: early_steady vs baseline (initial stabilization)
         memory_growth_pct = (
-            ((early_steady_rss - baseline_rss) / baseline_rss * 100)
-            if baseline_rss > 0
-            else 0
+            ((early_steady_rss - baseline_rss) / baseline_rss * 100) if baseline_rss > 0 else 0
         )
 
         # Secondary: late_steady vs early_steady (continued growth = leak)
@@ -1634,7 +1639,9 @@ class SoakDriver:
 
         # Cache metrics from final sample
         final_cache_bytes = self.resource_samples[-1].cache_bytes if self.resource_samples else 0
-        final_cache_entries = self.resource_samples[-1].cache_entries if self.resource_samples else 0
+        final_cache_entries = (
+            self.resource_samples[-1].cache_entries if self.resource_samples else 0
+        )
         total_evictions = self.resource_samples[-1].cache_evictions if self.resource_samples else 0
 
         # =================================================================
@@ -1663,7 +1670,9 @@ class SoakDriver:
         )
 
         # Final p95 from clean steady-state samples tail
-        steady_latency_tail = steady_latency_clean[-baseline_window_samples:] if steady_latency_clean else []
+        steady_latency_tail = (
+            steady_latency_clean[-baseline_window_samples:] if steady_latency_clean else []
+        )
         final_p95 = (
             sum(s.p95_ms for s in steady_latency_tail) / len(steady_latency_tail)
             if len(steady_latency_tail) >= min_baseline_samples
@@ -1682,16 +1691,12 @@ class SoakDriver:
 
         # Spike p95 (expected to be higher during spikes)
         spike_p95 = (
-            sum(s.p95_ms for s in spike_latency) / len(spike_latency)
-            if spike_latency
-            else 0
+            sum(s.p95_ms for s in spike_latency) / len(spike_latency) if spike_latency else 0
         )
 
         # Latency drift: compare median steady vs baseline
         latency_drift_pct = (
-            ((median_steady_p95 - baseline_p95) / baseline_p95 * 100)
-            if baseline_p95 > 0
-            else 0
+            ((median_steady_p95 - baseline_p95) / baseline_p95 * 100) if baseline_p95 > 0 else 0
         )
 
         # Check if we have sufficient data for reliable metrics
@@ -1712,7 +1717,8 @@ class SoakDriver:
         for spike_start, spike_end in self.spike_events:
             recovery_window_s = 120.0
             recovery_samples = [
-                s for s in self.latency_samples
+                s
+                for s in self.latency_samples
                 if spike_end <= s.elapsed_s <= spike_end + recovery_window_s
                 and s.phase == Phase.STEADY.value
             ]
@@ -1773,10 +1779,7 @@ class SoakDriver:
         normal_window_count = 0
 
         # Use steady-state latency samples only (exclude warmup/cooldown)
-        steady_latency_for_gc = [
-            s for s in self.latency_samples
-            if s.phase == Phase.STEADY.value
-        ]
+        steady_latency_for_gc = [s for s in self.latency_samples if s.phase == Phase.STEADY.value]
 
         for sample in steady_latency_for_gc:
             if sample.p95_ms > slow_window_threshold:
@@ -1790,21 +1793,15 @@ class SoakDriver:
 
         # Compute correlation: % of slow windows that had gen2 activity
         gc_latency_correlation = (
-            (slow_window_with_gc_count / slow_window_count * 100)
-            if slow_window_count > 0
-            else 0.0
+            (slow_window_with_gc_count / slow_window_count * 100) if slow_window_count > 0 else 0.0
         )
 
         # Average GC pause time in slow vs normal windows
         slow_window_avg_gc_pause_ms = (
-            slow_window_gc_pause_total / slow_window_count
-            if slow_window_count > 0
-            else 0.0
+            slow_window_gc_pause_total / slow_window_count if slow_window_count > 0 else 0.0
         )
         normal_window_avg_gc_pause_ms = (
-            normal_window_gc_pause_total / normal_window_count
-            if normal_window_count > 0
-            else 0.0
+            normal_window_gc_pause_total / normal_window_count if normal_window_count > 0 else 0.0
         )
 
         # =================================================================
@@ -1827,9 +1824,7 @@ class SoakDriver:
 
         # Zero 5xx, timeouts, and Arrow decode errors after warmup (429 OK)
         no_errors_post_warmup = (
-            post_warmup_5xx == 0
-            and post_warmup_timeouts == 0
-            and post_warmup_arrow_errors == 0
+            post_warmup_5xx == 0 and post_warmup_timeouts == 0 and post_warmup_arrow_errors == 0
         )
 
         # Other fail rate <= 0.1% (per user specification)
@@ -1945,8 +1940,12 @@ class SoakDriver:
             rate_429_in_band=rate_429_in_band,
             overall_pass=overall_pass,
             server_crash_time_min=self.server_crash_time / 60 if self.server_crash_time else None,
-            server_crash_signal=self.server_crash_info.get("signal_name") if self.server_crash_info else None,
-            server_crash_exit_code=self.server_crash_info.get("exit_code") if self.server_crash_info else None,
+            server_crash_signal=self.server_crash_info.get("signal_name")
+            if self.server_crash_info
+            else None,
+            server_crash_exit_code=self.server_crash_info.get("exit_code")
+            if self.server_crash_info
+            else None,
             insufficient_data=insufficient_data,
         )
 
@@ -1971,9 +1970,13 @@ def print_results(results: SoakResults):
     print("\n" + "-" * 40)
     print("REQUEST CLASSIFICATION")
     print("-" * 40)
-    print(f"Success (2xx):     {results.success_2xx_count:>8,} ({results.success_2xx_rate * 100:5.1f}%)")
-    print(f"Rate limited (429):{results.rate_limited_429_count:>8,} ({results.rate_limited_429_rate * 100:5.1f}%)")
-    print(f"Other failures:    {results.other_fail_count:>8,} ({results.other_fail_rate * 100:5.2f}%)")
+    success_pct = results.success_2xx_rate * 100
+    print(f"Success (2xx):     {results.success_2xx_count:>8,} ({success_pct:5.1f}%)")
+    rate_limited_pct = results.rate_limited_429_rate * 100
+    print(f"Rate limited (429):{results.rate_limited_429_count:>8,} ({rate_limited_pct:5.1f}%)")
+    print(
+        f"Other failures:    {results.other_fail_count:>8,} ({results.other_fail_rate * 100:5.2f}%)"
+    )
 
     # =================================================================
     # Per-Phase Status Codes (new: POST/GET/DELETE breakdown)
@@ -1982,14 +1985,28 @@ def print_results(results: SoakResults):
     print("STATUS CODES BY PHASE")
     print("-" * 40)
     print("POST /v1/scan:")
-    print(f"  2xx: {results.post_success_count:,}  429: {results.post_429_count:,}  5xx: {results.post_5xx_count}  other: {results.post_other_fail_count}")
+    print(
+        f"  2xx: {results.post_success_count:,}  429: {results.post_429_count:,}  "
+        f"5xx: {results.post_5xx_count}  other: {results.post_other_fail_count}"
+    )
     print("GET /v1/scan/{id}/batches:")
-    print(f"  2xx: {results.stream_success_count:,}  429: {results.stream_429_count:,}  5xx: {results.stream_5xx_count}  other: {results.stream_other_fail_count}")
+    print(
+        f"  2xx: {results.stream_success_count:,}  429: {results.stream_429_count:,}  "
+        f"5xx: {results.stream_5xx_count}  other: {results.stream_other_fail_count}"
+    )
     print("DELETE /v1/scan/{id}:")
-    print(f"  2xx: {results.delete_success_count:,}  404 (already gone): {results.delete_already_gone_count:,}")
-    delete_real_errors = results.delete_5xx_count + results.delete_timeout_count + results.delete_other_fail_count
+    print(
+        f"  2xx: {results.delete_success_count:,}  "
+        f"404 (already gone): {results.delete_already_gone_count:,}"
+    )
+    delete_real_errors = (
+        results.delete_5xx_count + results.delete_timeout_count + results.delete_other_fail_count
+    )
     if delete_real_errors > 0:
-        print(f"  5xx: {results.delete_5xx_count}  timeout: {results.delete_timeout_count}  other: {results.delete_other_fail_count}")
+        print(
+            f"  5xx: {results.delete_5xx_count}  timeout: {results.delete_timeout_count}  "
+            f"other: {results.delete_other_fail_count}"
+        )
 
     # =================================================================
     # Memory (robust 3-window analysis)
@@ -2000,7 +2017,9 @@ def print_results(results: SoakResults):
     print(f"Baseline (warmup tail):   {results.baseline_rss_mb:.1f} MB")
     print(f"Early steady (30-90min):  {results.early_steady_rss_mb:.1f} MB")
     print(f"Late steady (last 30min): {results.late_steady_rss_mb:.1f} MB")
-    print(f"Range: {results.min_rss_mb:.1f} MB - {results.peak_rss_mb:.1f} MB (shows GC fluctuation)")
+    print(
+        f"Range: {results.min_rss_mb:.1f} MB - {results.peak_rss_mb:.1f} MB (shows GC fluctuation)"
+    )
     print(f"Final RSS: {results.final_rss_mb:.1f} MB")
     print(f"Growth (early vs baseline):  {results.memory_growth_pct:+.1f}%")
     print(f"Growth (late vs early):      {results.memory_end_growth_pct:+.1f}%")
@@ -2089,7 +2108,9 @@ def print_results(results: SoakResults):
     print(f"Final active scans: {results.final_active_scans}")
     cache_str = f"{results.cache_hit_rate * 100:.1f}%" if results.cache_hit_rate >= 0 else "n/a"
     print(f"Cache hit rate: {cache_str}")
-    prefetch_str = f"{results.prefetch_efficiency * 100:.1f}%" if results.prefetch_efficiency >= 0 else "n/a"
+    prefetch_str = (
+        f"{results.prefetch_efficiency * 100:.1f}%" if results.prefetch_efficiency >= 0 else "n/a"
+    )
     print(f"Prefetch efficiency: {prefetch_str}")
     print(f"Spikes completed: {results.spike_count}")
 
@@ -2155,7 +2176,9 @@ def print_results(results: SoakResults):
     threads_str = f"{results.baseline_threads:.0f} -> {results.final_threads}"
     print(f"No thread leak: {thread_status} ({threads_str})")
 
-    critical_errors = results.post_warmup_5xx + results.post_warmup_timeouts + results.post_warmup_arrow_errors
+    critical_errors = (
+        results.post_warmup_5xx + results.post_warmup_timeouts + results.post_warmup_arrow_errors
+    )
     err_status = "PASS" if results.no_errors_post_warmup else "FAIL"
     print(f"Zero critical errors (5xx/timeout/arrow): {err_status} ({critical_errors})")
 
@@ -2282,7 +2305,10 @@ async def main():
             server.start()
             config.base_url = f"http://{config.server_host}:{config.server_port}"
             print(f"  Server running at {config.base_url}")
-            print(f"  QoS slots: {interactive_slots} interactive + {bulk_slots} bulk = {total_slots} total")
+            print(
+                f"  QoS slots: {interactive_slots} interactive + {bulk_slots} bulk "
+                f"= {total_slots} total"
+            )
             print(f"  Cache limit: {config.cache_size_bytes // (1024 * 1024)} MB")
             print(f"  Logs: {config.results_dir}/server_*.log")
 

@@ -4,7 +4,7 @@ import pyarrow as pa
 import pytest
 
 from strata.client import gt, lt
-from strata.integration.arrow import StrataDataset, StrataScanner, dataset
+from strata.integration.arrow import StrataDataset, dataset
 
 
 class TestStrataDataset:
@@ -15,9 +15,7 @@ class TestStrataDataset:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataset(
-            table_uri, base_url=f"http://127.0.0.1:{config.port}"
-        ) as ds:
+        with StrataDataset(table_uri, base_url=f"http://127.0.0.1:{config.port}") as ds:
             table = ds.to_table()
             assert isinstance(table, pa.Table)
             assert table.num_rows > 0
@@ -283,9 +281,7 @@ class TestIntegrationWithOtherLibraries:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataset(
-            table_uri, base_url=f"http://127.0.0.1:{config.port}"
-        ) as ds:
+        with StrataDataset(table_uri, base_url=f"http://127.0.0.1:{config.port}") as ds:
             reader = ds.scanner(columns=["id", "value"]).to_reader()
 
             # Convert to Polars
@@ -300,9 +296,7 @@ class TestIntegrationWithOtherLibraries:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataset(
-            table_uri, base_url=f"http://127.0.0.1:{config.port}"
-        ) as ds:
+        with StrataDataset(table_uri, base_url=f"http://127.0.0.1:{config.port}") as ds:
             table = ds.scanner(columns=["id", "value"]).to_table()
 
             # Register with DuckDB

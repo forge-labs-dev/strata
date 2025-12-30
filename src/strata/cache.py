@@ -146,7 +146,8 @@ class DiskCache:
     def _key_path(self, key: CacheKey) -> Path:
         """Get the file path for a cache key.
 
-        Directory structure: cache_dir/v{VERSION}/{tenant_prefix}/{hash[:2]}/{hash[2:4]}/{hash}.arrowstream
+        Directory structure:
+            cache_dir/v{VERSION}/{tenant_prefix}/{hash[:2]}/{hash[2:4]}/{hash}.arrowstream
 
         Tenant isolation:
         - Each tenant's cache entries are stored under a tenant-prefixed directory
@@ -165,11 +166,7 @@ class DiskCache:
         tenant_prefix = hashlib.sha256(key.tenant_id.encode()).hexdigest()[:8]
         # Version prefix + tenant prefix + two-level directory structure
         subdir = (
-            self.cache_dir
-            / f"v{CACHE_VERSION}"
-            / tenant_prefix
-            / hex_digest[:2]
-            / hex_digest[2:4]
+            self.cache_dir / f"v{CACHE_VERSION}" / tenant_prefix / hex_digest[:2] / hex_digest[2:4]
         )
         subdir.mkdir(parents=True, exist_ok=True)
         return subdir / f"{hex_digest}{CACHE_FILE_EXTENSION}"

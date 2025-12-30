@@ -1,12 +1,11 @@
 """Tests for DataFusion integration."""
 
-import pyarrow as pa
 import pytest
 
 datafusion = pytest.importorskip("datafusion")
 
-from strata.client import gt, lt
-from strata.integration.datafusion import (
+from strata.client import gt, lt  # noqa: E402
+from strata.integration.datafusion import (  # noqa: E402
     StrataDataFusionContext,
     register_strata_table,
     strata_query,
@@ -145,9 +144,7 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
             result = ctx.sql("SELECT COUNT(*) as cnt FROM events").collect()
             assert result[0].column("cnt")[0].as_py() == 500
@@ -157,9 +154,7 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             # Register same table twice with different names for testing
             ctx.register("events1", table_uri, columns=["id"])
             ctx.register("events2", table_uri, columns=["value"])
@@ -172,14 +167,8 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
-            result = (
-                ctx.register("events", table_uri)
-                .sql("SELECT * FROM events LIMIT 5")
-                .collect()
-            )
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
+            result = ctx.register("events", table_uri).sql("SELECT * FROM events LIMIT 5").collect()
             assert len(result) > 0
 
     def test_table_method(self, server_with_client):
@@ -187,9 +176,7 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
             df = ctx.table("events")
 
@@ -203,9 +190,7 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
             assert "events" in ctx.tables()
 
@@ -217,9 +202,7 @@ class TestStrataDataFusionContext:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register(
                 "events",
                 table_uri,
@@ -238,9 +221,7 @@ class TestDataFusionDataFrameAPI:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
             result = ctx.table("events").select("id", "value").limit(5).collect()
 
@@ -254,17 +235,11 @@ class TestDataFusionDataFrameAPI:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
 
             # Filter using DataFusion expressions
-            result = (
-                ctx.table("events")
-                .filter(datafusion.col("id") < datafusion.lit(10))
-                .collect()
-            )
+            result = ctx.table("events").filter(datafusion.col("id") < datafusion.lit(10)).collect()
 
             total_rows = sum(batch.num_rows for batch in result)
             assert total_rows == 10
@@ -274,9 +249,7 @@ class TestDataFusionDataFrameAPI:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataDataFusionContext(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as ctx:
+        with StrataDataFusionContext(base_url=f"http://127.0.0.1:{config.port}") as ctx:
             ctx.register("events", table_uri)
 
             result = (

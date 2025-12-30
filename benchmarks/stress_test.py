@@ -846,13 +846,13 @@ class StressDriver:
         except httpx.ReadTimeout:
             # Read timeout - server is processing but too slow
             if not hasattr(self, "_metrics_error_printed"):
-                print(f"  Metrics read timeout (30s)")
+                print("  Metrics read timeout (30s)")
                 self._metrics_error_printed = True
             return {}
         except httpx.ConnectTimeout:
             # Connection timeout - can't even connect
             if not hasattr(self, "_connect_timeout_printed"):
-                print(f"  Metrics connect timeout")
+                print("  Metrics connect timeout")
                 self._connect_timeout_printed = True
             return {}
         except httpx.ConnectError:
@@ -991,7 +991,8 @@ class StressDriver:
         """Run the full stress test."""
         print(f"\n  Starting stress test: {self.config.scenario.value}")
         print(
-            f"  Users: {self.config.dashboard_users} dashboard + {self.config.analyst_users} analyst + {self.config.bulk_users} bulk"
+            f"  Users: {self.config.dashboard_users} dashboard + "
+            f"{self.config.analyst_users} analyst + {self.config.bulk_users} bulk"
         )
         print(f"  Duration: {self.config.duration_s}s")
 
@@ -1166,9 +1167,7 @@ class StressDriver:
         prefetch_used = prefetch.get("used", 0)
         prefetch_wasted = prefetch.get("wasted", 0)
         prefetch_skipped = prefetch.get("skipped", 0)
-        prefetch_efficiency = (
-            prefetch_used / prefetch_started if prefetch_started > 0 else 0.0
-        )
+        prefetch_efficiency = prefetch_used / prefetch_started if prefetch_started > 0 else 0.0
 
         total_requests = len(self.results)
         total_success = len(dashboard_success) + len(analyst_success) + len(bulk_success)
@@ -1248,14 +1247,17 @@ def print_stress_results(results: StressResults):
     print("\n" + "-" * 80)
     print("BY USER TYPE")
     print("-" * 80)
-    print(
-        f"{'Type':<12} {'Requests':>10} {'Success':>10} {'p50(ms)':>10} {'p95(ms)':>10} {'p99(ms)':>10}"
+    header = (
+        f"{'Type':<12} {'Requests':>10} {'Success':>10} "
+        f"{'p50(ms)':>10} {'p95(ms)':>10} {'p99(ms)':>10}"
     )
+    print(header)
     print("-" * 80)
 
     print(
         f"{'Dashboard':<12} {results.dashboard_requests:>10} {results.dashboard_success:>10} "
-        f"{results.dashboard_p50_ms:>10.1f} {results.dashboard_p95_ms:>10.1f} {results.dashboard_p99_ms:>10.1f}"
+        f"{results.dashboard_p50_ms:>10.1f} {results.dashboard_p95_ms:>10.1f} "
+        f"{results.dashboard_p99_ms:>10.1f}"
     )
     print(
         f"{'Analyst':<12} {results.analyst_requests:>10} {results.analyst_success:>10} "
@@ -1314,8 +1316,7 @@ def print_stress_results(results: StressResults):
     print("-" * 80)
     print(f"Prefetches started: {results.prefetch_started}")
     print(
-        f"Prefetches used: {results.prefetch_used} "
-        f"({results.prefetch_efficiency:.0%} efficiency)"
+        f"Prefetches used: {results.prefetch_used} ({results.prefetch_efficiency:.0%} efficiency)"
     )
     print(f"Prefetches wasted: {results.prefetch_wasted}")
     print(f"Prefetches skipped (server busy): {results.prefetch_skipped}")
@@ -1324,8 +1325,7 @@ def print_stress_results(results: StressResults):
         wasted_pct = results.prefetch_wasted / results.prefetch_started
         if wasted_pct > 0.25:
             print(
-                f"WARNING: High prefetch waste ({wasted_pct:.0%}) - "
-                "prefetch may be amplifying load"
+                f"WARNING: High prefetch waste ({wasted_pct:.0%}) - prefetch may be amplifying load"
             )
 
     print("\n" + "-" * 80)
@@ -1335,13 +1335,11 @@ def print_stress_results(results: StressResults):
     def status(passed: bool) -> str:
         return "PASS" if passed else "FAIL"
 
-    print(
-        f"Dashboard p95 < 500ms: {status(results.dashboard_p95_met)} ({results.dashboard_p95_ms:.1f}ms)"
-    )
+    p95_status = status(results.dashboard_p95_met)
+    print(f"Dashboard p95 < 500ms: {p95_status} ({results.dashboard_p95_ms:.1f}ms)")
     print(f"No semaphore starvation: {status(results.no_semaphore_starvation)}")
-    print(
-        f"No resource leak: {status(results.no_resource_leak)} (final active={results.final_active_scans})"
-    )
+    leak_status = status(results.no_resource_leak)
+    print(f"No resource leak: {leak_status} (final active={results.final_active_scans})")
     print(
         f"QoS isolation: {status(results.qos_isolation)} "
         f"(interactive max={results.max_interactive_active})"
@@ -1389,7 +1387,8 @@ async def run_stress_test(config: StressConfig) -> StressResults:
     print("=" * 100)
     print(f"\nScenario: {config.scenario.value}")
     print(
-        f"Users: {config.total_users} ({config.dashboard_users} dashboard + {config.analyst_users} analyst + {config.bulk_users} bulk)"
+        f"Users: {config.total_users} ({config.dashboard_users} dashboard + "
+        f"{config.analyst_users} analyst + {config.bulk_users} bulk)"
     )
     print(f"Duration: {config.duration_s}s")
     print(f"Cache size: {config.cache_size_bytes / (1024 * 1024):.0f} MB")

@@ -53,30 +53,36 @@ def temp_warehouse_multi_files(tmp_path):
     base_ts = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1_000_000)
 
     # File 1: values 0-99, category "A"
-    data1 = pa.table({
-        "id": pa.array(range(100), type=pa.int64()),
-        "value": pa.array([float(i) for i in range(100)], type=pa.float64()),
-        "category": pa.array(["A"] * 100, type=pa.string()),
-        "timestamp": pa.array([base_ts + i * 1000 for i in range(100)], type=pa.int64()),
-    })
+    data1 = pa.table(
+        {
+            "id": pa.array(range(100), type=pa.int64()),
+            "value": pa.array([float(i) for i in range(100)], type=pa.float64()),
+            "category": pa.array(["A"] * 100, type=pa.string()),
+            "timestamp": pa.array([base_ts + i * 1000 for i in range(100)], type=pa.int64()),
+        }
+    )
     table.append(data1)
 
     # File 2: values 100-199, category "B"
-    data2 = pa.table({
-        "id": pa.array(range(100, 200), type=pa.int64()),
-        "value": pa.array([float(i) for i in range(100, 200)], type=pa.float64()),
-        "category": pa.array(["B"] * 100, type=pa.string()),
-        "timestamp": pa.array([base_ts + i * 1000 for i in range(100, 200)], type=pa.int64()),
-    })
+    data2 = pa.table(
+        {
+            "id": pa.array(range(100, 200), type=pa.int64()),
+            "value": pa.array([float(i) for i in range(100, 200)], type=pa.float64()),
+            "category": pa.array(["B"] * 100, type=pa.string()),
+            "timestamp": pa.array([base_ts + i * 1000 for i in range(100, 200)], type=pa.int64()),
+        }
+    )
     table.append(data2)
 
     # File 3: values 200-299, category "C"
-    data3 = pa.table({
-        "id": pa.array(range(200, 300), type=pa.int64()),
-        "value": pa.array([float(i) for i in range(200, 300)], type=pa.float64()),
-        "category": pa.array(["C"] * 100, type=pa.string()),
-        "timestamp": pa.array([base_ts + i * 1000 for i in range(200, 300)], type=pa.int64()),
-    })
+    data3 = pa.table(
+        {
+            "id": pa.array(range(200, 300), type=pa.int64()),
+            "value": pa.array([float(i) for i in range(200, 300)], type=pa.float64()),
+            "category": pa.array(["C"] * 100, type=pa.string()),
+            "timestamp": pa.array([base_ts + i * 1000 for i in range(200, 300)], type=pa.int64()),
+        }
+    )
     table.append(data3)
 
     return {
@@ -228,20 +234,22 @@ class TestBuildColumnIndexMap:
 
     def test_flat_schema(self):
         """Test with a simple flat schema."""
-        import pyarrow.parquet as pq
         import tempfile
 
+        import pyarrow.parquet as pq
+
         # Create a simple parquet file
-        table = pa.table({
-            "id": [1, 2, 3],
-            "value": [1.0, 2.0, 3.0],
-            "name": ["a", "b", "c"],
-        })
+        table = pa.table(
+            {
+                "id": [1, 2, 3],
+                "value": [1.0, 2.0, 3.0],
+                "name": ["a", "b", "c"],
+            }
+        )
 
         with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
             pq.write_table(table, f.name)
             meta = pq.read_metadata(f.name)
-            schema = meta.schema.to_arrow_schema()
 
             # Build using parquet schema
             pq_schema = meta.schema

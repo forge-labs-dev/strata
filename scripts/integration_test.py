@@ -23,7 +23,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from pathlib import Path
 
 import httpx
 import pyarrow as pa
@@ -107,11 +106,13 @@ def create_test_tables(warehouse_path: str, catalog_uri: str) -> dict[str, str]:
     tables = {}
 
     # Table 1: Simple events table
-    schema1 = pa.schema([
-        ("id", pa.int64()),
-        ("value", pa.float64()),
-        ("name", pa.string()),
-    ])
+    schema1 = pa.schema(
+        [
+            ("id", pa.int64()),
+            ("value", pa.float64()),
+            ("name", pa.string()),
+        ]
+    )
 
     try:
         catalog.drop_table("integration.events")
@@ -121,20 +122,24 @@ def create_test_tables(warehouse_path: str, catalog_uri: str) -> dict[str, str]:
     table1 = catalog.create_table("integration.events", schema1)
 
     # Insert test data
-    data1 = pa.table({
-        "id": [1, 2, 3, 4, 5],
-        "value": [1.1, 2.2, 3.3, 4.4, 5.5],
-        "name": ["alice", "bob", "charlie", "david", "eve"],
-    })
+    data1 = pa.table(
+        {
+            "id": [1, 2, 3, 4, 5],
+            "value": [1.1, 2.2, 3.3, 4.4, 5.5],
+            "name": ["alice", "bob", "charlie", "david", "eve"],
+        }
+    )
     table1.append(data1)
     # Use file:// prefix for table URIs
     tables["events"] = f"file://{warehouse_path}#integration.events"
 
     # Table 2: Larger table for QoS testing
-    schema2 = pa.schema([
-        ("id", pa.int64()),
-        ("data", pa.string()),
-    ])
+    schema2 = pa.schema(
+        [
+            ("id", pa.int64()),
+            ("data", pa.string()),
+        ]
+    )
 
     try:
         catalog.drop_table("integration.large")
@@ -145,10 +150,12 @@ def create_test_tables(warehouse_path: str, catalog_uri: str) -> dict[str, str]:
 
     # Insert more data (multiple row groups)
     for batch in range(5):
-        data2 = pa.table({
-            "id": list(range(batch * 1000, (batch + 1) * 1000)),
-            "data": [f"row_{i}" for i in range(batch * 1000, (batch + 1) * 1000)],
-        })
+        data2 = pa.table(
+            {
+                "id": list(range(batch * 1000, (batch + 1) * 1000)),
+                "data": [f"row_{i}" for i in range(batch * 1000, (batch + 1) * 1000)],
+            }
+        )
         table2.append(data2)
     tables["large"] = f"file://{warehouse_path}#integration.large"
 
@@ -171,10 +178,13 @@ def test_basic_scan(client: httpx.Client, table_uri: str) -> bool:
     print(f"Testing basic scan on {table_uri}...")
 
     # Create scan
-    resp = client.post("/v1/scan", json={
-        "table_uri": table_uri,
-        "columns": ["id", "name"],
-    })
+    resp = client.post(
+        "/v1/scan",
+        json={
+            "table_uri": table_uri,
+            "columns": ["id", "name"],
+        },
+    )
 
     if resp.status_code != 200:
         print(f"  FAIL: scan creation failed: {resp.status_code} {resp.text}")
@@ -204,13 +214,14 @@ def test_filtered_scan(client: httpx.Client, table_uri: str) -> bool:
     print(f"Testing filtered scan on {table_uri}...")
 
     # Create scan with filter
-    resp = client.post("/v1/scan", json={
-        "table_uri": table_uri,
-        "columns": ["id", "name"],
-        "filters": [
-            {"column": "id", "op": ">", "value": 2}
-        ],
-    })
+    resp = client.post(
+        "/v1/scan",
+        json={
+            "table_uri": table_uri,
+            "columns": ["id", "name"],
+            "filters": [{"column": "id", "op": ">", "value": 2}],
+        },
+    )
 
     if resp.status_code != 200:
         print(f"  FAIL: scan creation failed: {resp.status_code} {resp.text}")
@@ -237,10 +248,14 @@ def test_multi_tenant_scan(client: httpx.Client, table_uri: str) -> bool:
     for tenant in tenants:
         headers = {"X-Tenant-ID": tenant}
 
-        resp = client.post("/v1/scan", json={
-            "table_uri": table_uri,
-            "columns": ["id"],
-        }, headers=headers)
+        resp = client.post(
+            "/v1/scan",
+            json={
+                "table_uri": table_uri,
+                "columns": ["id"],
+            },
+            headers=headers,
+        )
 
         if resp.status_code != 200:
             print(f"  FAIL: scan for {tenant} failed: {resp.status_code}")
@@ -265,10 +280,13 @@ def test_concurrent_scans(client: httpx.Client, table_uri: str) -> bool:
 
     def run_scan(scan_num: int) -> tuple[int, bool]:
         try:
-            resp = client.post("/v1/scan", json={
-                "table_uri": table_uri,
-                "columns": ["id", "data"],
-            })
+            resp = client.post(
+                "/v1/scan",
+                json={
+                    "table_uri": table_uri,
+                    "columns": ["id", "data"],
+                },
+            )
             if resp.status_code != 200:
                 return scan_num, False
 

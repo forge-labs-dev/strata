@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 
 class TestRequestContext:
     """Tests for request context management."""

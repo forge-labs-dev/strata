@@ -31,8 +31,7 @@ from typing import TYPE_CHECKING, Any
 # Check if OpenTelemetry is available
 _OTEL_AVAILABLE = False
 try:
-    from opentelemetry import trace
-    from opentelemetry.trace import Span, Status, StatusCode, Tracer
+    from opentelemetry.trace import Span, Tracer  # noqa: F401
 
     _OTEL_AVAILABLE = True
 except ImportError:

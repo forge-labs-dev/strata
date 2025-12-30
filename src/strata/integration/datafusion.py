@@ -196,7 +196,7 @@ class StrataDataFusionContext:
 
         self.client = StrataClient(config=config, base_url=base_url)
         self.ctx = datafusion.SessionContext()
-        self._tables: dict[str, "pa.Table"] = {}  # Keep references to prevent GC
+        self._tables: dict[str, pa.Table] = {}  # Keep references to prevent GC
 
     def __enter__(self) -> "StrataDataFusionContext":
         return self

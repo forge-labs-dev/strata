@@ -361,9 +361,7 @@ class TestQoSTierIsolation:
                 scan_id = resp.json()["scan_id"]
 
                 # Stream the interactive query - should work
-                with client.stream(
-                    "GET", f"{base_url}/v1/scan/{scan_id}/batches"
-                ) as stream:
+                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
@@ -470,9 +468,7 @@ class TestQoSSemaphoreCleanup:
 
                 # Stream each to completion
                 for scan_id in scan_ids:
-                    with client.stream(
-                        "GET", f"{base_url}/v1/scan/{scan_id}/batches"
-                    ) as stream:
+                    with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
                         for _ in stream.iter_bytes():
                             pass
                     client.delete(f"{base_url}/v1/scan/{scan_id}")

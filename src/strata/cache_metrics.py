@@ -9,7 +9,7 @@ Tracks detailed cache eviction events including:
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
 
 

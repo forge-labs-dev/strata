@@ -64,8 +64,14 @@ class TestS3PathNormalization:
             # Mixed issues
             ("s3://bucket/./a//b/./c/../d/./e.parquet", "s3://bucket/a/b/d/e.parquet"),
             # Special characters preserved
-            ("s3://bucket/path/file-with_special.chars.parquet", "s3://bucket/path/file-with_special.chars.parquet"),
-            ("s3://bucket/path/with-dashes_underscores.and.dots/file.parquet", "s3://bucket/path/with-dashes_underscores.and.dots/file.parquet"),
+            (
+                "s3://bucket/path/file-with_special.chars.parquet",
+                "s3://bucket/path/file-with_special.chars.parquet",
+            ),
+            (
+                "s3://bucket/path/with-dashes_underscores.and.dots/file.parquet",
+                "s3://bucket/path/with-dashes_underscores.and.dots/file.parquet",
+            ),
         ],
     )
     def test_normalize_s3_path(self, input_path, expected):
@@ -85,15 +91,35 @@ class TestS3PathJoin:
         "base,relative,expected",
         [
             # Simple paths
-            ("s3://bucket/warehouse", "data/file.parquet", "s3://bucket/warehouse/data/file.parquet"),
+            (
+                "s3://bucket/warehouse",
+                "data/file.parquet",
+                "s3://bucket/warehouse/data/file.parquet",
+            ),
             # Base with trailing slash
-            ("s3://bucket/warehouse/", "data/file.parquet", "s3://bucket/warehouse/data/file.parquet"),
+            (
+                "s3://bucket/warehouse/",
+                "data/file.parquet",
+                "s3://bucket/warehouse/data/file.parquet",
+            ),
             # Relative with leading slash
-            ("s3://bucket/warehouse", "/data/file.parquet", "s3://bucket/warehouse/data/file.parquet"),
+            (
+                "s3://bucket/warehouse",
+                "/data/file.parquet",
+                "s3://bucket/warehouse/data/file.parquet",
+            ),
             # Both trailing and leading slashes
-            ("s3://bucket/warehouse/", "/data/file.parquet", "s3://bucket/warehouse/data/file.parquet"),
+            (
+                "s3://bucket/warehouse/",
+                "/data/file.parquet",
+                "s3://bucket/warehouse/data/file.parquet",
+            ),
             # Normalizes result
-            ("s3://bucket/warehouse", "./data/../other/file.parquet", "s3://bucket/warehouse/other/file.parquet"),
+            (
+                "s3://bucket/warehouse",
+                "./data/../other/file.parquet",
+                "s3://bucket/warehouse/other/file.parquet",
+            ),
             # Empty relative
             ("s3://bucket/warehouse", "", "s3://bucket/warehouse"),
             # Bucket only base

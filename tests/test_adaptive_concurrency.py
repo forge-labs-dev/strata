@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from strata.adaptive_concurrency import (
-    AdaptiveConfig,
     AdaptiveConcurrencyController,
+    AdaptiveConfig,
     ResizableLimiter,
     RollingLatencyWindow,
     TierState,
@@ -371,15 +371,11 @@ class TestAdaptiveConcurrencyController:
             controller.record_latency("interactive", 200.0)
 
         # Manually trigger evaluation (don't wait for control loop)
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
         # First signal
         assert controller._interactive.consecutive_decrease_signals == 1
 
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
         # Second signal should trigger adjustment (hysteresis=2)
         # Slots should decrease from 10 to 9
         assert controller._interactive.current_slots == 9
@@ -399,12 +395,8 @@ class TestAdaptiveConcurrencyController:
             controller.record_queue_wait("interactive", 150.0)
 
         # Trigger evaluations
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
 
         # Slots should increase from 10 to 11
         assert controller._interactive.current_slots == 11
@@ -425,9 +417,7 @@ class TestAdaptiveConcurrencyController:
 
         # Trigger evaluations multiple times
         for _ in range(5):
-            await controller._evaluate_and_adjust(
-                controller._interactive, interactive
-            )
+            await controller._evaluate_and_adjust(controller._interactive, interactive)
 
         # Slots should NOT increase - no queue pressure means no demand
         assert controller._interactive.current_slots == 10
@@ -448,9 +438,7 @@ class TestAdaptiveConcurrencyController:
 
         # Try to decrease multiple times
         for _ in range(10):
-            await controller._evaluate_and_adjust(
-                controller._interactive, interactive
-            )
+            await controller._evaluate_and_adjust(controller._interactive, interactive)
 
         # Should not go below min_slots_interactive=4
         assert controller._interactive.current_slots >= 4
@@ -471,9 +459,7 @@ class TestAdaptiveConcurrencyController:
 
         # Try to increase multiple times
         for _ in range(10):
-            await controller._evaluate_and_adjust(
-                controller._interactive, interactive
-            )
+            await controller._evaluate_and_adjust(controller._interactive, interactive)
 
         # Should not go above max_slots_interactive=20
         assert controller._interactive.current_slots <= 20
@@ -488,9 +474,7 @@ class TestAdaptiveConcurrencyController:
             controller.record_latency("interactive", 200.0)
 
         # Single evaluation shouldn't change slots
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
         assert controller._interactive.current_slots == 10  # No change yet
         assert controller._interactive.consecutive_decrease_signals == 1
 
@@ -499,9 +483,7 @@ class TestAdaptiveConcurrencyController:
         for _ in range(20):
             controller.record_latency("interactive", 85.0)  # Between 80% and 100% of target
 
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
         # Signals should reset (latency in acceptable range)
         assert controller._interactive.consecutive_decrease_signals == 0
         assert controller._interactive.consecutive_increase_signals == 0
@@ -517,15 +499,9 @@ class TestAdaptiveConcurrencyController:
             controller.record_latency("bulk", 200.0)
 
         # Trigger evaluations for both tiers
-        await controller._evaluate_and_adjust(
-            controller._interactive, interactive
-        )
-        await controller._evaluate_and_adjust(
-            controller._bulk, bulk
-        )
-        await controller._evaluate_and_adjust(
-            controller._bulk, bulk
-        )
+        await controller._evaluate_and_adjust(controller._interactive, interactive)
+        await controller._evaluate_and_adjust(controller._bulk, bulk)
+        await controller._evaluate_and_adjust(controller._bulk, bulk)
 
         # Only bulk should have decreased
         assert controller._interactive.current_slots == 10  # No change

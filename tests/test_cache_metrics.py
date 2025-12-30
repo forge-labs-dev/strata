@@ -1,7 +1,5 @@
 """Tests for cache eviction metrics."""
 
-import time
-
 import pytest
 
 

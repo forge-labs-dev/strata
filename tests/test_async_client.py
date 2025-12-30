@@ -17,9 +17,7 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             table = await client.scan_to_table(table_uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
@@ -29,9 +27,7 @@ class TestAsyncStrataClient:
         """health() returns server health status."""
         config = server_with_client["config"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             health = await client.health()
             assert "status" in health
 
@@ -40,9 +36,7 @@ class TestAsyncStrataClient:
         """metrics() returns server metrics."""
         config = server_with_client["config"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             metrics = await client.metrics()
             assert isinstance(metrics, dict)
 
@@ -52,9 +46,7 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             batches = []
             async for batch in client.scan(table_uri):
                 assert isinstance(batch, pa.RecordBatch)
@@ -70,9 +62,7 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             table = await client.scan_to_table(table_uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
@@ -83,9 +73,7 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             batches = await client.scan_to_batches(table_uri)
             assert isinstance(batches, list)
             assert len(batches) > 0
@@ -97,9 +85,7 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             table = await client.scan_to_table(table_uri, columns=["id", "value"])
             assert table.num_columns == 2
             assert "id" in table.column_names
@@ -112,13 +98,9 @@ class TestAsyncStrataClient:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Filters are for row-group pruning
-            table = await client.scan_to_table(
-                table_uri, filters=[gt("id", 99), lt("id", 200)]
-            )
+            table = await client.scan_to_table(table_uri, filters=[gt("id", 99), lt("id", 200)])
             assert isinstance(table, pa.Table)
 
 
@@ -131,9 +113,7 @@ class TestAsyncConcurrency:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Run multiple scans concurrently
             results = await asyncio.gather(
                 client.scan_to_table(table_uri, columns=["id"]),
@@ -153,9 +133,7 @@ class TestAsyncConcurrency:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             table1, table2 = await asyncio.gather(
                 client.scan_to_table(table_uri, columns=["id", "value"]),
                 client.scan_to_table(table_uri, columns=["name"]),
@@ -189,9 +167,7 @@ class TestAsyncClientManualClose:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        async with AsyncStrataClient(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as client:
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Health check
             health = await client.health()
             assert "status" in health

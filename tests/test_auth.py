@@ -133,7 +133,9 @@ class TestTableRef:
     def test_from_table_identity_s3(self):
         """TableRef from S3 table identity."""
         identity = TableIdentity(catalog="strata", namespace="analytics", table="clicks")
-        table_ref = TableRef.from_table_identity(identity, table_uri="s3://bucket/warehouse#analytics.clicks")
+        table_ref = TableRef.from_table_identity(
+            identity, table_uri="s3://bucket/warehouse#analytics.clicks"
+        )
 
         assert table_ref.catalog == "s3"
         assert table_ref.namespace == "analytics"
@@ -223,9 +225,7 @@ class TestAclEvaluator:
         """Rule with tenant only matches that tenant."""
         config = AclConfig(
             default="deny",
-            allow_rules=[
-                AclRule(principal="*", tenant="data-platform", tables=("file:*.*",))
-            ],
+            allow_rules=[AclRule(principal="*", tenant="data-platform", tables=("file:*.*",))],
         )
         acl = AclEvaluator(config)
         table_ref = TableRef(catalog="file", namespace="db", table="events")

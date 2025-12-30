@@ -36,6 +36,7 @@ try:
 except ImportError:
     pytest.skip("testcontainers[minio] not installed", allow_module_level=True)
 
+
 # Check if Docker is available
 def _docker_available() -> bool:
     """Check if Docker daemon is accessible."""
@@ -397,5 +398,5 @@ class TestS3Latency:
 
         # Warm should be faster (or at least not significantly slower)
         # Allow some variance since these are real I/O operations
-        print(f"Cold planning: {cold_time*1000:.1f}ms, Warm planning: {warm_time*1000:.1f}ms")
+        print(f"Cold planning: {cold_time * 1000:.1f}ms, Warm planning: {warm_time * 1000:.1f}ms")
         # Just verify it works - timing assertions are flaky in CI

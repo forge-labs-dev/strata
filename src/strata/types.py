@@ -294,7 +294,8 @@ class CacheKey:
     """Immutable cache key for a row group.
 
     v2 Cache Key Contract (multi-tenancy):
-    - Key format: {tenant_id}|{table_identity}|{snapshot_id}|{file_path}|{row_group_id}[|{projection}]
+    - Key format: {tenant_id}|{table_identity}|{snapshot_id}|{file_path}|
+      {row_group_id}[|{projection}]
     - Hash: SHA-256 of the key string
     - Storage: cache_dir/v{VERSION}/{tenant_prefix}/{hash[:2]}/{hash[2:4]}/{hash}.arrowstream
     - Version is baked into path (see cache.CACHE_VERSION)

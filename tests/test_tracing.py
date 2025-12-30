@@ -1,7 +1,5 @@
 """Tests for OpenTelemetry tracing integration."""
 
-import os
-
 import pytest
 
 
@@ -226,7 +224,7 @@ class TestTracingWithOTelEnabled:
         init_tracing()
 
         with pytest.raises(RuntimeError, match="test exception"):
-            with trace_span("failing_op") as span:
+            with trace_span("failing_op"):
                 raise RuntimeError("test exception")
 
     def test_trace_span_with_in_memory_exporter(self, monkeypatch):

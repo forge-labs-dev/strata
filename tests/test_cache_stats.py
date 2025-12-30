@@ -1,7 +1,5 @@
 """Tests for cache statistics histogram."""
 
-import time
-
 import pytest
 
 

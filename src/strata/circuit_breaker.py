@@ -11,9 +11,10 @@ States:
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -346,9 +347,7 @@ def reset_circuit_breakers() -> None:
         _registry = None
 
 
-def get_circuit_breaker(
-    name: str, config: CircuitBreakerConfig | None = None
-) -> CircuitBreaker:
+def get_circuit_breaker(name: str, config: CircuitBreakerConfig | None = None) -> CircuitBreaker:
     """Get or create a circuit breaker by name.
 
     Args:

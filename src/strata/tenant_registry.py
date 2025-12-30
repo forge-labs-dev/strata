@@ -8,7 +8,6 @@ Provides:
 from __future__ import annotations
 
 import threading
-import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -110,9 +109,7 @@ class TenantRegistry:
 
             return quotas
 
-    def get_or_create_limiters(
-        self, tenant_id: str
-    ) -> tuple[ResizableLimiter, ResizableLimiter]:
+    def get_or_create_limiters(self, tenant_id: str) -> tuple[ResizableLimiter, ResizableLimiter]:
         """Get or create per-tenant QoS limiters.
 
         Each tenant gets their own ResizableLimiter instances for interactive

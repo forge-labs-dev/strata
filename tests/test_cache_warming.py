@@ -230,9 +230,7 @@ class TestCacheWarmerIntegration:
 
                 # List jobs including completed
                 await asyncio.sleep(0.1)
-                response = await client.get(
-                    "/v1/cache/warm/jobs?include_completed=true"
-                )
+                response = await client.get("/v1/cache/warm/jobs?include_completed=true")
                 assert response.status_code == 200
                 jobs = response.json()["jobs"]
                 assert len(jobs) >= 1
@@ -508,7 +506,6 @@ class TestCacheWarmingRealTables:
 
                 assert progress1["status"] == "completed"
                 first_cached = progress1["row_groups_cached"]
-                first_skipped = progress1["row_groups_skipped"]
 
                 # Second warming job on same table
                 response = await client.post(
@@ -633,10 +630,12 @@ class TestCacheWarmingRealTables:
             NestedField(2, "count", LongType(), required=False),
         )
         table2 = catalog.create_table("test_db.metrics", schema)
-        data2 = pa.table({
-            "id": pa.array(range(50), type=pa.int64()),
-            "count": pa.array(range(50), type=pa.int64()),
-        })
+        data2 = pa.table(
+            {
+                "id": pa.array(range(50), type=pa.int64()),
+                "count": pa.array(range(50), type=pa.int64()),
+            }
+        )
         table2.append(data2)
         table2_uri = f"file://{temp_warehouse['warehouse_path']}#test_db.metrics"
 

@@ -258,9 +258,7 @@ class StrataScanner:
             ValueError: If name exists and replace=False
         """
         if not replace and name in self._tables:
-            raise ValueError(
-                f"Table '{name}' already registered. Use replace=True to overwrite."
-            )
+            raise ValueError(f"Table '{name}' already registered. Use replace=True to overwrite.")
 
         arrow_table = register_strata_scan(
             conn=self.conn,

@@ -4,8 +4,8 @@ import pytest
 
 pd = pytest.importorskip("pandas")
 
-from strata.client import gt, lt
-from strata.integration.pandas import StrataPandasScanner, scan_to_pandas
+from strata.client import gt, lt  # noqa: E402
+from strata.integration.pandas import StrataPandasScanner, scan_to_pandas  # noqa: E402
 
 
 class TestScanToPandas:
@@ -59,9 +59,7 @@ class TestStrataPandasScanner:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataPandasScanner(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as scanner:
+        with StrataPandasScanner(base_url=f"http://127.0.0.1:{config.port}") as scanner:
             df = scanner.scan(table_uri)
             assert isinstance(df, pd.DataFrame)
             assert len(df) == 500
@@ -71,9 +69,7 @@ class TestStrataPandasScanner:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataPandasScanner(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as scanner:
+        with StrataPandasScanner(base_url=f"http://127.0.0.1:{config.port}") as scanner:
             df1 = scanner.scan(table_uri, columns=["id"])
             df2 = scanner.scan(table_uri, columns=["value"])
 
@@ -85,9 +81,7 @@ class TestStrataPandasScanner:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataPandasScanner(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as scanner:
+        with StrataPandasScanner(base_url=f"http://127.0.0.1:{config.port}") as scanner:
             df = scanner.scan(table_uri, filters=[gt("id", 99), lt("id", 200)])
             assert isinstance(df, pd.DataFrame)
 
@@ -98,9 +92,7 @@ class TestStrataPandasScanner:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataPandasScanner(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as scanner:
+        with StrataPandasScanner(base_url=f"http://127.0.0.1:{config.port}") as scanner:
             batches = list(scanner.scan_batches(table_uri))
 
             assert len(batches) > 0
@@ -115,9 +107,7 @@ class TestStrataPandasScanner:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        with StrataPandasScanner(
-            base_url=f"http://127.0.0.1:{config.port}"
-        ) as scanner:
+        with StrataPandasScanner(base_url=f"http://127.0.0.1:{config.port}") as scanner:
             dfs = [
                 batch.to_pandas()
                 for batch in scanner.scan_batches(table_uri, columns=["id", "value"])
@@ -144,9 +134,7 @@ class TestPandasDataTypes:
         )
 
         # Should be numeric type
-        assert pd.api.types.is_integer_dtype(df["id"]) or pd.api.types.is_numeric_dtype(
-            df["id"]
-        )
+        assert pd.api.types.is_integer_dtype(df["id"]) or pd.api.types.is_numeric_dtype(df["id"])
 
     def test_float_columns(self, server_with_client):
         """Float columns are properly converted."""
