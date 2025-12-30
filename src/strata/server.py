@@ -11,10 +11,21 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from strata import fast_io
+from strata.auth import (
+    AclEvaluator,
+    AuthError,
+    get_principal,
+    parse_principal,
+    set_principal,
+    verify_proxy_token,
+)
 from strata.cache import CachedFetcher
+from strata.cache_metrics import get_eviction_tracker
+from strata.cache_stats import get_cache_histogram
 from strata.cache_warmer import CacheWarmer
 from strata.config import StrataConfig
 from strata.gc_tracker import get_gc_stats, get_recent_gc_pauses, install_gc_tracker
+from strata.health import HealthStatus, run_health_checks
 from strata.logging import (
     configure_logging,
     get_logger,
@@ -24,9 +35,6 @@ from strata.logging import (
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
 from strata.metrics import MetricsCollector, ScanMetrics, Timer
 from strata.planner import ReadPlanner
-from strata.cache_metrics import get_eviction_tracker
-from strata.cache_stats import get_cache_histogram
-from strata.health import HealthStatus, run_health_checks
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
     RateLimitConfig,
@@ -41,12 +49,13 @@ from strata.tenant import (
     set_tenant_id,
     validate_tenant_id,
 )
-from strata.tenant_registry import get_tenant_registry, init_tenant_registry
+from strata.tenant_registry import get_tenant_registry
 from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
     ReadPlan,
     ScanRequest,
     ScanResponse,
+    TableRef,
     Task,
     WarmAsyncRequest,
     WarmAsyncResponse,
@@ -250,7 +259,7 @@ class ServerState:
         self._cache_warmer: CacheWarmer | None = None
 
         # Adaptive concurrency controller (initialized async in lifespan)
-        self._adaptive_controller: "AdaptiveConcurrencyController | None" = None
+        self._adaptive_controller: AdaptiveConcurrencyController | None = None
 
 
 # Global state (initialized in lifespan)
@@ -603,7 +612,7 @@ async def lifespan(app: FastAPI):
     await _state._cache_warmer.start()
 
     # Initialize adaptive concurrency controller (if enabled)
-    from strata.adaptive_concurrency import AdaptiveConfig, AdaptiveConcurrencyController
+    from strata.adaptive_concurrency import AdaptiveConcurrencyController, AdaptiveConfig
 
     adaptive_config = AdaptiveConfig(
         enabled=config.adaptive_enabled,
@@ -748,7 +757,13 @@ async def tenant_context_middleware(request: Request, call_next):
     """
     # Skip tenant setup for health/metrics endpoints
     path = request.url.path
-    if path in ("/health", "/health/ready", "/health/dependencies", "/metrics", "/metrics/prometheus"):
+    if path in (
+        "/health",
+        "/health/ready",
+        "/health/dependencies",
+        "/metrics",
+        "/metrics/prometheus",
+    ):
         return await call_next(request)
 
     state = get_state()
@@ -803,6 +818,77 @@ async def tenant_context_middleware(request: Request, call_next):
         return response
     finally:
         clear_tenant_context()
+
+
+# Trusted proxy authentication middleware
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Verify trusted proxy and parse principal for authorization.
+
+    When auth_mode="trusted_proxy":
+    1. Verify X-Strata-Proxy-Token matches configured secret
+    2. Parse X-Strata-Principal, X-Strata-Tenant, X-Strata-Scopes headers
+    3. Set principal context for downstream use
+
+    Skips auth for health/metrics endpoints.
+    """
+    state = get_state()
+    config = state.config
+
+    # Skip if auth is disabled
+    if config.auth_mode == "none":
+        return await call_next(request)
+
+    # Skip auth for health/metrics endpoints
+    path = request.url.path
+    if path in (
+        "/health",
+        "/health/ready",
+        "/health/dependencies",
+        "/metrics",
+        "/metrics/prometheus",
+    ):
+        return await call_next(request)
+
+    # Verify proxy token
+    proxy_token = request.headers.get(config.proxy_token_header)
+    if not verify_proxy_token(proxy_token, config.proxy_token):
+        logger.warning(
+            "auth_failed",
+            reason="invalid_proxy_token",
+            path=path,
+        )
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized"},
+        )
+
+    # Parse principal from headers
+    try:
+        principal = parse_principal(dict(request.headers), config)
+        set_principal(principal)
+        logger.debug(
+            "auth_success",
+            principal=principal.id,
+            tenant=principal.tenant,
+            scopes=list(principal.scopes),
+        )
+    except AuthError as e:
+        logger.warning(
+            "auth_failed",
+            reason="missing_principal",
+            path=path,
+        )
+        return JSONResponse(
+            status_code=e.status_code,
+            content={"detail": e.message},
+        )
+
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        set_principal(None)  # Clear principal context
 
 
 # Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
@@ -1565,7 +1651,7 @@ async def metrics_prometheus():
         for cb_name, cb_stats in cb_all_stats.items():
             lines.append(
                 f'strata_circuit_breaker_calls_total{{name="{cb_name}"}} '
-                f'{cb_stats.get("total_calls", 0)}'
+                f"{cb_stats.get('total_calls', 0)}"
             )
 
         lines.extend(
@@ -1578,7 +1664,7 @@ async def metrics_prometheus():
         for cb_name, cb_stats in cb_all_stats.items():
             lines.append(
                 f'strata_circuit_breaker_failures_total{{name="{cb_name}"}} '
-                f'{cb_stats.get("total_failures", 0)}'
+                f"{cb_stats.get('total_failures', 0)}"
             )
 
         lines.extend(
@@ -1591,7 +1677,7 @@ async def metrics_prometheus():
         for cb_name, cb_stats in cb_all_stats.items():
             lines.append(
                 f'strata_circuit_breaker_rejections_total{{name="{cb_name}"}} '
-                f'{cb_stats.get("total_rejections", 0)}'
+                f"{cb_stats.get('total_rejections', 0)}"
             )
 
     # Add per-table metrics (top 20 most accessed tables)
@@ -1629,7 +1715,9 @@ async def metrics_prometheus():
         )
         for tm in table_metrics:
             table_id = tm["table_id"]
-            lines.append(f'strata_table_cache_hit_rate{{table="{table_id}"}} {tm["cache_hit_rate"]}')
+            lines.append(
+                f'strata_table_cache_hit_rate{{table="{table_id}"}} {tm["cache_hit_rate"]}'
+            )
 
     # Add per-tenant metrics (multi-tenancy support)
     tenant_registry = get_tenant_registry()
@@ -1655,7 +1743,9 @@ async def metrics_prometheus():
         )
         for tm in tenant_metrics:
             tenant_id = tm["tenant_id"]
-            lines.append(f'strata_tenant_cache_hit_rate{{tenant="{tenant_id}"}} {tm["cache_hit_rate"]}')
+            lines.append(
+                f'strata_tenant_cache_hit_rate{{tenant="{tenant_id}"}} {tm["cache_hit_rate"]}'
+            )
 
         lines.extend(
             [
@@ -1778,6 +1868,41 @@ async def create_scan_v1(request: ScanRequest):
                     f"exceeds limit ({max_response:,} bytes). "
                     "Use filters or column projection to reduce scope."
                 ),
+            )
+
+        # Authorization check (when auth_mode=trusted_proxy)
+        if state.config.auth_mode == "trusted_proxy":
+            principal = get_principal()
+            if principal is None:
+                # Should not happen if middleware is configured correctly
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+            # Check table access via ACL
+            table_ref = TableRef.from_table_identity(
+                plan.table_identity, table_uri=request.table_uri
+            )
+            acl = AclEvaluator(state.config.acl_config)
+
+            if not acl.authorize(principal, table_ref):
+                logger.warning(
+                    "access_denied",
+                    principal=principal.id,
+                    table=str(table_ref),
+                    action="scan",
+                )
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail="Table not found")
+                raise HTTPException(status_code=403, detail="Access denied")
+
+            # Store owner info for later verification
+            plan.owner_principal = principal.id
+            plan.owner_tenant = principal.tenant
+
+            logger.debug(
+                "access_granted",
+                principal=principal.id,
+                table=str(table_ref),
+                scan_id=plan.scan_id,
             )
 
         # Store the plan
@@ -1938,6 +2063,26 @@ async def get_batches_v1(scan_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 
     plan = state.scans[scan_id]
+
+    # Ownership check (when auth_mode=trusted_proxy)
+    # Only the principal who created the scan (or admin) can retrieve batches
+    if state.config.auth_mode == "trusted_proxy":
+        principal = get_principal()
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        # Check if principal owns this scan or has admin scope
+        if plan.owner_principal != principal.id:
+            if not principal.has_scope("admin:*"):
+                logger.warning(
+                    "scan_ownership_denied",
+                    principal=principal.id,
+                    scan_id=scan_id,
+                    owner=plan.owner_principal,
+                )
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
+                raise HTTPException(status_code=403, detail="Access denied")
 
     # QoS: Classify query and acquire appropriate tier limiter
     # This prevents bulk queries from starving interactive (dashboard) queries.
@@ -3080,8 +3225,18 @@ async def inspect_cache_v1(
 
 @app.post("/v1/cache/clear")
 async def clear_cache_v1():
-    """Clear the disk cache."""
+    """Clear the disk cache.
+
+    Requires admin:cache scope when auth_mode=trusted_proxy.
+    """
     state = get_state()
+
+    # Scope check for admin operations
+    if state.config.auth_mode == "trusted_proxy":
+        principal = get_principal()
+        if principal is None or not principal.has_scope("admin:cache"):
+            raise HTTPException(status_code=403, detail="Insufficient scope")
+
     try:
         state.fetcher.cache.clear()
         state.metrics.reset()

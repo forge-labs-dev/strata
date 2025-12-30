@@ -68,9 +68,42 @@ Key modules:
 - **tenant.py** - `TenantConfig`, `TenantQuotas`, context management (`get_tenant_id()`, `set_tenant_id()`)
 - **tenant_registry.py** - `TenantRegistry` with LRU eviction (max 1000 tenants tracked), `get_or_create_limiters()`
 
+### Trusted Proxy Authorization
+
+Strata uses a trusted proxy model for authentication and authorization. It does NOT handle authentication itself—it trusts identity headers injected by an upstream proxy.
+
+**Threat model**: Only the proxy can reach Strata (private network / security group / k8s NetworkPolicy).
+
+**Identity headers** (injected by proxy):
+- `X-Strata-Principal` - Stable user/service ID (required when auth enabled)
+- `X-Strata-Tenant` - Team/org ID (optional, same as multi-tenancy tenant)
+- `X-Strata-Scopes` - Space-separated permission scopes (e.g., `scan:create admin:cache`)
+- `X-Strata-Proxy-Token` - Shared secret for proxy verification
+
+**ACL evaluation order**:
+1. Deny rules checked first - if any match, access denied
+2. Allow rules checked - if any match, access allowed
+3. Default action applied (`allow` or `deny`)
+
+**Enforcement points**:
+- `POST /v1/scan` - ACL check on table access
+- `GET /v1/scan/{id}/batches` - Scan ownership check (only creator can retrieve)
+- `POST /v1/cache/clear` - Requires `admin:cache` scope
+
+**Key types**:
+- `Principal` - Authenticated identity (`id`, `tenant`, `scopes`)
+- `TableRef` - Canonical table reference for ACL pattern matching (`catalog:namespace.table`)
+- `AclRule` - Single ACL rule (`principal`, `tenant`, `tables` patterns)
+- `AclConfig` - ACL configuration (`default`, `deny_rules`, `allow_rules`)
+
+Key modules:
+- **auth.py** - `AuthError`, `verify_proxy_token()`, `parse_principal()`, `AclEvaluator`, context management (`get_principal()`, `set_principal()`)
+- **types.py** - `Principal`, `TableRef` types; `ReadPlan.owner_principal`, `ReadPlan.owner_tenant` fields
+- **config.py** - `AclRule`, `AclConfig`, auth settings (`auth_mode`, `proxy_token`, etc.)
+
 ### Key Modules
 
-- **types.py** - Core types: `CacheKey`, `ReadPlan`, `Task`, `Filter`, `TableIdentity`
+- **types.py** - Core types: `CacheKey`, `ReadPlan`, `Task`, `Filter`, `TableIdentity`, `Principal`, `TableRef`
 - **planner.py** - `ReadPlanner` resolves snapshots, applies pruning, builds plans; S3 path normalization utilities
 - **cache.py** - `DiskCache` + `CachedFetcher` for row-group caching with LRU eviction
 - **server.py** - FastAPI endpoints, streaming responses, two-tier QoS admission control, prefetch
@@ -81,6 +114,7 @@ Key modules:
 - **fast_io.py** - Python wrapper for Rust extension functions
 - **tracing.py** - OpenTelemetry integration (optional, requires `strata[otel]`)
 - **logging.py** - Structured JSON logging with correlation IDs (request_id, scan_id, trace_id)
+- **auth.py** - Trusted proxy authentication, principal parsing, ACL evaluation
 - **rust/src/lib.rs** - Arrow IPC stream manipulation (concatenation, format conversion)
 
 ### Observability Modules
@@ -129,6 +163,7 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 - Timeouts: `plan_timeout_seconds`, `scan_timeout_seconds`, `fetch_timeout_seconds`, `s3_connect_timeout_seconds`, `s3_request_timeout_seconds`
 - Rate limiting: `rate_limit_enabled`, `rate_limit_global_rps`, `rate_limit_client_rps`, `rate_limit_scan_rps`
 - Multi-tenancy: `STRATA_MULTI_TENANT_ENABLED`, `STRATA_TENANT_HEADER`, `STRATA_REQUIRE_TENANT_HEADER`
+- Auth: `STRATA_AUTH_MODE`, `STRATA_PROXY_TOKEN`, `STRATA_PRINCIPAL_HEADER`, `STRATA_SCOPES_HEADER`, `STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND`
 
 ## Important Invariants
 
@@ -143,6 +178,10 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 5. **Two-tier QoS isolation**: Interactive (dashboard) and bulk (ETL) queries use separate semaphores to prevent starvation. Classification based on estimated bytes and column count. In multi-tenant mode, each tenant gets their own limiter pools for complete QoS isolation.
 
 6. **S3 path normalization**: S3 paths are normalized (double slashes, `.`, `..` resolved) to ensure consistent cache keys. See `_normalize_s3_path` in `planner.py`.
+
+7. **Authorization is deny-first**: When `auth_mode=trusted_proxy`, deny rules are evaluated before allow rules. This ensures explicit denials cannot be bypassed by allow rules.
+
+8. **Cache remains shared across principals**: ACL only gates the ability to request scans and retrieve results—cache artifacts are still shared. This preserves Strata's main performance advantage.
 
 ## Testing
 
@@ -162,6 +201,7 @@ Key test files:
 - `test_timeout_config.py` - Timeout configuration
 - `test_tracing.py` - OpenTelemetry integration
 - `test_multitenancy.py` - Tenant context, registry, cache isolation, validation
+- `test_auth.py` - Trusted proxy auth, principal parsing, ACL evaluation, scan ownership
 
 Benchmarks in `benchmarks/`:
 - `stress_test.py` - Multi-user load testing with QoS validation

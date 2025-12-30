@@ -13,6 +13,95 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
+# ---------------------------------------------------------------------------
+# Authentication / Authorization Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Authenticated identity from trusted proxy.
+
+    Represents the user or service making a request, as identified by
+    a trusted upstream proxy. Strata does not perform authentication
+    itself - it trusts identity headers injected by the proxy.
+
+    Attributes:
+        id: Stable user/service identifier (from X-Strata-Principal header)
+        tenant: Optional team/org identifier (from X-Strata-Tenant header)
+        scopes: Set of permission scopes (from X-Strata-Scopes header)
+    """
+
+    id: str
+    tenant: str | None = None
+    scopes: frozenset[str] = field(default_factory=frozenset)
+
+    def has_scope(self, scope: str) -> bool:
+        """Check if principal has a specific scope.
+
+        The special scope 'admin:*' grants all permissions.
+
+        Args:
+            scope: The scope to check (e.g., 'scan:create', 'admin:cache')
+
+        Returns:
+            True if the principal has the scope or admin:* wildcard
+        """
+        if "admin:*" in self.scopes:
+            return True
+        return scope in self.scopes
+
+
+@dataclass(frozen=True)
+class TableRef:
+    """Canonical table reference for ACL matching.
+
+    Provides a normalized representation of a table for access control
+    pattern matching. Format: {catalog}:{namespace}.{table}
+
+    Examples:
+        - file:integration.events
+        - s3:analytics.clicks
+
+    Attributes:
+        catalog: Storage type ('file' or 's3')
+        namespace: Database/schema namespace
+        table: Table name
+    """
+
+    catalog: str  # "file" or "s3"
+    namespace: str
+    table: str
+
+    @classmethod
+    def from_table_identity(
+        cls, identity: "TableIdentity", table_uri: str | None = None
+    ) -> "TableRef":
+        """Convert TableIdentity to canonical TableRef.
+
+        Args:
+            identity: TableIdentity from the planner
+            table_uri: Original table URI (used to determine catalog type)
+
+        Returns:
+            TableRef with normalized catalog, namespace, and table
+        """
+        # Determine catalog type from URI prefix
+        catalog = "file"
+        if table_uri and table_uri.startswith("s3://"):
+            catalog = "s3"
+
+        return cls(
+            catalog=catalog,
+            namespace=identity.namespace,
+            table=identity.table,
+        )
+
+    def __str__(self) -> str:
+        """Return canonical string for ACL pattern matching."""
+        return f"{self.catalog}:{self.namespace}.{self.table}"
+
+
 @dataclass(frozen=True)
 class TableIdentity:
     """Canonical table identity for deterministic cache keys and metrics.
@@ -329,6 +418,10 @@ class ReadPlan:
     # Set by server after plan is stored; consumed by streaming endpoint.
     # Using bytes | None avoids asyncio.Future which isn't picklable.
     prefetched_first: bytes | None = None
+
+    # Ownership tracking for authorization (set by server when auth_mode=trusted_proxy)
+    owner_principal: str | None = None  # Principal ID who created this scan
+    owner_tenant: str | None = None  # Tenant of the owner
 
 
 class ScanRequest(BaseModel):

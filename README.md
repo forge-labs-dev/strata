@@ -318,9 +318,72 @@ curl -X POST http://localhost:8765/v1/cache/warm \
 
 ## Configuration Reference
 
-### Security
+### Security & Authorization
 
-Strata has no built-in authentication. Run it behind a reverse proxy or API gateway (nginx, Envoy, Kong) that handles JWT/OAuth validation and injects the `X-Tenant-ID` header. Rate limiting is enabled by default to protect against abuse.
+Strata uses a **trusted proxy** authentication model. It does not handle authentication itself—it trusts identity headers injected by an upstream proxy (nginx, Envoy, Kong, etc.) that handles JWT/OAuth validation.
+
+**Threat model assumption:** Only the proxy can reach Strata (via private network, security group, or k8s NetworkPolicy). Clients cannot call Strata directly.
+
+**Enable trusted proxy auth:**
+
+```bash
+export STRATA_AUTH_MODE=trusted_proxy
+export STRATA_PROXY_TOKEN=your-shared-secret  # Proxy must send this token
+```
+
+**Identity headers** (injected by proxy after authentication):
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Strata-Principal` | Yes | Stable user/service ID |
+| `X-Strata-Tenant` | No | Team/org ID (same as multi-tenancy) |
+| `X-Strata-Scopes` | No | Space-separated scopes (e.g., `scan:create admin:cache`) |
+| `X-Strata-Proxy-Token` | Yes* | Shared secret for proxy verification |
+
+*Required when `STRATA_PROXY_TOKEN` is configured.
+
+**ACL configuration** (in `pyproject.toml`):
+
+```toml
+[tool.strata.acl]
+default = "deny"  # Default action when no rules match
+
+# Deny rules are checked first
+deny = [
+  { principal = "*", tables = ["file:finance.*", "s3:pii.*"] }
+]
+
+# Allow rules are checked second
+allow = [
+  { principal = "bi-dashboard", tables = ["file:db.*"] },
+  { tenant = "data-platform", tables = ["file:analytics.*"] }
+]
+```
+
+**Security guarantees:**
+- Requests without valid proxy token return 401
+- Deny rules override allow rules (deny-first evaluation)
+- Scan ownership enforced (only creator can retrieve batches)
+- Admin endpoints require `admin:cache` scope
+- `hide_forbidden_as_not_found=true` (default) returns 404 instead of 403 to prevent information disclosure
+
+**Proxy configuration example (nginx):**
+
+```nginx
+location /strata/ {
+    auth_request /auth;  # Your auth endpoint
+
+    # CRITICAL: Strip client-supplied headers and inject trusted values
+    proxy_set_header X-Strata-Principal $upstream_principal;
+    proxy_set_header X-Strata-Tenant $upstream_tenant;
+    proxy_set_header X-Strata-Scopes $upstream_scopes;
+    proxy_set_header X-Strata-Proxy-Token "your-shared-secret";
+
+    proxy_pass http://strata:8765/;
+}
+```
+
+Rate limiting is also enabled by default to protect against abuse.
 
 ### Environment Variables
 
@@ -341,6 +404,11 @@ Strata has no built-in authentication. Run it behind a reverse proxy or API gate
 | `STRATA_MULTI_TENANT_ENABLED` | Enable multi-tenancy (default: false) |
 | `STRATA_TENANT_HEADER` | Header name for tenant ID (default: X-Tenant-ID) |
 | `STRATA_REQUIRE_TENANT_HEADER` | Reject requests without tenant header |
+| `STRATA_AUTH_MODE` | Auth mode: `none` or `trusted_proxy` (default: none) |
+| `STRATA_PROXY_TOKEN` | Expected proxy token for verification |
+| `STRATA_PRINCIPAL_HEADER` | Header for principal ID (default: X-Strata-Principal) |
+| `STRATA_SCOPES_HEADER` | Header for scopes (default: X-Strata-Scopes) |
+| `STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND` | Return 404 instead of 403 (default: true) |
 
 ### OpenTelemetry Tracing
 
@@ -465,6 +533,7 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 | `types.py` | Core types (CacheKey, ReadPlan, Task) |
 | `tenant.py` | Multi-tenancy context and config |
 | `tenant_registry.py` | Per-tenant metrics tracking |
+| `auth.py` | Trusted proxy authentication and ACL evaluation |
 | `rate_limiter.py` | Token bucket rate limiting |
 | `health.py` | Dependency health checks |
 | `circuit_breaker.py` | Circuit breaker pattern |

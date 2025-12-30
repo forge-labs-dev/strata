@@ -7,6 +7,50 @@ from pathlib import Path
 
 from strata.types import CacheGranularity
 
+# ---------------------------------------------------------------------------
+# ACL Configuration Types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AclRule:
+    """Single ACL rule for access control.
+
+    Rules are matched in order. A rule matches if:
+    - Principal matches (or rule principal is "*" for any)
+    - Tenant matches (if specified in rule)
+    - At least one table pattern matches
+
+    Attributes:
+        principal: Principal ID pattern ("*" for any principal)
+        tenant: Optional tenant ID (None means any tenant)
+        tables: Tuple of table patterns (glob-style, e.g., "file:db.*")
+    """
+
+    principal: str = "*"
+    tenant: str | None = None
+    tables: tuple[str, ...] = ()
+
+
+@dataclass
+class AclConfig:
+    """Access control list configuration.
+
+    ACL evaluation order:
+    1. Deny rules are checked first - if any match, access is denied
+    2. Allow rules are checked - if any match, access is allowed
+    3. Default action is applied (allow or deny)
+
+    Attributes:
+        default: Default action when no rules match ("allow" or "deny")
+        deny_rules: List of deny rules (checked first)
+        allow_rules: List of allow rules (checked second)
+    """
+
+    default: str = "allow"  # "allow" | "deny"
+    deny_rules: list[AclRule] = field(default_factory=list)
+    allow_rules: list[AclRule] = field(default_factory=list)
+
 
 def _get_env_overrides() -> dict:
     """Get configuration overrides from environment variables.
@@ -129,6 +173,25 @@ def _get_env_overrides() -> dict:
     if default_tenant_bulk := os.environ.get("STRATA_DEFAULT_TENANT_BULK_SLOTS"):
         overrides["default_tenant_bulk_slots"] = int(default_tenant_bulk)
 
+    # Trusted proxy authentication settings
+    if auth_mode := os.environ.get("STRATA_AUTH_MODE"):
+        overrides["auth_mode"] = auth_mode
+
+    if proxy_token := os.environ.get("STRATA_PROXY_TOKEN"):
+        overrides["proxy_token"] = proxy_token
+
+    if proxy_token_header := os.environ.get("STRATA_PROXY_TOKEN_HEADER"):
+        overrides["proxy_token_header"] = proxy_token_header
+
+    if principal_header := os.environ.get("STRATA_PRINCIPAL_HEADER"):
+        overrides["principal_header"] = principal_header
+
+    if scopes_header := os.environ.get("STRATA_SCOPES_HEADER"):
+        overrides["scopes_header"] = scopes_header
+
+    if os.environ.get("STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND", "").lower() == "true":
+        overrides["hide_forbidden_as_not_found"] = True
+
     return overrides
 
 
@@ -152,6 +215,58 @@ def _load_from_pyproject() -> dict:
         data = tomllib.load(f)
 
     return data.get("tool", {}).get("strata", {})
+
+
+def _parse_acl_config(raw: dict) -> AclConfig:
+    """Parse ACL configuration from pyproject.toml [tool.strata.acl] section.
+
+    Expected format:
+        [tool.strata.acl]
+        default = "deny"
+
+        deny = [
+          { principal = "*", tables = ["file:finance.*", "s3:pii.*"] }
+        ]
+
+        allow = [
+          { principal = "bi-dashboard", tables = ["file:db.*"] },
+          { tenant = "data-platform", tables = ["file:analytics.*"] }
+        ]
+
+    Args:
+        raw: Dictionary from pyproject.toml acl section
+
+    Returns:
+        Parsed AclConfig object
+    """
+    if not raw:
+        return AclConfig()
+
+    deny_rules = []
+    for rule_dict in raw.get("deny", []):
+        deny_rules.append(
+            AclRule(
+                principal=rule_dict.get("principal", "*"),
+                tenant=rule_dict.get("tenant"),
+                tables=tuple(rule_dict.get("tables", [])),
+            )
+        )
+
+    allow_rules = []
+    for rule_dict in raw.get("allow", []):
+        allow_rules.append(
+            AclRule(
+                principal=rule_dict.get("principal", "*"),
+                tenant=rule_dict.get("tenant"),
+                tables=tuple(rule_dict.get("tables", [])),
+            )
+        )
+
+    return AclConfig(
+        default=raw.get("default", "allow"),
+        deny_rules=deny_rules,
+        allow_rules=allow_rules,
+    )
 
 
 @dataclass
@@ -296,6 +411,20 @@ class StrataConfig:
     default_tenant_interactive_slots: int = 32  # Default interactive slots per tenant
     default_tenant_bulk_slots: int = 8  # Default bulk slots per tenant
 
+    # Trusted proxy authentication settings
+    # When auth_mode="trusted_proxy", Strata trusts identity headers from the proxy.
+    # The proxy MUST strip client-supplied X-Strata-* headers and inject trusted values.
+    auth_mode: str = "none"  # "none" | "trusted_proxy"
+    proxy_token_header: str = "X-Strata-Proxy-Token"  # Header containing proxy secret
+    proxy_token: str | None = None  # Expected proxy token (from STRATA_PROXY_TOKEN env)
+    principal_header: str = "X-Strata-Principal"  # Header containing user/service ID
+    scopes_header: str = "X-Strata-Scopes"  # Header containing space-separated scopes
+    hide_forbidden_as_not_found: bool = True  # Return 404 instead of 403 for denied access
+
+    # Access control list configuration
+    # Loaded from [tool.strata.acl] section in pyproject.toml
+    acl_config: AclConfig = field(default_factory=AclConfig)
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -328,6 +457,10 @@ class StrataConfig:
         # Handle cache_dir path conversion
         if "cache_dir" in merged and isinstance(merged["cache_dir"], str):
             merged["cache_dir"] = Path(merged["cache_dir"])
+
+        # Parse ACL configuration from [tool.strata.acl] section
+        if "acl" in merged:
+            merged["acl_config"] = _parse_acl_config(merged.pop("acl"))
 
         return cls(**merged)
 
