@@ -192,6 +192,16 @@ def _get_env_overrides() -> dict:
     if os.environ.get("STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND", "").lower() == "true":
         overrides["hide_forbidden_as_not_found"] = True
 
+    # Deployment mode settings
+    if deployment_mode := os.environ.get("STRATA_DEPLOYMENT_MODE"):
+        overrides["deployment_mode"] = deployment_mode
+
+    if os.environ.get("STRATA_ALLOW_REMOTE_CLIENTS_IN_PERSONAL", "").lower() == "true":
+        overrides["allow_remote_clients_in_personal"] = True
+
+    if artifact_dir := os.environ.get("STRATA_ARTIFACT_DIR"):
+        overrides["artifact_dir"] = Path(artifact_dir)
+
     return overrides
 
 
@@ -425,6 +435,17 @@ class StrataConfig:
     # Loaded from [tool.strata.acl] section in pyproject.toml
     acl_config: AclConfig = field(default_factory=AclConfig)
 
+    # Deployment mode: "service" (shared server) or "personal" (local notebook/dev)
+    # - service: Read-only cache server, write endpoints return 403
+    # - personal: Enables artifact store, materialize API, uploads
+    deployment_mode: str = "service"  # "service" | "personal"
+    # Safety: personal mode only binds to loopback by default
+    # Set True to allow non-loopback binding (dangerous if not firewalled)
+    allow_remote_clients_in_personal: bool = False
+    # Artifact storage directory (personal mode only)
+    # Defaults to ~/.strata/artifacts if not set
+    artifact_dir: Path | None = None
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -437,6 +458,51 @@ class StrataConfig:
             self.metadata_db = Path(self.metadata_db)
         # Ensure parent directory exists
         self.metadata_db.parent.mkdir(parents=True, exist_ok=True)
+
+        # Validate deployment_mode
+        if self.deployment_mode not in ("service", "personal"):
+            raise ValueError(
+                f"deployment_mode must be 'service' or 'personal', got '{self.deployment_mode}'"
+            )
+
+        # Set default artifact_dir for personal mode
+        if self.artifact_dir is None and self.deployment_mode == "personal":
+            self.artifact_dir = Path.home() / ".strata" / "artifacts"
+        elif isinstance(self.artifact_dir, str):
+            self.artifact_dir = Path(self.artifact_dir)
+
+        # Ensure artifact_dir exists in personal mode
+        if self.deployment_mode == "personal" and self.artifact_dir is not None:
+            self.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    def validate_personal_mode_binding(self) -> None:
+        """Validate that personal mode binding is safe.
+
+        In personal mode, binding to non-loopback addresses exposes the server
+        to the network, which is dangerous since personal mode enables writes.
+
+        Raises:
+            ValueError: If personal mode binds to non-loopback without explicit allow
+        """
+        if self.deployment_mode != "personal":
+            return
+
+        # Check if host is loopback
+        loopback_hosts = {"127.0.0.1", "localhost", "::1"}
+        is_loopback = self.host in loopback_hosts
+
+        if not is_loopback and not self.allow_remote_clients_in_personal:
+            raise ValueError(
+                f"Personal mode binding to '{self.host}' is unsafe. "
+                f"Personal mode enables write endpoints (artifacts, uploads). "
+                f"Either bind to 127.0.0.1/localhost, or set "
+                f"allow_remote_clients_in_personal=True if you have firewall protection."
+            )
+
+    @property
+    def writes_enabled(self) -> bool:
+        """Check if write endpoints are enabled (personal mode only)."""
+        return self.deployment_mode == "personal"
 
     @classmethod
     def load(cls, **overrides) -> "StrataConfig":

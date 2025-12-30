@@ -57,11 +57,24 @@ from strata.tenant import (
 from strata.tenant_registry import get_tenant_registry
 from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
+    ArtifactInfoResponse,
+    BuildSpec,
+    ExplainMaterializeRequest,
+    ExplainMaterializeResponse,
+    InputChangeInfo,
+    MaterializeRequest,
+    MaterializeResponse,
+    NameResolveResponse,
+    NameSetRequest,
+    NameSetResponse,
+    NameStatusResponse,
     ReadPlan,
     ScanRequest,
     ScanResponse,
     TableRef,
     Task,
+    UploadFinalizeRequest,
+    UploadFinalizeResponse,
     WarmAsyncRequest,
     WarmAsyncResponse,
     WarmJobProgress,
@@ -275,6 +288,29 @@ def get_state() -> ServerState:
     if _state is None:
         raise RuntimeError("Server not initialized")
     return _state
+
+
+def require_writes_enabled() -> None:
+    """FastAPI dependency that requires write endpoints to be enabled.
+
+    In service mode (default), write endpoints return 403 with writes_disabled error.
+    In personal mode, write endpoints are enabled.
+
+    Raises:
+        HTTPException: 403 if writes are disabled (service mode)
+    """
+    state = get_state()
+    if not state.config.writes_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "writes_disabled",
+                "message": (
+                    "Write endpoints are disabled in service mode. "
+                    "Set deployment_mode='personal' for local development."
+                ),
+            },
+        )
 
 
 def _get_active_scan_count(state: ServerState) -> int:
@@ -579,6 +615,10 @@ async def lifespan(app: FastAPI):
         config = _state.config
     else:
         config = StrataConfig.load()
+
+    # Validate personal mode binding safety before starting
+    # This prevents accidental exposure of write endpoints to the network
+    config.validate_personal_mode_binding()
 
     # Configure structured logging first
     configure_logging()
@@ -3487,6 +3527,801 @@ async def cancel_warm_job_v1(job_id: str):
             status_code=404,
             detail="Job not found or already completed",
         )
+
+
+# ---------------------------------------------------------------------------
+# Artifact Endpoints (Personal Mode Only)
+# ---------------------------------------------------------------------------
+
+
+def _get_artifact_store():
+    """Get the artifact store, raising 403 if not in personal mode."""
+    from strata.artifact_store import get_artifact_store
+
+    state = get_state()
+    if not state.config.writes_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "writes_disabled",
+                "message": (
+                    "Artifact endpoints are disabled in service mode. "
+                    "Set deployment_mode='personal' for local development."
+                ),
+            },
+        )
+
+    store = get_artifact_store(state.config.artifact_dir)
+    if store is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Artifact store not initialized",
+        )
+    return store
+
+
+def _resolve_input_version(input_uri: str) -> str:
+    """Resolve an input URI to its current version string.
+
+    For table URIs (file:// or s3://): returns the current snapshot ID
+    For artifact URIs (strata://artifact/...): returns the artifact version
+    For artifact names (strata://name/...): resolves to artifact version
+
+    Args:
+        input_uri: Input URI to resolve
+
+    Returns:
+        Version string (snapshot ID for tables, "artifact_id@v=N" for artifacts)
+
+    Raises:
+        HTTPException: If input cannot be resolved
+    """
+    import re
+
+    store = _get_artifact_store()
+    state = get_state()
+
+    # Artifact URI: strata://artifact/{id}@v={version}
+    if input_uri.startswith("strata://artifact/"):
+        match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", input_uri)
+        if match:
+            artifact_id = match.group(1)
+            version = int(match.group(2))
+            return f"{artifact_id}@v={version}"
+        raise HTTPException(status_code=400, detail=f"Invalid artifact URI: {input_uri}")
+
+    # Name URI: strata://name/{name}
+    if input_uri.startswith("strata://name/"):
+        name = input_uri.replace("strata://name/", "")
+        artifact = store.resolve_name(name)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail=f"Name not found: {name}")
+        return f"{artifact.id}@v={artifact.version}"
+
+    # Table URI: file:// or s3://
+    if input_uri.startswith("file://") or input_uri.startswith("s3://"):
+        try:
+            # Get current snapshot ID from planner
+            plan = state.planner.plan(
+                table_uri=input_uri,
+                snapshot_id=None,  # Current snapshot
+                columns=None,
+                filters=None,
+            )
+            return str(plan.snapshot_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not resolve table {input_uri}: {str(e)}",
+            )
+
+    # Unknown URI type
+    raise HTTPException(status_code=400, detail=f"Unknown input URI type: {input_uri}")
+
+
+@app.post("/v1/artifacts/materialize", response_model=MaterializeResponse)
+async def materialize_artifact(request: MaterializeRequest):
+    """Materialize a computed artifact (personal mode only).
+
+    This endpoint implements the "needs_local" materialization pattern:
+    1. Resolve input versions (snapshot IDs for tables, artifact versions for artifacts)
+    2. Compute provenance hash from resolved versions + transform
+    3. If cached, return artifact URI (hit=True)
+    4. If not cached, create building artifact with input_versions and return build spec
+
+    The server NEVER executes transforms - computation happens client-side.
+
+    Returns:
+        MaterializeResponse with hit status and artifact URI or build spec
+    """
+    import uuid
+
+    from strata.artifact_store import TransformSpec, compute_provenance_hash
+
+    store = _get_artifact_store()
+
+    # Parse transform spec
+    transform = request.transform
+    transform_spec = TransformSpec(
+        executor=transform.get("executor", ""),
+        params=transform.get("params", {}),
+        inputs=request.inputs,
+    )
+
+    # Resolve input versions for both hashing and staleness tracking
+    # If resolution fails, fall back to using the URI as the version (legacy behavior)
+    input_versions: dict[str, str] = {}
+    for input_uri in request.inputs:
+        try:
+            input_versions[input_uri] = _resolve_input_version(input_uri)
+        except HTTPException:
+            # Can't resolve - use URI as version (for tests with fake URIs)
+            input_versions[input_uri] = input_uri
+
+    # Use resolved versions as hashes for provenance calculation
+    input_hashes = [f"{uri}:{version}" for uri, version in sorted(input_versions.items())]
+
+    provenance_hash = compute_provenance_hash(input_hashes, transform_spec)
+
+    # Check for existing artifact with same provenance
+    existing = store.find_by_provenance(provenance_hash)
+    if existing is not None:
+        artifact_uri = f"strata://artifact/{existing.id}@v={existing.version}"
+
+        # Optionally set name
+        if request.name:
+            store.set_name(request.name, existing.id, existing.version)
+
+        return MaterializeResponse(
+            hit=True,
+            artifact_uri=artifact_uri,
+            build_spec=None,
+        )
+
+    # Cache miss - create new artifact in building state
+    artifact_id = str(uuid.uuid4())
+    version = store.create_artifact(
+        artifact_id=artifact_id,
+        provenance_hash=provenance_hash,
+        transform_spec=transform_spec,
+        input_versions=input_versions,  # Track for staleness detection
+    )
+
+    artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
+    build_spec = BuildSpec(
+        artifact_id=artifact_id,
+        version=version,
+        executor=transform_spec.executor,
+        params=transform_spec.params,
+        input_uris=request.inputs,
+    )
+
+    return MaterializeResponse(
+        hit=False,
+        artifact_uri=artifact_uri,
+        build_spec=build_spec.model_dump(),
+    )
+
+
+@app.post("/v1/artifacts/upload/{artifact_id}/v/{version}")
+async def upload_artifact_blob(artifact_id: str, version: int, request: Request):
+    """Upload artifact blob data (personal mode only).
+
+    The client POSTs raw Arrow IPC stream bytes to this endpoint.
+    After upload, call /v1/artifacts/finalize to complete the artifact.
+
+    Args:
+        artifact_id: Artifact ID from materialize response
+        version: Version number from materialize response
+        request: Raw request body containing Arrow IPC bytes
+    """
+    store = _get_artifact_store()
+
+    # Verify artifact exists and is in building state
+    artifact = store.get_artifact(artifact_id, version)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.state != "building":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Artifact is not in building state (state={artifact.state})",
+        )
+
+    # Read raw bytes from request body
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty request body")
+
+    # Write blob to disk
+    store.write_blob(artifact_id, version, body)
+
+    return {"status": "uploaded", "byte_size": len(body)}
+
+
+@app.post("/v1/artifacts/finalize", response_model=UploadFinalizeResponse)
+async def finalize_artifact(request: UploadFinalizeRequest):
+    """Finalize an artifact after upload (personal mode only).
+
+    After uploading the blob, call this to transition the artifact to ready state.
+    Optionally sets a name pointer to the artifact.
+
+    Returns:
+        UploadFinalizeResponse with artifact URI and optional name URI
+    """
+    store = _get_artifact_store()
+
+    # Verify blob exists
+    if not store.blob_exists(request.artifact_id, request.version):
+        raise HTTPException(
+            status_code=400,
+            detail="Blob not uploaded. Call upload endpoint first.",
+        )
+
+    # Get blob size
+    blob = store.read_blob(request.artifact_id, request.version)
+    byte_size = len(blob) if blob else 0
+
+    # Finalize artifact
+    try:
+        store.finalize_artifact(
+            artifact_id=request.artifact_id,
+            version=request.version,
+            schema_json=request.arrow_schema,
+            row_count=request.row_count,
+            byte_size=byte_size,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    artifact_uri = f"strata://artifact/{request.artifact_id}@v={request.version}"
+    name_uri = None
+
+    # Set name if requested
+    if request.name:
+        try:
+            store.set_name(request.name, request.artifact_id, request.version)
+            name_uri = f"strata://name/{request.name}"
+        except ValueError as e:
+            # Don't fail the whole request if name setting fails
+            logger.warning(f"Failed to set name {request.name}: {e}")
+
+    return UploadFinalizeResponse(
+        artifact_uri=artifact_uri,
+        byte_size=byte_size,
+        name_uri=name_uri,
+    )
+
+
+@app.get("/v1/artifacts/{artifact_id}/v/{version}", response_model=ArtifactInfoResponse)
+async def get_artifact_info(artifact_id: str, version: int):
+    """Get artifact metadata (personal mode only).
+
+    Args:
+        artifact_id: Artifact ID
+        version: Version number
+
+    Returns:
+        ArtifactInfoResponse with artifact metadata
+    """
+    store = _get_artifact_store()
+
+    artifact = store.get_artifact(artifact_id, version)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return ArtifactInfoResponse(
+        artifact_id=artifact.id,
+        version=artifact.version,
+        state=artifact.state,
+        arrow_schema=artifact.schema_json,
+        row_count=artifact.row_count,
+        byte_size=artifact.byte_size,
+        created_at=artifact.created_at or 0,
+    )
+
+
+@app.get("/v1/names/{name}", response_model=NameResolveResponse)
+async def resolve_name(name: str):
+    """Resolve a name to its artifact (personal mode only).
+
+    Args:
+        name: Name to resolve (without strata://name/ prefix)
+
+    Returns:
+        NameResolveResponse with resolved artifact URI
+    """
+    store = _get_artifact_store()
+
+    name_info = store.get_name(name)
+    if name_info is None:
+        raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
+
+    artifact_uri = f"strata://artifact/{name_info.artifact_id}@v={name_info.version}"
+
+    return NameResolveResponse(
+        artifact_uri=artifact_uri,
+        version=name_info.version,
+        updated_at=name_info.updated_at,
+    )
+
+
+@app.post("/v1/names", response_model=NameSetResponse)
+async def set_name(request: NameSetRequest):
+    """Set or update a name pointer (personal mode only).
+
+    Args:
+        request: NameSetRequest with name, artifact_id, and version
+
+    Returns:
+        NameSetResponse with name and artifact URIs
+    """
+    store = _get_artifact_store()
+
+    try:
+        store.set_name(request.name, request.artifact_id, request.version)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    name_uri = f"strata://name/{request.name}"
+    artifact_uri = f"strata://artifact/{request.artifact_id}@v={request.version}"
+
+    return NameSetResponse(
+        name_uri=name_uri,
+        artifact_uri=artifact_uri,
+    )
+
+
+@app.delete("/v1/names/{name}")
+async def delete_name(name: str):
+    """Delete a name pointer (personal mode only).
+
+    Args:
+        name: Name to delete
+
+    Returns:
+        Success status
+    """
+    store = _get_artifact_store()
+
+    if not store.delete_name(name):
+        raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
+
+    return {"status": "deleted", "name": name}
+
+
+@app.get("/v1/names")
+async def list_names():
+    """List all name pointers (personal mode only).
+
+    Returns:
+        List of name entries with their artifact mappings
+    """
+    store = _get_artifact_store()
+
+    names = store.list_names()
+    return {
+        "names": [
+            {
+                "name": n.name,
+                "artifact_uri": f"strata://artifact/{n.artifact_id}@v={n.version}",
+                "updated_at": n.updated_at,
+            }
+            for n in names
+        ]
+    }
+
+
+@app.get("/v1/artifacts/names/{name}/status", response_model=NameStatusResponse)
+async def get_name_status(name: str):
+    """Get status of a named artifact including staleness info (personal mode only).
+
+    Returns the current state of a named artifact and checks whether any of its
+    input dependencies have newer versions available. This is useful for:
+    - Determining if an artifact needs to be rebuilt
+    - Understanding which specific inputs have changed
+    - Debugging dependency chains
+
+    Args:
+        name: Name to check status for
+
+    Returns:
+        NameStatusResponse with staleness information
+    """
+
+    store = _get_artifact_store()
+
+    # Get name status from store (includes input_versions)
+    status = store.get_name_status(name)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
+
+    # Check for staleness by comparing stored vs current input versions
+    changed_inputs: list[InputChangeInfo] = []
+    for input_uri, old_version in status.input_versions.items():
+        try:
+            current_version = _resolve_input_version(input_uri)
+            if current_version != old_version:
+                changed_inputs.append(
+                    InputChangeInfo(
+                        input_uri=input_uri,
+                        old_version=old_version,
+                        new_version=current_version,
+                    )
+                )
+        except HTTPException:
+            # Input no longer exists or is inaccessible - treat as changed
+            changed_inputs.append(
+                InputChangeInfo(
+                    input_uri=input_uri,
+                    old_version=old_version,
+                    new_version="<unavailable>",
+                )
+            )
+
+    # Build staleness reason
+    is_stale = len(changed_inputs) > 0
+    stale_reason = None
+    if is_stale:
+        changes = [f"{c.input_uri}: {c.old_version} → {c.new_version}" for c in changed_inputs]
+        stale_reason = f"Rebuild needed: {', '.join(changes)}"
+
+    return NameStatusResponse(
+        name=status.name,
+        artifact_uri=status.artifact_uri,
+        artifact_id=status.artifact_id,
+        version=status.version,
+        state=status.state,
+        updated_at=status.updated_at,
+        input_versions=status.input_versions,
+        is_stale=is_stale,
+        stale_reason=stale_reason,
+        changed_inputs=changed_inputs if changed_inputs else None,
+    )
+
+
+@app.post("/v1/artifacts/explain-materialize", response_model=ExplainMaterializeResponse)
+async def explain_materialize(request: ExplainMaterializeRequest):
+    """Explain what materialize would do without actually doing it (dry run).
+
+    This endpoint is useful for:
+    - Checking if a computation would be a cache hit or miss
+    - Understanding why a rebuild is needed
+    - Debugging provenance and staleness issues
+    - Scripts that want to print "Rebuild needed: raw_q1 moved from v12 → v13"
+
+    Args:
+        request: ExplainMaterializeRequest with inputs, transform, and optional name
+
+    Returns:
+        ExplainMaterializeResponse explaining what would happen
+    """
+    from strata.artifact_store import TransformSpec, compute_provenance_hash
+
+    store = _get_artifact_store()
+
+    # Parse transform spec
+    transform = request.transform
+    transform_spec = TransformSpec(
+        executor=transform.get("executor", ""),
+        params=transform.get("params", {}),
+        inputs=request.inputs,
+    )
+
+    # Resolve current input versions
+    resolved_versions: dict[str, str] = {}
+    for input_uri in request.inputs:
+        try:
+            resolved_versions[input_uri] = _resolve_input_version(input_uri)
+        except HTTPException as e:
+            resolved_versions[input_uri] = f"<error: {e.detail}>"
+
+    # Compute provenance hash with current versions
+    input_hashes = [f"{uri}:{version}" for uri, version in sorted(resolved_versions.items())]
+    provenance_hash = compute_provenance_hash(input_hashes, transform_spec)
+
+    # Check for existing artifact with same provenance
+    existing = store.find_by_provenance(provenance_hash)
+    if existing is not None:
+        return ExplainMaterializeResponse(
+            would_hit=True,
+            artifact_uri=f"strata://artifact/{existing.id}@v={existing.version}",
+            would_build=False,
+            resolved_input_versions=resolved_versions,
+        )
+
+    # Cache miss - check if there's an existing named artifact that would be stale
+    changed_inputs: list[InputChangeInfo] = []
+    is_stale = False
+    stale_reason = None
+    existing_artifact_uri = None
+
+    if request.name:
+        name_status = store.get_name_status(request.name)
+        if name_status is not None:
+            existing_artifact_uri = name_status.artifact_uri
+            # Compare stored versions vs current
+            for input_uri, old_version in name_status.input_versions.items():
+                current_version = resolved_versions.get(input_uri)
+                if current_version and current_version != old_version:
+                    changed_inputs.append(
+                        InputChangeInfo(
+                            input_uri=input_uri,
+                            old_version=old_version,
+                            new_version=current_version,
+                        )
+                    )
+
+            is_stale = len(changed_inputs) > 0
+            if is_stale:
+                changes = [
+                    f"{c.input_uri}: {c.old_version} → {c.new_version}" for c in changed_inputs
+                ]
+                stale_reason = f"Rebuild needed: {', '.join(changes)}"
+
+    return ExplainMaterializeResponse(
+        would_hit=False,
+        artifact_uri=existing_artifact_uri,
+        would_build=True,
+        is_stale=is_stale,
+        stale_reason=stale_reason,
+        changed_inputs=changed_inputs if changed_inputs else None,
+        resolved_input_versions=resolved_versions,
+    )
+
+
+@app.get("/v1/artifacts/stats")
+async def get_artifact_stats():
+    """Get artifact store statistics (personal mode only).
+
+    Returns:
+        Artifact store statistics
+    """
+    store = _get_artifact_store()
+    return store.stats()
+
+
+@app.get("/v1/artifacts/usage")
+async def get_artifact_usage():
+    """Get artifact store usage metrics (personal mode only).
+
+    Returns comprehensive usage statistics including:
+    - Total bytes used
+    - Number of artifacts and versions
+    - Unreferenced artifact count (candidates for GC)
+
+    Returns:
+        Usage metrics dictionary
+    """
+    store = _get_artifact_store()
+    return store.get_usage()
+
+
+@app.get("/v1/artifacts")
+async def list_artifacts(
+    limit: int = 100,
+    offset: int = 0,
+    state: str | None = None,
+    name_prefix: str | None = None,
+):
+    """List artifacts with optional filtering (personal mode only).
+
+    Args:
+        limit: Maximum number of artifacts to return (default 100)
+        offset: Number of artifacts to skip for pagination
+        state: Filter by state ("ready", "building", "failed")
+        name_prefix: Filter by artifacts with names starting with prefix
+
+    Returns:
+        List of artifact versions with their metadata
+    """
+    store = _get_artifact_store()
+
+    if state is not None and state not in ("ready", "building", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid state filter: {state}. Must be 'ready', 'building', or 'failed'",
+        )
+
+    artifacts = store.list_artifacts(
+        limit=limit,
+        offset=offset,
+        state=state,
+        name_prefix=name_prefix,
+    )
+
+    return {
+        "artifacts": [
+            {
+                "artifact_uri": f"strata://artifact/{a.id}@v={a.version}",
+                "artifact_id": a.id,
+                "version": a.version,
+                "state": a.state,
+                "row_count": a.row_count,
+                "byte_size": a.byte_size,
+                "created_at": a.created_at,
+            }
+            for a in artifacts
+        ],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@app.delete("/v1/artifacts/{artifact_id}/v/{version}")
+async def delete_artifact(artifact_id: str, version: int):
+    """Delete an artifact version (personal mode only).
+
+    Deletes the artifact blob and metadata. Also removes any name pointers
+    that reference this specific version.
+
+    Args:
+        artifact_id: Artifact ID
+        version: Version number
+
+    Returns:
+        Success status
+    """
+    store = _get_artifact_store()
+
+    deleted = store.delete_artifact(artifact_id, version)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    return {"deleted": True, "artifact_uri": f"strata://artifact/{artifact_id}@v={version}"}
+
+
+@app.post("/v1/artifacts/gc")
+async def garbage_collect_artifacts(max_age_days: float = 7.0):
+    """Garbage collect unreferenced artifacts (personal mode only).
+
+    Deletes artifacts that:
+    1. Have no name pointer referencing them
+    2. Are older than max_age_days
+    3. Are in "ready" or "failed" state
+
+    This is safe to run periodically to clean up temporary artifacts
+    that were never named or whose names were deleted.
+
+    Args:
+        max_age_days: Maximum age in days for unreferenced artifacts (default 7)
+
+    Returns:
+        GC statistics including deleted count and bytes freed
+    """
+    store = _get_artifact_store()
+
+    if max_age_days < 0:
+        raise HTTPException(status_code=400, detail="max_age_days must be non-negative")
+
+    result = store.garbage_collect(max_age_days=max_age_days)
+    return result
+
+
+@app.get("/v1/artifacts/{artifact_id}/v/{version}/data")
+async def get_artifact_data(artifact_id: str, version: int):
+    """Stream artifact data as Arrow IPC (personal mode only).
+
+    Returns the raw Arrow IPC stream bytes for the artifact.
+    This can be consumed directly by Arrow clients.
+
+    Args:
+        artifact_id: Artifact ID
+        version: Version number
+
+    Returns:
+        StreamingResponse with Arrow IPC data
+    """
+    store = _get_artifact_store()
+
+    # Verify artifact exists and is ready
+    artifact = store.get_artifact(artifact_id, version)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    if artifact.state != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Artifact is not ready (state={artifact.state})",
+        )
+
+    # Read blob
+    blob = store.read_blob(artifact_id, version)
+    if blob is None:
+        raise HTTPException(status_code=404, detail="Artifact data not found")
+
+    # Note: We don't include schema in headers since it may contain newlines
+    # Clients should read the schema from the Arrow IPC stream itself
+    return StreamingResponse(
+        iter([blob]),
+        media_type="application/vnd.apache.arrow.stream",
+        headers={
+            "X-Arrow-Row-Count": str(artifact.row_count or 0),
+        },
+    )
+
+
+def _parse_artifact_uri(uri: str) -> tuple[str, int] | None:
+    """Parse artifact URI to (artifact_id, version).
+
+    Formats:
+        strata://artifact/{id}@v={version}
+        strata://artifact/{id}  (resolves to latest)
+
+    Returns:
+        Tuple of (artifact_id, version) or None if not an artifact URI
+    """
+    import re
+
+    # Match strata://artifact/{id}@v={version}
+    match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", uri)
+    if match:
+        return (match.group(1), int(match.group(2)))
+
+    # Match strata://artifact/{id} (latest version)
+    match = re.match(r"^strata://artifact/([^@]+)$", uri)
+    if match:
+        return (match.group(1), -1)  # -1 indicates "latest"
+
+    return None
+
+
+def _parse_name_uri(uri: str) -> str | None:
+    """Parse name URI to name.
+
+    Format: strata://name/{name}
+
+    Returns:
+        Name string or None if not a name URI
+    """
+    import re
+
+    match = re.match(r"^strata://name/(.+)$", uri)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _resolve_artifact_uri(uri: str) -> tuple[str, int] | None:
+    """Resolve URI to artifact (id, version).
+
+    Handles:
+        strata://artifact/{id}@v={version} -> (id, version)
+        strata://artifact/{id} -> (id, latest_version)
+        strata://name/{name} -> (resolved_id, resolved_version)
+
+    Returns:
+        Tuple of (artifact_id, version) or None if not a Strata URI
+    """
+    from strata.artifact_store import get_artifact_store
+
+    state = get_state()
+    if not state.config.writes_enabled:
+        return None  # Artifacts only in personal mode
+
+    store = get_artifact_store(state.config.artifact_dir)
+    if store is None:
+        return None
+
+    # Try artifact URI
+    result = _parse_artifact_uri(uri)
+    if result is not None:
+        artifact_id, version = result
+        if version == -1:
+            # Resolve to latest
+            latest = store.get_latest_version(artifact_id)
+            if latest is not None:
+                return (artifact_id, latest.version)
+            return None
+        return result
+
+    # Try name URI
+    name = _parse_name_uri(uri)
+    if name is not None:
+        artifact = store.resolve_name(name)
+        if artifact is not None:
+            return (artifact.id, artifact.version)
+        return None
+
+    return None
 
 
 def main():

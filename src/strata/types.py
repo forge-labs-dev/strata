@@ -577,3 +577,257 @@ def serialize_filter(f: Filter) -> dict[str, Any]:
     if isinstance(value, datetime):
         value = f"__datetime__:{value.isoformat()}"
     return {"column": f.column, "op": f.op.value, "value": value}
+
+
+# ---------------------------------------------------------------------------
+# Artifact API Types (Personal Mode Only)
+# ---------------------------------------------------------------------------
+
+
+class MaterializeRequest(BaseModel):
+    """Request to materialize a computed artifact.
+
+    The client computes the result locally if not cached. The server
+    never executes transforms - it only stores and deduplicates results.
+
+    Attributes:
+        inputs: List of input URIs (table URIs or artifact URIs)
+        transform: Transform specification (executor + params)
+        name: Optional name to assign to the result
+    """
+
+    inputs: list[str]  # Input URIs: "file:///warehouse#db.events" or "strata://artifact/..."
+    transform: dict[str, Any]  # {"executor": "local://duckdb_sql@v1", "params": {...}}
+    name: str | None = None  # Optional name to assign (e.g., "daily_revenue")
+
+
+class MaterializeResponse(BaseModel):
+    """Response from materialize request.
+
+    Returns either a cache hit (artifact exists) or a build spec
+    that the client must execute locally.
+
+    Attributes:
+        hit: True if artifact exists in cache
+        artifact_uri: URI of the artifact (hit) or placeholder for upload (miss)
+        build_spec: If miss, the spec for client to build locally
+    """
+
+    hit: bool  # True = artifact exists, False = client must build
+    artifact_uri: str  # "strata://artifact/{id}@v={version}"
+    build_spec: dict[str, Any] | None = None  # Present if hit=False
+
+
+class BuildSpec(BaseModel):
+    """Specification for client-side artifact building.
+
+    Returned when materialize() has a cache miss. The client must:
+    1. Execute the transform locally using the specified executor
+    2. Upload the result via upload_finalize
+    3. Optionally set a name pointer
+
+    Attributes:
+        artifact_id: ID of the artifact being built
+        version: Version number of the artifact
+        executor: Executor URI (e.g., "local://duckdb_sql@v1")
+        params: Executor-specific parameters
+        input_uris: Resolved input URIs (tables or artifacts)
+    """
+
+    artifact_id: str
+    version: int
+    executor: str
+    params: dict[str, Any]
+    input_uris: list[str]  # Resolved URIs for inputs
+
+
+class UploadFinalizeRequest(BaseModel):
+    """Request to finalize an artifact upload.
+
+    After the client builds an artifact locally, it uploads the Arrow IPC
+    data and calls this endpoint to finalize the artifact.
+
+    Attributes:
+        artifact_id: ID of the artifact being finalized
+        version: Version number of the artifact
+        arrow_schema: Arrow schema as JSON string
+        row_count: Number of rows in the artifact
+        name: Optional name to assign after finalization
+    """
+
+    artifact_id: str
+    version: int
+    arrow_schema: str  # Arrow schema serialized as JSON
+    row_count: int  # Number of rows in the result
+    name: str | None = None  # Optional name to assign
+
+
+class UploadFinalizeResponse(BaseModel):
+    """Response from upload finalization.
+
+    Attributes:
+        artifact_uri: Final artifact URI
+        byte_size: Size of the stored artifact in bytes
+        name_uri: Name URI if a name was assigned
+    """
+
+    artifact_uri: str  # "strata://artifact/{id}@v={version}"
+    byte_size: int
+    name_uri: str | None = None  # "strata://name/{name}" if name was set
+
+
+class NameResolveRequest(BaseModel):
+    """Request to resolve a name to an artifact.
+
+    Attributes:
+        name: Name to resolve (without strata://name/ prefix)
+    """
+
+    name: str
+
+
+class NameResolveResponse(BaseModel):
+    """Response from name resolution.
+
+    Attributes:
+        artifact_uri: Resolved artifact URI
+        version: Pinned version
+        updated_at: Timestamp of last name update
+    """
+
+    artifact_uri: str  # "strata://artifact/{id}@v={version}"
+    version: int
+    updated_at: float  # Unix timestamp
+
+
+class NameSetRequest(BaseModel):
+    """Request to set or update a name pointer.
+
+    Attributes:
+        name: Name to set
+        artifact_id: Target artifact ID
+        version: Target version
+    """
+
+    name: str
+    artifact_id: str
+    version: int
+
+
+class NameSetResponse(BaseModel):
+    """Response from setting a name.
+
+    Attributes:
+        name_uri: URI of the name pointer
+        artifact_uri: URI of the target artifact
+    """
+
+    name_uri: str  # "strata://name/{name}"
+    artifact_uri: str  # "strata://artifact/{id}@v={version}"
+
+
+class ArtifactInfoResponse(BaseModel):
+    """Response with artifact metadata.
+
+    Attributes:
+        artifact_id: Artifact ID
+        version: Version number
+        state: Lifecycle state ("building", "ready", "failed")
+        arrow_schema: Arrow schema as JSON (if ready)
+        row_count: Number of rows (if ready)
+        byte_size: Size in bytes (if ready)
+        created_at: Creation timestamp
+    """
+
+    artifact_id: str
+    version: int
+    state: str
+    arrow_schema: str | None = None
+    row_count: int | None = None
+    byte_size: int | None = None
+    created_at: float
+
+
+class InputChangeInfo(BaseModel):
+    """Information about a changed input dependency.
+
+    Attributes:
+        input_uri: The input URI that changed
+        old_version: The version used when artifact was built
+        new_version: The current version of the input
+    """
+
+    input_uri: str
+    old_version: str
+    new_version: str
+
+
+class NameStatusResponse(BaseModel):
+    """Response with named artifact status including staleness info.
+
+    Use GET /v1/artifacts/names/{name}/status to get this information.
+
+    Attributes:
+        name: The artifact name
+        artifact_uri: URI of the pinned artifact version
+        artifact_id: Artifact ID
+        version: Pinned version number
+        state: Artifact state ("ready", "building", "failed")
+        updated_at: When the name was last updated
+        input_versions: Mapping of input URI -> version when built
+        is_stale: True if any input has changed since build
+        stale_reason: Human-readable explanation if stale
+        changed_inputs: List of inputs that have newer versions
+    """
+
+    name: str
+    artifact_uri: str
+    artifact_id: str
+    version: int
+    state: str
+    updated_at: float
+    input_versions: dict[str, str]
+    is_stale: bool = False
+    stale_reason: str | None = None
+    changed_inputs: list[InputChangeInfo] | None = None
+
+
+class ExplainMaterializeRequest(BaseModel):
+    """Request to explain what materialize would do (dry run).
+
+    Attributes:
+        inputs: List of input URIs (table URIs or artifact URIs)
+        transform: Transform specification (executor + params)
+        name: Optional name to check against existing artifact
+    """
+
+    inputs: list[str]
+    transform: dict[str, Any]
+    name: str | None = None
+
+
+class ExplainMaterializeResponse(BaseModel):
+    """Response explaining what materialize would do.
+
+    This is a dry-run that doesn't modify anything but shows:
+    - Whether the result would be a cache hit or miss
+    - If checking a name, whether it's stale
+    - Which inputs have changed if stale
+
+    Attributes:
+        would_hit: True if materialize would return a cached artifact
+        artifact_uri: URI of existing artifact (if would_hit) or None
+        would_build: True if client would need to build locally
+        is_stale: True if named artifact exists but inputs have changed
+        stale_reason: Explanation of why rebuild is needed
+        changed_inputs: List of inputs that changed since last build
+        resolved_input_versions: Current versions of all inputs
+    """
+
+    would_hit: bool
+    artifact_uri: str | None = None
+    would_build: bool = False
+    is_stale: bool = False
+    stale_reason: str | None = None
+    changed_inputs: list[InputChangeInfo] | None = None
+    resolved_input_versions: dict[str, str] | None = None
