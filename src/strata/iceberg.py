@@ -25,9 +25,32 @@ class PyIcebergCatalog:
         self.config = config
         self._catalogs: dict[str, Catalog] = {}
 
+    def _get_default_catalog_uri(self, warehouse_path: str | None = None) -> str:
+        """Get the default catalog URI based on warehouse path.
+
+        If catalog_properties has a URI configured (e.g., PostgreSQL), use that.
+        Otherwise fall back to SQLite based on warehouse path.
+        """
+        # Use configured URI if provided (supports PostgreSQL, MySQL, etc.)
+        if "uri" in self.config.catalog_properties:
+            return self.config.catalog_properties["uri"]
+
+        # Fall back to SQLite based on warehouse path
+        if warehouse_path and warehouse_path.startswith("s3://"):
+            return f"sqlite:///{self.config.metadata_db}"
+        elif warehouse_path:
+            return f"sqlite:///{Path(warehouse_path) / 'catalog.db'}"
+        else:
+            return "sqlite:///:memory:"
+
     def _get_catalog(self, warehouse_path: str | None = None) -> Catalog:
-        """Get or create a catalog instance."""
-        # For S3 warehouses, use a SQL catalog with SQLite in cache_dir
+        """Get or create a catalog instance.
+
+        The catalog backend is determined by catalog_properties.uri:
+        - If set (e.g., postgresql://...), uses that for all warehouses
+        - Otherwise, falls back to SQLite (per-warehouse or in-memory)
+        """
+        # For S3 warehouses
         if warehouse_path and warehouse_path.startswith("s3://"):
             cache_key = warehouse_path
             if cache_key not in self._catalogs:
@@ -42,11 +65,11 @@ class PyIcebergCatalog:
                 if self.config.s3_endpoint_url:
                     s3_props["s3.endpoint"] = self.config.s3_endpoint_url
 
-                # Use configured metadata_db for catalog metadata
+                catalog_uri = self._get_default_catalog_uri(warehouse_path)
                 self._catalogs[cache_key] = SqlCatalog(
                     "strata",
                     **{
-                        "uri": f"sqlite:///{self.config.metadata_db}",
+                        "uri": catalog_uri,
                         "warehouse": warehouse_path,
                         **s3_props,
                         **self.config.catalog_properties,
@@ -54,23 +77,22 @@ class PyIcebergCatalog:
                 )
             return self._catalogs[cache_key]
 
-        # For local filesystem tables, use a SQL catalog with SQLite
+        # For local filesystem tables
         if warehouse_path:
             cache_key = warehouse_path
             if cache_key not in self._catalogs:
-                # Use "strata" as catalog name for local filesystems
-                # This must match what the demo/tests use
+                catalog_uri = self._get_default_catalog_uri(warehouse_path)
                 self._catalogs[cache_key] = SqlCatalog(
                     "strata",
                     **{
-                        "uri": f"sqlite:///{Path(warehouse_path) / 'catalog.db'}",
+                        "uri": catalog_uri,
                         "warehouse": warehouse_path,
                         **self.config.catalog_properties,
                     },
                 )
             return self._catalogs[cache_key]
 
-        # Use configured catalog properties
+        # Use configured catalog properties (default catalog)
         cache_key = "default"
         if cache_key not in self._catalogs:
             if self.config.catalog_properties:

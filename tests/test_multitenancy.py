@@ -413,3 +413,116 @@ class TestTenantIdValidation:
         """Tenant ID with null byte should be invalid."""
         is_valid, error = validate_tenant_id("tenant\x00evil")
         assert is_valid is False
+
+
+class TestPerTenantQoS:
+    """Tests for per-tenant QoS enforcement."""
+
+    def setup_method(self):
+        """Reset global registry before each test."""
+        reset_tenant_registry()
+
+    def teardown_method(self):
+        """Reset global registry after each test."""
+        reset_tenant_registry()
+
+    def test_tenant_gets_own_limiters(self):
+        """Each tenant should get separate limiter instances."""
+        registry = TenantRegistry()
+
+        lim_a_int, lim_a_bulk = registry.get_or_create_limiters("tenant-a")
+        lim_b_int, lim_b_bulk = registry.get_or_create_limiters("tenant-b")
+
+        # Different tenants should get different instances
+        assert lim_a_int is not lim_b_int
+        assert lim_a_bulk is not lim_b_bulk
+
+    def test_same_tenant_gets_same_limiters(self):
+        """Same tenant should get same limiter instances on subsequent calls."""
+        registry = TenantRegistry()
+
+        lim1_int, lim1_bulk = registry.get_or_create_limiters("tenant-a")
+        lim2_int, lim2_bulk = registry.get_or_create_limiters("tenant-a")
+
+        # Same tenant should get same instances
+        assert lim1_int is lim2_int
+        assert lim1_bulk is lim2_bulk
+
+    def test_tenant_limiter_uses_config_slots(self):
+        """Tenant limiters should use configured slot counts."""
+        registry = TenantRegistry(
+            default_interactive_slots=32,
+            default_bulk_slots=8,
+        )
+
+        # Register tenant with custom slots
+        config = TenantConfig(
+            tenant_id="premium",
+            interactive_slots=64,
+            bulk_slots=16,
+        )
+        registry.register_tenant(config)
+
+        lim_int, lim_bulk = registry.get_or_create_limiters("premium")
+        assert lim_int.capacity == 64
+        assert lim_bulk.capacity == 16
+
+    def test_unknown_tenant_uses_defaults(self):
+        """Unknown tenants should get default slot counts."""
+        registry = TenantRegistry(
+            default_interactive_slots=32,
+            default_bulk_slots=8,
+        )
+
+        lim_int, lim_bulk = registry.get_or_create_limiters("unknown")
+        assert lim_int.capacity == 32
+        assert lim_bulk.capacity == 8
+
+    def test_default_tenant_uses_global_defaults(self):
+        """Default tenant should use global default slot counts."""
+        registry = TenantRegistry(
+            default_interactive_slots=16,
+            default_bulk_slots=4,
+        )
+
+        lim_int, lim_bulk = registry.get_or_create_limiters(DEFAULT_TENANT_ID)
+        assert lim_int.capacity == 16
+        assert lim_bulk.capacity == 4
+
+    def test_limiter_persists_across_quotas_access(self):
+        """Limiters should persist when quotas are accessed multiple times."""
+        registry = TenantRegistry()
+
+        # Create limiters
+        lim1_int, lim1_bulk = registry.get_or_create_limiters("tenant-a")
+
+        # Access quotas separately
+        quotas = registry.get_or_create_quotas("tenant-a")
+
+        # Get limiters again
+        lim2_int, lim2_bulk = registry.get_or_create_limiters("tenant-a")
+
+        # Should be same instances
+        assert lim1_int is lim2_int
+        assert lim1_bulk is lim2_bulk
+        assert quotas.interactive_limiter is lim1_int
+        assert quotas.bulk_limiter is lim1_bulk
+
+    def test_tenant_config_partial_override(self):
+        """Tenant config with only one slot type should use defaults for the other."""
+        registry = TenantRegistry(
+            default_interactive_slots=32,
+            default_bulk_slots=8,
+        )
+
+        # Register tenant with only interactive slots override
+        config = TenantConfig(
+            tenant_id="partial",
+            interactive_slots=100,  # Override
+            # bulk_slots=None means use default
+        )
+        registry.register_tenant(config)
+
+        lim_int, lim_bulk = registry.get_or_create_limiters("partial")
+        assert lim_int.capacity == 100  # Custom
+        assert lim_bulk.capacity == 8  # Default

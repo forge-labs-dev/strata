@@ -56,16 +56,17 @@ hash(tenant_id | table_identity | snapshot_id | file_path | row_group_id | proje
 
 ### Multi-Tenancy
 
-Strata supports multi-tenant deployments with complete cache isolation between tenants:
+Strata supports multi-tenant deployments with complete isolation between tenants:
 
 - **Tenant identification**: `X-Tenant-ID` header (injected by API gateway after JWT validation)
 - **Cache isolation**: Tenant ID is hashed into cache keys and directory paths
+- **Per-tenant QoS**: Each tenant gets their own `ResizableLimiter` pools (interactive/bulk slots)
 - **Per-tenant metrics**: Scans, cache hits, bytes tracked per tenant
 - **Validation**: Tenant IDs must be 1-64 chars, alphanumeric with `_` and `-`
 
 Key modules:
 - **tenant.py** - `TenantConfig`, `TenantQuotas`, context management (`get_tenant_id()`, `set_tenant_id()`)
-- **tenant_registry.py** - `TenantRegistry` with LRU eviction (max 1000 tenants tracked)
+- **tenant_registry.py** - `TenantRegistry` with LRU eviction (max 1000 tenants tracked), `get_or_create_limiters()`
 
 ### Key Modules
 
@@ -139,7 +140,7 @@ Most tests use `test_db.events` table with columns: `id`, `value`, `name`, `time
 
 4. **Pre-flight size checks**: Estimated response size is computed from Parquet metadata before streaming begins—oversized scans return HTTP 413.
 
-5. **Two-tier QoS isolation**: Interactive (dashboard) and bulk (ETL) queries use separate semaphores to prevent starvation. Classification based on estimated bytes and column count.
+5. **Two-tier QoS isolation**: Interactive (dashboard) and bulk (ETL) queries use separate semaphores to prevent starvation. Classification based on estimated bytes and column count. In multi-tenant mode, each tenant gets their own limiter pools for complete QoS isolation.
 
 6. **S3 path normalization**: S3 paths are normalized (double slashes, `.`, `..` resolved) to ensure consistent cache keys. See `_normalize_s3_path` in `planner.py`.
 

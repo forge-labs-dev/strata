@@ -389,7 +389,7 @@ Monitor via `GET /v1/debug/circuit-breakers`.
 
 ### Multi-Tenancy
 
-Enable multi-tenant mode for SaaS deployments with complete cache isolation:
+Enable multi-tenant mode for SaaS deployments with complete cache and QoS isolation:
 
 ```bash
 export STRATA_MULTI_TENANT_ENABLED=true
@@ -399,18 +399,32 @@ export STRATA_REQUIRE_TENANT_HEADER=true  # Optional: reject requests without te
 **How it works:**
 1. API gateway authenticates requests (JWT, OAuth, API key)
 2. Gateway extracts tenant ID from token and injects `X-Tenant-ID` header
-3. Strata validates header format and isolates cache per tenant
+3. Strata validates header format, isolates cache and QoS per tenant
 
 ```
 Client → API Gateway → Strata
          (validates   (trusts header,
-          JWT, adds    isolates cache)
+          JWT, adds    isolates cache + QoS)
           X-Tenant-ID)
 ```
 
 **Cache isolation:** Each tenant gets a separate cache namespace. Same data queried by different tenants produces different cache keys.
 
-**Per-tenant metrics:** Track scans, cache hits, and bytes per tenant via `/v1/admin/tenants`.
+**QoS isolation:** Each tenant gets their own interactive and bulk slot pools. One tenant consuming all their slots doesn't affect other tenants. Configure per-tenant slot counts via `TenantConfig`:
+
+```python
+from strata.tenant import TenantConfig
+from strata.tenant_registry import get_tenant_registry
+
+registry = get_tenant_registry()
+registry.register_tenant(TenantConfig(
+    tenant_id="premium-tenant",
+    interactive_slots=64,  # Premium gets more slots
+    bulk_slots=16,
+))
+```
+
+**Per-tenant metrics:** Track scans, cache hits, bytes, and QoS slot usage per tenant via `/v1/admin/tenants` and `/metrics`.
 
 **Tenant ID validation:** IDs must be 1-64 characters, alphanumeric with underscores and hyphens. Invalid IDs return HTTP 400.
 

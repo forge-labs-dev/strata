@@ -301,8 +301,8 @@ def _classify_query(plan) -> str:
 
 
 def _get_qos_metrics(state: ServerState) -> dict:
-    """Get QoS tier metrics including queue wait times."""
-    # Get limiter stats for accurate capacity/in_use tracking
+    """Get QoS tier metrics including queue wait times and per-tenant stats."""
+    # Get global limiter stats (for backward compatibility and aggregate metrics)
     interactive_stats = state._interactive_limiter.get_stats()
     bulk_stats = state._bulk_limiter.get_stats()
 
@@ -317,6 +317,19 @@ def _get_qos_metrics(state: ServerState) -> dict:
         if state._bulk_queue_wait_count > 0
         else 0.0
     )
+
+    # Per-tenant QoS metrics (only for tenants with active limiters)
+    tenant_registry = get_tenant_registry()
+    per_tenant_qos = {}
+    with tenant_registry._lock:
+        for tenant_id, quotas in tenant_registry._quotas.items():
+            if quotas.interactive_limiter is not None:
+                per_tenant_qos[tenant_id] = {
+                    "interactive_capacity": quotas.interactive_limiter.capacity,
+                    "interactive_in_use": quotas.interactive_limiter.in_use,
+                    "bulk_capacity": quotas.bulk_limiter.capacity,
+                    "bulk_in_use": quotas.bulk_limiter.in_use,
+                }
 
     return {
         "interactive_slots": interactive_stats["capacity"],
@@ -340,6 +353,8 @@ def _get_qos_metrics(state: ServerState) -> dict:
         "per_client_bulk": state.config.per_client_bulk,
         "client_rejected": state._client_rejected,
         "tracked_clients": len(state._client_interactive_semaphores),
+        # Per-tenant QoS metrics
+        "per_tenant": per_tenant_qos,
     }
 
 
@@ -1926,13 +1941,18 @@ async def get_batches_v1(scan_id: str, request: Request):
 
     # QoS: Classify query and acquire appropriate tier limiter
     # This prevents bulk queries from starving interactive (dashboard) queries.
+    # Each tenant gets their own limiter pools for complete QoS isolation.
     tier = _classify_query(plan)
+    tenant_id = get_tenant_id()
+    tenant_registry = get_tenant_registry()
+    interactive_limiter, bulk_limiter = tenant_registry.get_or_create_limiters(tenant_id)
+
     if tier == "interactive":
-        limiter = state._interactive_limiter
+        limiter = interactive_limiter
         tier_name = "interactive"
         queue_timeout = state.config.interactive_queue_timeout
     else:
-        limiter = state._bulk_limiter
+        limiter = bulk_limiter
         tier_name = "bulk"
         queue_timeout = state.config.bulk_queue_timeout
 
@@ -2516,14 +2536,15 @@ async def get_batches_v1(scan_id: str, request: Request):
             # Remove from progress tracking
             state._scan_progress.pop(scan_id, None)
 
-            # Release the tier-specific limiter (global)
+            # Release the tier-specific limiter (per-tenant)
+            # The 'limiter' variable from the outer scope is the per-tenant limiter we acquired
             scan_tier = state._scan_tier.pop(scan_id, None)
             if scan_tier == "interactive":
                 state._active_interactive -= 1
-                await state._interactive_limiter.release()
+                await limiter.release()
             elif scan_tier == "bulk":
                 state._active_bulk -= 1
-                await state._bulk_limiter.release()
+                await limiter.release()
             # Note: if scan_tier is None, we never acquired the limiter (early error path)
 
             # Release per-client semaphore (after global, reverse of acquisition order)

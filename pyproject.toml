@@ -19,7 +19,7 @@ classifiers = [
     "Programming Language :: Rust",
 ]
 dependencies = [
-    "pyiceberg[sql-sqlite]>=0.8.0",
+    "pyiceberg[sql-sqlite,sql-postgres]>=0.8.0",
     "pyarrow>=18.0.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.32.0",

@@ -5,11 +5,17 @@ Provides:
 - Global registry access via get_tenant_registry() / init_tenant_registry()
 """
 
+from __future__ import annotations
+
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from strata.tenant import DEFAULT_TENANT_ID, TenantConfig, TenantQuotas
+
+if TYPE_CHECKING:
+    from strata.adaptive_concurrency import ResizableLimiter
 
 # Max tenants to track runtime state for (LRU eviction beyond this)
 MAX_TRACKED_TENANTS = 1000
@@ -103,6 +109,42 @@ class TenantRegistry:
                 del self._quotas[oldest]
 
             return quotas
+
+    def get_or_create_limiters(
+        self, tenant_id: str
+    ) -> tuple[ResizableLimiter, ResizableLimiter]:
+        """Get or create per-tenant QoS limiters.
+
+        Each tenant gets their own ResizableLimiter instances for interactive
+        and bulk tiers, providing complete QoS isolation between tenants.
+
+        Limiters are created lazily on first access and stored in TenantQuotas.
+        When tenant quotas are LRU-evicted, their limiters go with them.
+
+        Returns:
+            Tuple of (interactive_limiter, bulk_limiter)
+        """
+        from strata.adaptive_concurrency import ResizableLimiter
+
+        quotas = self.get_or_create_quotas(tenant_id)
+
+        with self._lock:
+            if quotas.interactive_limiter is None:
+                # Get tenant-specific config or use defaults
+                config = self.get_config(tenant_id)
+                if config:
+                    interactive_slots = config.effective_interactive_slots(
+                        self.default_interactive_slots
+                    )
+                    bulk_slots = config.effective_bulk_slots(self.default_bulk_slots)
+                else:
+                    interactive_slots = self.default_interactive_slots
+                    bulk_slots = self.default_bulk_slots
+
+                quotas.interactive_limiter = ResizableLimiter(interactive_slots)
+                quotas.bulk_limiter = ResizableLimiter(bulk_slots)
+
+            return quotas.interactive_limiter, quotas.bulk_limiter
 
     def is_tenant_enabled(self, tenant_id: str) -> bool:
         """Check if tenant is enabled (exists and not disabled).

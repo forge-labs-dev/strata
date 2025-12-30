@@ -16,6 +16,8 @@ def _get_env_overrides() -> dict:
     - STRATA_PORT: Server port
     - STRATA_CACHE_DIR: Cache directory path
     - STRATA_MAX_CACHE_SIZE_BYTES: Maximum cache size in bytes
+    - STRATA_CATALOG_URI: Catalog database URI (PostgreSQL recommended for production)
+      Example: postgresql://user:pass@localhost:5432/iceberg_catalog
     - AWS_REGION / STRATA_S3_REGION: S3 region
     - AWS_ACCESS_KEY_ID / STRATA_S3_ACCESS_KEY: S3 access key
     - AWS_SECRET_ACCESS_KEY / STRATA_S3_SECRET_KEY: S3 secret key
@@ -102,6 +104,14 @@ def _get_env_overrides() -> dict:
 
     if adaptive_target := os.environ.get("STRATA_ADAPTIVE_TARGET_P95_MS"):
         overrides["adaptive_target_p95_ms"] = float(adaptive_target)
+
+    # Catalog URI (for PostgreSQL or other SQL backends)
+    # Example: postgresql://user:pass@localhost:5432/iceberg_catalog
+    if catalog_uri := os.environ.get("STRATA_CATALOG_URI"):
+        # Merge into catalog_properties
+        if "catalog_properties" not in overrides:
+            overrides["catalog_properties"] = {}
+        overrides["catalog_properties"]["uri"] = catalog_uri
 
     # Multi-tenancy configuration
     if os.environ.get("STRATA_MULTI_TENANT_ENABLED", "").lower() == "true":
