@@ -25,6 +25,7 @@ dependencies = [
     "uvicorn>=0.32.0",
     "httpx>=0.28.0",
     "duckdb>=1.1.0",
+    "python-multipart>=0.0.9",  # Required for executor multipart form handling
 ]
 
 [project.optional-dependencies]

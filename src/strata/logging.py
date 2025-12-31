@@ -74,6 +74,51 @@ def RequestContext(**kwargs: Any):
         _request_context.reset(token)
 
 
+@contextmanager
+def BuildContext(
+    build_id: str,
+    tenant_id: str | None = None,
+    transform_ref: str | None = None,
+    provenance_hash: str | None = None,
+    **kwargs: Any,
+):
+    """Context manager for build-scoped logging context.
+
+    Adds build context to all log entries within the context manager.
+    This is useful for correlating logs from a specific build operation.
+
+    Usage:
+        with BuildContext(
+            build_id="build-123",
+            tenant_id="acme",
+            transform_ref="duckdb_sql@v1",
+            provenance_hash="abc123",
+        ):
+            logger.info("Starting transform")  # includes build context
+
+    Args:
+        build_id: Unique build identifier
+        tenant_id: Tenant who owns this build
+        transform_ref: Transform reference (e.g., "duckdb_sql@v1")
+        provenance_hash: Provenance hash for the build
+        **kwargs: Additional context to include
+    """
+    ctx = {"build_id": build_id}
+    if tenant_id:
+        ctx["tenant_id"] = tenant_id
+    if transform_ref:
+        ctx["transform_ref"] = transform_ref
+    if provenance_hash:
+        ctx["provenance_hash"] = provenance_hash
+    ctx.update(kwargs)
+
+    token = set_request_context(**ctx)
+    try:
+        yield
+    finally:
+        _request_context.reset(token)
+
+
 def get_trace_context() -> dict[str, str]:
     """Get OpenTelemetry trace context if available.
 
@@ -165,6 +210,12 @@ class TextFormatter(logging.Formatter):
             ctx_parts.append(f"req={ctx['request_id'][:8]}")
         if "scan_id" in ctx:
             ctx_parts.append(f"scan={ctx['scan_id'][:8]}")
+        if "build_id" in ctx:
+            ctx_parts.append(f"build={ctx['build_id'][:8]}")
+        if "tenant_id" in ctx:
+            ctx_parts.append(f"tenant={ctx['tenant_id']}")
+        if "transform_ref" in ctx:
+            ctx_parts.append(f"transform={ctx['transform_ref']}")
 
         # Trace context
         trace_ctx = get_trace_context()

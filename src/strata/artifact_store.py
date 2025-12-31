@@ -245,6 +245,12 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
 -- Index for provenance lookup (deduplication)
 CREATE INDEX IF NOT EXISTS idx_provenance ON artifact_versions(provenance_hash);
 
+-- Unique constraint for idempotent finalize: (tenant, provenance_hash) for ready artifacts
+-- This prevents duplicate artifacts for the same computation within a tenant
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_provenance_unique
+ON artifact_versions(tenant, provenance_hash)
+WHERE state = 'ready';
+
 -- Index for state queries (e.g., cleanup of failed artifacts)
 CREATE INDEX IF NOT EXISTS idx_state ON artifact_versions(state);
 
@@ -356,6 +362,22 @@ class ArtifactStore:
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_versions_tenant "
                         "ON artifact_versions(tenant)"
+                    )
+                    conn.commit()
+
+                # Add unique index on (tenant, provenance_hash) if not exists
+                # This enables idempotent finalize
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='index' "
+                    "AND name='idx_tenant_provenance_unique'"
+                )
+                if cursor.fetchone() is None:
+                    conn.execute(
+                        """
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_tenant_provenance_unique
+                        ON artifact_versions(tenant, provenance_hash)
+                        WHERE state = 'ready'
+                        """
                     )
                     conn.commit()
 
@@ -476,8 +498,12 @@ class ArtifactStore:
         schema_json: str,
         row_count: int,
         byte_size: int,
-    ) -> None:
+    ) -> ArtifactVersion | None:
         """Mark artifact as ready after blob is written.
+
+        This is idempotent: if the same (tenant, provenance_hash) already exists
+        in ready state, returns the existing artifact instead of raising an error.
+        This enables safe retries after crashes or network failures.
 
         Args:
             artifact_id: Artifact ID
@@ -486,26 +512,251 @@ class ArtifactStore:
             row_count: Number of rows
             byte_size: Size of blob in bytes
 
+        Returns:
+            The finalized ArtifactVersion, or the existing artifact if duplicate
+
         Raises:
             ValueError: If artifact not found or not in "building" state
         """
         conn = self._get_connection()
         try:
+            # Get the artifact being finalized to check tenant/provenance
             cursor = conn.execute(
                 """
-                UPDATE artifact_versions
-                SET state = 'ready', schema_json = ?, row_count = ?, byte_size = ?
-                WHERE id = ? AND version = ? AND state = 'building'
+                SELECT id, version, state, provenance_hash, tenant
+                FROM artifact_versions
+                WHERE id = ? AND version = ?
                 """,
-                (schema_json, row_count, byte_size, artifact_id, version),
+                (artifact_id, version),
             )
-            if cursor.rowcount == 0:
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"Artifact {artifact_id}@v={version} not found")
+
+            if row["state"] == "ready":
+                # Already finalized - return it (idempotent)
+                return self.get_artifact(artifact_id, version)
+
+            if row["state"] != "building":
                 raise ValueError(
-                    f"Artifact {artifact_id}@v={version} not found or not in building state"
+                    f"Artifact {artifact_id}@v={version} not in building state "
+                    f"(state={row['state']})"
                 )
-            conn.commit()
+
+            provenance_hash = row["provenance_hash"]
+            tenant = row["tenant"]
+
+            # Check if another artifact with same (tenant, provenance_hash) already exists
+            # This handles the race condition where two builds complete simultaneously
+            existing = self.find_by_provenance(provenance_hash, tenant=tenant)
+            if existing is not None and existing.id != artifact_id:
+                # Another artifact with same provenance already exists
+                # Mark this one as failed (duplicate) and return the existing one
+                conn.execute(
+                    """
+                    UPDATE artifact_versions
+                    SET state = 'failed'
+                    WHERE id = ? AND version = ?
+                    """,
+                    (artifact_id, version),
+                )
+                conn.commit()
+                return existing
+
+            # Proceed with finalization
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE artifact_versions
+                    SET state = 'ready', schema_json = ?, row_count = ?, byte_size = ?
+                    WHERE id = ? AND version = ? AND state = 'building'
+                    """,
+                    (schema_json, row_count, byte_size, artifact_id, version),
+                )
+                if cursor.rowcount == 0:
+                    # Race condition: another process may have finalized
+                    conn.rollback()
+                    return self.get_artifact(artifact_id, version)
+                conn.commit()
+                return self.get_artifact(artifact_id, version)
+            except sqlite3.IntegrityError:
+                # Unique constraint violation - duplicate (tenant, provenance_hash)
+                # Another artifact was finalized first, return it
+                conn.rollback()
+                existing = self.find_by_provenance(provenance_hash, tenant=tenant)
+                if existing is not None:
+                    # Mark this one as failed
+                    conn.execute(
+                        """
+                        UPDATE artifact_versions
+                        SET state = 'failed'
+                        WHERE id = ? AND version = ?
+                        """,
+                        (artifact_id, version),
+                    )
+                    conn.commit()
+                    return existing
+                raise
         finally:
             conn.close()
+
+    def finalize_and_set_name(
+        self,
+        artifact_id: str,
+        version: int,
+        schema_json: str,
+        row_count: int,
+        byte_size: int,
+        name: str | None = None,
+        tenant: str | None = None,
+    ) -> ArtifactVersion | None:
+        """Atomically finalize artifact and set name pointer in one transaction.
+
+        This ensures the name pointer is only updated after the artifact is
+        fully persisted and metadata committed. If the artifact is a duplicate
+        (same provenance already exists), the name is pointed to the existing
+        artifact instead.
+
+        Args:
+            artifact_id: Artifact ID
+            version: Version number
+            schema_json: Arrow schema as JSON
+            row_count: Number of rows
+            byte_size: Size of blob in bytes
+            name: Optional name to set (if None, no name is set)
+            tenant: Tenant ID for the name (if setting name)
+
+        Returns:
+            The finalized ArtifactVersion (or existing duplicate)
+
+        Raises:
+            ValueError: If artifact not found or not in "building" state
+        """
+        conn = self._get_connection()
+        try:
+            # Get the artifact being finalized
+            cursor = conn.execute(
+                """
+                SELECT id, version, state, provenance_hash, tenant
+                FROM artifact_versions
+                WHERE id = ? AND version = ?
+                """,
+                (artifact_id, version),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise ValueError(f"Artifact {artifact_id}@v={version} not found")
+
+            if row["state"] == "ready":
+                # Already finalized - set name and return (idempotent)
+                if name:
+                    self._set_name_in_connection(
+                        conn, name, artifact_id, version, tenant
+                    )
+                    conn.commit()
+                return self.get_artifact(artifact_id, version)
+
+            if row["state"] != "building":
+                raise ValueError(
+                    f"Artifact {artifact_id}@v={version} not in building state "
+                    f"(state={row['state']})"
+                )
+
+            provenance_hash = row["provenance_hash"]
+            artifact_tenant = row["tenant"]
+
+            # Check if another artifact with same (tenant, provenance_hash) already exists
+            existing = self.find_by_provenance(provenance_hash, tenant=artifact_tenant)
+            if existing is not None and existing.id != artifact_id:
+                # Another artifact with same provenance already exists
+                # Mark this one as failed and point name to existing
+                conn.execute(
+                    """
+                    UPDATE artifact_versions
+                    SET state = 'failed'
+                    WHERE id = ? AND version = ?
+                    """,
+                    (artifact_id, version),
+                )
+                if name:
+                    self._set_name_in_connection(
+                        conn, name, existing.id, existing.version, tenant
+                    )
+                conn.commit()
+                return existing
+
+            # Atomically finalize and set name
+            try:
+                cursor = conn.execute(
+                    """
+                    UPDATE artifact_versions
+                    SET state = 'ready', schema_json = ?, row_count = ?, byte_size = ?
+                    WHERE id = ? AND version = ? AND state = 'building'
+                    """,
+                    (schema_json, row_count, byte_size, artifact_id, version),
+                )
+                if cursor.rowcount == 0:
+                    # Race condition
+                    conn.rollback()
+                    artifact = self.get_artifact(artifact_id, version)
+                    if artifact and artifact.state == "ready" and name:
+                        # Still set the name
+                        self.set_name(name, artifact_id, version, tenant)
+                    return artifact
+
+                # Set name in same transaction
+                if name:
+                    self._set_name_in_connection(
+                        conn, name, artifact_id, version, tenant
+                    )
+
+                conn.commit()
+                return self.get_artifact(artifact_id, version)
+
+            except sqlite3.IntegrityError:
+                # Unique constraint violation - duplicate provenance
+                conn.rollback()
+                existing = self.find_by_provenance(provenance_hash, tenant=artifact_tenant)
+                if existing is not None:
+                    # Mark this one as failed, point name to existing
+                    conn.execute(
+                        """
+                        UPDATE artifact_versions
+                        SET state = 'failed'
+                        WHERE id = ? AND version = ?
+                        """,
+                        (artifact_id, version),
+                    )
+                    if name:
+                        self._set_name_in_connection(
+                            conn, name, existing.id, existing.version, tenant
+                        )
+                    conn.commit()
+                    return existing
+                raise
+        finally:
+            conn.close()
+
+    def _set_name_in_connection(
+        self,
+        conn: sqlite3.Connection,
+        name: str,
+        artifact_id: str,
+        version: int,
+        tenant: str | None,
+    ) -> None:
+        """Set name within an existing connection (for use in transactions)."""
+        conn.execute(
+            """
+            INSERT INTO artifact_names (name, artifact_id, version, updated_at, tenant)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(tenant, name) DO UPDATE SET
+                artifact_id = excluded.artifact_id,
+                version = excluded.version,
+                updated_at = excluded.updated_at
+            """,
+            (name, artifact_id, version, time.time(), tenant),
+        )
 
     def fail_artifact(self, artifact_id: str, version: int) -> None:
         """Mark artifact as failed.
@@ -980,6 +1231,140 @@ class ArtifactStore:
             updated_at=name_info.updated_at,
             input_versions=input_versions,
         )
+
+    # -----------------------------------------------------------------------
+    # Lineage and Dependency Queries
+    # -----------------------------------------------------------------------
+
+    def find_dependents(
+        self,
+        artifact_id: str,
+        version: int,
+        tenant: str | None = None,
+    ) -> list[tuple[ArtifactVersion, str]]:
+        """Find artifacts that depend on a given artifact version.
+
+        Searches all artifacts whose input_versions contain a reference to
+        the specified artifact. Returns the dependent artifacts along with
+        the version string they used for the dependency.
+
+        Args:
+            artifact_id: Artifact ID to search for dependents of
+            version: Version number to search for
+            tenant: Optional tenant filter for multi-tenant isolation
+
+        Returns:
+            List of (ArtifactVersion, input_version_string) tuples for dependents
+        """
+        # Build the search pattern - artifacts reference inputs as "artifact_id@v=N"
+        search_pattern = f'"{artifact_id}@v={version}"'
+        # Also search for the full URI format
+        uri_pattern = f'"strata://artifact/{artifact_id}@v={version}"'
+
+        conn = self._get_connection()
+        try:
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT id, version, state, provenance_hash, schema_json,
+                           row_count, byte_size, created_at, transform_spec,
+                           input_versions, tenant, principal
+                    FROM artifact_versions
+                    WHERE state = 'ready'
+                      AND tenant = ?
+                      AND (input_versions LIKE ? OR input_versions LIKE ?)
+                    ORDER BY created_at DESC
+                    """,
+                    (tenant, f"%{search_pattern}%", f"%{uri_pattern}%"),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT id, version, state, provenance_hash, schema_json,
+                           row_count, byte_size, created_at, transform_spec,
+                           input_versions, tenant, principal
+                    FROM artifact_versions
+                    WHERE state = 'ready'
+                      AND (input_versions LIKE ? OR input_versions LIKE ?)
+                    ORDER BY created_at DESC
+                    """,
+                    (f"%{search_pattern}%", f"%{uri_pattern}%"),
+                )
+
+            results = []
+            for row in cursor.fetchall():
+                artifact = ArtifactVersion(
+                    id=row["id"],
+                    version=row["version"],
+                    state=row["state"],
+                    provenance_hash=row["provenance_hash"],
+                    schema_json=row["schema_json"],
+                    row_count=row["row_count"],
+                    byte_size=row["byte_size"],
+                    created_at=row["created_at"],
+                    transform_spec=row["transform_spec"],
+                    input_versions=row["input_versions"],
+                    tenant=row["tenant"],
+                    principal=row["principal"],
+                )
+
+                # Parse input_versions to find the exact version string used
+                input_version_used = f"{artifact_id}@v={version}"
+                if artifact.input_versions:
+                    try:
+                        input_vers = json.loads(artifact.input_versions)
+                        # Look for the artifact in the input_versions dict
+                        for uri, ver in input_vers.items():
+                            if artifact_id in uri and f"@v={version}" in ver:
+                                input_version_used = ver
+                                break
+                    except json.JSONDecodeError:
+                        pass
+
+                results.append((artifact, input_version_used))
+
+            return results
+        finally:
+            conn.close()
+
+    def get_name_for_artifact(
+        self,
+        artifact_id: str,
+        version: int,
+        tenant: str | None = None,
+    ) -> str | None:
+        """Get the name pointing to a specific artifact version.
+
+        Args:
+            artifact_id: Artifact ID
+            version: Version number
+            tenant: Optional tenant filter
+
+        Returns:
+            Name string if found, None otherwise
+        """
+        conn = self._get_connection()
+        try:
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT name FROM artifact_names
+                    WHERE artifact_id = ? AND version = ? AND tenant = ?
+                    """,
+                    (artifact_id, version, tenant),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT name FROM artifact_names
+                    WHERE artifact_id = ? AND version = ? AND tenant IS NULL
+                    """,
+                    (artifact_id, version),
+                )
+            row = cursor.fetchone()
+            return row["name"] if row else None
+        finally:
+            conn.close()
 
     # -----------------------------------------------------------------------
     # Lifecycle Management

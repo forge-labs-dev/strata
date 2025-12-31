@@ -1,0 +1,453 @@
+"""Tests for artifact lineage and dependents endpoints.
+
+These tests verify:
+1. GET /v1/artifacts/{id}/v/{version}/lineage - Input dependency traversal
+2. GET /v1/artifacts/{id}/v/{version}/dependents - Reverse dependency lookup
+"""
+
+import json
+import socket
+import threading
+import time
+
+import httpx
+import pyarrow as pa
+import pyarrow.ipc as ipc
+import pytest
+import uvicorn
+
+from strata import server
+from strata.artifact_store import reset_artifact_store
+from strata.config import StrataConfig
+from strata.server import ServerState, app
+
+
+def find_free_port() -> int:
+    """Find an available port on localhost."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def wait_for_server(port: int, timeout: float = 5.0) -> bool:
+    """Wait for server to be ready."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return False
+
+
+def table_to_ipc_bytes(table: pa.Table) -> bytes:
+    """Convert Arrow table to IPC stream bytes."""
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+@pytest.fixture
+def lineage_server(tmp_path):
+    """Start a server in personal mode for lineage testing."""
+    cache_dir = tmp_path / "cache"
+    artifact_dir = tmp_path / "artifacts"
+    cache_dir.mkdir()
+    artifact_dir.mkdir()
+
+    port = find_free_port()
+
+    config = StrataConfig(
+        host="127.0.0.1",
+        port=port,
+        cache_dir=cache_dir,
+        deployment_mode="personal",
+        artifact_dir=artifact_dir,
+    )
+    server._state = ServerState(config)
+
+    server_config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server_instance = uvicorn.Server(server_config)
+    thread = threading.Thread(target=server_instance.run, daemon=True)
+    thread.start()
+
+    if not wait_for_server(port):
+        raise RuntimeError(f"Server failed to start on port {port}")
+
+    try:
+        yield {"port": port, "base_url": f"http://127.0.0.1:{port}"}
+    finally:
+        server_instance.should_exit = True
+        thread.join(timeout=2.0)
+        server._state = None
+        reset_artifact_store()
+
+
+def create_artifact(base_url: str, inputs: list[str], executor: str = "test") -> dict:
+    """Create and finalize an artifact, returning artifact info."""
+    # Materialize
+    resp = httpx.post(
+        f"{base_url}/v1/artifacts/materialize",
+        json={
+            "inputs": inputs,
+            "transform": {"executor": executor, "params": {"sql": "SELECT 1"}},
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    build_spec = data["build_spec"]
+    artifact_id = build_spec["artifact_id"]
+    version = build_spec["version"]
+
+    # Upload
+    table = pa.table({"x": [1, 2, 3]})
+    httpx.post(
+        f"{base_url}/v1/artifacts/upload/{artifact_id}/v/{version}",
+        content=table_to_ipc_bytes(table),
+        headers={"Content-Type": "application/vnd.apache.arrow.stream"},
+    )
+
+    # Finalize
+    resp = httpx.post(
+        f"{base_url}/v1/artifacts/finalize",
+        json={
+            "artifact_id": artifact_id,
+            "version": version,
+            "arrow_schema": str(table.schema),
+            "row_count": 3,
+        },
+    )
+    assert resp.status_code == 200
+
+    return {
+        "artifact_id": artifact_id,
+        "version": version,
+        "artifact_uri": data["artifact_uri"],
+    }
+
+
+class TestArtifactLineage:
+    """Tests for the artifact lineage endpoint."""
+
+    def test_lineage_single_artifact_no_inputs(self, lineage_server):
+        """Lineage of artifact with no inputs returns just the root node."""
+        base_url = lineage_server["base_url"]
+
+        # Create artifact with no inputs
+        artifact = create_artifact(base_url, inputs=[])
+
+        # Get lineage
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{artifact['artifact_id']}/v/{artifact['version']}/lineage"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Should have just the root node
+        assert data["artifact_id"] == artifact["artifact_id"]
+        assert data["version"] == artifact["version"]
+        assert len(data["nodes"]) == 1
+        assert len(data["edges"]) == 0
+        assert data["direct_inputs"] == []
+        assert data["depth"] == 0
+
+        # Root node should be the artifact
+        root_node = data["nodes"][0]
+        assert root_node["type"] == "artifact"
+        assert root_node["artifact_id"] == artifact["artifact_id"]
+
+    def test_lineage_with_table_input(self, lineage_server):
+        """Lineage of artifact with table input shows table as leaf node."""
+        base_url = lineage_server["base_url"]
+
+        # Create artifact with table input
+        table_uri = "file:///warehouse#db.events"
+        artifact = create_artifact(base_url, inputs=[table_uri])
+
+        # Get lineage
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{artifact['artifact_id']}/v/{artifact['version']}/lineage"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Should have artifact node + table node
+        assert len(data["nodes"]) == 2
+        assert len(data["edges"]) == 1
+        assert table_uri in data["direct_inputs"]
+
+        # Check nodes
+        node_types = {n["type"] for n in data["nodes"]}
+        assert "artifact" in node_types
+        assert "table" in node_types
+
+        # Check edge
+        edge = data["edges"][0]
+        assert edge["from_uri"] == table_uri
+        assert artifact["artifact_id"] in edge["to_uri"]
+
+    def test_lineage_with_artifact_input(self, lineage_server):
+        """Lineage of artifact with artifact input shows both artifacts."""
+        base_url = lineage_server["base_url"]
+
+        # Create base artifact
+        base_artifact = create_artifact(base_url, inputs=["file:///warehouse#db.base"])
+
+        # Create dependent artifact that uses base_artifact as input
+        dependent_artifact = create_artifact(
+            base_url,
+            inputs=[base_artifact["artifact_uri"]],
+            executor="dependent_transform",
+        )
+
+        # Get lineage of dependent artifact
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{dependent_artifact['artifact_id']}/v/{dependent_artifact['version']}/lineage"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Should have 3 nodes: dependent artifact, base artifact, and table
+        assert len(data["nodes"]) == 3
+
+        # Check that we have edges from table->base and base->dependent
+        assert len(data["edges"]) == 2
+
+        # Direct inputs should only include the base artifact
+        assert len(data["direct_inputs"]) == 1
+        assert base_artifact["artifact_uri"] in data["direct_inputs"][0]
+
+    def test_lineage_max_depth(self, lineage_server):
+        """Lineage respects max_depth parameter."""
+        base_url = lineage_server["base_url"]
+
+        # Create chain: table -> artifact1 -> artifact2 -> artifact3
+        a1 = create_artifact(base_url, inputs=["file:///warehouse#db.source"])
+        a2 = create_artifact(base_url, inputs=[a1["artifact_uri"]])
+        a3 = create_artifact(base_url, inputs=[a2["artifact_uri"]])
+
+        # Get lineage with max_depth=1
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{a3['artifact_id']}/v/{a3['version']}/lineage",
+            params={"max_depth": 1},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Should only traverse 1 level, so should have a3 and a2 (not a1 or table)
+        # max_depth=1 means we go 1 level deep from the root
+        assert data["depth"] <= 1
+
+    def test_lineage_not_found(self, lineage_server):
+        """Lineage returns 404 for non-existent artifact."""
+        base_url = lineage_server["base_url"]
+
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/nonexistent-id/v/1/lineage"
+        )
+        assert resp.status_code == 404
+
+
+class TestArtifactDependents:
+    """Tests for the artifact dependents endpoint."""
+
+    def test_dependents_no_dependents(self, lineage_server):
+        """Artifact with no dependents returns empty list."""
+        base_url = lineage_server["base_url"]
+
+        # Create standalone artifact
+        artifact = create_artifact(base_url, inputs=[])
+
+        # Get dependents
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{artifact['artifact_id']}/v/{artifact['version']}/dependents"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["artifact_id"] == artifact["artifact_id"]
+        assert data["version"] == artifact["version"]
+        assert data["dependents"] == []
+        assert data["total_count"] == 0
+
+    def test_dependents_single_dependent(self, lineage_server):
+        """Find artifact that uses another artifact as input."""
+        base_url = lineage_server["base_url"]
+
+        # Create base artifact
+        base_artifact = create_artifact(base_url, inputs=["file:///warehouse#db.source"])
+
+        # Create dependent artifact
+        dependent = create_artifact(
+            base_url,
+            inputs=[base_artifact["artifact_uri"]],
+            executor="dependent_transform",
+        )
+
+        # Get dependents of base artifact
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{base_artifact['artifact_id']}/v/{base_artifact['version']}/dependents"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total_count"] == 1
+        assert len(data["dependents"]) == 1
+
+        dep_info = data["dependents"][0]
+        assert dep_info["artifact_id"] == dependent["artifact_id"]
+        assert dep_info["version"] == dependent["version"]
+        assert dep_info["transform_ref"] == "dependent_transform"
+
+    def test_dependents_multiple_dependents(self, lineage_server):
+        """Find multiple artifacts that use the same artifact as input."""
+        base_url = lineage_server["base_url"]
+
+        # Create base artifact
+        base_artifact = create_artifact(base_url, inputs=["file:///warehouse#db.source"])
+
+        # Create multiple dependent artifacts
+        dep1 = create_artifact(base_url, inputs=[base_artifact["artifact_uri"]], executor="transform1")
+        dep2 = create_artifact(
+            base_url,
+            inputs=[base_artifact["artifact_uri"], "file:///other#table"],
+            executor="transform2",
+        )
+
+        # Get dependents of base artifact
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{base_artifact['artifact_id']}/v/{base_artifact['version']}/dependents"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total_count"] == 2
+        assert len(data["dependents"]) == 2
+
+        dep_ids = {d["artifact_id"] for d in data["dependents"]}
+        assert dep1["artifact_id"] in dep_ids
+        assert dep2["artifact_id"] in dep_ids
+
+    def test_dependents_limit(self, lineage_server):
+        """Dependents respects limit parameter."""
+        base_url = lineage_server["base_url"]
+
+        # Create base artifact
+        base_artifact = create_artifact(base_url, inputs=[])
+
+        # Create multiple dependent artifacts
+        for i in range(5):
+            create_artifact(
+                base_url,
+                inputs=[base_artifact["artifact_uri"]],
+                executor=f"transform_{i}",
+            )
+
+        # Get dependents with limit=2
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{base_artifact['artifact_id']}/v/{base_artifact['version']}/dependents",
+            params={"limit": 2},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        assert data["total_count"] == 5  # Total is still 5
+        assert len(data["dependents"]) == 2  # But only 2 returned
+
+    def test_dependents_not_found(self, lineage_server):
+        """Dependents returns 404 for non-existent artifact."""
+        base_url = lineage_server["base_url"]
+
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/nonexistent-id/v/1/dependents"
+        )
+        assert resp.status_code == 404
+
+
+class TestArtifactStoreLineageMethods:
+    """Unit tests for ArtifactStore lineage methods."""
+
+    def test_find_dependents_method(self, tmp_path):
+        """Test ArtifactStore.find_dependents directly."""
+        from strata.artifact_store import ArtifactStore, TransformSpec
+
+        store = ArtifactStore(tmp_path)
+
+        # Create base artifact
+        base_spec = TransformSpec(
+            executor="base_executor",
+            params={},
+            inputs=["file:///data#table"],
+        )
+        base_version = store.create_artifact(
+            artifact_id="base-123",
+            provenance_hash="hash1",
+            transform_spec=base_spec,
+            input_versions={"file:///data#table": "snapshot-1"},
+        )
+
+        # Write blob and finalize
+        table = pa.table({"x": [1]})
+        store.write_blob("base-123", base_version, table_to_ipc_bytes(table))
+        store.finalize_artifact("base-123", base_version, str(table.schema), 1, 100)
+
+        # Create dependent artifact
+        dep_spec = TransformSpec(
+            executor="dep_executor",
+            params={"sql": "SELECT * FROM input"},
+            inputs=["strata://artifact/base-123@v=1"],
+        )
+        dep_version = store.create_artifact(
+            artifact_id="dep-456",
+            provenance_hash="hash2",
+            transform_spec=dep_spec,
+            input_versions={"strata://artifact/base-123@v=1": "base-123@v=1"},
+        )
+        store.write_blob("dep-456", dep_version, table_to_ipc_bytes(table))
+        store.finalize_artifact("dep-456", dep_version, str(table.schema), 1, 100)
+
+        # Find dependents
+        dependents = store.find_dependents("base-123", 1)
+
+        assert len(dependents) == 1
+        dep_artifact, input_ver = dependents[0]
+        assert dep_artifact.id == "dep-456"
+        assert "base-123@v=1" in input_ver
+
+    def test_get_name_for_artifact_method(self, tmp_path):
+        """Test ArtifactStore.get_name_for_artifact directly."""
+        from strata.artifact_store import ArtifactStore, TransformSpec
+
+        store = ArtifactStore(tmp_path)
+
+        # Create artifact
+        spec = TransformSpec(executor="test", params={}, inputs=[])
+        version = store.create_artifact(
+            artifact_id="named-artifact",
+            provenance_hash="hash123",
+            transform_spec=spec,
+        )
+
+        # Write blob and finalize
+        table = pa.table({"x": [1]})
+        store.write_blob("named-artifact", version, table_to_ipc_bytes(table))
+        store.finalize_artifact("named-artifact", version, str(table.schema), 1, 100)
+
+        # No name set yet
+        assert store.get_name_for_artifact("named-artifact", version) is None
+
+        # Set name
+        store.set_name("my_artifact", "named-artifact", version)
+
+        # Now should find name
+        name = store.get_name_for_artifact("named-artifact", version)
+        assert name == "my_artifact"

@@ -617,7 +617,7 @@ class TestBuildPolling:
         # Mock successful execution
         executed_builds = []
 
-        async def mock_execute(build):
+        async def mock_execute(build, already_claimed=False):
             executed_builds.append(build.build_id)
             build_store.start_build(build.build_id)
             build_store.complete_build(build.build_id)
@@ -641,7 +641,7 @@ class TestBuildPolling:
         )
 
         # Mock slow execution
-        async def slow_execute(build):
+        async def slow_execute(build, already_claimed=False):
             build_store.start_build(build.build_id)
             await asyncio.sleep(10.0)  # Long sleep
 

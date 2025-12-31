@@ -208,6 +208,18 @@ def _get_env_overrides() -> dict:
             overrides["transforms_config"] = {}
         overrides["transforms_config"]["enabled"] = True
 
+    # Build QoS configuration
+    if build_qos_interactive := os.environ.get("STRATA_BUILD_QOS_INTERACTIVE_SLOTS"):
+        overrides["build_qos_interactive_slots"] = int(build_qos_interactive)
+    if build_qos_bulk := os.environ.get("STRATA_BUILD_QOS_BULK_SLOTS"):
+        overrides["build_qos_bulk_slots"] = int(build_qos_bulk)
+    if build_qos_per_tenant_interactive := os.environ.get("STRATA_BUILD_QOS_PER_TENANT_INTERACTIVE"):
+        overrides["build_qos_per_tenant_interactive"] = int(build_qos_per_tenant_interactive)
+    if build_qos_per_tenant_bulk := os.environ.get("STRATA_BUILD_QOS_PER_TENANT_BULK"):
+        overrides["build_qos_per_tenant_bulk"] = int(build_qos_per_tenant_bulk)
+    if build_qos_bytes_per_day := os.environ.get("STRATA_BUILD_QOS_BYTES_PER_DAY"):
+        overrides["build_qos_bytes_per_day"] = int(build_qos_bytes_per_day)
+
     return overrides
 
 
@@ -464,6 +476,28 @@ class StrataConfig:
     build_runner_default_timeout: float = 300.0  # Default build timeout
     build_runner_default_max_output: int = 1024 * 1024 * 1024  # 1 GB default
 
+    # Pull model (Stage 2) configuration
+    # When enabled, executors pull inputs and push outputs via signed URLs
+    # instead of Strata streaming data through itself (push model)
+    pull_model_enabled: bool = False  # Enable pull model for executor execution
+    signed_url_expiry_seconds: float = 600.0  # How long signed URLs are valid (10 min)
+
+    # Build QoS configuration (quotas and backpressure for builds)
+    # This controls admission at the API layer, rejecting builds before they're
+    # created if the system is at capacity. Returns 429 with Retry-After header.
+    build_qos_interactive_slots: int = 16  # Max concurrent interactive builds (globally)
+    build_qos_bulk_slots: int = 8  # Max concurrent bulk builds (globally)
+    build_qos_per_tenant_interactive: int = 4  # Max concurrent interactive builds per tenant
+    build_qos_per_tenant_bulk: int = 2  # Max concurrent bulk builds per tenant
+    build_qos_interactive_timeout: float = 5.0  # Queue timeout for interactive (seconds)
+    build_qos_bulk_timeout: float = 15.0  # Queue timeout for bulk (seconds)
+    build_qos_per_tenant_timeout: float = 1.0  # Per-tenant slot wait timeout (seconds)
+    # Optional daily byte quota per tenant (None = unlimited)
+    build_qos_bytes_per_day: int | None = None
+    # Classification thresholds: build is "bulk" if exceeds either threshold
+    build_qos_bulk_bytes_threshold: int = 100 * 1024 * 1024  # 100MB output = bulk
+    build_qos_bulk_inputs_threshold: int = 5  # >5 inputs = bulk
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -530,6 +564,32 @@ class StrataConfig:
         external executors. Requires transforms_config with enabled=true.
         """
         return self.deployment_mode == "service" and self.transforms_config.get("enabled", False)
+
+    @property
+    def max_transform_output_bytes(self) -> int:
+        """Get max transform output size in bytes."""
+        return self.build_runner_default_max_output
+
+    def get_build_qos_config(self):
+        """Create BuildQoSConfig from Strata configuration.
+
+        Returns:
+            BuildQoSConfig instance for initializing BuildQoS.
+        """
+        from strata.transforms.build_qos import BuildQoSConfig
+
+        return BuildQoSConfig(
+            interactive_slots=self.build_qos_interactive_slots,
+            bulk_slots=self.build_qos_bulk_slots,
+            per_tenant_interactive=self.build_qos_per_tenant_interactive,
+            per_tenant_bulk=self.build_qos_per_tenant_bulk,
+            interactive_queue_timeout=self.build_qos_interactive_timeout,
+            bulk_queue_timeout=self.build_qos_bulk_timeout,
+            per_tenant_timeout=self.build_qos_per_tenant_timeout,
+            bytes_per_day_limit=self.build_qos_bytes_per_day,
+            classify_by_estimated_bytes=self.build_qos_bulk_bytes_threshold,
+            classify_by_input_count=self.build_qos_bulk_inputs_threshold,
+        )
 
     @classmethod
     def load(cls, **overrides) -> "StrataConfig":

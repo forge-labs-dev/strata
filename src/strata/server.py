@@ -57,12 +57,17 @@ from strata.tenant import (
 from strata.tenant_registry import get_tenant_registry
 from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
+    ArtifactDependentsResponse,
     ArtifactInfoResponse,
+    ArtifactLineageResponse,
     BuildSpec,
     BuildStatusResponse,
+    DependentInfo,
     ExplainMaterializeRequest,
     ExplainMaterializeResponse,
     InputChangeInfo,
+    LineageEdge,
+    LineageNode,
     MaterializeRequest,
     MaterializeResponse,
     NameResolveResponse,
@@ -691,6 +696,21 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Don't fail startup if cleanup fails
 
+    # Initialize build QoS for server-mode transforms (quotas + backpressure)
+    build_qos = None
+    if config.server_transforms_enabled:
+        from strata.transforms.build_qos import BuildQoS, set_build_qos
+
+        build_qos = BuildQoS(config.get_build_qos_config())
+        set_build_qos(build_qos)
+
+    # Initialize build metrics collector for observability
+    build_metrics = None
+    if config.server_transforms_enabled:
+        from strata.transforms.build_metrics import init_build_metrics
+
+        build_metrics = init_build_metrics()
+
     # Initialize build runner for server-mode transforms
     build_runner = None
     if config.server_transforms_enabled:
@@ -745,9 +765,15 @@ async def lifespan(app: FastAPI):
         tracing_enabled=tracing_enabled,
         arrow_memory_pool=warmup_times.get("arrow_memory_pool"),
         build_runner_enabled=build_runner is not None,
+        build_qos_enabled=build_qos is not None,
     )
 
     yield
+
+    # Reset build QoS
+    from strata.transforms.build_qos import reset_build_qos
+
+    reset_build_qos()
 
     # Stop build runner (cancel pending builds)
     from strata.transforms.runner import get_build_runner, reset_build_runner
@@ -1193,6 +1219,14 @@ async def metrics():
     # Add adaptive concurrency control metrics
     if state._adaptive_controller is not None:
         stats["adaptive_concurrency"] = state._adaptive_controller.get_metrics()
+
+    # Add build QoS metrics (server-mode transforms)
+    if state.config.server_transforms_enabled:
+        from strata.transforms.build_qos import get_build_qos
+
+        build_qos = get_build_qos()
+        if build_qos is not None:
+            stats["build_qos"] = build_qos.get_metrics()
 
     return stats
 
@@ -1863,6 +1897,20 @@ async def metrics_prometheus():
             tenant_id = tm["tenant_id"]
             total_bytes = tm["bytes_from_cache"] + tm["bytes_from_storage"]
             lines.append(f'strata_tenant_bytes_total{{tenant="{tenant_id}"}} {total_bytes}')
+
+    # Add build metrics (if server transforms are enabled)
+    try:
+        from strata.transforms.build_metrics import get_build_metrics
+
+        build_metrics = get_build_metrics()
+        if build_metrics is not None:
+            # Append build-specific metrics
+            build_prom = build_metrics.get_prometheus_metrics()
+            if build_prom:
+                lines.append("")
+                lines.append(build_prom)
+    except Exception:
+        pass  # Build metrics not available
 
     return Response(
         content="\n".join(lines) + "\n",
@@ -3683,6 +3731,40 @@ def _validate_transform_allowed(executor_ref: str):
     )
 
 
+def _resolve_to_artifact_version(
+    input_uri: str, store
+) -> tuple[str, int] | None:
+    """Resolve an input URI to an (artifact_id, version) tuple.
+
+    Args:
+        input_uri: Input URI to resolve
+        store: Artifact store for name resolution
+
+    Returns:
+        (artifact_id, version) tuple or None if cannot resolve
+    """
+    import re
+
+    # Artifact URI: strata://artifact/{id}@v={version}
+    if input_uri.startswith("strata://artifact/"):
+        match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", input_uri)
+        if match:
+            artifact_id = match.group(1)
+            version = int(match.group(2))
+            return (artifact_id, version)
+        return None
+
+    # Name URI: strata://name/{name}
+    if input_uri.startswith("strata://name/"):
+        name = input_uri.replace("strata://name/", "")
+        artifact = store.resolve_name(name)
+        if artifact is None:
+            return None
+        return (artifact.id, artifact.version)
+
+    return None
+
+
 def _resolve_input_version(input_uri: str) -> str:
     """Resolve an input URI to its current version string.
 
@@ -3828,6 +3910,10 @@ async def materialize_artifact(request: MaterializeRequest):
 
     # Server mode: create build record for async execution
     if state.config.server_transforms_enabled:
+        from strata.transforms.build_qos import (
+            BuildQoSError,
+            get_build_qos,
+        )
         from strata.transforms.build_store import get_build_store
 
         build_id = str(uuid.uuid4())
@@ -3844,28 +3930,73 @@ async def materialize_artifact(request: MaterializeRequest):
         from strata.auth import get_principal
 
         principal = get_principal()
-        tenant_id = principal.tenant if principal else None
+        tenant_id = principal.tenant if principal else "__default__"
         principal_id = principal.id if principal else None
 
-        # Create build record
-        build_store.create_build(
-            build_id=build_id,
-            artifact_id=artifact_id,
-            version=version,
-            executor_ref=executor_ref,
-            executor_url=transform_defn.executor_url if transform_defn else None,
-            tenant_id=tenant_id,
-            principal_id=principal_id,
-        )
+        # Build QoS admission control
+        # Classify build and check quotas before creating the build
+        build_qos = get_build_qos()
+        build_slot = None
 
-        # TODO: Queue build for background execution
+        if build_qos is not None:
+            # Classify based on number of inputs (estimated output size not known yet)
+            priority = build_qos.classify_build(
+                estimated_output_bytes=None,
+                input_count=len(request.inputs),
+            )
 
-        return MaterializeResponse(
-            hit=False,
-            artifact_uri=artifact_uri,
-            build_id=build_id,
-            state="pending",
-        )
+            # Check quota if enabled (estimated output not known, check against 0)
+            try:
+                await build_qos.check_quota(tenant_id, 0)
+            except BuildQoSError as e:
+                # Quota exceeded - clean up artifact and return 429
+                store.fail_artifact(artifact_id, version)
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content=e.to_dict(),
+                    headers={"Retry-After": str(int(e.retry_after or 5))},
+                )
+
+            # Acquire build slot (early rejection if at capacity)
+            try:
+                build_slot = await build_qos.acquire(tenant_id, priority)
+            except BuildQoSError as e:
+                # At capacity - clean up artifact and return 429
+                store.fail_artifact(artifact_id, version)
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content=e.to_dict(),
+                    headers={"Retry-After": str(int(e.retry_after or 5))},
+                )
+
+        try:
+            # Create build record
+            build_store.create_build(
+                build_id=build_id,
+                artifact_id=artifact_id,
+                version=version,
+                executor_ref=executor_ref,
+                executor_url=transform_defn.executor_url if transform_defn else None,
+                tenant_id=tenant_id if tenant_id != "__default__" else None,
+                principal_id=principal_id,
+            )
+
+            # Build is now queued - release the admission slot
+            # The runner has its own concurrency control for execution
+            if build_slot:
+                await build_slot.release()
+
+            return MaterializeResponse(
+                hit=False,
+                artifact_uri=artifact_uri,
+                build_id=build_id,
+                state="pending",
+            )
+        except Exception:
+            # Release slot on failure
+            if build_slot:
+                await build_slot.release()
+            raise
 
     # Personal mode: return build spec for client-side execution
     build_spec = BuildSpec(
@@ -4160,6 +4291,284 @@ async def get_name_status(name: str):
     )
 
 
+# ---------------------------------------------------------------------------
+# Lineage and Dependency Introspection Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/v1/artifacts/{artifact_id}/v/{version}/lineage",
+    response_model=ArtifactLineageResponse,
+)
+async def get_artifact_lineage(
+    artifact_id: str,
+    version: int,
+    max_depth: int = Query(default=10, ge=1, le=100),
+):
+    """Get the lineage (input dependency graph) for an artifact.
+
+    Returns the full input dependency tree, showing all artifacts and tables
+    that this artifact depends on, including transitive dependencies.
+
+    This is useful for:
+    - Understanding data provenance (what data went into this artifact)
+    - Debugging computation graphs
+    - Auditing data lineage for compliance
+
+    Args:
+        artifact_id: Artifact ID to get lineage for
+        version: Version number
+        max_depth: Maximum depth to traverse (default: 10, max: 100)
+
+    Returns:
+        ArtifactLineageResponse with nodes and edges representing the lineage graph
+    """
+    import json
+
+    from strata.artifact_store import TransformSpec
+
+    store = _get_artifact_store()
+
+    # Get the root artifact
+    artifact = store.get_artifact(artifact_id, version)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    if artifact.state != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Artifact is not ready (state={artifact.state})",
+        )
+
+    # Build lineage graph via BFS
+    artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
+    nodes: dict[str, LineageNode] = {}
+    edges: list[LineageEdge] = []
+    visited: set[str] = set()
+    queue: list[tuple[str, str, int, int]] = []  # (uri, artifact_id, version, depth)
+
+    # Add root node
+    transform_ref = None
+    if artifact.transform_spec:
+        try:
+            spec = TransformSpec.from_json(artifact.transform_spec)
+            transform_ref = spec.executor
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    root_node = LineageNode(
+        uri=artifact_uri,
+        artifact_id=artifact_id,
+        version=version,
+        type="artifact",
+        transform_ref=transform_ref,
+        created_at=artifact.created_at,
+    )
+    nodes[artifact_uri] = root_node
+    visited.add(artifact_uri)
+
+    # Parse input_versions and add to queue
+    direct_inputs: list[str] = []
+    if artifact.input_versions:
+        try:
+            input_vers = json.loads(artifact.input_versions)
+            for input_uri, input_version in input_vers.items():
+                direct_inputs.append(input_uri)
+                edges.append(
+                    LineageEdge(
+                        from_uri=input_uri,
+                        to_uri=artifact_uri,
+                        input_version=input_version,
+                    )
+                )
+
+                # Determine if this is an artifact or table
+                if input_uri.startswith("strata://artifact/"):
+                    # Parse artifact_id@v=N from version string
+                    if "@v=" in input_version:
+                        parts = input_version.split("@v=")
+                        inp_artifact_id = parts[0]
+                        inp_version = int(parts[1])
+                        queue.append((input_uri, inp_artifact_id, inp_version, 1))
+                else:
+                    # It's a table input
+                    if input_uri not in visited:
+                        visited.add(input_uri)
+                        nodes[input_uri] = LineageNode(
+                            uri=input_uri,
+                            type="table",
+                        )
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # BFS to traverse transitive dependencies
+    max_depth_reached = 0
+    while queue:
+        uri, art_id, art_ver, depth = queue.pop(0)
+
+        if depth > max_depth:
+            continue
+        max_depth_reached = max(max_depth_reached, depth)
+
+        node_uri = f"strata://artifact/{art_id}@v={art_ver}"
+        if node_uri in visited:
+            continue
+        visited.add(node_uri)
+
+        # Get the artifact
+        input_artifact = store.get_artifact(art_id, art_ver)
+        if input_artifact is None or input_artifact.state != "ready":
+            # Add as unknown node
+            nodes[node_uri] = LineageNode(
+                uri=node_uri,
+                artifact_id=art_id,
+                version=art_ver,
+                type="artifact",
+            )
+            continue
+
+        # Parse transform ref
+        art_transform_ref = None
+        if input_artifact.transform_spec:
+            try:
+                spec = TransformSpec.from_json(input_artifact.transform_spec)
+                art_transform_ref = spec.executor
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        nodes[node_uri] = LineageNode(
+            uri=node_uri,
+            artifact_id=art_id,
+            version=art_ver,
+            type="artifact",
+            transform_ref=art_transform_ref,
+            created_at=input_artifact.created_at,
+        )
+
+        # Add this artifact's inputs to queue
+        if input_artifact.input_versions:
+            try:
+                inp_vers = json.loads(input_artifact.input_versions)
+                for inp_uri, inp_version in inp_vers.items():
+                    edges.append(
+                        LineageEdge(
+                            from_uri=inp_uri,
+                            to_uri=node_uri,
+                            input_version=inp_version,
+                        )
+                    )
+
+                    if inp_uri.startswith("strata://artifact/"):
+                        if "@v=" in inp_version:
+                            parts = inp_version.split("@v=")
+                            nested_id = parts[0]
+                            nested_ver = int(parts[1])
+                            queue.append((inp_uri, nested_id, nested_ver, depth + 1))
+                    else:
+                        # Table input
+                        if inp_uri not in visited:
+                            visited.add(inp_uri)
+                            nodes[inp_uri] = LineageNode(
+                                uri=inp_uri,
+                                type="table",
+                            )
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    return ArtifactLineageResponse(
+        artifact_uri=artifact_uri,
+        artifact_id=artifact_id,
+        version=version,
+        nodes=list(nodes.values()),
+        edges=edges,
+        depth=max_depth_reached,
+        direct_inputs=direct_inputs,
+    )
+
+
+@app.get(
+    "/v1/artifacts/{artifact_id}/v/{version}/dependents",
+    response_model=ArtifactDependentsResponse,
+)
+async def get_artifact_dependents(
+    artifact_id: str,
+    version: int,
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    """Get artifacts that depend on this artifact (reverse dependencies).
+
+    Returns all artifacts that use this artifact as an input. This is useful for:
+    - Impact analysis before modifying or deleting an artifact
+    - Understanding downstream consumers
+    - Planning cascading rebuilds
+
+    Note: Only searches for direct dependents, not transitive dependents.
+    Only returns ready artifacts.
+
+    Args:
+        artifact_id: Artifact ID to find dependents of
+        version: Version number
+        limit: Maximum number of dependents to return (default: 100, max: 1000)
+
+    Returns:
+        ArtifactDependentsResponse with list of dependent artifacts
+    """
+    import json
+
+    from strata.artifact_store import TransformSpec
+
+    store = _get_artifact_store()
+
+    # Verify the artifact exists
+    artifact = store.get_artifact(artifact_id, version)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    if artifact.state != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Artifact is not ready (state={artifact.state})",
+        )
+
+    # Find dependents
+    dependent_results = store.find_dependents(artifact_id, version)
+
+    # Build response
+    dependents: list[DependentInfo] = []
+    for dep_artifact, input_version in dependent_results[:limit]:
+        # Get name for this artifact if it exists
+        name = store.get_name_for_artifact(dep_artifact.id, dep_artifact.version)
+
+        # Parse transform ref
+        transform_ref = None
+        if dep_artifact.transform_spec:
+            try:
+                spec = TransformSpec.from_json(dep_artifact.transform_spec)
+                transform_ref = spec.executor
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+        dependents.append(
+            DependentInfo(
+                artifact_uri=f"strata://artifact/{dep_artifact.id}@v={dep_artifact.version}",
+                artifact_id=dep_artifact.id,
+                version=dep_artifact.version,
+                name=name,
+                transform_ref=transform_ref,
+                created_at=dep_artifact.created_at,
+                input_version=input_version,
+            )
+        )
+
+    return ArtifactDependentsResponse(
+        artifact_uri=f"strata://artifact/{artifact_id}@v={version}",
+        artifact_id=artifact_id,
+        version=version,
+        dependents=dependents,
+        total_count=len(dependent_results),
+    )
+
+
 @app.get("/v1/artifacts/builds/{build_id}", response_model=BuildStatusResponse)
 async def get_build_status(build_id: str):
     """Get async build status (server-mode transforms only).
@@ -4225,6 +4634,376 @@ async def get_build_status(build_id: str):
         error_message=build.error_message,
         error_code=build.error_code,
     )
+
+
+# ---------------------------------------------------------------------------
+# Pull Model Endpoints (Stage 2) - Signed URL based execution
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/builds/{build_id}/manifest")
+async def get_build_manifest(build_id: str, request: Request):
+    """Get build manifest with signed URLs for pull-model execution.
+
+    This endpoint returns a manifest containing:
+    - Signed download URLs for each input artifact
+    - Signed upload URL for the output
+    - Finalize URL to call after upload completes
+
+    Executors use this manifest to:
+    1. Pull inputs directly from Strata storage
+    2. Execute the transform
+    3. Push output directly to Strata storage
+    4. Call finalize to mark the build complete
+
+    Args:
+        build_id: Build ID from materialize response
+
+    Returns:
+        BuildManifest with all signed URLs
+    """
+    from strata.transforms.build_store import get_build_store
+    from strata.transforms.signed_urls import generate_build_manifest
+
+    state = get_state()
+
+    if not state.config.server_transforms_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="Build manifest is only available in server mode",
+        )
+
+    build_store = get_build_store()
+    if build_store is None:
+        raise HTTPException(status_code=500, detail="Build store not initialized")
+
+    build = build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    # Only allow manifest retrieval for pending/running builds
+    if build.state not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Build is not in pending or running state (state={build.state})",
+        )
+
+    # Access control
+    if state.config.auth_mode == "trusted_proxy":
+        principal = get_principal()
+        if principal is not None:
+            is_owner = build.principal_id == principal.id
+            is_admin = principal.has_scope("admin:*")
+            if not is_owner and not is_admin:
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail="Build not found")
+                raise HTTPException(status_code=403, detail="Access denied")
+
+    # Get artifact store to resolve input artifacts
+    store = _get_artifact_store(allow_server_mode=True)
+
+    # Resolve input artifacts to (artifact_id, version) tuples
+    input_artifacts: list[tuple[str, int]] = []
+    for input_uri in build.input_uris:
+        result = _resolve_to_artifact_version(input_uri, store)
+        if result is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot resolve input artifact: {input_uri}",
+            )
+        input_artifacts.append(result)
+
+    # Build base URL from request
+    base_url = str(request.base_url).rstrip("/")
+
+    # Build metadata for the executor
+    metadata = {
+        "build_id": build_id,
+        "artifact_id": build.artifact_id,
+        "version": build.version,
+        "executor_ref": build.executor_ref,
+        "params": build.params or {},
+    }
+
+    # Generate manifest with signed URLs
+    manifest = generate_build_manifest(
+        base_url=base_url,
+        build_id=build_id,
+        metadata=metadata,
+        input_artifacts=input_artifacts,
+        max_output_bytes=state.config.max_transform_output_bytes,
+        url_expiry_seconds=state.config.signed_url_expiry_seconds,
+    )
+
+    return manifest.to_dict()
+
+
+@app.get("/v1/artifacts/download")
+async def download_artifact_signed(
+    artifact_id: str,
+    version: str,
+    build_id: str,
+    expires_at: str,
+    signature: str,
+):
+    """Download artifact blob using a signed URL.
+
+    This endpoint is called by executors to pull input artifacts.
+    The URL must be signed by Strata and not expired.
+
+    Query Parameters:
+        artifact_id: Artifact ID to download
+        version: Version number
+        build_id: Build ID this download is for (audit trail)
+        expires_at: URL expiry timestamp (Unix epoch)
+        signature: HMAC-SHA256 signature
+
+    Returns:
+        Arrow IPC stream bytes
+    """
+    from strata.transforms.signed_urls import verify_download_signature
+
+    # Parse and verify signature
+    try:
+        version_int = int(version)
+        expires_at_float = float(expires_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid parameter format")
+
+    if not verify_download_signature(
+        artifact_id=artifact_id,
+        version=version_int,
+        build_id=build_id,
+        expires_at=expires_at_float,
+        signature=signature,
+    ):
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
+
+    # Get artifact blob
+    store = _get_artifact_store(allow_server_mode=True)
+    artifact = store.get_artifact(artifact_id, version_int)
+
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    if artifact.state != "ready":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Artifact is not ready (state={artifact.state})",
+        )
+
+    blob = store.read_blob(artifact_id, version_int)
+    if blob is None:
+        raise HTTPException(status_code=404, detail="Artifact blob not found")
+
+    return Response(
+        content=blob,
+        media_type="application/vnd.apache.arrow.stream",
+        headers={
+            "Content-Length": str(len(blob)),
+            "Content-Disposition": f'attachment; filename="{artifact_id}_v{version_int}.arrow"',
+        },
+    )
+
+
+@app.post("/v1/artifacts/upload")
+async def upload_artifact_signed(
+    build_id: str,
+    max_bytes: str,
+    expires_at: str,
+    signature: str,
+    request: Request,
+):
+    """Upload artifact blob using a signed URL.
+
+    This endpoint is called by executors to push output artifacts.
+    The URL must be signed by Strata and not expired.
+    The upload size must not exceed max_bytes.
+
+    Query Parameters:
+        build_id: Build ID this upload is for
+        max_bytes: Maximum allowed upload size
+        expires_at: URL expiry timestamp (Unix epoch)
+        signature: HMAC-SHA256 signature
+
+    Body:
+        Raw Arrow IPC stream bytes
+
+    Returns:
+        Upload status
+    """
+    from strata.transforms.build_store import get_build_store
+    from strata.transforms.signed_urls import verify_upload_signature
+
+    # Parse and verify signature
+    try:
+        max_bytes_int = int(max_bytes)
+        expires_at_float = float(expires_at)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid parameter format")
+
+    if not verify_upload_signature(
+        build_id=build_id,
+        max_bytes=max_bytes_int,
+        expires_at=expires_at_float,
+        signature=signature,
+    ):
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
+
+    # Check build exists and is in correct state
+    build_store = get_build_store()
+    if build_store is None:
+        raise HTTPException(status_code=500, detail="Build store not initialized")
+
+    build = build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    if build.state not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Build is not in pending or running state (state={build.state})",
+        )
+
+    # Read body with size limit
+    body = await request.body()
+    if len(body) > max_bytes_int:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Upload exceeds maximum size: {len(body)} > {max_bytes_int}",
+        )
+
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty request body")
+
+    # Write blob to artifact store
+    store = _get_artifact_store(allow_server_mode=True)
+    store.write_blob(build.artifact_id, build.version, body)
+
+    return {"status": "uploaded", "build_id": build_id, "byte_size": len(body)}
+
+
+@app.post("/v1/builds/{build_id}/finalize")
+async def finalize_build(build_id: str, request: Request):
+    """Finalize a build after upload (pull-model execution).
+
+    Called by executors after uploading the output artifact.
+    This endpoint:
+    1. Verifies the blob was uploaded
+    2. Reads Arrow metadata (schema, row count)
+    3. Finalizes the artifact
+    4. Marks the build as complete
+    5. Optionally sets the name pointer
+
+    Args:
+        build_id: Build ID to finalize
+
+    Body (JSON):
+        Optional fields for metadata the executor provides
+
+    Returns:
+        Finalize status with artifact URI
+    """
+    from strata.transforms.build_store import get_build_store
+
+    state = get_state()
+
+    if not state.config.server_transforms_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="Build finalize is only available in server mode",
+        )
+
+    build_store = get_build_store()
+    if build_store is None:
+        raise HTTPException(status_code=500, detail="Build store not initialized")
+
+    build = build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    # Access control - only build owner or admin can finalize
+    if state.config.auth_mode == "trusted_proxy":
+        principal = get_principal()
+        if principal is not None:
+            is_owner = build.principal_id == principal.id
+            is_admin = principal.has_scope("admin:*")
+            if not is_owner and not is_admin:
+                raise HTTPException(status_code=403, detail="Access denied")
+
+    # Check build state
+    if build.state not in ("pending", "running"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Build is not in pending or running state (state={build.state})",
+        )
+
+    # Verify blob was uploaded
+    store = _get_artifact_store(allow_server_mode=True)
+    if not store.blob_exists(build.artifact_id, build.version):
+        raise HTTPException(
+            status_code=400,
+            detail="Blob not uploaded. Upload using the signed URL first.",
+        )
+
+    # Read Arrow metadata from blob
+    blob = store.read_blob(build.artifact_id, build.version)
+    if blob is None:
+        raise HTTPException(status_code=500, detail="Failed to read uploaded blob")
+
+    byte_size = len(blob)
+
+    # Parse Arrow IPC to get schema and row count
+    try:
+        import pyarrow.ipc as arrow_ipc
+        import io
+
+        reader = arrow_ipc.open_stream(io.BytesIO(blob))
+        schema = reader.schema
+        row_count = 0
+        for batch in reader:
+            row_count += batch.num_rows
+        schema_json = schema.to_string()
+    except Exception as e:
+        # Mark build as failed
+        build_store.fail_build(build_id, str(e), "INVALID_ARROW_FORMAT")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid Arrow IPC format: {e}",
+        )
+
+    # Finalize the artifact atomically with name if provided
+    try:
+        store.finalize_and_set_name(
+            artifact_id=build.artifact_id,
+            version=build.version,
+            schema_json=schema_json,
+            row_count=row_count,
+            byte_size=byte_size,
+            name=build.name,
+            tenant=build.tenant,
+        )
+    except ValueError as e:
+        build_store.fail_build(build_id, str(e), "FINALIZE_FAILED")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Mark build as complete
+    # First start the build if it's still pending (pull model may finalize directly)
+    if build.state == "pending":
+        build_store.start_build(build_id)
+    build_store.complete_build(build_id)
+
+    artifact_uri = f"strata://artifact/{build.artifact_id}@v={build.version}"
+    name_uri = f"strata://name/{build.name}" if build.name else None
+
+    return {
+        "status": "finalized",
+        "build_id": build_id,
+        "artifact_uri": artifact_uri,
+        "name_uri": name_uri,
+        "byte_size": byte_size,
+        "row_count": row_count,
+    }
 
 
 @app.post("/v1/artifacts/explain-materialize", response_model=ExplainMaterializeResponse)

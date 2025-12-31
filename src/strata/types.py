@@ -869,3 +869,312 @@ class ExplainMaterializeResponse(BaseModel):
     stale_reason: str | None = None
     changed_inputs: list[InputChangeInfo] | None = None
     resolved_input_versions: dict[str, str] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Lineage and Dependency Introspection
+# ---------------------------------------------------------------------------
+
+
+class LineageNode(BaseModel):
+    """A node in the artifact lineage graph.
+
+    Attributes:
+        uri: Artifact URI (strata://artifact/{id}@v={version}) or table URI
+        artifact_id: Artifact ID (if this is an artifact, not a table)
+        version: Artifact version (if this is an artifact)
+        type: "artifact" or "table"
+        transform_ref: Transform executor reference (if artifact)
+        created_at: When artifact was created (if artifact)
+    """
+
+    uri: str
+    artifact_id: str | None = None
+    version: int | None = None
+    type: str  # "artifact" | "table"
+    transform_ref: str | None = None
+    created_at: float | None = None
+
+
+class LineageEdge(BaseModel):
+    """An edge in the artifact lineage graph (input dependency).
+
+    Attributes:
+        from_uri: Source URI (the input)
+        to_uri: Target URI (the artifact that uses this input)
+        input_version: Version string of the input when used
+    """
+
+    from_uri: str
+    to_uri: str
+    input_version: str
+
+
+class ArtifactLineageResponse(BaseModel):
+    """Response with artifact lineage (input dependency graph).
+
+    Shows the full input dependency tree for an artifact, including:
+    - Direct inputs (tables and artifacts)
+    - Transitive inputs (inputs of input artifacts, recursively)
+
+    Use GET /v1/artifacts/{artifact_id}/v/{version}/lineage to get this.
+
+    Attributes:
+        artifact_uri: The artifact being queried
+        artifact_id: Artifact ID
+        version: Artifact version
+        nodes: All nodes in the lineage graph (artifacts and tables)
+        edges: All edges (input relationships) in the graph
+        depth: Maximum depth of the lineage tree
+        direct_inputs: URIs of direct inputs (first-level dependencies)
+    """
+
+    artifact_uri: str
+    artifact_id: str
+    version: int
+    nodes: list[LineageNode]
+    edges: list[LineageEdge]
+    depth: int
+    direct_inputs: list[str]
+
+
+class DependentInfo(BaseModel):
+    """Information about an artifact that depends on another.
+
+    Attributes:
+        artifact_uri: URI of the dependent artifact
+        artifact_id: Artifact ID
+        version: Artifact version
+        name: Name pointing to this artifact (if any)
+        transform_ref: Transform executor reference
+        created_at: When the dependent artifact was created
+        input_version: Version string this artifact uses for the dependency
+    """
+
+    artifact_uri: str
+    artifact_id: str
+    version: int
+    name: str | None = None
+    transform_ref: str | None = None
+    created_at: float | None = None
+    input_version: str
+
+
+class ArtifactDependentsResponse(BaseModel):
+    """Response with artifacts that depend on a given artifact.
+
+    Shows reverse dependencies: which artifacts use this artifact as input.
+    Useful for impact analysis when considering artifact changes/deletion.
+
+    Use GET /v1/artifacts/{artifact_id}/v/{version}/dependents to get this.
+
+    Attributes:
+        artifact_uri: The artifact being queried
+        artifact_id: Artifact ID
+        version: Artifact version
+        dependents: List of artifacts that use this artifact as input
+        total_count: Total number of dependents found
+    """
+
+    artifact_uri: str
+    artifact_id: str
+    version: int
+    dependents: list[DependentInfo]
+    total_count: int
+
+
+# ---------------------------------------------------------------------------
+# Executor Protocol v1 - Stable interface for external executors
+# ---------------------------------------------------------------------------
+#
+# Protocol Version: v1
+# Header: X-Strata-Executor-Protocol: v1
+#
+# This defines the stable interface for implementing Strata executors.
+# Executors receive Arrow IPC inputs, run a transform, and return Arrow IPC output.
+#
+# Push Model (Strata streams to executor):
+#   POST {executor_url}/v1/execute
+#   Content-Type: multipart/form-data
+#   X-Strata-Executor-Protocol: v1
+#
+# Pull Model (Executor pulls from Strata):
+#   GET /v1/builds/{build_id}/manifest -> ExecutorManifest
+#   Executor downloads inputs, executes, uploads output, calls finalize
+#
+# ---------------------------------------------------------------------------
+
+# Protocol version constant
+EXECUTOR_PROTOCOL_VERSION = "v1"
+
+# HTTP headers for protocol versioning
+EXECUTOR_PROTOCOL_HEADER = "X-Strata-Executor-Protocol"
+EXECUTOR_LOGS_HEADER = "X-Strata-Logs"
+
+
+class ExecutorInputDescriptor(BaseModel):
+    """Descriptor for a single input in an executor request.
+
+    Attributes:
+        name: Input name (e.g., "input0", "input1")
+        format: Data format (always "arrow_ipc_stream" in v1)
+        uri: Original input URI (for debugging/logging)
+        byte_size: Size of the input in bytes (if known)
+    """
+
+    name: str
+    format: str = "arrow_ipc_stream"
+    uri: str | None = None
+    byte_size: int | None = None
+
+
+class ExecutorTransformSpec(BaseModel):
+    """Transform specification sent to executor.
+
+    Attributes:
+        ref: Transform reference (e.g., "duckdb_sql@v1")
+        code_hash: Hash of the transform code (for reproducibility)
+        params: Executor-specific parameters (e.g., {"sql": "SELECT ..."})
+    """
+
+    ref: str
+    code_hash: str
+    params: dict[str, Any]
+
+
+class ExecutorRequestMetadata(BaseModel):
+    """Metadata sent to executor in push model requests.
+
+    This is the JSON payload in the "metadata" part of the multipart request.
+    It provides all context needed for the executor to run the transform.
+
+    Attributes:
+        protocol_version: Protocol version (always "v1" for this schema)
+        build_id: Unique build identifier for tracing/logging
+        tenant: Tenant ID (for multi-tenant deployments)
+        principal: Principal ID who initiated the build
+        provenance_hash: Hash of inputs + transform for deduplication
+        transform: Transform specification with ref, code_hash, params
+        inputs: List of input descriptors (name, format, uri)
+    """
+
+    protocol_version: str = EXECUTOR_PROTOCOL_VERSION
+    build_id: str
+    tenant: str | None = None
+    principal: str | None = None
+    provenance_hash: str
+    transform: ExecutorTransformSpec
+    inputs: list[ExecutorInputDescriptor]
+
+
+class ExecutorResponse(BaseModel):
+    """Response from executor (for structured error responses).
+
+    Success responses return Arrow IPC stream directly with 200 status.
+    Error responses return JSON with this structure.
+
+    Attributes:
+        success: Whether the execution succeeded
+        error_code: Machine-readable error code
+        error_message: Human-readable error message
+        duration_ms: Execution time in milliseconds
+        output_rows: Number of rows in output (on success)
+        output_bytes: Size of output in bytes (on success)
+        logs: Executor logs (stderr/stdout)
+    """
+
+    success: bool
+    error_code: str | None = None
+    error_message: str | None = None
+    duration_ms: float | None = None
+    output_rows: int | None = None
+    output_bytes: int | None = None
+    logs: str | None = None
+
+
+class ExecutorManifestInput(BaseModel):
+    """Input descriptor in pull model manifest.
+
+    Attributes:
+        name: Input name (e.g., "input0")
+        download_url: Signed URL to download the input
+        byte_size: Expected size in bytes
+        format: Data format (always "arrow_ipc_stream")
+    """
+
+    name: str
+    download_url: str
+    byte_size: int | None = None
+    format: str = "arrow_ipc_stream"
+
+
+class ExecutorManifest(BaseModel):
+    """Manifest returned for pull model execution.
+
+    The executor uses this manifest to:
+    1. Download inputs from signed URLs
+    2. Execute the transform
+    3. Upload output to the signed URL
+    4. Call finalize_url to complete the build
+
+    Attributes:
+        protocol_version: Protocol version (always "v1")
+        build_id: Unique build identifier
+        metadata: Transform metadata (ref, params, etc.)
+        inputs: List of inputs with signed download URLs
+        upload_url: Signed URL to upload the output
+        finalize_url: URL to call after upload completes
+        max_output_bytes: Maximum allowed output size
+        timeout_seconds: Maximum execution time
+    """
+
+    protocol_version: str = EXECUTOR_PROTOCOL_VERSION
+    build_id: str
+    metadata: dict[str, Any]
+    inputs: list[ExecutorManifestInput]
+    upload_url: str
+    finalize_url: str
+    max_output_bytes: int
+    timeout_seconds: float
+
+
+class ExecutorCapabilities(BaseModel):
+    """Executor capabilities reported in health check.
+
+    Executors should return this from GET /health to describe their capabilities.
+
+    Attributes:
+        protocol_versions: List of supported protocol versions
+        transform_refs: List of supported transform references
+        max_input_bytes: Maximum total input size supported
+        max_output_bytes: Maximum output size supported
+        max_concurrent_executions: Maximum concurrent executions
+        features: Optional feature flags (e.g., {"streaming": true})
+    """
+
+    protocol_versions: list[str] = [EXECUTOR_PROTOCOL_VERSION]
+    transform_refs: list[str] = []
+    max_input_bytes: int | None = None
+    max_output_bytes: int | None = None
+    max_concurrent_executions: int | None = None
+    features: dict[str, Any] | None = None
+
+
+class ExecutorHealthResponse(BaseModel):
+    """Health check response from executor.
+
+    GET /health should return this structure.
+
+    Attributes:
+        status: "healthy", "degraded", or "unhealthy"
+        capabilities: Executor capabilities
+        version: Executor software version
+        uptime_seconds: Seconds since executor started
+        active_executions: Current number of active executions
+    """
+
+    status: str  # "healthy" | "degraded" | "unhealthy"
+    capabilities: ExecutorCapabilities
+    version: str | None = None
+    uptime_seconds: float | None = None
+    active_executions: int | None = None
