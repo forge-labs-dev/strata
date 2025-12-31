@@ -59,6 +59,7 @@ from strata.tracing import init_tracing, instrument_fastapi, trace_span
 from strata.types import (
     ArtifactInfoResponse,
     BuildSpec,
+    BuildStatusResponse,
     ExplainMaterializeRequest,
     ExplainMaterializeResponse,
     InputChangeInfo,
@@ -620,6 +621,12 @@ async def lifespan(app: FastAPI):
     # This prevents accidental exposure of write endpoints to the network
     config.validate_personal_mode_binding()
 
+    # Initialize transform registry from config
+    from strata.transforms.registry import TransformRegistry, set_transform_registry
+
+    transform_registry = TransformRegistry.from_config(config.transforms_config)
+    set_transform_registry(transform_registry)
+
     # Configure structured logging first
     configure_logging()
 
@@ -684,6 +691,46 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass  # Don't fail startup if cleanup fails
 
+    # Initialize build runner for server-mode transforms
+    build_runner = None
+    if config.server_transforms_enabled:
+        from strata.artifact_store import get_artifact_store
+        from strata.transforms.build_store import get_build_store
+        from strata.transforms.registry import get_transform_registry
+        from strata.transforms.runner import (
+            BuildRunner,
+            RunnerConfig,
+            set_build_runner,
+        )
+
+        # Ensure artifact_dir exists for server-mode transforms
+        if config.artifact_dir is None:
+            config.artifact_dir = Path.home() / ".strata" / "artifacts"
+        config.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize stores
+        artifact_store = get_artifact_store(config.artifact_dir)
+        build_store = get_build_store(config.artifact_dir / "artifacts.sqlite")
+
+        if artifact_store and build_store:
+            runner_config = RunnerConfig(
+                poll_interval_ms=config.build_runner_poll_interval_ms,
+                max_concurrent_builds=config.build_runner_max_concurrent,
+                max_builds_per_tenant=config.build_runner_max_per_tenant,
+                default_timeout_seconds=config.build_runner_default_timeout,
+                default_max_output_bytes=config.build_runner_default_max_output,
+            )
+
+            build_runner = BuildRunner(
+                config=runner_config,
+                artifact_store=artifact_store,
+                build_store=build_store,
+                transform_registry=get_transform_registry(),
+                artifact_dir=config.artifact_dir,
+            )
+            set_build_runner(build_runner)
+            await build_runner.start()
+
     # Log startup with warmup timing info
     _state.metrics.log_event(
         "server_started",
@@ -697,9 +744,18 @@ async def lifespan(app: FastAPI):
         stale_entries_removed=stale_removed,
         tracing_enabled=tracing_enabled,
         arrow_memory_pool=warmup_times.get("arrow_memory_pool"),
+        build_runner_enabled=build_runner is not None,
     )
 
     yield
+
+    # Stop build runner (cancel pending builds)
+    from strata.transforms.runner import get_build_runner, reset_build_runner
+
+    build_runner = get_build_runner()
+    if build_runner:
+        await build_runner.stop()
+        reset_build_runner()
 
     # Stop adaptive controller (cancel background loop)
     if _state._adaptive_controller:
@@ -714,6 +770,11 @@ async def lifespan(app: FastAPI):
 
     _state.metrics.log_event("server_stopped")
     _state = None
+
+    # Reset transform registry
+    from strata.transforms.registry import reset_transform_registry
+
+    reset_transform_registry()
 
 
 app = FastAPI(
@@ -3534,19 +3595,30 @@ async def cancel_warm_job_v1(job_id: str):
 # ---------------------------------------------------------------------------
 
 
-def _get_artifact_store():
-    """Get the artifact store, raising 403 if not in personal mode."""
+def _get_artifact_store(allow_server_mode: bool = False):
+    """Get the artifact store, raising 403 if not in appropriate mode.
+
+    Args:
+        allow_server_mode: If True, also allow access when server-mode
+            transforms are enabled (for materialize endpoint).
+    """
     from strata.artifact_store import get_artifact_store
 
     state = get_state()
-    if not state.config.writes_enabled:
+
+    # Check if access is allowed
+    writes_ok = state.config.writes_enabled  # personal mode
+    server_transforms_ok = allow_server_mode and state.config.server_transforms_enabled
+
+    if not (writes_ok or server_transforms_ok):
         raise HTTPException(
             status_code=403,
             detail={
                 "error": "writes_disabled",
                 "message": (
                     "Artifact endpoints are disabled in service mode. "
-                    "Set deployment_mode='personal' for local development."
+                    "Set deployment_mode='personal' for local development, "
+                    "or enable server-mode transforms."
                 ),
             },
         )
@@ -3558,6 +3630,57 @@ def _get_artifact_store():
             detail="Artifact store not initialized",
         )
     return store
+
+
+def _validate_transform_allowed(executor_ref: str):
+    """Validate transform is allowed in server mode and return its definition.
+
+    In personal mode, all transforms are allowed (returns None).
+    In server mode with transforms enabled, validates against registry.
+
+    Args:
+        executor_ref: Executor reference (e.g., "local://duckdb_sql@v1")
+
+    Returns:
+        TransformDefinition if in server mode and found, None in personal mode
+
+    Raises:
+        HTTPException: 403 if transform is not allowed in server mode
+    """
+    from strata.transforms.registry import get_transform_registry
+
+    state = get_state()
+
+    # Personal mode: no validation needed
+    if state.config.writes_enabled:
+        return None
+
+    # Server mode with transforms enabled: validate against registry
+    if state.config.server_transforms_enabled:
+        registry = get_transform_registry()
+        defn = registry.get(executor_ref)
+
+        if defn is None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "transform_not_allowed",
+                    "message": f"Transform '{executor_ref}' is not registered. "
+                    "Contact your administrator to add it to the allowlist.",
+                    "executor": executor_ref,
+                },
+            )
+
+        return defn
+
+    # Shouldn't reach here if called correctly
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "writes_disabled",
+            "message": "Artifact endpoints are disabled.",
+        },
+    )
 
 
 def _resolve_input_version(input_uri: str) -> str:
@@ -3621,15 +3744,19 @@ def _resolve_input_version(input_uri: str) -> str:
 
 @app.post("/v1/artifacts/materialize", response_model=MaterializeResponse)
 async def materialize_artifact(request: MaterializeRequest):
-    """Materialize a computed artifact (personal mode only).
+    """Materialize a computed artifact.
 
-    This endpoint implements the "needs_local" materialization pattern:
-    1. Resolve input versions (snapshot IDs for tables, artifact versions for artifacts)
-    2. Compute provenance hash from resolved versions + transform
-    3. If cached, return artifact URI (hit=True)
-    4. If not cached, create building artifact with input_versions and return build spec
+    This endpoint supports two modes:
+    1. Personal mode: Returns build_spec for client-side execution
+    2. Server mode (transforms enabled): Validates transform against allowlist
+       and returns build_spec for server-orchestrated execution
 
-    The server NEVER executes transforms - computation happens client-side.
+    Flow:
+    1. Validate transform is allowed (server mode only)
+    2. Resolve input versions (snapshot IDs for tables, artifact versions for artifacts)
+    3. Compute provenance hash from resolved versions + transform
+    4. If cached, return artifact URI (hit=True)
+    5. If not cached, create building artifact with input_versions and return build spec
 
     Returns:
         MaterializeResponse with hit status and artifact URI or build spec
@@ -3638,12 +3765,20 @@ async def materialize_artifact(request: MaterializeRequest):
 
     from strata.artifact_store import TransformSpec, compute_provenance_hash
 
-    store = _get_artifact_store()
-
-    # Parse transform spec
+    # Parse transform spec early so we can validate it
     transform = request.transform
+    executor_ref = transform.get("executor", "")
+
+    # Validate transform is allowed (raises 403 if not)
+    # In personal mode this returns None (no validation needed)
+    # In server mode this returns the TransformDefinition
+    transform_defn = _validate_transform_allowed(executor_ref)
+
+    # Get artifact store (allows server mode when transforms are enabled)
+    store = _get_artifact_store(allow_server_mode=True)
+
     transform_spec = TransformSpec(
-        executor=transform.get("executor", ""),
+        executor=executor_ref,
         params=transform.get("params", {}),
         inputs=request.inputs,
     )
@@ -3676,6 +3811,7 @@ async def materialize_artifact(request: MaterializeRequest):
             hit=True,
             artifact_uri=artifact_uri,
             build_spec=None,
+            state="ready",
         )
 
     # Cache miss - create new artifact in building state
@@ -3688,6 +3824,50 @@ async def materialize_artifact(request: MaterializeRequest):
     )
 
     artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
+    state = get_state()
+
+    # Server mode: create build record for async execution
+    if state.config.server_transforms_enabled:
+        from strata.transforms.build_store import get_build_store
+
+        build_id = str(uuid.uuid4())
+
+        # Get build store (uses same directory as artifact store)
+        build_store = get_build_store(state.config.artifact_dir / "artifacts.sqlite")
+        if build_store is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Build store not initialized",
+            )
+
+        # Get tenant and principal from auth context
+        from strata.auth import get_principal
+
+        principal = get_principal()
+        tenant_id = principal.tenant if principal else None
+        principal_id = principal.id if principal else None
+
+        # Create build record
+        build_store.create_build(
+            build_id=build_id,
+            artifact_id=artifact_id,
+            version=version,
+            executor_ref=executor_ref,
+            executor_url=transform_defn.executor_url if transform_defn else None,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+        )
+
+        # TODO: Queue build for background execution
+
+        return MaterializeResponse(
+            hit=False,
+            artifact_uri=artifact_uri,
+            build_id=build_id,
+            state="pending",
+        )
+
+    # Personal mode: return build spec for client-side execution
     build_spec = BuildSpec(
         artifact_id=artifact_id,
         version=version,
@@ -3700,6 +3880,7 @@ async def materialize_artifact(request: MaterializeRequest):
         hit=False,
         artifact_uri=artifact_uri,
         build_spec=build_spec.model_dump(),
+        state="building",
     )
 
 
@@ -3976,6 +4157,73 @@ async def get_name_status(name: str):
         is_stale=is_stale,
         stale_reason=stale_reason,
         changed_inputs=changed_inputs if changed_inputs else None,
+    )
+
+
+@app.get("/v1/artifacts/builds/{build_id}", response_model=BuildStatusResponse)
+async def get_build_status(build_id: str):
+    """Get async build status (server-mode transforms only).
+
+    Use this endpoint to poll the status of a build that was started
+    asynchronously via materialize in server mode.
+
+    Args:
+        build_id: Build ID from materialize response
+
+    Returns:
+        BuildStatusResponse with current build state
+    """
+    from strata.transforms.build_store import get_build_store
+
+    state = get_state()
+
+    # Build polling is only available when server transforms are enabled
+    if not state.config.server_transforms_enabled:
+        raise HTTPException(
+            status_code=404,
+            detail="Build polling is only available in server mode with transforms enabled",
+        )
+
+    # Get build store
+    build_store = get_build_store()
+    if build_store is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Build store not initialized",
+        )
+
+    # Look up build
+    build = build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(status_code=404, detail="Build not found")
+
+    # Check access control if auth is enabled
+    if state.config.auth_mode == "trusted_proxy":
+        from strata.auth import get_principal
+
+        principal = get_principal()
+        if principal is not None:
+            # Only build owner or admin can see build status
+            is_owner = build.principal_id == principal.id
+            is_admin = principal.has_scope("admin:*")
+
+            if not is_owner and not is_admin:
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail="Build not found")
+                raise HTTPException(status_code=403, detail="Access denied")
+
+    return BuildStatusResponse(
+        build_id=build.build_id,
+        artifact_id=build.artifact_id,
+        version=build.version,
+        state=build.state,
+        artifact_uri=f"strata://artifact/{build.artifact_id}@v={build.version}",
+        executor_ref=build.executor_ref,
+        created_at=build.created_at,
+        started_at=build.started_at,
+        completed_at=build.completed_at,
+        error_message=build.error_message,
+        error_code=build.error_code,
     )
 
 

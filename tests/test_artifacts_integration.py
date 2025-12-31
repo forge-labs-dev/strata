@@ -373,10 +373,13 @@ class TestServiceModeBlocking:
 
         assert httpx.get(f"{base_url}/v1/names").status_code == 403
         assert httpx.get(f"{base_url}/v1/names/test").status_code == 403
-        assert httpx.post(
-            f"{base_url}/v1/names",
-            json={"name": "test", "artifact_id": "x", "version": 1},
-        ).status_code == 403
+        assert (
+            httpx.post(
+                f"{base_url}/v1/names",
+                json={"name": "test", "artifact_id": "x", "version": 1},
+            ).status_code
+            == 403
+        )
 
 
 # =============================================================================
@@ -491,12 +494,13 @@ class TestArtifactContract:
             assert all(e == "click" for e in filtered_data["event"].to_pylist())
 
             # Stage 3: Aggregate clicks by user (depends on filtered)
+            agg_sql = (
+                "SELECT user_id, sum(amount) as total FROM input0 GROUP BY user_id ORDER BY user_id"
+            )
             hit, agg_uri, agg_spec = client.materialize(
                 inputs=[filtered_uri],
                 executor="local://duckdb_sql@v1",
-                params={
-                    "sql": "SELECT user_id, sum(amount) as total FROM input0 GROUP BY user_id ORDER BY user_id"
-                },
+                params={"sql": agg_sql},
             )
             assert hit is False
 
@@ -520,9 +524,7 @@ class TestArtifactContract:
             hit2, _, _ = client.materialize(
                 inputs=[filtered_uri],
                 executor="local://duckdb_sql@v1",
-                params={
-                    "sql": "SELECT user_id, sum(amount) as total FROM input0 GROUP BY user_id ORDER BY user_id"
-                },
+                params={"sql": agg_sql},
             )
             assert hit2 is True, "Aggregate stage should be cached"
 
@@ -559,12 +561,13 @@ class TestArtifactContract:
         with run_server(cache_dir, artifact_dir, "personal") as ctx:
             with StrataClient(base_url=ctx.base_url) as client:
                 # Cache should still hit
+                union_sql = (
+                    "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
+                )
                 hit, uri, spec = client.materialize(
                     inputs=[],
                     executor="local://duckdb_sql@v1",
-                    params={
-                        "sql": "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
-                    },
+                    params={"sql": union_sql},
                 )
                 assert hit is True, "Should be cache hit after restart"
                 assert uri == saved_uri
@@ -1010,10 +1013,13 @@ class TestStalenessDetection:
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'combined' as result"},
             )
-            result = client.run_local(spec, {
-                input1_uri: pa.table({"source": ["input1"]}),
-                input2_uri: pa.table({"source": ["input2"]}),
-            })
+            result = client.run_local(
+                spec,
+                {
+                    input1_uri: pa.table({"source": ["input1"]}),
+                    input2_uri: pa.table({"source": ["input2"]}),
+                },
+            )
             client.upload_artifact(
                 artifact_id=spec["artifact_id"],
                 version=spec["version"],

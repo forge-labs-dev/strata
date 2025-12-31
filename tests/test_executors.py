@@ -3,10 +3,10 @@
 These tests verify client-side execution without requiring a server.
 """
 
-import pytest
 import pyarrow as pa
+import pytest
 
-from strata.executors import run_local, _run_duckdb_sql
+from strata.executors import _run_duckdb_sql, run_local
 
 
 class TestRunLocal:
@@ -79,9 +79,7 @@ class TestDuckDBExecutor:
             "params": {"sql": "SELECT sum(value) as total FROM input0"},
             "input_uris": ["file:///warehouse#db.events"],
         }
-        result = _run_duckdb_sql(
-            build_spec, {"file:///warehouse#db.events": input_table}
-        )
+        result = _run_duckdb_sql(build_spec, {"file:///warehouse#db.events": input_table})
         assert result.to_pydict() == {"total": [60]}
 
     def test_multiple_input_tables(self):
@@ -147,10 +145,12 @@ class TestDuckDBExecutor:
 
     def test_filter_and_aggregate(self):
         """Test filtering and aggregation."""
-        events = pa.table({
-            "event_type": ["click", "view", "click", "purchase", "view"],
-            "count": [1, 2, 3, 4, 5],
-        })
+        events = pa.table(
+            {
+                "event_type": ["click", "view", "click", "purchase", "view"],
+                "count": [1, 2, 3, 4, 5],
+            }
+        )
         build_spec = {
             "executor": "local://duckdb_sql@v1",
             "params": {
@@ -172,11 +172,13 @@ class TestDuckDBExecutor:
 
     def test_preserves_arrow_types(self):
         """DuckDB preserves Arrow types correctly."""
-        input_table = pa.table({
-            "int_col": pa.array([1, 2, 3], type=pa.int64()),
-            "float_col": pa.array([1.5, 2.5, 3.5], type=pa.float64()),
-            "str_col": pa.array(["a", "b", "c"], type=pa.string()),
-        })
+        input_table = pa.table(
+            {
+                "int_col": pa.array([1, 2, 3], type=pa.int64()),
+                "float_col": pa.array([1.5, 2.5, 3.5], type=pa.float64()),
+                "str_col": pa.array(["a", "b", "c"], type=pa.string()),
+            }
+        )
         build_spec = {
             "executor": "local://duckdb_sql@v1",
             "params": {"sql": "SELECT * FROM input0"},

@@ -23,8 +23,8 @@ if TYPE_CHECKING:
 
 def run_local(
     build_spec: dict,
-    input_tables: dict[str, "pa.Table"],
-) -> "pa.Table":
+    input_tables: dict[str, pa.Table],
+) -> pa.Table:
     """Execute a transform locally based on the build spec.
 
     This is the main entry point for client-side execution. It dispatches
@@ -53,8 +53,8 @@ def run_local(
 
 def _run_duckdb_sql(
     build_spec: dict,
-    input_tables: dict[str, "pa.Table"],
-) -> "pa.Table":
+    input_tables: dict[str, pa.Table],
+) -> pa.Table:
     """Execute a DuckDB SQL transform locally.
 
     Args:

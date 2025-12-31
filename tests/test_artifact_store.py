@@ -9,7 +9,6 @@ These tests verify:
 """
 
 import json
-import time
 
 import pytest
 
@@ -54,11 +53,13 @@ class TestTransformSpec:
 
     def test_from_json(self):
         """TransformSpec deserializes from JSON."""
-        json_str = json.dumps({
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": "SELECT 1"},
-            "inputs": [],
-        })
+        json_str = json.dumps(
+            {
+                "executor": "local://duckdb_sql@v1",
+                "params": {"sql": "SELECT 1"},
+                "inputs": [],
+            }
+        )
         spec = TransformSpec.from_json(json_str)
         assert spec.executor == "local://duckdb_sql@v1"
         assert spec.params == {"sql": "SELECT 1"}

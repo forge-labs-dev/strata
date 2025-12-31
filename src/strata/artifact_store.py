@@ -55,6 +55,8 @@ class ArtifactVersion:
         input_versions: JSON-serialized dict mapping input URI -> version string
             Used for staleness detection. For table URIs, version is snapshot_id.
             For artifact URIs, version is "artifact_id@v=N".
+        tenant: Tenant ID that owns this artifact (for multi-tenant isolation)
+        principal: Principal ID that created this artifact
     """
 
     id: str
@@ -67,6 +69,8 @@ class ArtifactVersion:
     created_at: float | None = None
     transform_spec: str | None = None
     input_versions: str | None = None  # JSON: {"uri": "version_string", ...}
+    tenant: str | None = None  # Tenant ID for multi-tenant isolation
+    principal: str | None = None  # Principal ID that created this artifact
 
 
 @dataclass(frozen=True)
@@ -76,17 +80,22 @@ class ArtifactName:
     Names provide human-readable aliases for artifacts, e.g.:
         strata://name/daily_revenue -> strata://artifact/abc123@v=5
 
+    In multi-tenant mode, names are scoped by tenant. The unique key is
+    (tenant, name), so different tenants can have the same name.
+
     Attributes:
         name: Human-readable name (e.g., "daily_revenue")
         artifact_id: ID of the pinned artifact
         version: Version of the pinned artifact
         updated_at: Unix timestamp of last update
+        tenant: Tenant ID that owns this name (for multi-tenant isolation)
     """
 
     name: str
     artifact_id: str
     version: int
     updated_at: float
+    tenant: str | None = None  # Tenant ID for multi-tenant isolation
 
 
 @dataclass(frozen=True)
@@ -168,7 +177,7 @@ class TransformSpec:
         )
 
     @classmethod
-    def from_json(cls, json_str: str) -> "TransformSpec":
+    def from_json(cls, json_str: str) -> TransformSpec:
         """Deserialize from JSON string."""
         data = json.loads(json_str)
         return cls(
@@ -228,6 +237,8 @@ CREATE TABLE IF NOT EXISTS artifact_versions (
     created_at REAL NOT NULL,
     transform_spec TEXT,
     input_versions TEXT,  -- JSON: {"uri": "version_string", ...} for staleness detection
+    tenant TEXT,  -- Tenant ID for multi-tenant isolation
+    principal TEXT,  -- Principal ID that created this artifact
     PRIMARY KEY (id, version)
 );
 
@@ -237,14 +248,32 @@ CREATE INDEX IF NOT EXISTS idx_provenance ON artifact_versions(provenance_hash);
 -- Index for state queries (e.g., cleanup of failed artifacts)
 CREATE INDEX IF NOT EXISTS idx_state ON artifact_versions(state);
 
+-- Index for tenant queries (multi-tenant isolation)
+CREATE INDEX IF NOT EXISTS idx_versions_tenant ON artifact_versions(tenant);
+
 -- Name pointers: mutable, point to artifact versions
+-- In multi-tenant mode, (tenant, name) is the unique key
 CREATE TABLE IF NOT EXISTS artifact_names (
-    name TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
     artifact_id TEXT NOT NULL,
     version INTEGER NOT NULL,
     updated_at REAL NOT NULL,
+    tenant TEXT,  -- Tenant ID for multi-tenant isolation
+    PRIMARY KEY (tenant, name),
     FOREIGN KEY (artifact_id, version) REFERENCES artifact_versions(id, version)
 );
+
+-- Index for name lookup without tenant (personal mode)
+CREATE INDEX IF NOT EXISTS idx_names_name ON artifact_names(name);
+"""
+
+# Migration SQL to add tenant columns to existing tables
+_MIGRATION_SQL = """
+-- Add tenant and principal columns to artifact_versions if they don't exist
+-- SQLite doesn't have ADD COLUMN IF NOT EXISTS, so we use a workaround
+
+-- Check if tenant column exists by trying to select it
+-- If it fails, the column doesn't exist and we need to add it
 """
 
 
@@ -302,11 +331,73 @@ class ArtifactStore:
         return conn
 
     def _init_schema(self) -> None:
-        """Initialize database schema."""
+        """Initialize database schema with migrations for tenant columns."""
         conn = self._get_connection()
         try:
-            conn.executescript(_SCHEMA_SQL)
-            conn.commit()
+            # Check if this is a fresh database or needs migration
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='artifact_versions'"
+            )
+            table_exists = cursor.fetchone() is not None
+
+            if table_exists:
+                # Check if tenant column exists
+                cursor = conn.execute("PRAGMA table_info(artifact_versions)")
+                columns = {row["name"] for row in cursor.fetchall()}
+
+                if "tenant" not in columns:
+                    # Migrate: add tenant and principal columns
+                    conn.execute(
+                        "ALTER TABLE artifact_versions ADD COLUMN tenant TEXT"
+                    )
+                    conn.execute(
+                        "ALTER TABLE artifact_versions ADD COLUMN principal TEXT"
+                    )
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_versions_tenant "
+                        "ON artifact_versions(tenant)"
+                    )
+                    conn.commit()
+
+                # Check if artifact_names needs migration
+                cursor = conn.execute("PRAGMA table_info(artifact_names)")
+                name_columns = {row["name"] for row in cursor.fetchall()}
+
+                if "tenant" not in name_columns:
+                    # Need to recreate artifact_names with new schema
+                    # SQLite doesn't support changing primary key
+                    conn.execute(
+                        "ALTER TABLE artifact_names RENAME TO artifact_names_old"
+                    )
+                    conn.execute("""
+                        CREATE TABLE artifact_names (
+                            name TEXT NOT NULL,
+                            artifact_id TEXT NOT NULL,
+                            version INTEGER NOT NULL,
+                            updated_at REAL NOT NULL,
+                            tenant TEXT,
+                            PRIMARY KEY (tenant, name),
+                            FOREIGN KEY (artifact_id, version)
+                                REFERENCES artifact_versions(id, version)
+                        )
+                    """)
+                    # Migrate data with NULL tenant (personal mode)
+                    conn.execute("""
+                        INSERT INTO artifact_names
+                            (name, artifact_id, version, updated_at, tenant)
+                        SELECT name, artifact_id, version, updated_at, NULL
+                        FROM artifact_names_old
+                    """)
+                    conn.execute("DROP TABLE artifact_names_old")
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_names_name "
+                        "ON artifact_names(name)"
+                    )
+                    conn.commit()
+            else:
+                # Fresh database: create schema
+                conn.executescript(_SCHEMA_SQL)
+                conn.commit()
         finally:
             conn.close()
 
@@ -324,6 +415,8 @@ class ArtifactStore:
         provenance_hash: str,
         transform_spec: TransformSpec | None = None,
         input_versions: dict[str, str] | None = None,
+        tenant: str | None = None,
+        principal: str | None = None,
     ) -> int:
         """Create a new artifact version in "building" state.
 
@@ -334,6 +427,8 @@ class ArtifactStore:
             input_versions: Optional mapping of input URI -> version string
                 Used for staleness detection. For tables, version is snapshot_id.
                 For artifacts, version is "artifact_id@v=N".
+            tenant: Optional tenant ID for multi-tenant isolation
+            principal: Optional principal ID that created this artifact
 
         Returns:
             The new version number
@@ -354,8 +449,9 @@ class ArtifactStore:
             conn.execute(
                 """
                 INSERT INTO artifact_versions
-                    (id, version, state, provenance_hash, created_at, transform_spec, input_versions)
-                VALUES (?, ?, 'building', ?, ?, ?, ?)
+                    (id, version, state, provenance_hash, created_at,
+                     transform_spec, input_versions, tenant, principal)
+                VALUES (?, ?, 'building', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact_id,
@@ -364,6 +460,8 @@ class ArtifactStore:
                     time.time(),
                     transform_spec.to_json() if transform_spec else None,
                     input_versions_json,
+                    tenant,
+                    principal,
                 ),
             )
             conn.commit()
@@ -445,7 +543,8 @@ class ArtifactStore:
             cursor = conn.execute(
                 """
                 SELECT id, version, state, provenance_hash, schema_json,
-                       row_count, byte_size, created_at, transform_spec, input_versions
+                       row_count, byte_size, created_at, transform_spec,
+                       input_versions, tenant, principal
                 FROM artifact_versions
                 WHERE id = ? AND version = ?
                 """,
@@ -465,6 +564,8 @@ class ArtifactStore:
                 created_at=row["created_at"],
                 transform_spec=row["transform_spec"],
                 input_versions=row["input_versions"],
+                tenant=row["tenant"],
+                principal=row["principal"],
             )
         finally:
             conn.close()
@@ -483,7 +584,8 @@ class ArtifactStore:
             cursor = conn.execute(
                 """
                 SELECT id, version, state, provenance_hash, schema_json,
-                       row_count, byte_size, created_at, transform_spec, input_versions
+                       row_count, byte_size, created_at, transform_spec,
+                       input_versions, tenant, principal
                 FROM artifact_versions
                 WHERE id = ? AND state = 'ready'
                 ORDER BY version DESC
@@ -505,32 +607,55 @@ class ArtifactStore:
                 created_at=row["created_at"],
                 transform_spec=row["transform_spec"],
                 input_versions=row["input_versions"],
+                tenant=row["tenant"],
+                principal=row["principal"],
             )
         finally:
             conn.close()
 
-    def find_by_provenance(self, provenance_hash: str) -> ArtifactVersion | None:
+    def find_by_provenance(
+        self,
+        provenance_hash: str,
+        tenant: str | None = None,
+    ) -> ArtifactVersion | None:
         """Find artifact by provenance hash (for deduplication).
 
         Args:
             provenance_hash: Provenance hash to look up
+            tenant: Optional tenant filter for multi-tenant isolation.
+                If provided, only returns artifacts owned by this tenant.
 
         Returns:
             Matching ArtifactVersion with state="ready", or None if not found
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
-                SELECT id, version, state, provenance_hash, schema_json,
-                       row_count, byte_size, created_at, transform_spec, input_versions
-                FROM artifact_versions
-                WHERE provenance_hash = ? AND state = 'ready'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (provenance_hash,),
-            )
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT id, version, state, provenance_hash, schema_json,
+                           row_count, byte_size, created_at, transform_spec,
+                           input_versions, tenant, principal
+                    FROM artifact_versions
+                    WHERE provenance_hash = ? AND state = 'ready' AND tenant = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (provenance_hash, tenant),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT id, version, state, provenance_hash, schema_json,
+                           row_count, byte_size, created_at, transform_spec,
+                           input_versions, tenant, principal
+                    FROM artifact_versions
+                    WHERE provenance_hash = ? AND state = 'ready'
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (provenance_hash,),
+                )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -545,6 +670,8 @@ class ArtifactStore:
                 created_at=row["created_at"],
                 transform_spec=row["transform_spec"],
                 input_versions=row["input_versions"],
+                tenant=row["tenant"],
+                principal=row["principal"],
             )
         finally:
             conn.close()
@@ -598,13 +725,23 @@ class ArtifactStore:
     # Name Pointers
     # -----------------------------------------------------------------------
 
-    def set_name(self, name: str, artifact_id: str, version: int) -> None:
+    def set_name(
+        self,
+        name: str,
+        artifact_id: str,
+        version: int,
+        tenant: str | None = None,
+    ) -> None:
         """Create or update a name pointer.
+
+        In multi-tenant mode, names are scoped by tenant. The unique key is
+        (tenant, name), so different tenants can have the same name.
 
         Args:
             name: Human-readable name
             artifact_id: Target artifact ID
             version: Target version
+            tenant: Optional tenant ID for multi-tenant isolation
 
         Raises:
             ValueError: If target artifact version doesn't exist or isn't ready
@@ -627,41 +764,59 @@ class ArtifactStore:
                     f"Artifact {artifact_id}@v={version} is not ready (state={row['state']})"
                 )
 
-            # Upsert name
+            # Upsert name (tenant, name) is the unique key
             conn.execute(
                 """
-                INSERT INTO artifact_names (name, artifact_id, version, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(name) DO UPDATE SET
+                INSERT INTO artifact_names (name, artifact_id, version, updated_at, tenant)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(tenant, name) DO UPDATE SET
                     artifact_id = excluded.artifact_id,
                     version = excluded.version,
                     updated_at = excluded.updated_at
                 """,
-                (name, artifact_id, version, time.time()),
+                (name, artifact_id, version, time.time(), tenant),
             )
             conn.commit()
         finally:
             conn.close()
 
-    def resolve_name(self, name: str) -> ArtifactVersion | None:
+    def resolve_name(
+        self,
+        name: str,
+        tenant: str | None = None,
+    ) -> ArtifactVersion | None:
         """Resolve a name to its artifact version.
+
+        In multi-tenant mode, names are scoped by tenant.
 
         Args:
             name: Name to resolve
+            tenant: Optional tenant filter for multi-tenant isolation
 
         Returns:
             The pinned ArtifactVersion, or None if name not found
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
-                SELECT n.artifact_id, n.version
-                FROM artifact_names n
-                WHERE n.name = ?
-                """,
-                (name,),
-            )
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT n.artifact_id, n.version
+                    FROM artifact_names n
+                    WHERE n.name = ? AND n.tenant = ?
+                    """,
+                    (name, tenant),
+                )
+            else:
+                # Personal mode: no tenant filter, but prefer NULL tenant
+                cursor = conn.execute(
+                    """
+                    SELECT n.artifact_id, n.version
+                    FROM artifact_names n
+                    WHERE n.name = ? AND n.tenant IS NULL
+                    """,
+                    (name,),
+                )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -669,25 +824,40 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def get_name(self, name: str) -> ArtifactName | None:
+    def get_name(
+        self,
+        name: str,
+        tenant: str | None = None,
+    ) -> ArtifactName | None:
         """Get name pointer metadata.
 
         Args:
             name: Name to look up
+            tenant: Optional tenant filter for multi-tenant isolation
 
         Returns:
             ArtifactName or None if not found
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
-                SELECT name, artifact_id, version, updated_at
-                FROM artifact_names
-                WHERE name = ?
-                """,
-                (name,),
-            )
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT name, artifact_id, version, updated_at, tenant
+                    FROM artifact_names
+                    WHERE name = ? AND tenant = ?
+                    """,
+                    (name, tenant),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT name, artifact_id, version, updated_at, tenant
+                    FROM artifact_names
+                    WHERE name = ? AND tenant IS NULL
+                    """,
+                    (name,),
+                )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -696,51 +866,79 @@ class ArtifactStore:
                 artifact_id=row["artifact_id"],
                 version=row["version"],
                 updated_at=row["updated_at"],
+                tenant=row["tenant"],
             )
         finally:
             conn.close()
 
-    def delete_name(self, name: str) -> bool:
+    def delete_name(
+        self,
+        name: str,
+        tenant: str | None = None,
+    ) -> bool:
         """Delete a name pointer.
 
         Args:
             name: Name to delete
+            tenant: Optional tenant filter for multi-tenant isolation
 
         Returns:
             True if name was deleted, False if it didn't exist
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                "DELETE FROM artifact_names WHERE name = ?",
-                (name,),
-            )
+            if tenant is not None:
+                cursor = conn.execute(
+                    "DELETE FROM artifact_names WHERE name = ? AND tenant = ?",
+                    (name, tenant),
+                )
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM artifact_names WHERE name = ? AND tenant IS NULL",
+                    (name,),
+                )
             conn.commit()
             return cursor.rowcount > 0
         finally:
             conn.close()
 
-    def list_names(self) -> list[ArtifactName]:
+    def list_names(self, tenant: str | None = None) -> list[ArtifactName]:
         """List all name pointers.
 
+        Args:
+            tenant: Optional tenant filter for multi-tenant isolation
+
         Returns:
-            List of all ArtifactName entries
+            List of ArtifactName entries (filtered by tenant if provided)
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
-                SELECT name, artifact_id, version, updated_at
-                FROM artifact_names
-                ORDER BY name
-                """
-            )
+            if tenant is not None:
+                cursor = conn.execute(
+                    """
+                    SELECT name, artifact_id, version, updated_at, tenant
+                    FROM artifact_names
+                    WHERE tenant = ?
+                    ORDER BY name
+                    """,
+                    (tenant,),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    SELECT name, artifact_id, version, updated_at, tenant
+                    FROM artifact_names
+                    WHERE tenant IS NULL
+                    ORDER BY name
+                    """
+                )
             return [
                 ArtifactName(
                     name=row["name"],
                     artifact_id=row["artifact_id"],
                     version=row["version"],
                     updated_at=row["updated_at"],
+                    tenant=row["tenant"],
                 )
                 for row in cursor.fetchall()
             ]
@@ -814,7 +1012,8 @@ class ArtifactStore:
                            av.schema_json, av.row_count, av.byte_size, av.created_at,
                            av.transform_spec, av.input_versions
                     FROM artifact_versions av
-                    INNER JOIN artifact_names an ON av.id = an.artifact_id AND av.version = an.version
+                    INNER JOIN artifact_names an
+                        ON av.id = an.artifact_id AND av.version = an.version
                     WHERE an.name LIKE ?
                 """
                 params: list = [name_prefix + "%"]

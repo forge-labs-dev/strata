@@ -202,6 +202,12 @@ def _get_env_overrides() -> dict:
     if artifact_dir := os.environ.get("STRATA_ARTIFACT_DIR"):
         overrides["artifact_dir"] = Path(artifact_dir)
 
+    # Server-mode transforms
+    if os.environ.get("STRATA_TRANSFORMS_ENABLED", "").lower() == "true":
+        if "transforms_config" not in overrides:
+            overrides["transforms_config"] = {}
+        overrides["transforms_config"]["enabled"] = True
+
     return overrides
 
 
@@ -446,6 +452,18 @@ class StrataConfig:
     # Defaults to ~/.strata/artifacts if not set
     artifact_dir: Path | None = None
 
+    # Server-mode transforms configuration
+    # When enabled, allows materialize in service mode with external executors
+    # Transforms config is loaded from [tool.strata.transforms] section
+    transforms_config: dict = field(default_factory=dict)
+
+    # Build runner configuration (server-mode transforms)
+    build_runner_poll_interval_ms: int = 500  # How often to poll for pending builds
+    build_runner_max_concurrent: int = 10  # Global limit on concurrent builds
+    build_runner_max_per_tenant: int = 3  # Per-tenant limit on concurrent builds
+    build_runner_default_timeout: float = 300.0  # Default build timeout
+    build_runner_default_max_output: int = 1024 * 1024 * 1024  # 1 GB default
+
     def __post_init__(self) -> None:
         if isinstance(self.cache_dir, str):
             self.cache_dir = Path(self.cache_dir)
@@ -504,6 +522,15 @@ class StrataConfig:
         """Check if write endpoints are enabled (personal mode only)."""
         return self.deployment_mode == "personal"
 
+    @property
+    def server_transforms_enabled(self) -> bool:
+        """Check if server-mode transforms are enabled.
+
+        Server-mode transforms allow materialize in service mode with
+        external executors. Requires transforms_config with enabled=true.
+        """
+        return self.deployment_mode == "service" and self.transforms_config.get("enabled", False)
+
     @classmethod
     def load(cls, **overrides) -> "StrataConfig":
         """Load configuration with precedence: defaults < pyproject.toml < env vars < overrides.
@@ -527,6 +554,10 @@ class StrataConfig:
         # Parse ACL configuration from [tool.strata.acl] section
         if "acl" in merged:
             merged["acl_config"] = _parse_acl_config(merged.pop("acl"))
+
+        # Store transforms configuration from [tool.strata.transforms] section
+        if "transforms" in merged:
+            merged["transforms_config"] = merged.pop("transforms")
 
         return cls(**merged)
 

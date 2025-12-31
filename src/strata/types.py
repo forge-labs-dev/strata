@@ -604,18 +604,24 @@ class MaterializeRequest(BaseModel):
 class MaterializeResponse(BaseModel):
     """Response from materialize request.
 
-    Returns either a cache hit (artifact exists) or a build spec
-    that the client must execute locally.
+    Returns either:
+    - Cache hit: artifact exists, no build needed
+    - Personal mode miss: build_spec for client-side execution
+    - Server mode miss: build_id for async server-side execution
 
     Attributes:
         hit: True if artifact exists in cache
         artifact_uri: URI of the artifact (hit) or placeholder for upload (miss)
-        build_spec: If miss, the spec for client to build locally
+        build_spec: If miss in personal mode, spec for client to build locally
+        build_id: If miss in server mode, ID to poll for async build status
+        state: Current artifact state ("ready", "building", "pending")
     """
 
     hit: bool  # True = artifact exists, False = client must build
     artifact_uri: str  # "strata://artifact/{id}@v={version}"
-    build_spec: dict[str, Any] | None = None  # Present if hit=False
+    build_spec: dict[str, Any] | None = None  # Present if hit=False (personal mode)
+    build_id: str | None = None  # Present if hit=False (server mode)
+    state: str = "ready"  # "ready", "building", "pending"
 
 
 class BuildSpec(BaseModel):
@@ -790,6 +796,38 @@ class NameStatusResponse(BaseModel):
     is_stale: bool = False
     stale_reason: str | None = None
     changed_inputs: list[InputChangeInfo] | None = None
+
+
+class BuildStatusResponse(BaseModel):
+    """Response with async build status for server-mode transforms.
+
+    Use GET /v1/artifacts/builds/{build_id} to poll build status.
+
+    Attributes:
+        build_id: Unique build identifier
+        artifact_id: Target artifact ID
+        version: Target artifact version
+        state: Current state (pending, building, ready, failed)
+        artifact_uri: URI of the artifact (available when state=ready)
+        executor_ref: Executor reference
+        created_at: When the build was created
+        started_at: When execution started (if started)
+        completed_at: When execution finished (if finished)
+        error_message: Error details (if failed)
+        error_code: Error code for programmatic handling (if failed)
+    """
+
+    build_id: str
+    artifact_id: str
+    version: int
+    state: str  # "pending", "building", "ready", "failed"
+    artifact_uri: str
+    executor_ref: str
+    created_at: float
+    started_at: float | None = None
+    completed_at: float | None = None
+    error_message: str | None = None
+    error_code: str | None = None
 
 
 class ExplainMaterializeRequest(BaseModel):
