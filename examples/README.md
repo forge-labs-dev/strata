@@ -94,17 +94,19 @@ asyncio.run(main())
 ## Artifact Workflow
 
 ```python
-import httpx
+from strata.client import StrataClient
 
 # Materialize a transform result as an artifact
-with httpx.Client(base_url="http://127.0.0.1:8765") as client:
-    resp = client.post("/v1/artifacts/materialize", json={
-        "artifact_id": "daily_summary",
-        "inputs": ["file:///warehouse#db.events"],
-        "transform": {
+with StrataClient(base_url="http://127.0.0.1:8765") as client:
+    artifact = client.materialize(
+        inputs=["file:///warehouse#db.events"],
+        transform={
             "ref": "duckdb_sql@v1",
             "params": {"sql": "SELECT category, COUNT(*) FROM input0 GROUP BY 1"}
-        }
-    })
-    print(resp.json())
+        },
+        name="daily_summary",
+    )
+    print(f"Artifact URI: {artifact.uri}")
+    print(f"Cache hit: {artifact.cache_hit}")
+    print(artifact.to_pandas())
 ```

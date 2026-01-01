@@ -121,35 +121,21 @@ def materialize_and_upload(
     client: StrataClient,
     sql: str,
     inputs: list[str] | None = None,
-    input_tables: dict[str, pa.Table] | None = None,
     name: str | None = None,
 ) -> tuple[str, pa.Table]:
-    """Helper to materialize, execute locally, and upload in one call.
+    """Helper to materialize using the unified API.
 
     Returns (artifact_uri, result_table).
     """
     inputs = inputs or []
-    input_tables = input_tables or {}
 
-    hit, uri, spec = client.materialize_raw(
+    artifact = client.materialize(
         inputs=inputs,
-        executor="local://duckdb_sql@v1",
-        params={"sql": sql},
-    )
-
-    if hit:
-        # Cache hit - fetch existing artifact
-        return uri, client.fetch_artifact(uri)
-
-    # Cache miss - execute and upload
-    result = client.run_local(spec, input_tables)
-    client.upload_artifact(
-        artifact_id=spec["artifact_id"],
-        version=spec["version"],
-        table=result,
+        transform={"ref": "duckdb_sql@v1", "params": {"sql": sql}},
         name=name,
     )
-    return uri, result
+
+    return artifact.uri, artifact.to_table()
 
 
 # =============================================================================
@@ -383,58 +369,6 @@ class TestServiceModeBlocking:
 
 
 # =============================================================================
-# Client Method Tests
-# =============================================================================
-
-
-class TestClientArtifactMethods:
-    """Tests for client artifact helper methods."""
-
-    def test_client_materialize_returns_build_spec(self, personal_mode_server):
-        """Client materialize_raw() returns (hit, uri, build_spec) on miss."""
-        with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize_raw(
-                inputs=["table1"],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 1"},
-            )
-            assert hit is False
-            assert uri.startswith("strata://artifact/")
-            assert spec["executor"] == "local://duckdb_sql@v1"
-
-    def test_client_upload_and_fetch(self, personal_mode_server):
-        """Client can upload and fetch artifacts."""
-        with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize_raw(inputs=[], executor="test", params={})
-
-            original = pa.table({"a": [1, 2], "b": ["x", "y"]})
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=original,
-            )
-
-            fetched = client.fetch_artifact(uri)
-            assert fetched.to_pydict() == original.to_pydict()
-
-    def test_client_name_operations(self, personal_mode_server):
-        """Client name helper methods work."""
-        with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize_raw(inputs=[], executor="test", params={})
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=pa.table({"x": [1]}),
-            )
-
-            result = client.set_name("test-name", spec["artifact_id"], spec["version"])
-            assert result["name_uri"] == "strata://name/test-name"
-
-            resolved = client.resolve_name("test-name")
-            assert resolved["artifact_uri"].startswith("strata://artifact/")
-
-
-# =============================================================================
 # Contract Tests - The Core Workflow
 # =============================================================================
 
@@ -443,12 +377,11 @@ class TestArtifactContract:
     """Contract tests that verify the complete artifact workflow.
 
     These are the critical tests that ensure the full loop works correctly:
-    1. materialize() returns cache miss with build_spec
+    1. materialize() returns cache miss on first call
     2. Local executor (DuckDB) runs the transform
-    3. upload_artifact() stores the result
-    4. materialize() returns cache hit
-    5. Data is accessible via artifact URI and name URI
-    6. Persistence survives server restart
+    3. materialize() returns cache hit on second call
+    4. Data is accessible via artifact URI and name URI
+    5. Persistence survives server restart
     """
 
     def test_transform_pipeline_with_dependencies(self, personal_mode_server):
@@ -462,34 +395,37 @@ class TestArtifactContract:
         """
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Stage 1: Create source data
-            source_uri, source_data = materialize_and_upload(
-                client,
-                sql="""
-                    SELECT 'click' as event, 1 as user_id, 10 as amount
-                    UNION ALL SELECT 'click', 1, 20
-                    UNION ALL SELECT 'view', 2, 5
-                    UNION ALL SELECT 'click', 2, 30
-                    UNION ALL SELECT 'view', 1, 15
-                """,
+            source = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT 'click' as event, 1 as user_id, 10 as amount
+                            UNION ALL SELECT 'click', 1, 20
+                            UNION ALL SELECT 'view', 2, 5
+                            UNION ALL SELECT 'click', 2, 30
+                            UNION ALL SELECT 'view', 1, 15
+                        """
+                    },
+                },
                 name="events-source",
             )
+            source_data = source.to_table()
             assert source_data.num_rows == 5
 
             # Stage 2: Filter to clicks only (depends on source)
-            hit, filtered_uri, filtered_spec = client.materialize_raw(
-                inputs=[source_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT * FROM input0 WHERE event = 'click'"},
-            )
-            assert hit is False, "Should be cache miss for new transform"
-
-            filtered_data = client.run_local(filtered_spec, {source_uri: source_data})
-            client.upload_artifact(
-                artifact_id=filtered_spec["artifact_id"],
-                version=filtered_spec["version"],
-                table=filtered_data,
+            filtered = client.materialize(
+                inputs=[source.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0 WHERE event = 'click'"},
+                },
                 name="clicks-only",
             )
+            assert filtered.cache_hit is False, "Should be cache miss for new transform"
+
+            filtered_data = filtered.to_table()
             assert filtered_data.num_rows == 3
             assert all(e == "click" for e in filtered_data["event"].to_pylist())
 
@@ -497,45 +433,39 @@ class TestArtifactContract:
             agg_sql = (
                 "SELECT user_id, sum(amount) as total FROM input0 GROUP BY user_id ORDER BY user_id"
             )
-            hit, agg_uri, agg_spec = client.materialize_raw(
-                inputs=[filtered_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": agg_sql},
-            )
-            assert hit is False
-
-            agg_data = client.run_local(agg_spec, {filtered_uri: filtered_data})
-            client.upload_artifact(
-                artifact_id=agg_spec["artifact_id"],
-                version=agg_spec["version"],
-                table=agg_data,
+            aggregated = client.materialize(
+                inputs=[filtered.uri],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": agg_sql}},
                 name="user-totals",
             )
+            assert aggregated.cache_hit is False
+
+            agg_data = aggregated.to_table()
             assert agg_data.to_pydict() == {"user_id": [1, 2], "total": [30, 30]}
 
             # Verify all stages are now cached
-            hit1, _, _ = client.materialize_raw(
-                inputs=[source_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT * FROM input0 WHERE event = 'click'"},
+            filtered2 = client.materialize(
+                inputs=[source.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0 WHERE event = 'click'"},
+                },
             )
-            assert hit1 is True, "Filter stage should be cached"
+            assert filtered2.cache_hit is True, "Filter stage should be cached"
 
-            hit2, _, _ = client.materialize_raw(
-                inputs=[filtered_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": agg_sql},
+            aggregated2 = client.materialize(
+                inputs=[filtered.uri],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": agg_sql}},
             )
-            assert hit2 is True, "Aggregate stage should be cached"
+            assert aggregated2.cache_hit is True, "Aggregate stage should be cached"
 
             # Verify names resolve to correct data
             for name, expected in [
                 ("clicks-only", filtered_data.to_pydict()),
                 ("user-totals", agg_data.to_pydict()),
             ]:
-                resolved = client.resolve_name(name)
-                fetched = client.fetch_artifact(resolved["artifact_uri"])
-                assert fetched.to_pydict() == expected
+                artifact = client.get_artifact_by_name(name)
+                assert artifact.to_table().to_pydict() == expected
 
     def test_persistence_across_restart(self, tmp_path):
         """Artifacts persist across server restarts."""
@@ -545,109 +475,94 @@ class TestArtifactContract:
         artifact_dir.mkdir()
 
         expected_data = {"x": [1, 2, 3], "y": ["a", "b", "c"]}
+        union_sql = "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
 
         # Phase 1: Create artifacts
         with run_server(cache_dir, artifact_dir, "personal") as ctx:
             with StrataClient(base_url=ctx.base_url) as client:
-                uri, _ = materialize_and_upload(
-                    client,
-                    sql="SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'",
+                artifact = client.materialize(
+                    inputs=[],
+                    transform={"ref": "duckdb_sql@v1", "params": {"sql": union_sql}},
                     name="persistent-artifact",
                 )
-                saved_uri = uri
+                saved_uri = artifact.uri
 
         # Phase 2: Restart and verify
         time.sleep(0.2)  # Ensure clean shutdown
         with run_server(cache_dir, artifact_dir, "personal") as ctx:
             with StrataClient(base_url=ctx.base_url) as client:
                 # Cache should still hit
-                union_sql = (
-                    "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
-                )
-                hit, uri, spec = client.materialize_raw(
+                artifact = client.materialize(
                     inputs=[],
-                    executor="local://duckdb_sql@v1",
-                    params={"sql": union_sql},
+                    transform={"ref": "duckdb_sql@v1", "params": {"sql": union_sql}},
                 )
-                assert hit is True, "Should be cache hit after restart"
-                assert uri == saved_uri
+                assert artifact.cache_hit is True, "Should be cache hit after restart"
+                assert artifact.uri == saved_uri
 
                 # Data should be accessible
-                data = client.fetch_artifact(uri)
+                data = artifact.to_table()
                 assert data.to_pydict() == expected_data
 
                 # Name should still resolve
-                resolved = client.resolve_name("persistent-artifact")
-                assert resolved["artifact_uri"] == saved_uri
+                resolved = client.get_artifact_by_name("persistent-artifact")
+                assert resolved.uri == saved_uri
 
     def test_provenance_deduplication(self, personal_mode_server):
         """Same inputs + transform deduplicate via provenance hash."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
+            # Create real input artifacts
+            input_a = client.materialize(
+                inputs=[],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": "SELECT 'a' as val"}},
+            )
+            input_b = client.materialize(
+                inputs=[],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": "SELECT 'b' as val"}},
+            )
+            input_c = client.materialize(
+                inputs=[],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": "SELECT 'c' as val"}},
+            )
+
             sql = "SELECT 'dedup' as tag"
 
             # First call with inputs [a, b]
-            hit1, uri1, spec1 = client.materialize_raw(
-                inputs=["input-a", "input-b"],
-                executor="local://duckdb_sql@v1",
-                params={"sql": sql},
+            artifact1 = client.materialize(
+                inputs=[input_a.uri, input_b.uri],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": sql}},
             )
-            assert hit1 is False
-            result = client.run_local({**spec1, "input_uris": []}, {})
-            client.upload_artifact(
-                artifact_id=spec1["artifact_id"],
-                version=spec1["version"],
-                table=result,
-            )
+            assert artifact1.cache_hit is False
 
             # Same inputs in different order - should hit (order independent)
-            hit2, uri2, _ = client.materialize_raw(
-                inputs=["input-b", "input-a"],
-                executor="local://duckdb_sql@v1",
-                params={"sql": sql},
+            artifact2 = client.materialize(
+                inputs=[input_b.uri, input_a.uri],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": sql}},
             )
-            assert hit2 is True
-            assert uri2 == uri1
+            assert artifact2.cache_hit is True
+            assert artifact2.uri == artifact1.uri
 
             # Different inputs - should miss
-            hit3, uri3, _ = client.materialize_raw(
-                inputs=["input-a", "input-c"],
-                executor="local://duckdb_sql@v1",
-                params={"sql": sql},
+            artifact3 = client.materialize(
+                inputs=[input_a.uri, input_c.uri],
+                transform={"ref": "duckdb_sql@v1", "params": {"sql": sql}},
             )
-            assert hit3 is False
-            assert uri3 != uri1
-
-    def test_unfinalized_artifact_not_cached(self, personal_mode_server):
-        """Artifacts not finalized don't appear as cache hits."""
-        with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            # Start materialize but don't upload
-            hit1, _, _ = client.materialize_raw(
-                inputs=[],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'unfinalized' as status"},
-            )
-            assert hit1 is False
-
-            # Same request again - still miss because never finalized
-            hit2, _, _ = client.materialize_raw(
-                inputs=[],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'unfinalized' as status"},
-            )
-            assert hit2 is False
+            assert artifact3.cache_hit is False
+            assert artifact3.uri != artifact1.uri
 
     def test_artifact_and_name_uri_equivalence(self, personal_mode_server):
         """Artifact URI and name URI return identical data."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 1 as id, 'alice' as name, 95.5 as score",
+            artifact = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 1 as id, 'alice' as name, 95.5 as score"},
+                },
                 name="equivalence-test",
             )
 
-            via_artifact = client.fetch_artifact(uri)
-            resolved = client.resolve_name("equivalence-test")
-            via_name = client.fetch_artifact(resolved["artifact_uri"])
+            via_artifact = artifact.to_table()
+            via_name = client.get_artifact_by_name("equivalence-test").to_table()
 
             assert via_artifact.schema == via_name.schema
             assert via_artifact.to_pydict() == via_name.to_pydict()
@@ -695,59 +610,48 @@ class TestArtifactLifecycle:
         """Delete an artifact version."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create artifact
-            uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 'to-delete' as status",
+            artifact = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'to-delete' as status"},
+                },
                 name="delete-test",
             )
 
-            # Extract artifact_id and version from URI
-            # URI format: strata://artifact/{id}@v={version}
-            import re
-
-            match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", uri)
-            artifact_id = match.group(1)
-            version = int(match.group(2))
-
             # Verify it exists
-            fetched = client.fetch_artifact(uri)
-            assert fetched.to_pydict() == {"status": ["to-delete"]}
+            assert artifact.to_table().to_pydict() == {"status": ["to-delete"]}
 
             # Delete it
-            result = client.delete_artifact(artifact_id, version)
+            result = client.delete_artifact(artifact.artifact_id, artifact.version)
             assert result["deleted"] is True
 
-            # Verify it's gone
+            # Verify it's gone - getting artifact by name should fail
             with pytest.raises(httpx.HTTPStatusError) as exc_info:
-                client.fetch_artifact(uri)
-            assert exc_info.value.response.status_code == 404
-
-            # Name should also be gone (since it pointed to deleted artifact)
-            with pytest.raises(httpx.HTTPStatusError) as exc_info:
-                client.resolve_name("delete-test")
+                client.get_artifact_by_name("delete-test")
             assert exc_info.value.response.status_code == 404
 
     def test_garbage_collect_unreferenced(self, personal_mode_server):
         """GC removes unreferenced artifacts older than cutoff."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create artifact WITHOUT a name (unreferenced)
-            hit, uri, spec = client.materialize_raw(
+            unreferenced = client.materialize(
                 inputs=[],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'gc-candidate' as status"},
-            )
-            result = client.run_local(spec, {})
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=result,
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'gc-candidate' as status"},
+                },
                 # No name - this artifact is unreferenced
             )
+            assert unreferenced.name is None
 
             # Create artifact WITH a name (referenced)
-            materialize_and_upload(
-                client,
-                sql="SELECT 'gc-safe' as status",
+            _referenced = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'gc-safe' as status"},
+                },
                 name="gc-protected",
             )
 
@@ -760,9 +664,8 @@ class TestArtifactLifecycle:
             assert gc_result["deleted_count"] >= 1
 
             # Named artifact should still exist
-            resolved = client.resolve_name("gc-protected")
-            fetched = client.fetch_artifact(resolved["artifact_uri"])
-            assert fetched.to_pydict() == {"status": ["gc-safe"]}
+            fetched = client.get_artifact_by_name("gc-protected")
+            assert fetched.to_table().to_pydict() == {"status": ["gc-safe"]}
 
     def test_usage_metrics(self, personal_mode_server):
         """Usage metrics track artifacts correctly."""
@@ -796,22 +699,25 @@ class TestArtifactLifecycle:
         """GC never deletes artifacts with name pointers."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create several named artifacts
-            uris = []
+            artifacts = []
             for i in range(3):
-                uri, _ = materialize_and_upload(
-                    client,
-                    sql=f"SELECT {i} as idx",
+                artifact = client.materialize(
+                    inputs=[],
+                    transform={
+                        "ref": "duckdb_sql@v1",
+                        "params": {"sql": f"SELECT {i} as idx"},
+                    },
                     name=f"gc-preserve-{i}",
                 )
-                uris.append(uri)
+                artifacts.append(artifact)
 
             # Run aggressive GC
             client.garbage_collect(max_age_days=0)
 
             # All named artifacts should still exist
-            for i, uri in enumerate(uris):
-                fetched = client.fetch_artifact(uri)
-                assert fetched.to_pydict() == {"idx": [i]}
+            for i, artifact in enumerate(artifacts):
+                fetched = client.get_artifact_by_name(f"gc-preserve-{i}")
+                assert fetched.to_table().to_pydict() == {"idx": [i]}
 
 
 # =============================================================================
@@ -832,9 +738,12 @@ class TestStalenessDetection:
         """Name status shows not stale when inputs unchanged."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create artifact with no inputs (will never be stale)
-            materialize_and_upload(
-                client,
-                sql="SELECT 'fresh' as status",
+            client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'fresh' as status"},
+                },
                 name="fresh-artifact",
             )
 
@@ -857,9 +766,12 @@ class TestStalenessDetection:
     def test_is_artifact_stale_convenience(self, personal_mode_server):
         """is_artifact_stale convenience method returns boolean."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            materialize_and_upload(
-                client,
-                sql="SELECT 'test' as value",
+            client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'test' as value"},
+                },
                 name="staleness-check",
             )
 
@@ -870,17 +782,22 @@ class TestStalenessDetection:
         """Explain materialize shows would_hit for cached computation."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create and finalize an artifact
-            materialize_and_upload(
-                client,
-                sql="SELECT 'cached' as result",
+            client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'cached' as result"},
+                },
                 name="explain-hit-test",
             )
 
             # Explain the same computation
-            result = client.explain_materialize_raw(
+            result = client.explain_materialize(
                 inputs=[],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'cached' as result"},
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'cached' as result"},
+                },
                 name="explain-hit-test",
             )
 
@@ -892,10 +809,12 @@ class TestStalenessDetection:
     def test_explain_materialize_miss_no_name(self, personal_mode_server):
         """Explain materialize shows would_build for new computation."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            result = client.explain_materialize_raw(
+            result = client.explain_materialize(
                 inputs=[],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'new-computation' as result"},
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'new-computation' as result"},
+                },
             )
 
             assert result["would_hit"] is False
@@ -916,32 +835,34 @@ class TestStalenessDetection:
         """
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create source artifact
-            source_uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 1 as version",
+            source = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 1 as version"},
+                },
                 name="stale-source",
             )
 
             # Create dependent artifact using source
-            hit, dep_uri, spec = client.materialize_raw(
-                inputs=[source_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT version * 10 as derived FROM input0"},
-            )
-            result = client.run_local(spec, {source_uri: pa.table({"version": [1]})})
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=result,
+            client.materialize(
+                inputs=[source.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT version * 10 as derived FROM input0"},
+                },
                 name="stale-dependent",
             )
 
             # Now explain a computation with DIFFERENT transform params (same inputs)
             # This triggers cache miss + staleness check against existing named artifact
-            result = client.explain_materialize_raw(
-                inputs=[source_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT version * 100 as derived FROM input0"},  # Different SQL
+            # Different SQL than above
+            result = client.explain_materialize(
+                inputs=[source.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT version * 100 as derived FROM input0"},
+                },
                 name="stale-dependent",
             )
 
@@ -966,23 +887,22 @@ class TestStalenessDetection:
         """
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create base artifact
-            base_uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 'v1' as data",
+            base = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'v1' as data"},
+                },
                 name="base-artifact",
             )
 
             # Create derived artifact that depends on base
-            hit, derived_uri, spec = client.materialize_raw(
-                inputs=[base_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT data || '-derived' as result FROM input0"},
-            )
-            result = client.run_local(spec, {base_uri: pa.table({"data": ["v1"]})})
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=result,
+            client.materialize(
+                inputs=[base.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT data || '-derived' as result FROM input0"},
+                },
                 name="derived-artifact",
             )
 
@@ -990,71 +910,72 @@ class TestStalenessDetection:
             status = client.get_name_status("derived-artifact")
             assert status["is_stale"] is False
             # Should show the input dependency
-            assert base_uri in status["input_versions"]
+            assert base.uri in status["input_versions"]
             # Input version should be the artifact version string
-            assert "@v=" in status["input_versions"][base_uri]
+            assert "@v=" in status["input_versions"][base.uri]
 
     def test_name_status_reports_input_versions(self, personal_mode_server):
         """Name status reports stored input versions correctly."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create two input artifacts
-            input1_uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 'input1' as source",
+            input1 = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'input1' as source"},
+                },
             )
-            input2_uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 'input2' as source",
+            input2 = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'input2' as source"},
+                },
             )
 
             # Create artifact that depends on both
-            hit, uri, spec = client.materialize_raw(
-                inputs=[input1_uri, input2_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT 'combined' as result"},
-            )
-            result = client.run_local(
-                spec,
-                {
-                    input1_uri: pa.table({"source": ["input1"]}),
-                    input2_uri: pa.table({"source": ["input2"]}),
+            client.materialize(
+                inputs=[input1.uri, input2.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'combined' as result"},
                 },
-            )
-            client.upload_artifact(
-                artifact_id=spec["artifact_id"],
-                version=spec["version"],
-                table=result,
                 name="multi-input-artifact",
             )
 
             # Check status shows all input versions
             status = client.get_name_status("multi-input-artifact")
             assert len(status["input_versions"]) == 2
-            assert input1_uri in status["input_versions"]
-            assert input2_uri in status["input_versions"]
+            assert input1.uri in status["input_versions"]
+            assert input2.uri in status["input_versions"]
             assert status["is_stale"] is False
 
     def test_explain_resolved_input_versions(self, personal_mode_server):
         """Explain returns resolved input versions."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create an artifact to use as input
-            input_uri, _ = materialize_and_upload(
-                client,
-                sql="SELECT 'input-data' as value",
+            input_artifact = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 'input-data' as value"},
+                },
             )
 
             # Explain with that input
-            result = client.explain_materialize_raw(
-                inputs=[input_uri],
-                executor="local://duckdb_sql@v1",
-                params={"sql": "SELECT * FROM input0"},
+            result = client.explain_materialize(
+                inputs=[input_artifact.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0"},
+                },
             )
 
             # Should have resolved versions
             assert result["resolved_input_versions"] is not None
-            assert input_uri in result["resolved_input_versions"]
+            assert input_artifact.uri in result["resolved_input_versions"]
             # Version should be in format "artifact_id@v=N"
-            version = result["resolved_input_versions"][input_uri]
+            version = result["resolved_input_versions"][input_artifact.uri]
             assert "@v=" in version
 
 
