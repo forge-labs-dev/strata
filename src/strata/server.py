@@ -3846,6 +3846,12 @@ async def materialize_artifact(request: MaterializeRequest):
     import uuid
 
     from strata.artifact_store import TransformSpec, compute_provenance_hash
+    from strata.auth import get_principal
+
+    # Get tenant and principal from auth context early for artifact isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+    principal_id = principal.id if principal else None
 
     # Parse transform spec early so we can validate it
     transform = request.transform
@@ -3880,14 +3886,14 @@ async def materialize_artifact(request: MaterializeRequest):
 
     provenance_hash = compute_provenance_hash(input_hashes, transform_spec)
 
-    # Check for existing artifact with same provenance
-    existing = store.find_by_provenance(provenance_hash)
+    # Check for existing artifact with same provenance (tenant-scoped)
+    existing = store.find_by_provenance(provenance_hash, tenant=tenant_id)
     if existing is not None:
         artifact_uri = f"strata://artifact/{existing.id}@v={existing.version}"
 
-        # Optionally set name
+        # Optionally set name (tenant-scoped)
         if request.name:
-            store.set_name(request.name, existing.id, existing.version)
+            store.set_name(request.name, existing.id, existing.version, tenant=tenant_id)
 
         return MaterializeResponse(
             hit=True,
@@ -3896,13 +3902,15 @@ async def materialize_artifact(request: MaterializeRequest):
             state="ready",
         )
 
-    # Cache miss - create new artifact in building state
+    # Cache miss - create new artifact in building state (tenant-scoped)
     artifact_id = str(uuid.uuid4())
     version = store.create_artifact(
         artifact_id=artifact_id,
         provenance_hash=provenance_hash,
         transform_spec=transform_spec,
         input_versions=input_versions,  # Track for staleness detection
+        tenant=tenant_id,
+        principal=principal_id,
     )
 
     artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
@@ -3926,12 +3934,8 @@ async def materialize_artifact(request: MaterializeRequest):
                 detail="Build store not initialized",
             )
 
-        # Get tenant and principal from auth context
-        from strata.auth import get_principal
-
-        principal = get_principal()
-        tenant_id = principal.tenant if principal else "__default__"
-        principal_id = principal.id if principal else None
+        # Use tenant for build QoS (fallback to __default__ for QoS tracking)
+        build_tenant_id = tenant_id if tenant_id else "__default__"
 
         # Build QoS admission control
         # Classify build and check quotas before creating the build
@@ -3947,7 +3951,7 @@ async def materialize_artifact(request: MaterializeRequest):
 
             # Check quota if enabled (estimated output not known, check against 0)
             try:
-                await build_qos.check_quota(tenant_id, 0)
+                await build_qos.check_quota(build_tenant_id, 0)
             except BuildQoSError as e:
                 # Quota exceeded - clean up artifact and return 429
                 store.fail_artifact(artifact_id, version)
@@ -3959,7 +3963,7 @@ async def materialize_artifact(request: MaterializeRequest):
 
             # Acquire build slot (early rejection if at capacity)
             try:
-                build_slot = await build_qos.acquire(tenant_id, priority)
+                build_slot = await build_qos.acquire(build_tenant_id, priority)
             except BuildQoSError as e:
                 # At capacity - clean up artifact and return 429
                 store.fail_artifact(artifact_id, version)
@@ -3977,7 +3981,7 @@ async def materialize_artifact(request: MaterializeRequest):
                 version=version,
                 executor_ref=executor_ref,
                 executor_url=transform_defn.executor_url if transform_defn else None,
-                tenant_id=tenant_id if tenant_id != "__default__" else None,
+                tenant_id=tenant_id,
                 principal_id=principal_id,
             )
 
@@ -4134,7 +4138,7 @@ async def get_artifact_info(artifact_id: str, version: int):
 
 @app.get("/v1/names/{name}", response_model=NameResolveResponse)
 async def resolve_name(name: str):
-    """Resolve a name to its artifact (personal mode only).
+    """Resolve a name to its artifact.
 
     Args:
         name: Name to resolve (without strata://name/ prefix)
@@ -4142,9 +4146,15 @@ async def resolve_name(name: str):
     Returns:
         NameResolveResponse with resolved artifact URI
     """
+    from strata.auth import get_principal
+
     store = _get_artifact_store()
 
-    name_info = store.get_name(name)
+    # Get tenant from auth context for name isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+
+    name_info = store.get_name(name, tenant=tenant_id)
     if name_info is None:
         raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
 
@@ -4159,7 +4169,7 @@ async def resolve_name(name: str):
 
 @app.post("/v1/names", response_model=NameSetResponse)
 async def set_name(request: NameSetRequest):
-    """Set or update a name pointer (personal mode only).
+    """Set or update a name pointer.
 
     Args:
         request: NameSetRequest with name, artifact_id, and version
@@ -4167,10 +4177,16 @@ async def set_name(request: NameSetRequest):
     Returns:
         NameSetResponse with name and artifact URIs
     """
+    from strata.auth import get_principal
+
     store = _get_artifact_store()
 
+    # Get tenant from auth context for name isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+
     try:
-        store.set_name(request.name, request.artifact_id, request.version)
+        store.set_name(request.name, request.artifact_id, request.version, tenant=tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -4185,7 +4201,7 @@ async def set_name(request: NameSetRequest):
 
 @app.delete("/v1/names/{name}")
 async def delete_name(name: str):
-    """Delete a name pointer (personal mode only).
+    """Delete a name pointer.
 
     Args:
         name: Name to delete
@@ -4193,9 +4209,15 @@ async def delete_name(name: str):
     Returns:
         Success status
     """
+    from strata.auth import get_principal
+
     store = _get_artifact_store()
 
-    if not store.delete_name(name):
+    # Get tenant from auth context for name isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+
+    if not store.delete_name(name, tenant=tenant_id):
         raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
 
     return {"status": "deleted", "name": name}
@@ -4203,14 +4225,20 @@ async def delete_name(name: str):
 
 @app.get("/v1/names")
 async def list_names():
-    """List all name pointers (personal mode only).
+    """List all name pointers.
 
     Returns:
         List of name entries with their artifact mappings
     """
+    from strata.auth import get_principal
+
     store = _get_artifact_store()
 
-    names = store.list_names()
+    # Get tenant from auth context for name isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+
+    names = store.list_names(tenant=tenant_id)
     return {
         "names": [
             {
@@ -4225,7 +4253,7 @@ async def list_names():
 
 @app.get("/v1/artifacts/names/{name}/status", response_model=NameStatusResponse)
 async def get_name_status(name: str):
-    """Get status of a named artifact including staleness info (personal mode only).
+    """Get status of a named artifact including staleness info.
 
     Returns the current state of a named artifact and checks whether any of its
     input dependencies have newer versions available. This is useful for:
@@ -4239,11 +4267,16 @@ async def get_name_status(name: str):
     Returns:
         NameStatusResponse with staleness information
     """
+    from strata.auth import get_principal
 
     store = _get_artifact_store()
 
+    # Get tenant from auth context for name isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+
     # Get name status from store (includes input_versions)
-    status = store.get_name_status(name)
+    status = store.get_name_status(name, tenant=tenant_id)
     if status is None:
         raise HTTPException(status_code=404, detail=f"Name '{name}' not found")
 
@@ -5023,8 +5056,13 @@ async def explain_materialize(request: ExplainMaterializeRequest):
         ExplainMaterializeResponse explaining what would happen
     """
     from strata.artifact_store import TransformSpec, compute_provenance_hash
+    from strata.auth import get_principal
 
     store = _get_artifact_store()
+
+    # Get tenant from auth context for artifact isolation
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
 
     # Parse transform spec
     transform = request.transform
@@ -5046,8 +5084,8 @@ async def explain_materialize(request: ExplainMaterializeRequest):
     input_hashes = [f"{uri}:{version}" for uri, version in sorted(resolved_versions.items())]
     provenance_hash = compute_provenance_hash(input_hashes, transform_spec)
 
-    # Check for existing artifact with same provenance
-    existing = store.find_by_provenance(provenance_hash)
+    # Check for existing artifact with same provenance (tenant-scoped)
+    existing = store.find_by_provenance(provenance_hash, tenant=tenant_id)
     if existing is not None:
         return ExplainMaterializeResponse(
             would_hit=True,
@@ -5063,7 +5101,7 @@ async def explain_materialize(request: ExplainMaterializeRequest):
     existing_artifact_uri = None
 
     if request.name:
-        name_status = store.get_name_status(request.name)
+        name_status = store.get_name_status(request.name, tenant=tenant_id)
         if name_status is not None:
             existing_artifact_uri = name_status.artifact_uri
             # Compare stored versions vs current

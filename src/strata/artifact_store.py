@@ -1196,7 +1196,9 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def get_name_status(self, name: str) -> NameStatus | None:
+    def get_name_status(
+        self, name: str, tenant: str | None = None
+    ) -> NameStatus | None:
         """Get status information for a named artifact.
 
         Returns the name pointer metadata along with the artifact's
@@ -1205,11 +1207,12 @@ class ArtifactStore:
 
         Args:
             name: Name to look up
+            tenant: Optional tenant filter for multi-tenant isolation
 
         Returns:
             NameStatus with artifact metadata and input versions, or None
         """
-        name_info = self.get_name(name)
+        name_info = self.get_name(name, tenant=tenant)
         if name_info is None:
             return None
 
