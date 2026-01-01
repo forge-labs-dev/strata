@@ -78,6 +78,114 @@ class RetryConfig:
         return min(exponential + jitter, self.max_delay)
 
 
+@dataclass
+class Artifact:
+    """An immutable, versioned artifact from Strata.
+
+    Returned by `client.materialize()`. Provides access to artifact data
+    and metadata.
+
+    Attributes:
+        artifact_id: Unique artifact identifier
+        version: Artifact version number
+        cache_hit: True if artifact was returned from cache
+        execution: How the artifact was obtained ("cache", "local", "server")
+        build_id: Build ID if artifact was built asynchronously
+        name: Name pointer if one was assigned
+
+    Example:
+        artifact = client.materialize(
+            inputs=["file:///warehouse#db.events"],
+            transform={
+                "ref": "duckdb_sql@v1",
+                "params": {"sql": "SELECT category, COUNT(*) FROM input0 GROUP BY 1"},
+            },
+            name="category_counts",
+        )
+        print(f"Artifact: {artifact.uri}")
+        print(f"Cache hit: {artifact.cache_hit}")
+        df = artifact.to_pandas()
+    """
+
+    _client: "StrataClient"
+    artifact_id: str
+    version: int
+    cache_hit: bool = False
+    execution: str = "cache"  # "cache" | "local" | "server"
+    build_id: str | None = None
+    name: str | None = None
+
+    @property
+    def uri(self) -> str:
+        """Artifact URI (strata://artifact/{id}@v={version})."""
+        return f"strata://artifact/{self.artifact_id}@v={self.version}"
+
+    @property
+    def name_uri(self) -> str | None:
+        """Name URI if a name was assigned (strata://name/{name})."""
+        return f"strata://name/{self.name}" if self.name else None
+
+    def info(self) -> dict:
+        """Get artifact metadata.
+
+        Returns:
+            Dict with artifact_id, version, state, size_bytes, row_count,
+            created_at, arrow_schema, etc.
+        """
+        response = self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def to_table(self) -> pa.Table:
+        """Download artifact data as Arrow Table."""
+        return self._client._fetch_artifact_data(self.artifact_id, self.version)
+
+    def to_pandas(self):
+        """Download artifact data as pandas DataFrame."""
+        return self.to_table().to_pandas()
+
+    def to_polars(self):
+        """Download artifact data as Polars DataFrame."""
+        import polars as pl
+
+        return pl.from_arrow(self.to_table())
+
+    def lineage(self, direction: str = "upstream", max_depth: int = 10) -> dict:
+        """Get artifact lineage (dependency graph).
+
+        Args:
+            direction: "upstream" (inputs) or "downstream" (dependents)
+            max_depth: Maximum traversal depth
+
+        Returns:
+            Dict with 'nodes' and 'edges' describing the lineage graph
+        """
+        response = self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}/lineage",
+            params={"direction": direction, "max_depth": max_depth},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def dependents(self, max_depth: int = 10) -> dict:
+        """Get artifacts that depend on this artifact.
+
+        Args:
+            max_depth: Maximum traversal depth
+
+        Returns:
+            Dict with 'dependents' list
+        """
+        response = self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}/dependents",
+            params={"max_depth": max_depth},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 class StrataClient:
     """Client for interacting with a Strata server.
 
@@ -262,20 +370,20 @@ class StrataClient:
         return response.json()
 
     # -----------------------------------------------------------------------
-    # Artifact Methods (Personal Mode Only)
+    # Low-level Artifact API (backward compatible)
     # -----------------------------------------------------------------------
 
-    def materialize(
+    def materialize_raw(
         self,
         inputs: list[str],
         executor: str,
         params: dict,
         name: str | None = None,
     ) -> tuple[bool, str, dict | None]:
-        """Materialize a computed artifact.
+        """Low-level materialize: check cache and get build spec.
 
-        Checks if the artifact exists (cache hit) or needs to be built locally.
-        The server NEVER executes transforms - this is client-side only.
+        This is the low-level API that returns (hit, uri, spec) tuple.
+        For most use cases, prefer the unified `materialize()` method.
 
         Args:
             inputs: List of input URIs (table URIs or artifact URIs)
@@ -311,7 +419,7 @@ class StrataClient:
         local executors.
 
         Args:
-            build_spec: BuildSpec from materialize() response
+            build_spec: BuildSpec from materialize_raw() response
             input_tables: Mapping of input URI -> Arrow Table
 
         Returns:
@@ -373,94 +481,433 @@ class StrataClient:
         finalize_response.raise_for_status()
         return finalize_response.json()
 
-    def materialize_local(
-        self,
-        inputs: list[str],
-        sql: str,
-        name: str | None = None,
-    ) -> pa.Table:
-        """Convenience method: materialize with DuckDB SQL, handling cache logic.
-
-        This is the main entry point for local development workflows:
-        1. Check if result is cached
-        2. If miss, fetch inputs, execute SQL locally, upload result
-        3. Return the result table
-
-        Args:
-            inputs: List of table URIs to use as inputs
-            sql: DuckDB SQL query (use input0, input1, etc. as table names)
-            name: Optional name to assign to the result
-
-        Returns:
-            Result Arrow Table (from cache or freshly computed)
-
-        Example:
-            result = client.materialize_local(
-                inputs=["file:///warehouse#db.events"],
-                sql="SELECT user_id, count(*) FROM input0 GROUP BY user_id",
-                name="user_counts",
-            )
-        """
-        # Check cache
-        hit, artifact_uri, build_spec = self.materialize(
-            inputs=inputs,
-            executor="local://duckdb_sql@v1",
-            params={"sql": sql},
-            name=name,
-        )
-
-        if hit:
-            # Fetch cached artifact
-            return self.fetch_artifact(artifact_uri)
-
-        # Cache miss - compute locally
-        if build_spec is None:
-            raise ValueError("Expected build_spec on cache miss")
-
-        # Fetch input tables
-        input_tables = {}
-        for uri in build_spec.get("input_uris", []):
-            input_tables[uri] = self.scan_to_table(uri)
-
-        # Execute locally
-        result = self.run_local(build_spec, input_tables)
-
-        # Upload result
-        self.upload_artifact(
-            artifact_id=build_spec["artifact_id"],
-            version=build_spec["version"],
-            table=result,
-            name=name,
-        )
-
-        return result
-
     def fetch_artifact(self, artifact_uri: str) -> pa.Table:
-        """Fetch an artifact by URI.
+        """Fetch artifact data by URI.
 
         Args:
             artifact_uri: Artifact URI (strata://artifact/{id}@v={version})
 
         Returns:
-            Arrow Table containing the artifact data
+            Arrow Table with artifact data
         """
+        return self._fetch_artifact_by_uri(artifact_uri)
+
+    def explain_materialize_raw(
+        self,
+        inputs: list[str],
+        executor: str,
+        params: dict,
+        name: str | None = None,
+    ) -> dict:
+        """Low-level explain materialize with executor/params API.
+
+        Args:
+            inputs: List of input URIs
+            executor: Executor URI (e.g., "local://duckdb_sql@v1")
+            params: Executor-specific parameters
+            name: Optional name to check staleness against
+
+        Returns:
+            Dict with would_hit, would_build, artifact_uri, is_stale, etc.
+        """
+        request_body = {
+            "inputs": inputs,
+            "transform": {"executor": executor, "params": params},
+            "name": name,
+        }
+        response = self._client.post("/v1/artifacts/explain-materialize", json=request_body)
+        response.raise_for_status()
+        return response.json()
+
+    # -----------------------------------------------------------------------
+    # Unified Artifact API (recommended)
+    # -----------------------------------------------------------------------
+
+    def materialize(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        name: str | None = None,
+        mode: str = "auto",
+        refresh: bool = False,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 300.0,
+    ) -> Artifact:
+        """Materialize a computed artifact.
+
+        This is the main entry point for creating artifacts. The client
+        automatically chooses local or server execution based on server
+        capabilities and the `mode` parameter.
+
+        Args:
+            inputs: List of input URIs (table URIs or artifact URIs)
+            transform: Transform specification with "ref" and "params"
+                Example: {"ref": "duckdb_sql@v1", "params": {"sql": "..."}}
+            name: Optional name to assign to the result
+            mode: Execution mode - "auto", "local", or "server"
+            refresh: Force recompute even if cached
+            wait: Wait for async builds to complete (server mode)
+            poll_interval: Seconds between build status polls
+            timeout: Maximum seconds to wait for build
+
+        Returns:
+            Artifact object with access to data and metadata
+
+        Example:
+            # SQL transform
+            result = client.materialize(
+                inputs=["file:///warehouse#db.events"],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT category, COUNT(*) FROM input0 GROUP BY 1"},
+                },
+                name="category_counts",
+            )
+            df = result.to_pandas()
+
+            # Chain artifacts
+            result2 = client.materialize(
+                inputs=[result.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0 WHERE count > 100"},
+                },
+            )
+        """
+        # Determine execution mode
+        effective_mode = self._resolve_execution_mode(mode, transform)
+
+        if effective_mode == "local":
+            return self._materialize_local(
+                inputs=inputs,
+                transform=transform,
+                name=name,
+                refresh=refresh,
+            )
+        else:
+            return self._materialize_server(
+                inputs=inputs,
+                transform=transform,
+                name=name,
+                refresh=refresh,
+                wait=wait,
+                poll_interval=poll_interval,
+                timeout=timeout,
+            )
+
+    def _resolve_execution_mode(
+        self, mode: str, transform: dict[str, Any]
+    ) -> str:
+        """Resolve execution mode based on server capabilities."""
+        if mode in ("local", "server"):
+            return mode
+
+        # mode == "auto": check server capabilities
+        # For now, default to server if transform ref doesn't start with "local://"
+        ref = transform.get("ref", "")
+        if ref.startswith("local://"):
+            return "local"
+
+        # Try server first, fall back to local if not supported
+        # In future: query /v1/capabilities to check server support
+        return "server"
+
+    def _materialize_local(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        name: str | None,
+        refresh: bool,
+    ) -> Artifact:
+        """Execute transform locally and upload result."""
+        # Request materialize to check cache / get build spec
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
+        request_body = {
+            "inputs": inputs,
+            "transform": server_transform,
+            "name": name,
+        }
+        if refresh:
+            request_body["refresh"] = True
+
+        response = self._client.post("/v1/artifacts/materialize", json=request_body)
+        response.raise_for_status()
+        data = response.json()
+
+        artifact_uri = data["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+
+        # Cache hit
+        if data.get("hit") or data.get("state") == "ready":
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=True,
+                execution="cache",
+                name=name,
+            )
+
+        # Cache miss - need to build locally
+        build_spec = data.get("build_spec")
+        if build_spec is None:
+            raise ValueError("Expected build_spec for local execution")
+
+        # Fetch input tables
+        input_tables = {}
+        for uri in build_spec.get("input_uris", inputs):
+            if uri.startswith("strata://artifact/"):
+                input_tables[uri] = self._fetch_artifact_by_uri(uri)
+            else:
+                input_tables[uri] = self.scan_to_table(uri)
+
+        # Execute locally
+        result_table = self._run_local(build_spec, input_tables)
+
+        # Upload result
+        self._upload_artifact(artifact_id, version, result_table, name)
+
+        return Artifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=False,
+            execution="local",
+            name=name,
+        )
+
+    def _parse_artifact_uri(self, uri: str) -> tuple[str, int]:
+        """Parse artifact URI into (artifact_id, version)."""
         import re
 
-        # Parse URI
+        match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", uri)
+        if not match:
+            raise ValueError(f"Invalid artifact URI: {uri}")
+        return match.group(1), int(match.group(2))
+
+    def _materialize_server(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        name: str | None,
+        refresh: bool,
+        wait: bool,
+        poll_interval: float,
+        timeout: float,
+    ) -> Artifact:
+        """Request server-side execution."""
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
+        request_body = {
+            "inputs": inputs,
+            "transform": server_transform,
+            "name": name,
+        }
+        if refresh:
+            request_body["refresh"] = True
+
+        response = self._client.post("/v1/artifacts/materialize", json=request_body)
+        response.raise_for_status()
+        data = response.json()
+
+        # Parse artifact_uri to get artifact_id and version
+        artifact_uri = data["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+        build_id = data.get("build_id")
+        hit = data.get("hit", False)
+        state = data.get("state", "ready")
+
+        # Cache hit or already ready
+        if hit or state == "ready":
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=hit,
+                execution="cache" if hit else "server",
+                name=name,
+            )
+
+        # Build in progress
+        if not wait:
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=False,
+                execution="server",
+                build_id=build_id,
+                name=name,
+            )
+
+        # Poll for completion if server is building
+        if build_id:
+            start_time = time.time()
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
+
+                status_resp = self._client.get(f"/v1/artifacts/builds/{build_id}")
+                status_resp.raise_for_status()
+                build_status = status_resp.json()
+
+                if build_status["state"] == "ready":
+                    return Artifact(
+                        _client=self,
+                        artifact_id=artifact_id,
+                        version=version,
+                        cache_hit=False,
+                        execution="server",
+                        build_id=build_id,
+                        name=name,
+                    )
+                elif build_status["state"] == "failed":
+                    error_msg = build_status.get("error_message", "Unknown error")
+                    raise RuntimeError(f"Build failed: {error_msg}")
+
+                time.sleep(poll_interval)
+
+        # Server returned build_spec but no build_id = personal mode
+        # Fall back to local execution
+        build_spec = data.get("build_spec")
+        if build_spec:
+            # Fetch input tables
+            input_tables = {}
+            for uri in build_spec.get("input_uris", []):
+                if uri.startswith("strata://artifact/"):
+                    input_tables[uri] = self._fetch_artifact_by_uri(uri)
+                else:
+                    input_tables[uri] = self.scan_to_table(uri)
+
+            # Execute locally
+            result_table = self._run_local(build_spec, input_tables)
+
+            # Upload result
+            self._upload_artifact(artifact_id, version, result_table, name)
+
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=False,
+                execution="local",
+                name=name,
+            )
+
+        # Should not reach here - server should return either hit, build_id, or build_spec
+        raise RuntimeError("Server returned neither hit, build_id, nor build_spec")
+
+    def _run_local(
+        self,
+        build_spec: dict,
+        input_tables: dict[str, pa.Table],
+    ) -> pa.Table:
+        """Execute a transform locally."""
+        from strata.executors import run_local
+
+        return run_local(build_spec, input_tables)
+
+    def _upload_artifact(
+        self,
+        artifact_id: str,
+        version: int,
+        table: pa.Table,
+        name: str | None = None,
+    ) -> dict:
+        """Upload an artifact after local computation."""
+        # Serialize table to Arrow IPC stream
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        blob = sink.getvalue().to_pybytes()
+
+        # Upload blob
+        upload_response = self._client.post(
+            f"/v1/artifacts/upload/{artifact_id}/v/{version}",
+            content=blob,
+            headers={"Content-Type": "application/vnd.apache.arrow.stream"},
+        )
+        upload_response.raise_for_status()
+
+        # Finalize
+        finalize_response = self._client.post(
+            "/v1/artifacts/finalize",
+            json={
+                "artifact_id": artifact_id,
+                "version": version,
+                "arrow_schema": table.schema.to_string(),
+                "row_count": table.num_rows,
+                "name": name,
+            },
+        )
+        finalize_response.raise_for_status()
+        return finalize_response.json()
+
+    def _fetch_artifact_data(self, artifact_id: str, version: int) -> pa.Table:
+        """Fetch artifact data by ID and version."""
+        response = self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}/data")
+        response.raise_for_status()
+        reader = ipc.open_stream(pa.BufferReader(response.content))
+        return reader.read_all()
+
+    def _fetch_artifact_by_uri(self, artifact_uri: str) -> pa.Table:
+        """Fetch artifact data by URI."""
+        import re
+
         match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", artifact_uri)
         if not match:
             raise ValueError(f"Invalid artifact URI: {artifact_uri}")
 
         artifact_id = match.group(1)
         version = int(match.group(2))
+        return self._fetch_artifact_data(artifact_id, version)
 
-        # Fetch data
-        response = self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}/data")
+    def get_artifact(self, artifact_id: str, version: int) -> Artifact:
+        """Get an existing artifact by ID and version.
+
+        Args:
+            artifact_id: Artifact ID
+            version: Version number
+
+        Returns:
+            Artifact object
+
+        Raises:
+            httpx.HTTPStatusError: If artifact not found (404)
+        """
+        # Verify artifact exists
+        response = self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
         response.raise_for_status()
+        return Artifact(_client=self, artifact_id=artifact_id, version=version)
 
-        # Parse Arrow IPC
-        reader = ipc.open_stream(pa.BufferReader(response.content))
-        return reader.read_all()
+    def get_artifact_by_name(self, name: str) -> Artifact:
+        """Get an artifact by its name.
+
+        Args:
+            name: Artifact name
+
+        Returns:
+            Artifact object
+
+        Raises:
+            httpx.HTTPStatusError: If name not found (404)
+        """
+        resolved = self.resolve_name(name)
+        artifact_id, version = self._parse_artifact_uri(resolved["artifact_uri"])
+        return Artifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            name=name,
+        )
 
     def resolve_name(self, name: str) -> dict:
         """Resolve a name to its artifact.
@@ -611,8 +1058,7 @@ class StrataClient:
     def explain_materialize(
         self,
         inputs: list[str],
-        executor: str,
-        params: dict,
+        transform: dict[str, Any],
         name: str | None = None,
     ) -> dict:
         """Explain what materialize would do without doing it (dry run).
@@ -622,34 +1068,36 @@ class StrataClient:
 
         Args:
             inputs: List of input URIs (table URIs or artifact URIs)
-            executor: Executor URI (e.g., "local://duckdb_sql@v1")
-            params: Executor-specific parameters
+            transform: Transform specification with "ref" and "params"
+                Example: {"ref": "duckdb_sql@v1", "params": {"sql": "..."}}
             name: Optional name to check staleness against
 
         Returns:
             Dict with fields:
-            - would_hit: True if result would be cached
-            - artifact_uri: URI of existing artifact if hit, or previous version if stale
-            - would_build: True if client would need to compute locally
+            - cache_hit: True if result would be cached
+            - artifact_uri: URI of existing artifact if hit
+            - provenance_hash: Hash of the transform specification
             - is_stale: True if named artifact exists but needs rebuild
             - stale_reason: Explanation of why rebuild is needed
-            - changed_inputs: List of inputs that changed
-            - resolved_input_versions: Current versions of all inputs
+            - execution: "cache", "local", or "server"
 
         Example:
             >>> result = client.explain_materialize(
             ...     inputs=["file:///warehouse#db.events"],
-            ...     executor="local://duckdb_sql@v1",
-            ...     params={"sql": "SELECT * FROM input0"},
+            ...     transform={"ref": "duckdb_sql@v1", "params": {"sql": "SELECT * FROM input0"}},
             ...     name="my_transform",
             ... )
             >>> if result["is_stale"]:
             ...     print(result["stale_reason"])
-            Rebuild needed: file:///warehouse#db.events: 123 → 456
         """
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
         request_body = {
             "inputs": inputs,
-            "transform": {"executor": executor, "params": params},
+            "transform": server_transform,
             "name": name,
         }
         response = self._client.post("/v1/artifacts/explain-materialize", json=request_body)
@@ -889,6 +1337,259 @@ class AsyncStrataClient:
     async def clear_cache(self) -> dict:
         """Clear the server's disk cache."""
         response = await self._client.post("/v1/cache/clear")
+        response.raise_for_status()
+        return response.json()
+
+    # -----------------------------------------------------------------------
+    # Artifact API
+    # -----------------------------------------------------------------------
+
+    async def materialize(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        name: str | None = None,
+        mode: str = "auto",
+        refresh: bool = False,
+        wait: bool = True,
+        poll_interval: float = 0.5,
+        timeout: float = 300.0,
+    ) -> "AsyncArtifact":
+        """Materialize a computed artifact.
+
+        This is the main entry point for creating artifacts. The client
+        automatically chooses local or server execution based on server
+        capabilities and the `mode` parameter.
+
+        Args:
+            inputs: List of input URIs (table URIs or artifact URIs)
+            transform: Transform specification with "ref" and "params"
+                Example: {"ref": "duckdb_sql@v1", "params": {"sql": "..."}}
+            name: Optional name to assign to the result
+            mode: Execution mode - "auto", "local", or "server"
+            refresh: Force recompute even if cached
+            wait: Wait for async builds to complete (server mode)
+            poll_interval: Seconds between build status polls
+            timeout: Maximum seconds to wait for build
+
+        Returns:
+            AsyncArtifact object with access to data and metadata
+
+        Example:
+            result = await client.materialize(
+                inputs=["file:///warehouse#db.events"],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT category, COUNT(*) FROM input0 GROUP BY 1"},
+                },
+                name="category_counts",
+            )
+            df = (await result.to_table()).to_pandas()
+        """
+        # For async client, we only support server mode for now
+        # (local execution would block the event loop)
+        return await self._materialize_server(
+            inputs=inputs,
+            transform=transform,
+            name=name,
+            refresh=refresh,
+            wait=wait,
+            poll_interval=poll_interval,
+            timeout=timeout,
+        )
+
+    def _parse_artifact_uri(self, uri: str) -> tuple[str, int]:
+        """Parse artifact URI into (artifact_id, version)."""
+        import re
+
+        match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", uri)
+        if not match:
+            raise ValueError(f"Invalid artifact URI: {uri}")
+        return match.group(1), int(match.group(2))
+
+    async def _materialize_server(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        name: str | None,
+        refresh: bool,
+        wait: bool,
+        poll_interval: float,
+        timeout: float,
+    ) -> "AsyncArtifact":
+        """Request server-side execution."""
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
+        request_body = {
+            "inputs": inputs,
+            "transform": server_transform,
+            "name": name,
+        }
+        if refresh:
+            request_body["refresh"] = True
+
+        response = await self._client.post("/v1/artifacts/materialize", json=request_body)
+        response.raise_for_status()
+        data = response.json()
+
+        artifact_uri = data["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+        build_id = data.get("build_id")
+        status = data.get("state", "ready")
+
+        # Cache hit or already ready
+        if status == "ready":
+            return AsyncArtifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=True,
+                execution="cache",
+                name=name,
+            )
+
+        # Build in progress
+        if not wait:
+            return AsyncArtifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=False,
+                execution="server",
+                build_id=build_id,
+                name=name,
+            )
+
+        # Poll for completion
+        if build_id:
+            start_time = time.time()
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
+
+                status_resp = await self._client.get(f"/v1/artifacts/builds/{build_id}")
+                status_resp.raise_for_status()
+                build_status = status_resp.json()
+
+                if build_status["state"] == "ready":
+                    return AsyncArtifact(
+                        _client=self,
+                        artifact_id=artifact_id,
+                        version=version,
+                        cache_hit=False,
+                        execution="server",
+                        build_id=build_id,
+                        name=name,
+                    )
+                elif build_status["state"] == "failed":
+                    error_msg = build_status.get("error_message", "Unknown error")
+                    raise RuntimeError(f"Build failed: {error_msg}")
+
+                await asyncio.sleep(poll_interval)
+
+        return AsyncArtifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=False,
+            execution="server",
+            name=name,
+        )
+
+    async def get_artifact(self, artifact_id: str, version: int) -> "AsyncArtifact":
+        """Get an existing artifact by ID and version."""
+        response = await self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
+        response.raise_for_status()
+        return AsyncArtifact(_client=self, artifact_id=artifact_id, version=version)
+
+    async def get_artifact_by_name(self, name: str) -> "AsyncArtifact":
+        """Get an artifact by its name."""
+        response = await self._client.get(f"/v1/names/{name}")
+        response.raise_for_status()
+        resolved = response.json()
+
+        artifact_id, version = self._parse_artifact_uri(resolved["artifact_uri"])
+        return AsyncArtifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            name=name,
+        )
+
+
+@dataclass
+class AsyncArtifact:
+    """An immutable, versioned artifact from Strata (async version).
+
+    Returned by `AsyncStrataClient.materialize()`. Provides async access
+    to artifact data and metadata.
+    """
+
+    _client: "AsyncStrataClient"
+    artifact_id: str
+    version: int
+    cache_hit: bool = False
+    execution: str = "cache"
+    build_id: str | None = None
+    name: str | None = None
+
+    @property
+    def uri(self) -> str:
+        """Artifact URI (strata://artifact/{id}@v={version})."""
+        return f"strata://artifact/{self.artifact_id}@v={self.version}"
+
+    @property
+    def name_uri(self) -> str | None:
+        """Name URI if a name was assigned."""
+        return f"strata://name/{self.name}" if self.name else None
+
+    async def info(self) -> dict:
+        """Get artifact metadata."""
+        response = await self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}"
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def to_table(self) -> pa.Table:
+        """Download artifact data as Arrow Table."""
+        response = await self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}/data"
+        )
+        response.raise_for_status()
+        reader = ipc.open_stream(pa.BufferReader(response.content))
+        return reader.read_all()
+
+    async def to_pandas(self):
+        """Download artifact data as pandas DataFrame."""
+        table = await self.to_table()
+        return table.to_pandas()
+
+    async def to_polars(self):
+        """Download artifact data as Polars DataFrame."""
+        import polars as pl
+
+        table = await self.to_table()
+        return pl.from_arrow(table)
+
+    async def lineage(self, direction: str = "upstream", max_depth: int = 10) -> dict:
+        """Get artifact lineage (dependency graph)."""
+        response = await self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}/lineage",
+            params={"direction": direction, "max_depth": max_depth},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def dependents(self, max_depth: int = 10) -> dict:
+        """Get artifacts that depend on this artifact."""
+        response = await self._client._client.get(
+            f"/v1/artifacts/{self.artifact_id}/v/{self.version}/dependents",
+            params={"max_depth": max_depth},
+        )
         response.raise_for_status()
         return response.json()
 

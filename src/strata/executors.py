@@ -45,7 +45,8 @@ def run_local(
     """
     executor = build_spec.get("executor", "")
 
-    if executor.startswith("local://duckdb_sql"):
+    # Accept both "local://duckdb_sql@v1" and "duckdb_sql@v1" formats
+    if executor.startswith("local://duckdb_sql") or executor.startswith("duckdb_sql"):
         return _run_duckdb_sql(build_spec, input_tables)
     else:
         raise ValueError(f"Unsupported executor: {executor}")

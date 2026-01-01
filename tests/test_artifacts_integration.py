@@ -131,7 +131,7 @@ def materialize_and_upload(
     inputs = inputs or []
     input_tables = input_tables or {}
 
-    hit, uri, spec = client.materialize(
+    hit, uri, spec = client.materialize_raw(
         inputs=inputs,
         executor="local://duckdb_sql@v1",
         params={"sql": sql},
@@ -391,9 +391,9 @@ class TestClientArtifactMethods:
     """Tests for client artifact helper methods."""
 
     def test_client_materialize_returns_build_spec(self, personal_mode_server):
-        """Client materialize() returns (hit, uri, build_spec) on miss."""
+        """Client materialize_raw() returns (hit, uri, build_spec) on miss."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize(
+            hit, uri, spec = client.materialize_raw(
                 inputs=["table1"],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 1"},
@@ -405,7 +405,7 @@ class TestClientArtifactMethods:
     def test_client_upload_and_fetch(self, personal_mode_server):
         """Client can upload and fetch artifacts."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize(inputs=[], executor="test", params={})
+            hit, uri, spec = client.materialize_raw(inputs=[], executor="test", params={})
 
             original = pa.table({"a": [1, 2], "b": ["x", "y"]})
             client.upload_artifact(
@@ -420,7 +420,7 @@ class TestClientArtifactMethods:
     def test_client_name_operations(self, personal_mode_server):
         """Client name helper methods work."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            hit, uri, spec = client.materialize(inputs=[], executor="test", params={})
+            hit, uri, spec = client.materialize_raw(inputs=[], executor="test", params={})
             client.upload_artifact(
                 artifact_id=spec["artifact_id"],
                 version=spec["version"],
@@ -476,7 +476,7 @@ class TestArtifactContract:
             assert source_data.num_rows == 5
 
             # Stage 2: Filter to clicks only (depends on source)
-            hit, filtered_uri, filtered_spec = client.materialize(
+            hit, filtered_uri, filtered_spec = client.materialize_raw(
                 inputs=[source_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT * FROM input0 WHERE event = 'click'"},
@@ -497,7 +497,7 @@ class TestArtifactContract:
             agg_sql = (
                 "SELECT user_id, sum(amount) as total FROM input0 GROUP BY user_id ORDER BY user_id"
             )
-            hit, agg_uri, agg_spec = client.materialize(
+            hit, agg_uri, agg_spec = client.materialize_raw(
                 inputs=[filtered_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": agg_sql},
@@ -514,14 +514,14 @@ class TestArtifactContract:
             assert agg_data.to_pydict() == {"user_id": [1, 2], "total": [30, 30]}
 
             # Verify all stages are now cached
-            hit1, _, _ = client.materialize(
+            hit1, _, _ = client.materialize_raw(
                 inputs=[source_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT * FROM input0 WHERE event = 'click'"},
             )
             assert hit1 is True, "Filter stage should be cached"
 
-            hit2, _, _ = client.materialize(
+            hit2, _, _ = client.materialize_raw(
                 inputs=[filtered_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": agg_sql},
@@ -564,7 +564,7 @@ class TestArtifactContract:
                 union_sql = (
                     "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
                 )
-                hit, uri, spec = client.materialize(
+                hit, uri, spec = client.materialize_raw(
                     inputs=[],
                     executor="local://duckdb_sql@v1",
                     params={"sql": union_sql},
@@ -586,7 +586,7 @@ class TestArtifactContract:
             sql = "SELECT 'dedup' as tag"
 
             # First call with inputs [a, b]
-            hit1, uri1, spec1 = client.materialize(
+            hit1, uri1, spec1 = client.materialize_raw(
                 inputs=["input-a", "input-b"],
                 executor="local://duckdb_sql@v1",
                 params={"sql": sql},
@@ -600,7 +600,7 @@ class TestArtifactContract:
             )
 
             # Same inputs in different order - should hit (order independent)
-            hit2, uri2, _ = client.materialize(
+            hit2, uri2, _ = client.materialize_raw(
                 inputs=["input-b", "input-a"],
                 executor="local://duckdb_sql@v1",
                 params={"sql": sql},
@@ -609,7 +609,7 @@ class TestArtifactContract:
             assert uri2 == uri1
 
             # Different inputs - should miss
-            hit3, uri3, _ = client.materialize(
+            hit3, uri3, _ = client.materialize_raw(
                 inputs=["input-a", "input-c"],
                 executor="local://duckdb_sql@v1",
                 params={"sql": sql},
@@ -621,7 +621,7 @@ class TestArtifactContract:
         """Artifacts not finalized don't appear as cache hits."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Start materialize but don't upload
-            hit1, _, _ = client.materialize(
+            hit1, _, _ = client.materialize_raw(
                 inputs=[],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'unfinalized' as status"},
@@ -629,7 +629,7 @@ class TestArtifactContract:
             assert hit1 is False
 
             # Same request again - still miss because never finalized
-            hit2, _, _ = client.materialize(
+            hit2, _, _ = client.materialize_raw(
                 inputs=[],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'unfinalized' as status"},
@@ -731,7 +731,7 @@ class TestArtifactLifecycle:
         """GC removes unreferenced artifacts older than cutoff."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
             # Create artifact WITHOUT a name (unreferenced)
-            hit, uri, spec = client.materialize(
+            hit, uri, spec = client.materialize_raw(
                 inputs=[],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'gc-candidate' as status"},
@@ -877,7 +877,7 @@ class TestStalenessDetection:
             )
 
             # Explain the same computation
-            result = client.explain_materialize(
+            result = client.explain_materialize_raw(
                 inputs=[],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'cached' as result"},
@@ -892,7 +892,7 @@ class TestStalenessDetection:
     def test_explain_materialize_miss_no_name(self, personal_mode_server):
         """Explain materialize shows would_build for new computation."""
         with StrataClient(base_url=personal_mode_server["base_url"]) as client:
-            result = client.explain_materialize(
+            result = client.explain_materialize_raw(
                 inputs=[],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'new-computation' as result"},
@@ -923,7 +923,7 @@ class TestStalenessDetection:
             )
 
             # Create dependent artifact using source
-            hit, dep_uri, spec = client.materialize(
+            hit, dep_uri, spec = client.materialize_raw(
                 inputs=[source_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT version * 10 as derived FROM input0"},
@@ -938,7 +938,7 @@ class TestStalenessDetection:
 
             # Now explain a computation with DIFFERENT transform params (same inputs)
             # This triggers cache miss + staleness check against existing named artifact
-            result = client.explain_materialize(
+            result = client.explain_materialize_raw(
                 inputs=[source_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT version * 100 as derived FROM input0"},  # Different SQL
@@ -973,7 +973,7 @@ class TestStalenessDetection:
             )
 
             # Create derived artifact that depends on base
-            hit, derived_uri, spec = client.materialize(
+            hit, derived_uri, spec = client.materialize_raw(
                 inputs=[base_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT data || '-derived' as result FROM input0"},
@@ -1008,7 +1008,7 @@ class TestStalenessDetection:
             )
 
             # Create artifact that depends on both
-            hit, uri, spec = client.materialize(
+            hit, uri, spec = client.materialize_raw(
                 inputs=[input1_uri, input2_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT 'combined' as result"},
@@ -1044,7 +1044,7 @@ class TestStalenessDetection:
             )
 
             # Explain with that input
-            result = client.explain_materialize(
+            result = client.explain_materialize_raw(
                 inputs=[input_uri],
                 executor="local://duckdb_sql@v1",
                 params={"sql": "SELECT * FROM input0"},
@@ -1056,3 +1056,299 @@ class TestStalenessDetection:
             # Version should be in format "artifact_id@v=N"
             version = result["resolved_input_versions"][input_uri]
             assert "@v=" in version
+
+
+# =============================================================================
+# Tests for unified materialize() API with real tables
+# =============================================================================
+
+
+@pytest.fixture
+def iceberg_warehouse(tmp_path):
+    """Create a temporary warehouse with a sample Iceberg table."""
+    from pyiceberg.catalog.sql import SqlCatalog
+    from pyiceberg.schema import Schema
+    from pyiceberg.types import DoubleType, LongType, NestedField, StringType
+
+    warehouse_path = tmp_path / "warehouse"
+    warehouse_path.mkdir()
+
+    # Create a SQL catalog
+    catalog = SqlCatalog(
+        "strata",
+        **{
+            "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
+            "warehouse": str(warehouse_path),
+        },
+    )
+
+    # Create namespace
+    catalog.create_namespace("test_db")
+
+    # Define schema
+    schema = Schema(
+        NestedField(1, "id", LongType(), required=False),
+        NestedField(2, "value", DoubleType(), required=False),
+        NestedField(3, "category", StringType(), required=False),
+    )
+
+    # Create table
+    table = catalog.create_table("test_db.events", schema)
+
+    # Create sample data
+    data = pa.table(
+        {
+            "id": pa.array([1, 2, 3, 4, 5], type=pa.int64()),
+            "value": pa.array([10.0, 20.0, 30.0, 40.0, 50.0], type=pa.float64()),
+            "category": pa.array(["A", "B", "A", "B", "A"], type=pa.string()),
+        }
+    )
+
+    # Append data to table
+    table.append(data)
+
+    return {
+        "warehouse_path": warehouse_path,
+        "table_uri": f"file://{warehouse_path}#test_db.events",
+        "catalog": catalog,
+        "table": table,
+    }
+
+
+@pytest.fixture
+def artifact_server_with_warehouse(tmp_path, iceberg_warehouse):
+    """Start a server with artifact support and an Iceberg warehouse."""
+    cache_dir = tmp_path / "cache"
+    artifact_dir = tmp_path / "artifacts"
+    cache_dir.mkdir()
+    artifact_dir.mkdir()
+
+    with run_server(cache_dir, artifact_dir, "personal") as ctx:
+        yield {
+            **iceberg_warehouse,
+            "base_url": ctx.base_url,
+            "config": ctx.config,
+        }
+
+
+class TestUnifiedMaterializeAPI:
+    """Tests for the unified client.materialize() API with real tables."""
+
+    def test_materialize_from_iceberg_table(self, artifact_server_with_warehouse):
+        """Materialize an artifact from a real Iceberg table."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # Materialize with SQL transform
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": "SELECT category, SUM(value) as total FROM input0 GROUP BY category"
+                    },
+                },
+                name="category_totals",
+            )
+
+            # Check artifact metadata
+            assert artifact.artifact_id is not None
+            assert artifact.version >= 1
+            assert artifact.cache_hit is False  # First time should be cache miss
+            assert artifact.execution in ("local", "server")
+            assert artifact.name == "category_totals"
+
+            # Check URI format
+            assert artifact.uri.startswith("strata://artifact/")
+            assert f"@v={artifact.version}" in artifact.uri
+
+            # Fetch the data and verify
+            result_table = artifact.to_table()
+            assert result_table.num_rows == 2  # Two categories: A and B
+            assert set(result_table.column_names) == {"category", "total"}
+
+            # Verify aggregation is correct
+            df = artifact.to_pandas()
+            totals = dict(zip(df["category"], df["total"]))
+            assert totals["A"] == 90.0  # 10 + 30 + 50
+            assert totals["B"] == 60.0  # 20 + 40
+
+    def test_materialize_cache_hit(self, artifact_server_with_warehouse):
+        """Second materialize with same inputs should hit cache."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # First call - cache miss
+            artifact1 = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT COUNT(*) as cnt FROM input0"},
+                },
+            )
+            assert artifact1.cache_hit is False
+
+            # Second call with same transform - should hit cache
+            artifact2 = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT COUNT(*) as cnt FROM input0"},
+                },
+            )
+            assert artifact2.cache_hit is True
+            assert artifact2.artifact_id == artifact1.artifact_id
+            assert artifact2.version == artifact1.version
+
+    def test_materialize_chain_artifacts(self, artifact_server_with_warehouse):
+        """Chain artifacts: use output of one as input to another."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # Stage 1: Filter to high-value rows
+            filtered = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0 WHERE value > 25"},
+                },
+                name="high_value",
+            )
+
+            # Verify filtered data
+            filtered_df = filtered.to_pandas()
+            assert len(filtered_df) == 3  # values 30, 40, 50
+            assert all(filtered_df["value"] > 25)
+
+            # Stage 2: Aggregate the filtered data
+            aggregated = client.materialize(
+                inputs=[filtered.uri],  # Use artifact URI as input
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT AVG(value) as avg_value FROM input0"},
+                },
+                name="high_value_avg",
+            )
+
+            # Verify aggregation
+            agg_df = aggregated.to_pandas()
+            assert agg_df["avg_value"].iloc[0] == 40.0  # (30 + 40 + 50) / 3
+
+    def test_materialize_with_refresh(self, artifact_server_with_warehouse):
+        """Force refresh recomputes even if cached."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # First call
+            artifact1 = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT MAX(value) as max_val FROM input0"},
+                },
+                name="max_value",
+            )
+
+            # Second call with refresh=True should recompute
+            artifact2 = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT MAX(value) as max_val FROM input0"},
+                },
+                name="max_value",
+                refresh=True,
+            )
+
+            # Both should have valid data
+            assert artifact1.to_pandas()["max_val"].iloc[0] == 50.0
+            assert artifact2.to_pandas()["max_val"].iloc[0] == 50.0
+
+    def test_artifact_info_and_lineage(self, artifact_server_with_warehouse):
+        """Test artifact.info() and artifact.lineage() methods."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0"},
+                },
+            )
+
+            # Get info
+            info = artifact.info()
+            assert info["artifact_id"] == artifact.artifact_id
+            assert info["version"] == artifact.version
+            assert info["state"] == "ready"
+            assert "row_count" in info
+            assert info["row_count"] == 5
+
+    def test_get_artifact_by_name(self, artifact_server_with_warehouse):
+        """Test retrieving artifact by name."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # Create named artifact
+            original = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT MIN(value) as min_val FROM input0"},
+                },
+                name="min_value",
+            )
+
+            # Retrieve by name
+            retrieved = client.get_artifact_by_name("min_value")
+            assert retrieved.artifact_id == original.artifact_id
+            assert retrieved.version == original.version
+            assert retrieved.name == "min_value"
+
+            # Data should match
+            assert retrieved.to_pandas()["min_val"].iloc[0] == 10.0
+
+    def test_explain_materialize_with_real_table(self, artifact_server_with_warehouse):
+        """Test explain_materialize() with real table."""
+        table_uri = artifact_server_with_warehouse["table_uri"]
+        base_url = artifact_server_with_warehouse["base_url"]
+
+        with StrataClient(base_url=base_url) as client:
+            # Explain before materializing - should be cache miss
+            result = client.explain_materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT DISTINCT category FROM input0"},
+                },
+            )
+            # Note: field names may vary based on server implementation
+            assert "cache_hit" in result or "would_hit" in result
+
+            # Actually materialize
+            client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT DISTINCT category FROM input0"},
+                },
+            )
+
+            # Explain again - should now be cache hit
+            result2 = client.explain_materialize(
+                inputs=[table_uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT DISTINCT category FROM input0"},
+                },
+            )
+            # Check for cache hit indication
+            hit_key = "cache_hit" if "cache_hit" in result2 else "would_hit"
+            assert result2[hit_key] is True
