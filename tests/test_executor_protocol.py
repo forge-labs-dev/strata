@@ -8,7 +8,6 @@ These tests verify:
 5. HTTP integration with executor server
 """
 
-import io
 import json
 import socket
 import threading
@@ -16,7 +15,6 @@ import time
 
 import httpx
 import pyarrow as pa
-import pyarrow.ipc as ipc
 import pytest
 import uvicorn
 
@@ -34,19 +32,7 @@ from strata.types import (
     ExecutorTransformSpec,
 )
 
-
-def table_to_ipc_bytes(table: pa.Table) -> bytes:
-    """Convert Arrow table to IPC stream bytes."""
-    sink = pa.BufferOutputStream()
-    with ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
-
-
-def ipc_bytes_to_table(data: bytes) -> pa.Table:
-    """Convert IPC stream bytes to Arrow table."""
-    reader = ipc.open_stream(io.BytesIO(data))
-    return reader.read_all()
+from tests.conftest import find_free_port, table_to_ipc_bytes, ipc_bytes_to_table
 
 
 class TestProtocolTypes:
@@ -421,25 +407,7 @@ class TestBaseExecutorInterface:
 # ---------------------------------------------------------------------------
 
 
-def find_free_port() -> int:
-    """Find an available port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def wait_for_server(port: int, timeout: float = 5.0) -> bool:
-    """Wait for server to be ready."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(0.1)
-    return False
+from tests.conftest import wait_for_server
 
 
 @pytest.fixture

@@ -7,27 +7,23 @@ These tests verify that the prefetch mechanism:
 4. Tracks metrics for observability (started, used, wasted)
 """
 
-import socket
-import threading
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
 
 import httpx
+import pyarrow as pa
 import pytest
-import uvicorn
+from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.schema import Schema
+from pyiceberg.types import LongType, NestedField, StringType
 
 from strata.config import StrataConfig
+
+from tests.conftest import find_free_port, run_server
 
 
 @pytest.fixture
 def prefetch_warehouse(tmp_path):
     """Create a warehouse with data for prefetch testing."""
-    import pyarrow as pa
-    from pyiceberg.catalog.sql import SqlCatalog
-    from pyiceberg.schema import Schema
-    from pyiceberg.types import LongType, NestedField, StringType
-
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 
@@ -64,56 +60,6 @@ def prefetch_warehouse(tmp_path):
         "catalog": catalog,
         "table": table,
     }
-
-
-def find_free_port() -> int:
-    """Find a free port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-@contextmanager
-def run_server(config: StrataConfig) -> Iterator[str]:
-    """Run a Strata server in a background thread."""
-    import strata.server as server_module
-    from strata.server import ServerState, app
-
-    # Initialize server state
-    server_module._state = ServerState(config)
-
-    # Start server in background thread
-    server_thread = threading.Thread(
-        target=uvicorn.run,
-        kwargs={
-            "app": app,
-            "host": config.host,
-            "port": config.port,
-            "log_level": "error",
-        },
-        daemon=True,
-    )
-    server_thread.start()
-
-    # Wait for server to be ready
-    base_url = f"http://{config.host}:{config.port}"
-    for _ in range(50):  # 5 second timeout
-        try:
-            with httpx.Client() as client:
-                resp = client.get(f"{base_url}/health", timeout=1.0)
-                if resp.status_code == 200:
-                    break
-        except Exception:
-            pass
-        time.sleep(0.1)
-    else:
-        raise RuntimeError("Server failed to start")
-
-    try:
-        yield base_url
-    finally:
-        # Server thread is daemon, will be killed on exit
-        server_module._state = None
 
 
 class TestPrefetchBasics:

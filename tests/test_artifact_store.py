@@ -197,14 +197,17 @@ class TestArtifactCRUD:
             store.finalize_artifact("nonexistent", 1, "{}", 0, 0)
         assert "not found" in str(exc_info.value)
 
-    def test_finalize_already_ready_raises(self, store):
-        """Finalize already-ready artifact raises ValueError."""
+    def test_finalize_already_ready_is_idempotent(self, store):
+        """Finalize already-ready artifact is idempotent (returns existing)."""
         version = store.create_artifact("test-id", "hash123")
-        store.finalize_artifact("test-id", version, "{}", 0, 0)
+        first_result = store.finalize_artifact("test-id", version, "{}", 0, 0)
 
-        with pytest.raises(ValueError) as exc_info:
-            store.finalize_artifact("test-id", version, "{}", 0, 0)
-        assert "not in building state" in str(exc_info.value)
+        # Calling finalize again should return the same artifact (idempotent)
+        second_result = store.finalize_artifact("test-id", version, "{}", 0, 0)
+        assert second_result is not None
+        assert second_result.id == first_result.id
+        assert second_result.version == first_result.version
+        assert second_result.state == "ready"
 
     def test_fail_artifact(self, store):
         """Fail transitions to failed state."""

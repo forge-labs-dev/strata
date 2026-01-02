@@ -259,12 +259,14 @@ CREATE INDEX IF NOT EXISTS idx_versions_tenant ON artifact_versions(tenant);
 
 -- Name pointers: mutable, point to artifact versions
 -- In multi-tenant mode, (tenant, name) is the unique key
+-- Note: tenant uses '' (empty string) instead of NULL for personal mode
+-- because SQLite's PRIMARY KEY doesn't treat NULLs as equal
 CREATE TABLE IF NOT EXISTS artifact_names (
     name TEXT NOT NULL,
     artifact_id TEXT NOT NULL,
     version INTEGER NOT NULL,
     updated_at REAL NOT NULL,
-    tenant TEXT,  -- Tenant ID for multi-tenant isolation
+    tenant TEXT NOT NULL DEFAULT '',  -- Tenant ID ('' for personal mode)
     PRIMARY KEY (tenant, name),
     FOREIGN KEY (artifact_id, version) REFERENCES artifact_versions(id, version)
 );
@@ -397,17 +399,18 @@ class ArtifactStore:
                             artifact_id TEXT NOT NULL,
                             version INTEGER NOT NULL,
                             updated_at REAL NOT NULL,
-                            tenant TEXT,
+                            tenant TEXT NOT NULL DEFAULT '',
                             PRIMARY KEY (tenant, name),
                             FOREIGN KEY (artifact_id, version)
                                 REFERENCES artifact_versions(id, version)
                         )
                     """)
-                    # Migrate data with NULL tenant (personal mode)
+                    # Migrate data with '' tenant (personal mode)
+                    # Use '' instead of NULL for SQLite unique constraint compatibility
                     conn.execute("""
                         INSERT INTO artifact_names
                             (name, artifact_id, version, updated_at, tenant)
-                        SELECT name, artifact_id, version, updated_at, NULL
+                        SELECT name, artifact_id, version, updated_at, ''
                         FROM artifact_names_old
                     """)
                     conn.execute("DROP TABLE artifact_names_old")
@@ -746,6 +749,8 @@ class ArtifactStore:
         tenant: str | None,
     ) -> None:
         """Set name within an existing connection (for use in transactions)."""
+        # Use '' instead of NULL for personal mode (SQLite NULL != NULL in unique constraints)
+        effective_tenant = tenant if tenant is not None else ""
         conn.execute(
             """
             INSERT INTO artifact_names (name, artifact_id, version, updated_at, tenant)
@@ -755,7 +760,7 @@ class ArtifactStore:
                 version = excluded.version,
                 updated_at = excluded.updated_at
             """,
-            (name, artifact_id, version, time.time(), tenant),
+            (name, artifact_id, version, time.time(), effective_tenant),
         )
 
     def fail_artifact(self, artifact_id: str, version: int) -> None:
@@ -1016,6 +1021,8 @@ class ArtifactStore:
                 )
 
             # Upsert name (tenant, name) is the unique key
+            # Use '' instead of NULL for personal mode (SQLite NULL != NULL in unique constraints)
+            effective_tenant = tenant if tenant is not None else ''
             conn.execute(
                 """
                 INSERT INTO artifact_names (name, artifact_id, version, updated_at, tenant)
@@ -1025,7 +1032,7 @@ class ArtifactStore:
                     version = excluded.version,
                     updated_at = excluded.updated_at
                 """,
-                (name, artifact_id, version, time.time(), tenant),
+                (name, artifact_id, version, time.time(), effective_tenant),
             )
             conn.commit()
         finally:
@@ -1049,25 +1056,16 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            if tenant is not None:
-                cursor = conn.execute(
-                    """
-                    SELECT n.artifact_id, n.version
-                    FROM artifact_names n
-                    WHERE n.name = ? AND n.tenant = ?
-                    """,
-                    (name, tenant),
-                )
-            else:
-                # Personal mode: no tenant filter, but prefer NULL tenant
-                cursor = conn.execute(
-                    """
-                    SELECT n.artifact_id, n.version
-                    FROM artifact_names n
-                    WHERE n.name = ? AND n.tenant IS NULL
-                    """,
-                    (name,),
-                )
+            # Use '' instead of NULL for personal mode
+            effective_tenant = tenant if tenant is not None else ''
+            cursor = conn.execute(
+                """
+                SELECT n.artifact_id, n.version
+                FROM artifact_names n
+                WHERE n.name = ? AND n.tenant = ?
+                """,
+                (name, effective_tenant),
+            )
             row = cursor.fetchone()
             if row is None:
                 return None
@@ -1091,33 +1089,27 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            if tenant is not None:
-                cursor = conn.execute(
-                    """
-                    SELECT name, artifact_id, version, updated_at, tenant
-                    FROM artifact_names
-                    WHERE name = ? AND tenant = ?
-                    """,
-                    (name, tenant),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT name, artifact_id, version, updated_at, tenant
-                    FROM artifact_names
-                    WHERE name = ? AND tenant IS NULL
-                    """,
-                    (name,),
-                )
+            # Use '' instead of NULL for personal mode
+            effective_tenant = tenant if tenant is not None else ''
+            cursor = conn.execute(
+                """
+                SELECT name, artifact_id, version, updated_at, tenant
+                FROM artifact_names
+                WHERE name = ? AND tenant = ?
+                """,
+                (name, effective_tenant),
+            )
             row = cursor.fetchone()
             if row is None:
                 return None
+            # Convert '' back to None for API consistency
+            returned_tenant = row["tenant"] if row["tenant"] else None
             return ArtifactName(
                 name=row["name"],
                 artifact_id=row["artifact_id"],
                 version=row["version"],
                 updated_at=row["updated_at"],
-                tenant=row["tenant"],
+                tenant=returned_tenant,
             )
         finally:
             conn.close()
@@ -1138,16 +1130,12 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            if tenant is not None:
-                cursor = conn.execute(
-                    "DELETE FROM artifact_names WHERE name = ? AND tenant = ?",
-                    (name, tenant),
-                )
-            else:
-                cursor = conn.execute(
-                    "DELETE FROM artifact_names WHERE name = ? AND tenant IS NULL",
-                    (name,),
-                )
+            # Use '' instead of NULL for personal mode
+            effective_tenant = tenant if tenant is not None else ''
+            cursor = conn.execute(
+                "DELETE FROM artifact_names WHERE name = ? AND tenant = ?",
+                (name, effective_tenant),
+            )
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1164,32 +1152,25 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            if tenant is not None:
-                cursor = conn.execute(
-                    """
-                    SELECT name, artifact_id, version, updated_at, tenant
-                    FROM artifact_names
-                    WHERE tenant = ?
-                    ORDER BY name
-                    """,
-                    (tenant,),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT name, artifact_id, version, updated_at, tenant
-                    FROM artifact_names
-                    WHERE tenant IS NULL
-                    ORDER BY name
-                    """
-                )
+            # Use '' instead of NULL for personal mode
+            effective_tenant = tenant if tenant is not None else ''
+            cursor = conn.execute(
+                """
+                SELECT name, artifact_id, version, updated_at, tenant
+                FROM artifact_names
+                WHERE tenant = ?
+                ORDER BY name
+                """,
+                (effective_tenant,),
+            )
             return [
                 ArtifactName(
                     name=row["name"],
                     artifact_id=row["artifact_id"],
                     version=row["version"],
                     updated_at=row["updated_at"],
-                    tenant=row["tenant"],
+                    # Convert '' back to None for API consistency
+                    tenant=row["tenant"] if row["tenant"] else None,
                 )
                 for row in cursor.fetchall()
             ]
@@ -1346,24 +1327,17 @@ class ArtifactStore:
         Returns:
             Name string if found, None otherwise
         """
+        # Use '' instead of NULL for personal mode (SQLite NULL != NULL in unique constraints)
+        effective_tenant = tenant if tenant is not None else ""
         conn = self._get_connection()
         try:
-            if tenant is not None:
-                cursor = conn.execute(
-                    """
-                    SELECT name FROM artifact_names
-                    WHERE artifact_id = ? AND version = ? AND tenant = ?
-                    """,
-                    (artifact_id, version, tenant),
-                )
-            else:
-                cursor = conn.execute(
-                    """
-                    SELECT name FROM artifact_names
-                    WHERE artifact_id = ? AND version = ? AND tenant IS NULL
-                    """,
-                    (artifact_id, version),
-                )
+            cursor = conn.execute(
+                """
+                SELECT name FROM artifact_names
+                WHERE artifact_id = ? AND version = ? AND tenant = ?
+                """,
+                (artifact_id, version, effective_tenant),
+            )
             row = cursor.fetchone()
             return row["name"] if row else None
         finally:

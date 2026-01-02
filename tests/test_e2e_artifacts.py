@@ -11,74 +11,20 @@ These tests verify complete artifact workflows including:
 These tests run against a real server instance with actual SQLite databases.
 """
 
-import io
-import socket
-import threading
-import time
-from contextlib import contextmanager
-from dataclasses import dataclass
-
 import httpx
 import pyarrow as pa
-import pyarrow.ipc as ipc
 import pytest
-import uvicorn
 
-from strata import server
-from strata.artifact_store import reset_artifact_store
-from strata.config import StrataConfig
-from strata.server import ServerState, app
-
-
-def find_free_port() -> int:
-    """Find an available port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from tests.conftest import (
+    run_server_with_context,
+    table_to_ipc_bytes,
+    ipc_bytes_to_table,
+)
 
 
-def wait_for_server(port: int, timeout: float = 10.0) -> bool:
-    """Wait for server to be ready."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(0.1)
-    return False
-
-
-def table_to_ipc_bytes(table: pa.Table) -> bytes:
-    """Convert Arrow table to IPC stream bytes."""
-    sink = pa.BufferOutputStream()
-    with ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
-
-
-def ipc_bytes_to_table(data: bytes) -> pa.Table:
-    """Convert IPC stream bytes to Arrow table."""
-    reader = ipc.open_stream(io.BytesIO(data))
-    return reader.read_all()
-
-
-@dataclass
-class ServerContext:
-    """Context for a running test server."""
-
-    config: StrataConfig
-    port: int
-    base_url: str
-    warehouse_path: str
-
-
-@contextmanager
-def run_e2e_server(tmp_path):
-    """Context manager to run a server with Iceberg warehouse for E2E tests."""
-    port = find_free_port()
+@pytest.fixture
+def e2e_server(tmp_path):
+    """Fixture providing a running server for E2E tests."""
     cache_dir = tmp_path / "cache"
     artifact_dir = tmp_path / "artifacts"
     warehouse_path = tmp_path / "warehouse"
@@ -87,47 +33,14 @@ def run_e2e_server(tmp_path):
     artifact_dir.mkdir()
     warehouse_path.mkdir()
 
-    config = StrataConfig(
-        host="127.0.0.1",
-        port=port,
-        cache_dir=cache_dir,
-        deployment_mode="personal",
-        artifact_dir=artifact_dir,
-    )
-    server._state = ServerState(config)
-
-    server_config = uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server_instance = uvicorn.Server(server_config)
-    thread = threading.Thread(target=server_instance.run, daemon=True)
-    thread.start()
-
-    if not wait_for_server(port):
-        raise RuntimeError(f"Server failed to start on port {port}")
-
-    try:
-        yield ServerContext(
-            config=config,
-            port=port,
-            base_url=f"http://127.0.0.1:{port}",
-            warehouse_path=str(warehouse_path),
-        )
-    finally:
-        server_instance.should_exit = True
-        thread.join(timeout=3.0)
-        server._state = None
-        reset_artifact_store()
-
-
-@pytest.fixture
-def e2e_server(tmp_path):
-    """Fixture providing a running server for E2E tests."""
-    with run_e2e_server(tmp_path) as ctx:
-        yield ctx
+    with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
+        # Add warehouse_path to context
+        yield {
+            "config": ctx.config,
+            "port": ctx.port,
+            "base_url": ctx.base_url,
+            "warehouse_path": str(warehouse_path),
+        }
 
 
 class ArtifactClient:
@@ -261,7 +174,7 @@ class TestArtifactPipeline:
 
     def test_create_single_artifact(self, e2e_server):
         """Create a single artifact without inputs."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create artifact
@@ -282,7 +195,7 @@ class TestArtifactPipeline:
 
     def test_create_artifact_with_name(self, e2e_server):
         """Create artifact and assign a name."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             result_table = pa.table({"value": [42]})
@@ -303,7 +216,7 @@ class TestArtifactPipeline:
 
     def test_cache_hit_on_duplicate(self, e2e_server):
         """Same inputs + transform should return cache hit."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             result_table = pa.table({"x": [1]})
@@ -332,7 +245,7 @@ class TestChainedArtifacts:
 
     def test_two_level_chain(self, e2e_server):
         """Create artifact that uses another artifact as input."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Level 1: Base artifact from table
@@ -376,7 +289,7 @@ class TestChainedArtifacts:
 
     def test_three_level_chain(self, e2e_server):
         """Create three-level artifact chain."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Level 1: Raw data
@@ -425,7 +338,7 @@ class TestLineageTraversal:
 
     def test_lineage_with_multiple_inputs(self, e2e_server):
         """Artifact with multiple inputs shows all in lineage."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create two base artifacts
@@ -478,7 +391,7 @@ class TestLineageTraversal:
 
     def test_lineage_max_depth_limiting(self, e2e_server):
         """Lineage respects max_depth parameter."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create 4-level chain
@@ -515,7 +428,7 @@ class TestDependentsTracking:
 
     def test_find_single_dependent(self, e2e_server):
         """Find artifact that uses another as input."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create base artifact
@@ -550,7 +463,7 @@ class TestDependentsTracking:
 
     def test_find_multiple_dependents(self, e2e_server):
         """Find multiple artifacts that use the same input."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create base artifact
@@ -591,7 +504,7 @@ class TestDependentsTracking:
 
     def test_no_dependents(self, e2e_server):
         """Artifact with no dependents returns empty list."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Create standalone artifact
@@ -621,7 +534,7 @@ class TestStalenessDetection:
 
     def test_fresh_artifact_not_stale(self, e2e_server):
         """Freshly created artifact is not stale."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             table = pa.table({"x": [1]})
@@ -645,7 +558,7 @@ class TestExplainMaterialize:
 
     def test_explain_cache_miss(self, e2e_server):
         """Explain shows cache miss for new computation."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # Explain a new computation (never run before)
@@ -670,7 +583,7 @@ class TestExplainMaterialize:
 
     def test_explain_cache_hit(self, e2e_server):
         """Explain shows cache hit when using artifact URI as input."""
-        client = ArtifactClient(e2e_server.base_url)
+        client = ArtifactClient(e2e_server["base_url"])
 
         try:
             # First, create a base artifact (no inputs so hash is stable)

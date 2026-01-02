@@ -5,50 +5,11 @@ These tests verify:
 2. GET /v1/artifacts/{id}/v/{version}/dependents - Reverse dependency lookup
 """
 
-import json
-import socket
-import threading
-import time
-
 import httpx
 import pyarrow as pa
-import pyarrow.ipc as ipc
 import pytest
-import uvicorn
 
-from strata import server
-from strata.artifact_store import reset_artifact_store
-from strata.config import StrataConfig
-from strata.server import ServerState, app
-
-
-def find_free_port() -> int:
-    """Find an available port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def wait_for_server(port: int, timeout: float = 5.0) -> bool:
-    """Wait for server to be ready."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(0.1)
-    return False
-
-
-def table_to_ipc_bytes(table: pa.Table) -> bytes:
-    """Convert Arrow table to IPC stream bytes."""
-    sink = pa.BufferOutputStream()
-    with ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
+from tests.conftest import run_server_with_context, table_to_ipc_bytes
 
 
 @pytest.fixture
@@ -59,37 +20,8 @@ def lineage_server(tmp_path):
     cache_dir.mkdir()
     artifact_dir.mkdir()
 
-    port = find_free_port()
-
-    config = StrataConfig(
-        host="127.0.0.1",
-        port=port,
-        cache_dir=cache_dir,
-        deployment_mode="personal",
-        artifact_dir=artifact_dir,
-    )
-    server._state = ServerState(config)
-
-    server_config = uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server_instance = uvicorn.Server(server_config)
-    thread = threading.Thread(target=server_instance.run, daemon=True)
-    thread.start()
-
-    if not wait_for_server(port):
-        raise RuntimeError(f"Server failed to start on port {port}")
-
-    try:
-        yield {"port": port, "base_url": f"http://127.0.0.1:{port}"}
-    finally:
-        server_instance.should_exit = True
-        thread.join(timeout=2.0)
-        server._state = None
-        reset_artifact_store()
+    with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
+        yield {"port": ctx.port, "base_url": ctx.base_url}
 
 
 def create_artifact(base_url: str, inputs: list[str], executor: str = "test") -> dict:

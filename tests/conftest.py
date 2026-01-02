@@ -1,11 +1,24 @@
-"""Shared pytest fixtures for Strata tests."""
+"""Shared pytest fixtures and helpers for Strata tests.
 
+This module provides:
+- Common utility functions (find_free_port, wait_for_server, etc.)
+- IPC conversion helpers (table_to_ipc_bytes, ipc_bytes_to_table)
+- Server context managers for running test servers
+- Base fixtures (temp_warehouse, strata_config, server_with_client)
+"""
+
+import io
 import socket
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import httpx
 import pyarrow as pa
+import pyarrow.ipc as ipc
 import pytest
 import uvicorn
 from pyiceberg.catalog.sql import SqlCatalog
@@ -19,6 +32,234 @@ from pyiceberg.types import (
 
 from strata.client import StrataClient
 from strata.config import StrataConfig
+
+
+# =============================================================================
+# Common Utility Functions
+# =============================================================================
+
+
+def find_free_port() -> int:
+    """Find an available port on localhost.
+
+    Uses SO_REUSEADDR to avoid "address already in use" errors.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def wait_for_server(port: int, timeout: float = 5.0) -> bool:
+    """Wait for server to be ready by polling /health endpoint.
+
+    Args:
+        port: Port the server is running on
+        timeout: Maximum time to wait in seconds
+
+    Returns:
+        True if server is ready, False if timeout
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
+            if resp.status_code == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.1)
+    return False
+
+
+# =============================================================================
+# IPC Conversion Helpers
+# =============================================================================
+
+
+def table_to_ipc_bytes(table: pa.Table) -> bytes:
+    """Convert Arrow table to IPC stream bytes.
+
+    Args:
+        table: PyArrow Table to convert
+
+    Returns:
+        Bytes representing the Arrow IPC stream
+    """
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+def ipc_bytes_to_table(data: bytes) -> pa.Table:
+    """Convert IPC stream bytes to Arrow table.
+
+    Args:
+        data: Arrow IPC stream bytes
+
+    Returns:
+        PyArrow Table
+    """
+    reader = ipc.open_stream(io.BytesIO(data))
+    return reader.read_all()
+
+
+# =============================================================================
+# Server Context Managers
+# =============================================================================
+
+
+@dataclass
+class ServerContext:
+    """Context for a running test server.
+
+    Attributes:
+        config: StrataConfig used by the server
+        port: Port the server is running on
+        base_url: Base URL for HTTP requests
+        server_instance: The uvicorn Server instance (if using uvicorn.Server)
+        thread: The thread running the server
+    """
+
+    config: StrataConfig
+    port: int
+    base_url: str
+    server_instance: uvicorn.Server | None = None
+    thread: threading.Thread | None = None
+
+
+@contextmanager
+def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str]:
+    """Run a Strata server in a background thread using uvicorn.run.
+
+    This is the basic server context manager that yields the base URL.
+    Server runs as a daemon thread and is killed on exit.
+
+    Args:
+        config: StrataConfig with host/port settings
+        reset_caches: If True, reset global metadata caches before starting
+
+    Yields:
+        Base URL string (e.g., "http://127.0.0.1:8765")
+
+    Raises:
+        RuntimeError: If server fails to start within 5 seconds
+    """
+    import strata.server as server_module
+    from strata.server import ServerState, app
+
+    # Reset global caches if requested (for test isolation)
+    if reset_caches:
+        from strata.metadata_cache import reset_caches as do_reset_caches
+        do_reset_caches()
+
+    # Initialize server state
+    server_module._state = ServerState(config)
+
+    # Start server in background thread
+    server_thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs={
+            "app": app,
+            "host": config.host,
+            "port": config.port,
+            "log_level": "error",
+        },
+        daemon=True,
+    )
+    server_thread.start()
+
+    # Wait for server to be ready
+    base_url = f"http://{config.host}:{config.port}"
+    for _ in range(50):  # 5 second timeout
+        try:
+            with httpx.Client() as client:
+                resp = client.get(f"{base_url}/health", timeout=1.0)
+                if resp.status_code == 200:
+                    break
+        except Exception:
+            pass
+        time.sleep(0.1)
+    else:
+        raise RuntimeError("Server failed to start")
+
+    try:
+        yield base_url
+    finally:
+        # Server thread is daemon, will be killed on exit
+        server_module._state = None
+
+
+@contextmanager
+def run_server_with_context(
+    cache_dir,
+    artifact_dir=None,
+    deployment_mode: str = "personal",
+) -> Iterator[ServerContext]:
+    """Run a server with full context including graceful shutdown.
+
+    This context manager provides more control than run_server():
+    - Returns ServerContext with server instance for graceful shutdown
+    - Supports artifact_dir configuration
+    - Resets artifact store on cleanup
+
+    Args:
+        cache_dir: Path for cache directory
+        artifact_dir: Optional path for artifact storage
+        deployment_mode: "personal" or "service"
+
+    Yields:
+        ServerContext with server details
+
+    Raises:
+        RuntimeError: If server fails to start
+    """
+    from strata import server
+    from strata.artifact_store import reset_artifact_store
+    from strata.server import ServerState, app
+
+    port = find_free_port()
+
+    config = StrataConfig(
+        host="127.0.0.1",
+        port=port,
+        cache_dir=cache_dir,
+        deployment_mode=deployment_mode,
+        artifact_dir=artifact_dir,
+    )
+    server._state = ServerState(config)
+
+    server_config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server_instance = uvicorn.Server(server_config)
+    thread = threading.Thread(target=server_instance.run, daemon=True)
+    thread.start()
+
+    if not wait_for_server(port):
+        raise RuntimeError(f"Server failed to start on port {port}")
+
+    try:
+        yield ServerContext(
+            config=config,
+            port=port,
+            base_url=f"http://127.0.0.1:{port}",
+            server_instance=server_instance,
+            thread=thread,
+        )
+    finally:
+        server_instance.should_exit = True
+        thread.join(timeout=2.0)
+        server._state = None
+        reset_artifact_store()
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
 
 
 @pytest.fixture
@@ -96,11 +337,7 @@ def server_with_client(temp_warehouse, tmp_path):
     import strata.server as server_module
     from strata.server import ServerState, app
 
-    # Find a free port
-    sock = socket.socket()
-    sock.bind(("127.0.0.1", 0))
-    port = sock.getsockname()[1]
-    sock.close()
+    port = find_free_port()
 
     config = StrataConfig(
         host="127.0.0.1",
@@ -124,7 +361,8 @@ def server_with_client(temp_warehouse, tmp_path):
     server_thread.start()
 
     # Wait for server to start
-    time.sleep(1)
+    if not wait_for_server(port):
+        raise RuntimeError("Server failed to start")
 
     client = StrataClient(base_url=f"http://127.0.0.1:{port}")
 

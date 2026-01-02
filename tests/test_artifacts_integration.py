@@ -8,113 +8,16 @@ These tests verify end-to-end artifact workflows:
 5. Service mode blocks artifact endpoints
 """
 
-import socket
-import threading
 import time
-from contextlib import contextmanager
-from dataclasses import dataclass
 
 import httpx
 import pyarrow as pa
 import pyarrow.ipc as ipc
 import pytest
-import uvicorn
 
-from strata import server
-from strata.artifact_store import reset_artifact_store
 from strata.client import StrataClient
-from strata.config import StrataConfig
-from strata.server import ServerState, app
 
-# =============================================================================
-# Test Helpers
-# =============================================================================
-
-
-def find_free_port() -> int:
-    """Find an available port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-def wait_for_server(port: int, timeout: float = 5.0) -> bool:
-    """Wait for server to be ready."""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=1.0)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(0.1)
-    return False
-
-
-def table_to_ipc_bytes(table: pa.Table) -> bytes:
-    """Convert Arrow table to IPC stream bytes."""
-    sink = pa.BufferOutputStream()
-    with ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    return sink.getvalue().to_pybytes()
-
-
-@dataclass
-class ServerContext:
-    """Context for a running test server."""
-
-    config: StrataConfig
-    port: int
-    base_url: str
-    server_instance: uvicorn.Server
-    thread: threading.Thread
-
-
-@contextmanager
-def run_server(
-    cache_dir,
-    artifact_dir=None,
-    deployment_mode: str = "personal",
-):
-    """Context manager to run a test server."""
-    port = find_free_port()
-
-    config = StrataConfig(
-        host="127.0.0.1",
-        port=port,
-        cache_dir=cache_dir,
-        deployment_mode=deployment_mode,
-        artifact_dir=artifact_dir,
-    )
-    server._state = ServerState(config)
-
-    server_config = uvicorn.Config(
-        app,
-        host="127.0.0.1",
-        port=port,
-        log_level="warning",
-    )
-    server_instance = uvicorn.Server(server_config)
-    thread = threading.Thread(target=server_instance.run, daemon=True)
-    thread.start()
-
-    if not wait_for_server(port):
-        raise RuntimeError(f"Server failed to start on port {port}")
-
-    try:
-        yield ServerContext(
-            config=config,
-            port=port,
-            base_url=f"http://127.0.0.1:{port}",
-            server_instance=server_instance,
-            thread=thread,
-        )
-    finally:
-        server_instance.should_exit = True
-        thread.join(timeout=2.0)
-        server._state = None
-        reset_artifact_store()
+from tests.conftest import run_server_with_context, table_to_ipc_bytes
 
 
 def materialize_and_upload(
@@ -151,7 +54,7 @@ def personal_mode_server(tmp_path):
     cache_dir.mkdir()
     artifact_dir.mkdir()
 
-    with run_server(cache_dir, artifact_dir, "personal") as ctx:
+    with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
         yield {"config": ctx.config, "port": ctx.port, "base_url": ctx.base_url}
 
 
@@ -161,7 +64,7 @@ def service_mode_server(tmp_path):
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
-    with run_server(cache_dir, deployment_mode="service") as ctx:
+    with run_server_with_context(cache_dir, deployment_mode="service") as ctx:
         yield {"config": ctx.config, "port": ctx.port, "base_url": ctx.base_url}
 
 
@@ -478,7 +381,7 @@ class TestArtifactContract:
         union_sql = "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
 
         # Phase 1: Create artifacts
-        with run_server(cache_dir, artifact_dir, "personal") as ctx:
+        with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
             with StrataClient(base_url=ctx.base_url) as client:
                 artifact = client.materialize(
                     inputs=[],
@@ -489,7 +392,7 @@ class TestArtifactContract:
 
         # Phase 2: Restart and verify
         time.sleep(0.2)  # Ensure clean shutdown
-        with run_server(cache_dir, artifact_dir, "personal") as ctx:
+        with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
             with StrataClient(base_url=ctx.base_url) as client:
                 # Cache should still hit
                 artifact = client.materialize(
@@ -1044,7 +947,7 @@ def artifact_server_with_warehouse(tmp_path, iceberg_warehouse):
     cache_dir.mkdir()
     artifact_dir.mkdir()
 
-    with run_server(cache_dir, artifact_dir, "personal") as ctx:
+    with run_server_with_context(cache_dir, artifact_dir, "personal") as ctx:
         yield {
             **iceberg_warehouse,
             "base_url": ctx.base_url,

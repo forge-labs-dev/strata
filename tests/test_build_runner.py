@@ -252,6 +252,8 @@ class TestBuildExecution:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
+        # Mock headers to return None for logs header (avoid MagicMock leaking to SQLite)
+        mock_response.headers = {}
 
         async def mock_aiter_bytes(chunk_size=65536):
             yield output_bytes
@@ -302,6 +304,8 @@ class TestBuildExecution:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
+        # Mock headers to return None for logs header (avoid MagicMock leaking to SQLite)
+        mock_response.headers = {}
 
         async def mock_aiter_bytes(chunk_size=65536):
             # Stream in chunks
@@ -347,6 +351,7 @@ class TestBuildExecution:
         # Mock the httpx response with 500 status
         mock_response = MagicMock()
         mock_response.status_code = 500
+        mock_response.headers = {}  # Avoid MagicMock leaking to SQLite
         mock_response.raise_for_status = MagicMock(
             side_effect=httpx.HTTPStatusError(
                 "Internal Server Error",
