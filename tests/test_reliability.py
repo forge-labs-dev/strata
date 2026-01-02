@@ -9,28 +9,23 @@ These tests verify:
 """
 
 import asyncio
-import sqlite3
 import time
 import uuid
-from pathlib import Path
 from unittest.mock import patch
 
-import pyarrow as pa
-import pyarrow.ipc as ipc
 import pytest
 
 from strata.artifact_store import (
-    ArtifactStore,
     TransformSpec,
     get_artifact_store,
     reset_artifact_store,
 )
-from strata.transforms.build_store import BuildStore, reset_build_store
+from strata.transforms.build_store import reset_build_store
 from strata.transforms.registry import (
     TransformDefinition,
     TransformRegistry,
-    set_transform_registry,
     reset_transform_registry,
+    set_transform_registry,
 )
 from strata.transforms.runner import BuildRunner, RunnerConfig
 
@@ -412,9 +407,7 @@ class TestAtomicFinalizeAndName:
         assert resolved.id == artifact_id
         assert resolved.version == version
 
-    def test_finalize_and_set_name_points_to_existing_on_duplicate(
-        self, artifact_store
-    ):
+    def test_finalize_and_set_name_points_to_existing_on_duplicate(self, artifact_store):
         """If duplicate provenance, name should point to existing artifact."""
         provenance_hash = f"hash-{uuid.uuid4()}"
         tenant = "team-a"
@@ -504,7 +497,9 @@ class TestBuildRunnerLeaseIntegration:
         assert runner_config.heartbeat_interval_seconds == 0.5
         assert runner_config.runner_id == "test-runner-1"
 
-    def test_runner_generates_id_if_not_provided(self, artifact_store, build_store, transform_registry, artifact_dir):
+    def test_runner_generates_id_if_not_provided(
+        self, artifact_store, build_store, transform_registry, artifact_dir
+    ):
         """Runner should generate unique ID if not provided."""
         config = RunnerConfig()
         runner = BuildRunner(
@@ -518,9 +513,7 @@ class TestBuildRunnerLeaseIntegration:
         assert len(runner._runner_id) > 7  # "runner-" + UUID fragment
 
     @pytest.mark.asyncio
-    async def test_heartbeat_renews_leases(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_heartbeat_renews_leases(self, build_runner, artifact_store, build_store):
         """Heartbeat loop should renew leases for running builds."""
         # Create artifact and build
         artifact_id = str(uuid.uuid4())

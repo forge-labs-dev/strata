@@ -132,9 +132,7 @@ class Artifact:
             Dict with artifact_id, version, state, size_bytes, row_count,
             created_at, arrow_schema, etc.
         """
-        response = self._client._client.get(
-            f"/v1/artifacts/{self.artifact_id}/v/{self.version}"
-        )
+        response = self._client._client.get(f"/v1/artifacts/{self.artifact_id}/v/{self.version}")
         response.raise_for_status()
         return response.json()
 
@@ -446,9 +444,7 @@ class StrataClient:
                 timeout=timeout,
             )
 
-    def _resolve_execution_mode(
-        self, mode: str, transform: dict[str, Any]
-    ) -> str:
+    def _resolve_execution_mode(self, mode: str, transform: dict[str, Any]) -> str:
         """Resolve execution mode based on server capabilities."""
         if mode in ("local", "server"):
             return mode

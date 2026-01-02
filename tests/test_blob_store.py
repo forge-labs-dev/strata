@@ -1,9 +1,15 @@
 """Tests for blob storage backends."""
 
-import pytest
 from pathlib import Path
 
-from strata.blob_store import LocalBlobStore, S3BlobStore, GCSBlobStore, BlobStore, create_blob_store
+import pytest
+
+from strata.blob_store import (
+    GCSBlobStore,
+    LocalBlobStore,
+    S3BlobStore,
+    create_blob_store,
+)
 from strata.config import StrataConfig
 
 
@@ -86,7 +92,7 @@ class TestLocalBlobStore:
         blobs_dir = tmp_path / "new" / "nested" / "blobs"
         assert not blobs_dir.exists()
 
-        store = LocalBlobStore(blobs_dir)
+        LocalBlobStore(blobs_dir)
 
         assert blobs_dir.exists()
 

@@ -16,7 +16,6 @@ import pyarrow.ipc as ipc
 import pytest
 
 from strata.client import StrataClient
-
 from tests.conftest import run_server_with_context, table_to_ipc_bytes
 
 

@@ -26,10 +26,10 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode, parse_qs, urlparse
+from urllib.parse import urlencode
 
 if TYPE_CHECKING:
-    from strata.config import StrataConfig
+    pass
 
 
 # Default signing secret - should be overridden in production

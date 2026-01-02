@@ -39,7 +39,9 @@ class TestDeploymentModeConfig:
                 cache_dir=tmp_path / "cache",
                 deployment_mode="invalid",
             )
-        assert "deployment_mode must be" in str(exc_info.value)
+        # Pydantic validation error includes 'service' or 'personal' in message
+        error_str = str(exc_info.value)
+        assert "'service'" in error_str or "'personal'" in error_str
 
     def test_personal_mode_creates_artifact_dir(self, tmp_path):
         """Personal mode creates artifact_dir if not specified."""

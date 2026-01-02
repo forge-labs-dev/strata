@@ -354,7 +354,7 @@ class BuildQoS:
         self,
         tenant_id: str,
         priority: BuildPriority,
-    ) -> "BuildSlot":
+    ) -> BuildSlot:
         """Acquire a build slot.
 
         This is the main admission control entry point. It:
@@ -548,7 +548,7 @@ class BuildSlot:
         await self._global_limiter.release()
         await self._tenant_limiter.release()
 
-    async def __aenter__(self) -> "BuildSlot":
+    async def __aenter__(self) -> BuildSlot:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:

@@ -1,7 +1,5 @@
 """Tests for transform registry (server-mode transforms)."""
 
-import pytest
-
 from strata.transforms.registry import (
     TransformDefinition,
     TransformRegistry,

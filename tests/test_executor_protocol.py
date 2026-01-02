@@ -9,9 +9,7 @@ These tests verify:
 """
 
 import json
-import socket
 import threading
-import time
 
 import httpx
 import pyarrow as pa
@@ -31,8 +29,7 @@ from strata.types import (
     ExecutorResponse,
     ExecutorTransformSpec,
 )
-
-from tests.conftest import find_free_port, table_to_ipc_bytes, ipc_bytes_to_table
+from tests.conftest import find_free_port, ipc_bytes_to_table, table_to_ipc_bytes, wait_for_server
 
 
 class TestProtocolTypes:
@@ -407,9 +404,6 @@ class TestBaseExecutorInterface:
 # ---------------------------------------------------------------------------
 
 
-from tests.conftest import wait_for_server
-
-
 @pytest.fixture
 def executor_server():
     """Start a reference executor server for integration tests."""
@@ -460,18 +454,20 @@ class TestExecutorHTTPIntegration:
         input_bytes = table_to_ipc_bytes(input_table)
 
         # Build multipart request
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-001",
-            "provenance_hash": "test-hash",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {"sql": "SELECT SUM(value) as total FROM input0"},
-            },
-            "inputs": [
-                {"name": "input0", "size_bytes": len(input_bytes)},
-            ],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-001",
+                "provenance_hash": "test-hash",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT SUM(value) as total FROM input0"},
+                },
+                "inputs": [
+                    {"name": "input0", "size_bytes": len(input_bytes)},
+                ],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -498,27 +494,29 @@ class TestExecutorHTTPIntegration:
         products_bytes = table_to_ipc_bytes(products)
         orders_bytes = table_to_ipc_bytes(orders)
 
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-002",
-            "provenance_hash": "test-hash-2",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {
-                    "sql": """
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-002",
+                "provenance_hash": "test-hash-2",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
                         SELECT p.name, SUM(o.qty * p.price) as revenue
                         FROM input0 p
                         JOIN input1 o ON p.id = o.product_id
                         GROUP BY p.name
                         ORDER BY p.name
                     """
+                    },
                 },
-            },
-            "inputs": [
-                {"name": "input0", "size_bytes": len(products_bytes)},
-                {"name": "input1", "size_bytes": len(orders_bytes)},
-            ],
-        })
+                "inputs": [
+                    {"name": "input0", "size_bytes": len(products_bytes)},
+                    {"name": "input1", "size_bytes": len(orders_bytes)},
+                ],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -547,18 +545,20 @@ class TestExecutorHTTPIntegration:
         input_table = pa.table({"x": [1, 2, 3]})
         input_bytes = table_to_ipc_bytes(input_table)
 
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-003",
-            "provenance_hash": "test-hash-3",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {"sql": "SELECT COUNT(*) as cnt FROM input0"},
-            },
-            "inputs": [
-                {"name": "input0", "size_bytes": len(input_bytes)},
-            ],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-003",
+                "provenance_hash": "test-hash-3",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT COUNT(*) as cnt FROM input0"},
+                },
+                "inputs": [
+                    {"name": "input0", "size_bytes": len(input_bytes)},
+                ],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -584,18 +584,20 @@ class TestExecutorHTTPIntegration:
         input_table = pa.table({"x": [1]})
         input_bytes = table_to_ipc_bytes(input_table)
 
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-004",
-            "provenance_hash": "test-hash-4",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {"sql": "SELEC * FROM invalid_table"},  # Typo in SELECT
-            },
-            "inputs": [
-                {"name": "input0", "size_bytes": len(input_bytes)},
-            ],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-004",
+                "provenance_hash": "test-hash-4",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELEC * FROM invalid_table"},  # Typo in SELECT
+                },
+                "inputs": [
+                    {"name": "input0", "size_bytes": len(input_bytes)},
+                ],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -617,18 +619,20 @@ class TestExecutorHTTPIntegration:
         input_table = pa.table({"x": [1]})
         input_bytes = table_to_ipc_bytes(input_table)
 
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-005",
-            "provenance_hash": "test-hash-5",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {},  # Missing sql
-            },
-            "inputs": [
-                {"name": "input0", "size_bytes": len(input_bytes)},
-            ],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-005",
+                "provenance_hash": "test-hash-5",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {},  # Missing sql
+                },
+                "inputs": [
+                    {"name": "input0", "size_bytes": len(input_bytes)},
+                ],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -647,16 +651,18 @@ class TestExecutorHTTPIntegration:
         """Unsupported transform returns error."""
         base_url = executor_server["base_url"]
 
-        metadata = json.dumps({
-            "protocol_version": "v1",
-            "build_id": "test-build-006",
-            "provenance_hash": "test-hash-6",
-            "transform": {
-                "ref": "pandas_transform@v1",  # Not supported by DuckDBExecutor
-                "params": {"code": "df.head()"},
-            },
-            "inputs": [],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v1",
+                "build_id": "test-build-006",
+                "provenance_hash": "test-hash-6",
+                "transform": {
+                    "ref": "pandas_transform@v1",  # Not supported by DuckDBExecutor
+                    "params": {"code": "df.head()"},
+                },
+                "inputs": [],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),
@@ -670,16 +676,18 @@ class TestExecutorHTTPIntegration:
         """Invalid protocol version returns error."""
         base_url = executor_server["base_url"]
 
-        metadata = json.dumps({
-            "protocol_version": "v99",  # Invalid version
-            "build_id": "test-build-007",
-            "provenance_hash": "test-hash-7",
-            "transform": {
-                "ref": "duckdb_sql@v1",
-                "params": {"sql": "SELECT 1"},
-            },
-            "inputs": [],
-        })
+        metadata = json.dumps(
+            {
+                "protocol_version": "v99",  # Invalid version
+                "build_id": "test-build-007",
+                "provenance_hash": "test-hash-7",
+                "transform": {
+                    "ref": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT 1"},
+                },
+                "inputs": [],
+            }
+        )
 
         files = {
             "metadata": ("metadata.json", metadata, "application/json"),

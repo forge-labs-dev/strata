@@ -26,7 +26,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException
 
 if TYPE_CHECKING:
     from strata.config import StrataConfig
@@ -35,10 +35,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Request-scoped principal context
-_principal_ctx: ContextVar["Principal | None"] = ContextVar("principal", default=None)
+_principal_ctx: ContextVar[Principal | None] = ContextVar("principal", default=None)
 
 
-def get_principal() -> "Principal | None":
+def get_principal() -> Principal | None:
     """Get the current request's principal from context.
 
     Returns:
@@ -47,7 +47,7 @@ def get_principal() -> "Principal | None":
     return _principal_ctx.get()
 
 
-def set_principal(principal: "Principal | None") -> None:
+def set_principal(principal: Principal | None) -> None:
     """Set the current request's principal in context.
 
     Called by auth middleware after parsing headers.
@@ -69,7 +69,7 @@ class TenantAccessError(Exception):
         super().__init__(message)
 
 
-def require_tenant(config: "StrataConfig") -> str:
+def require_tenant(config: StrataConfig) -> str:
     """Require tenant to be set in the current request context.
 
     In service mode with auth enabled, tenant is required for all
@@ -97,15 +97,13 @@ def require_tenant(config: "StrataConfig") -> str:
         raise TenantAccessError("Authentication required", 401)
 
     if principal.tenant is None:
-        raise TenantAccessError(
-            "Tenant header required for artifact operations", 400
-        )
+        raise TenantAccessError("Tenant header required for artifact operations", 400)
 
     return principal.tenant
 
 
 def authorize_resource_tenant(
-    config: "StrataConfig",
+    config: StrataConfig,
     resource_tenant: str | None,
     resource_type: str = "resource",
 ) -> None:
@@ -142,16 +140,12 @@ def authorize_resource_tenant(
 
     # Tenant is required in service mode
     if caller_tenant is None:
-        raise TenantAccessError(
-            "Tenant header required for artifact operations", 400
-        )
+        raise TenantAccessError("Tenant header required for artifact operations", 400)
 
     # Resource has no tenant (legacy data or misconfiguration)
     if resource_tenant is None:
         # Allow access but log warning
-        logger.warning(
-            f"Resource has no tenant, allowing access from {caller_tenant}"
-        )
+        logger.warning(f"Resource has no tenant, allowing access from {caller_tenant}")
         return
 
     # Tenant mismatch
@@ -163,7 +157,7 @@ def authorize_resource_tenant(
 
 
 def raise_not_found_or_forbidden(
-    config: "StrataConfig",
+    config: StrataConfig,
     resource_type: str = "resource",
 ) -> None:
     """Raise appropriate error for access denial.
@@ -186,7 +180,7 @@ def raise_not_found_or_forbidden(
 def tenant_scoped_lookup(
     caller_tenant: str | None,
     resource_tenant: str | None,
-    config: "StrataConfig",
+    config: StrataConfig,
 ) -> bool:
     """Check if caller can access a resource based on tenant.
 
@@ -230,8 +224,8 @@ class TenantContext:
     and authorization methods.
     """
 
-    config: "StrataConfig"
-    principal: "Principal | None"
+    config: StrataConfig
+    principal: Principal | None
 
     @property
     def tenant_id(self) -> str | None:
@@ -257,10 +251,7 @@ class TenantContext:
     @property
     def requires_tenant(self) -> bool:
         """Check if tenant is required for this request."""
-        return (
-            self.config.deployment_mode == "service"
-            and self.config.auth_mode != "none"
-        )
+        return self.config.deployment_mode == "service" and self.config.auth_mode != "none"
 
     def authorize(self, resource_tenant: str | None, resource_type: str = "resource") -> None:
         """Authorize access to a resource.
@@ -286,7 +277,7 @@ class TenantContext:
         return tenant_scoped_lookup(self.tenant_id, resource_tenant, self.config)
 
 
-def get_tenant_context(config: "StrataConfig") -> TenantContext:
+def get_tenant_context(config: StrataConfig) -> TenantContext:
     """Get the tenant context for the current request.
 
     Args:

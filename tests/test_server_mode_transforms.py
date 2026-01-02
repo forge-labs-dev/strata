@@ -1,18 +1,16 @@
 """Tests for server-mode transforms (async materialize + build polling)."""
 
 import pytest
-from pathlib import Path
 from fastapi.testclient import TestClient
 
+from strata.artifact_store import get_artifact_store, reset_artifact_store
 from strata.config import StrataConfig
-from strata.artifact_store import reset_artifact_store, get_artifact_store
+from strata.transforms.build_store import get_build_store, reset_build_store
 from strata.transforms.registry import (
-    TransformDefinition,
     TransformRegistry,
-    set_transform_registry,
     reset_transform_registry,
+    set_transform_registry,
 )
-from strata.transforms.build_store import reset_build_store, get_build_store
 
 
 @pytest.fixture
@@ -62,8 +60,8 @@ def personal_mode_config(tmp_path):
 @pytest.fixture
 def server_mode_app(server_mode_config):
     """Create test app with server mode config."""
-    from strata.server import app, _state
     import strata.server as server_module
+    from strata.server import app
 
     # Reset singletons
     reset_artifact_store()
@@ -71,9 +69,7 @@ def server_mode_app(server_mode_config):
     reset_build_store()
 
     # Initialize transform registry
-    transform_registry = TransformRegistry.from_config(
-        server_mode_config.transforms_config
-    )
+    transform_registry = TransformRegistry.from_config(server_mode_config.transforms_config)
     set_transform_registry(transform_registry)
 
     # Initialize artifact store
@@ -109,8 +105,8 @@ def server_mode_app(server_mode_config):
 @pytest.fixture
 def personal_mode_app(personal_mode_config):
     """Create test app with personal mode config."""
-    from strata.server import app, _state
     import strata.server as server_module
+    from strata.server import app
 
     # Reset singletons
     reset_artifact_store()
@@ -304,15 +300,16 @@ class TestProvenanceDeduplication:
             },
         )
 
-        build_id = resp1.json()["build_id"]
         artifact_uri = resp1.json()["artifact_uri"]
 
         # Simulate build completion by directly updating the artifact store
         from strata.artifact_store import get_artifact_store
+
         store = get_artifact_store()
 
         # Parse artifact_id and version from URI
         import re
+
         match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", artifact_uri)
         artifact_id = match.group(1)
         version = int(match.group(2))
@@ -395,9 +392,10 @@ class TestMixedModeScenarios:
 
     def test_materialize_without_transforms_enabled(self, tmp_path):
         """Materialize in service mode without transforms returns 403."""
-        from strata.server import app
-        import strata.server as server_module
         from unittest.mock import MagicMock
+
+        import strata.server as server_module
+        from strata.server import app
 
         # Reset singletons
         reset_artifact_store()

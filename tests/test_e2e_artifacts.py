@@ -16,9 +16,9 @@ import pyarrow as pa
 import pytest
 
 from tests.conftest import (
+    ipc_bytes_to_table,
     run_server_with_context,
     table_to_ipc_bytes,
-    ipc_bytes_to_table,
 )
 
 
@@ -183,8 +183,7 @@ class TestArtifactPipeline:
                 inputs=[],
                 result_table=result_table,
                 params={
-                    "sql": "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' "
-                    "UNION ALL SELECT 3, 'c'"
+                    "sql": "SELECT 1 as x, 'a' as y UNION ALL SELECT 2, 'b' UNION ALL SELECT 3, 'c'"
                 },
             )
 
@@ -357,10 +356,12 @@ class TestLineageTraversal:
             )
 
             # Create joined artifact using both
-            joined_table = pa.table({
-                "name": ["Alice", "Bob"],
-                "amount": [100, 200],
-            })
+            joined_table = pa.table(
+                {
+                    "name": ["Alice", "Bob"],
+                    "amount": [100, 200],
+                }
+            )
             joined_uri = client.create_artifact(
                 inputs=[users_uri, orders_uri],
                 result_table=joined_table,

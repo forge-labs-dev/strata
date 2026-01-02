@@ -235,8 +235,7 @@ class DuckDBExecutor(BaseExecutor):
                 table = reader.read_all()
                 conn.register(inp.name, table)
                 logs_buffer.write(
-                    f"Registered {inp.name}: {table.num_rows} rows, "
-                    f"{table.num_columns} columns\n"
+                    f"Registered {inp.name}: {table.num_rows} rows, {table.num_columns} columns\n"
                 )
 
             # Execute query
@@ -360,8 +359,7 @@ def create_executor_app(executor: BaseExecutor | None = None):
         if not any(transform_ref.startswith(ref.split("@")[0]) for ref in supported_refs):
             raise HTTPException(
                 status_code=400,
-                detail=f"Unsupported transform: {transform_ref}. "
-                f"Supported: {supported_refs}",
+                detail=f"Unsupported transform: {transform_ref}. Supported: {supported_refs}",
             )
 
         # Collect inputs from form data
@@ -399,9 +397,9 @@ def create_executor_app(executor: BaseExecutor | None = None):
 
         # Add logs as base64-encoded header if present
         if result.logs:
-            headers[EXECUTOR_LOGS_HEADER] = base64.b64encode(
-                result.logs.encode("utf-8")
-            ).decode("ascii")
+            headers[EXECUTOR_LOGS_HEADER] = base64.b64encode(result.logs.encode("utf-8")).decode(
+                "ascii"
+            )
 
         return Response(
             content=result.output_bytes,

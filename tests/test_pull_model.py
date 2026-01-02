@@ -10,7 +10,6 @@ Tests the complete pull model flow:
 
 from __future__ import annotations
 
-import io
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -21,12 +20,11 @@ import pyarrow.ipc as ipc
 import pytest
 from fastapi.testclient import TestClient
 
-from strata.artifact_store import ArtifactStore, get_artifact_store, reset_artifact_store
+import strata.server as server_module
+from strata.artifact_store import get_artifact_store, reset_artifact_store
 from strata.config import StrataConfig
 from strata.server import app
-import strata.server as server_module
 from strata.transforms.build_store import (
-    BuildStore,
     get_build_store,
     reset_build_store,
 )
@@ -149,7 +147,7 @@ class TestBuildManifestEndpoint:
         output_version = create_test_artifact(artifact_store, "output1", finalize=False)
 
         # Create a build with input_uris
-        build = build_store.create_build(
+        build_store.create_build(
             build_id="build-001",
             artifact_id="output1",
             version=output_version,

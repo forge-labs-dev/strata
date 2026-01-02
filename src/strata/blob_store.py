@@ -252,7 +252,9 @@ class S3BlobStore(BlobStore):
             return False
 
     @classmethod
-    def from_config(cls, config: "StrataConfig", bucket: str, prefix: str = "artifacts") -> "S3BlobStore":
+    def from_config(
+        cls, config: StrataConfig, bucket: str, prefix: str = "artifacts"
+    ) -> S3BlobStore:
         """Create S3BlobStore from Strata configuration.
 
         Args:
@@ -318,6 +320,7 @@ class GCSBlobStore(BlobStore):
             # or explicit credentials via access_token
             # For service account key files, set the env var before creating
             import os
+
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_json
         if anonymous:
             kwargs["anonymous"] = True
@@ -373,7 +376,9 @@ class GCSBlobStore(BlobStore):
             return False
 
     @classmethod
-    def from_config(cls, config: "StrataConfig", bucket: str, prefix: str = "artifacts") -> "GCSBlobStore":
+    def from_config(
+        cls, config: StrataConfig, bucket: str, prefix: str = "artifacts"
+    ) -> GCSBlobStore:
         """Create GCSBlobStore from Strata configuration.
 
         Args:
@@ -394,7 +399,7 @@ class GCSBlobStore(BlobStore):
         )
 
 
-def create_blob_store(config: "StrataConfig") -> BlobStore:
+def create_blob_store(config: StrataConfig) -> BlobStore:
     """Create appropriate blob store based on configuration.
 
     Factory function that creates the correct blob store implementation

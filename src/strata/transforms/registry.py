@@ -126,7 +126,7 @@ class TransformRegistry:
         return self.get(executor_ref) is not None
 
     @classmethod
-    def from_config(cls, config: dict) -> "TransformRegistry":
+    def from_config(cls, config: dict) -> TransformRegistry:
         """Create registry from configuration dictionary.
 
         Expected format (from pyproject.toml [tool.strata.transforms]):
@@ -168,8 +168,7 @@ class TransformRegistry:
             logger.debug(f"Registered transform: {defn.ref} -> {defn.executor_url}")
 
         logger.info(
-            f"Transform registry initialized: enabled={enabled}, "
-            f"definitions={len(definitions)}"
+            f"Transform registry initialized: enabled={enabled}, definitions={len(definitions)}"
         )
 
         return cls(enabled=enabled, definitions=definitions)

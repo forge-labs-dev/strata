@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
 if TYPE_CHECKING:
@@ -705,11 +706,10 @@ async def lifespan(app: FastAPI):
         set_build_qos(build_qos)
 
     # Initialize build metrics collector for observability
-    build_metrics = None
     if config.server_transforms_enabled:
         from strata.transforms.build_metrics import init_build_metrics
 
-        build_metrics = init_build_metrics()
+        init_build_metrics()
 
     # Initialize build runner for server-mode transforms
     build_runner = None
@@ -723,14 +723,15 @@ async def lifespan(app: FastAPI):
             set_build_runner,
         )
 
-        # Ensure artifact_dir exists for server-mode transforms
-        if config.artifact_dir is None:
-            config.artifact_dir = Path.home() / ".strata" / "artifacts"
-        config.artifact_dir.mkdir(parents=True, exist_ok=True)
+        # Determine artifact_dir for server-mode transforms
+        artifact_dir = config.artifact_dir
+        if artifact_dir is None:
+            artifact_dir = Path.home() / ".strata" / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize stores
-        artifact_store = get_artifact_store(config.artifact_dir)
-        build_store = get_build_store(config.artifact_dir / "artifacts.sqlite")
+        artifact_store = get_artifact_store(artifact_dir)
+        build_store = get_build_store(artifact_dir / "artifacts.sqlite")
 
         if artifact_store and build_store:
             runner_config = RunnerConfig(
@@ -746,7 +747,7 @@ async def lifespan(app: FastAPI):
                 artifact_store=artifact_store,
                 build_store=build_store,
                 transform_registry=get_transform_registry(),
-                artifact_dir=config.artifact_dir,
+                artifact_dir=artifact_dir,
             )
             set_build_runner(build_runner)
             await build_runner.start()
@@ -3731,9 +3732,7 @@ def _validate_transform_allowed(executor_ref: str):
     )
 
 
-def _resolve_to_artifact_version(
-    input_uri: str, store
-) -> tuple[str, int] | None:
+def _resolve_to_artifact_version(input_uri: str, store) -> tuple[str, int] | None:
     """Resolve an input URI to an (artifact_id, version) tuple.
 
     Args:
@@ -4988,8 +4987,9 @@ async def finalize_build(build_id: str, request: Request):
 
     # Parse Arrow IPC to get schema and row count
     try:
-        import pyarrow.ipc as arrow_ipc
         import io
+
+        import pyarrow.ipc as arrow_ipc
 
         reader = arrow_ipc.open_stream(io.BytesIO(blob))
         schema = reader.schema

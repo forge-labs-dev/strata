@@ -323,7 +323,7 @@ class ArtifactStore:
         artifact = store.resolve_name("daily_revenue")
     """
 
-    def __init__(self, artifact_dir: Path, blob_store: "BlobStore | None" = None):
+    def __init__(self, artifact_dir: Path, blob_store: BlobStore | None = None):
         """Initialize artifact store.
 
         Args:
@@ -337,6 +337,7 @@ class ArtifactStore:
         # Initialize blob store (default to local filesystem)
         if blob_store is None:
             from strata.blob_store import LocalBlobStore
+
             self.blobs_dir = artifact_dir / "blobs"
             self.blobs_dir.mkdir(parents=True, exist_ok=True)
             self.blob_store: BlobStore = LocalBlobStore(self.blobs_dir)
@@ -344,6 +345,7 @@ class ArtifactStore:
             self.blob_store = blob_store
             # For backwards compatibility, set blobs_dir if using local store
             from strata.blob_store import LocalBlobStore
+
             if isinstance(blob_store, LocalBlobStore):
                 self.blobs_dir = blob_store.blobs_dir
             else:
@@ -380,12 +382,8 @@ class ArtifactStore:
 
                 if "tenant" not in columns:
                     # Migrate: add tenant and principal columns
-                    conn.execute(
-                        "ALTER TABLE artifact_versions ADD COLUMN tenant TEXT"
-                    )
-                    conn.execute(
-                        "ALTER TABLE artifact_versions ADD COLUMN principal TEXT"
-                    )
+                    conn.execute("ALTER TABLE artifact_versions ADD COLUMN tenant TEXT")
+                    conn.execute("ALTER TABLE artifact_versions ADD COLUMN principal TEXT")
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_versions_tenant "
                         "ON artifact_versions(tenant)"
@@ -415,9 +413,7 @@ class ArtifactStore:
                 if "tenant" not in name_columns:
                     # Need to recreate artifact_names with new schema
                     # SQLite doesn't support changing primary key
-                    conn.execute(
-                        "ALTER TABLE artifact_names RENAME TO artifact_names_old"
-                    )
+                    conn.execute("ALTER TABLE artifact_names RENAME TO artifact_names_old")
                     conn.execute("""
                         CREATE TABLE artifact_names (
                             name TEXT NOT NULL,
@@ -440,8 +436,7 @@ class ArtifactStore:
                     """)
                     conn.execute("DROP TABLE artifact_names_old")
                     conn.execute(
-                        "CREATE INDEX IF NOT EXISTS idx_names_name "
-                        "ON artifact_names(name)"
+                        "CREATE INDEX IF NOT EXISTS idx_names_name ON artifact_names(name)"
                     )
                     conn.commit()
             else:
@@ -682,9 +677,7 @@ class ArtifactStore:
             if row["state"] == "ready":
                 # Already finalized - set name and return (idempotent)
                 if name:
-                    self._set_name_in_connection(
-                        conn, name, artifact_id, version, tenant
-                    )
+                    self._set_name_in_connection(conn, name, artifact_id, version, tenant)
                     conn.commit()
                 return self.get_artifact(artifact_id, version)
 
@@ -711,9 +704,7 @@ class ArtifactStore:
                     (artifact_id, version),
                 )
                 if name:
-                    self._set_name_in_connection(
-                        conn, name, existing.id, existing.version, tenant
-                    )
+                    self._set_name_in_connection(conn, name, existing.id, existing.version, tenant)
                 conn.commit()
                 return existing
 
@@ -738,9 +729,7 @@ class ArtifactStore:
 
                 # Set name in same transaction
                 if name:
-                    self._set_name_in_connection(
-                        conn, name, artifact_id, version, tenant
-                    )
+                    self._set_name_in_connection(conn, name, artifact_id, version, tenant)
 
                 conn.commit()
                 return self.get_artifact(artifact_id, version)
@@ -1050,7 +1039,7 @@ class ArtifactStore:
 
             # Upsert name (tenant, name) is the unique key
             # Use '' instead of NULL for personal mode (SQLite NULL != NULL in unique constraints)
-            effective_tenant = tenant if tenant is not None else ''
+            effective_tenant = tenant if tenant is not None else ""
             conn.execute(
                 """
                 INSERT INTO artifact_names (name, artifact_id, version, updated_at, tenant)
@@ -1085,7 +1074,7 @@ class ArtifactStore:
         conn = self._get_connection()
         try:
             # Use '' instead of NULL for personal mode
-            effective_tenant = tenant if tenant is not None else ''
+            effective_tenant = tenant if tenant is not None else ""
             cursor = conn.execute(
                 """
                 SELECT n.artifact_id, n.version
@@ -1118,7 +1107,7 @@ class ArtifactStore:
         conn = self._get_connection()
         try:
             # Use '' instead of NULL for personal mode
-            effective_tenant = tenant if tenant is not None else ''
+            effective_tenant = tenant if tenant is not None else ""
             cursor = conn.execute(
                 """
                 SELECT name, artifact_id, version, updated_at, tenant
@@ -1159,7 +1148,7 @@ class ArtifactStore:
         conn = self._get_connection()
         try:
             # Use '' instead of NULL for personal mode
-            effective_tenant = tenant if tenant is not None else ''
+            effective_tenant = tenant if tenant is not None else ""
             cursor = conn.execute(
                 "DELETE FROM artifact_names WHERE name = ? AND tenant = ?",
                 (name, effective_tenant),
@@ -1181,7 +1170,7 @@ class ArtifactStore:
         conn = self._get_connection()
         try:
             # Use '' instead of NULL for personal mode
-            effective_tenant = tenant if tenant is not None else ''
+            effective_tenant = tenant if tenant is not None else ""
             cursor = conn.execute(
                 """
                 SELECT name, artifact_id, version, updated_at, tenant
@@ -1205,9 +1194,7 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def get_name_status(
-        self, name: str, tenant: str | None = None
-    ) -> NameStatus | None:
+    def get_name_status(self, name: str, tenant: str | None = None) -> NameStatus | None:
         """Get status information for a named artifact.
 
         Returns the name pointer metadata along with the artifact's
@@ -1688,7 +1675,7 @@ _artifact_store: ArtifactStore | None = None
 
 def get_artifact_store(
     artifact_dir: Path | None = None,
-    blob_store: "BlobStore | None" = None,
+    blob_store: BlobStore | None = None,
 ) -> ArtifactStore | None:
     """Get the artifact store singleton.
 

@@ -183,9 +183,7 @@ class TestArtifactLineage:
         """Lineage returns 404 for non-existent artifact."""
         base_url = lineage_server["base_url"]
 
-        resp = httpx.get(
-            f"{base_url}/v1/artifacts/nonexistent-id/v/1/lineage"
-        )
+        resp = httpx.get(f"{base_url}/v1/artifacts/nonexistent-id/v/1/lineage")
         assert resp.status_code == 404
 
 
@@ -248,7 +246,9 @@ class TestArtifactDependents:
         base_artifact = create_artifact(base_url, inputs=["file:///warehouse#db.source"])
 
         # Create multiple dependent artifacts
-        dep1 = create_artifact(base_url, inputs=[base_artifact["artifact_uri"]], executor="transform1")
+        dep1 = create_artifact(
+            base_url, inputs=[base_artifact["artifact_uri"]], executor="transform1"
+        )
         dep2 = create_artifact(
             base_url,
             inputs=[base_artifact["artifact_uri"], "file:///other#table"],
@@ -299,9 +299,7 @@ class TestArtifactDependents:
         """Dependents returns 404 for non-existent artifact."""
         base_url = lineage_server["base_url"]
 
-        resp = httpx.get(
-            f"{base_url}/v1/artifacts/nonexistent-id/v/1/dependents"
-        )
+        resp = httpx.get(f"{base_url}/v1/artifacts/nonexistent-id/v/1/dependents")
         assert resp.status_code == 404
 
 

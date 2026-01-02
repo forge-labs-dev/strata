@@ -9,11 +9,7 @@ These tests verify:
 """
 
 import asyncio
-import json
-import tempfile
-import time
 import uuid
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -22,23 +18,20 @@ import pyarrow.ipc as ipc
 import pytest
 
 from strata.artifact_store import (
-    ArtifactStore,
     TransformSpec,
     get_artifact_store,
     reset_artifact_store,
 )
-from strata.transforms.build_store import BuildStore, get_build_store, reset_build_store
+from strata.transforms.build_store import get_build_store, reset_build_store
 from strata.transforms.registry import (
     TransformDefinition,
     TransformRegistry,
-    get_transform_registry,
     reset_transform_registry,
     set_transform_registry,
 )
 from strata.transforms.runner import (
     BuildRunner,
     RunnerConfig,
-    get_build_runner,
     reset_build_runner,
     set_build_runner,
 )
@@ -117,9 +110,7 @@ def runner_config():
 
 
 @pytest.fixture
-def build_runner(
-    runner_config, artifact_store, build_store, transform_registry, artifact_dir
-):
+def build_runner(runner_config, artifact_store, build_store, transform_registry, artifact_dir):
     """Create a build runner for testing."""
     reset_build_runner()
     runner = BuildRunner(
@@ -151,9 +142,7 @@ def create_arrow_ipc_bytes(data: dict) -> bytes:
     return sink.getvalue().to_pybytes()
 
 
-def create_test_artifact(
-    artifact_store, build_store, executor_ref="test_sql@v1", tenant_id=None
-):
+def create_test_artifact(artifact_store, build_store, executor_ref="test_sql@v1", tenant_id=None):
     """Create a test artifact in building state with a pending build.
 
     Returns:
@@ -235,14 +224,10 @@ class TestBuildExecution:
     """Tests for build execution with mocked executor."""
 
     @pytest.mark.asyncio
-    async def test_successful_build(
-        self, build_runner, artifact_store, build_store, artifact_dir
-    ):
+    async def test_successful_build(self, build_runner, artifact_store, build_store, artifact_dir):
         """Test successful build execution with mocked executor."""
         # Create a pending build
-        artifact_id, version, build_id = create_test_artifact(
-            artifact_store, build_store
-        )
+        artifact_id, version, build_id = create_test_artifact(artifact_store, build_store)
 
         # Create mock response with Arrow data
         output_data = {"id": [1, 2, 3], "value": ["a", "b", "c"]}
@@ -287,9 +272,7 @@ class TestBuildExecution:
         assert artifact.row_count == 3
 
     @pytest.mark.asyncio
-    async def test_build_max_output_bytes_exceeded(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_build_max_output_bytes_exceeded(self, build_runner, artifact_store, build_store):
         """Test build failure when output exceeds max_output_bytes."""
         # Create a pending build with small_output transform (100 byte limit)
         artifact_id, version, build_id = create_test_artifact(
@@ -339,14 +322,10 @@ class TestBuildExecution:
         assert artifact.state == "failed"
 
     @pytest.mark.asyncio
-    async def test_build_executor_non_200(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_build_executor_non_200(self, build_runner, artifact_store, build_store):
         """Test build failure when executor returns non-200 status."""
         # Create a pending build
-        artifact_id, version, build_id = create_test_artifact(
-            artifact_store, build_store
-        )
+        artifact_id, version, build_id = create_test_artifact(artifact_store, build_store)
 
         # Mock the httpx response with 500 status
         mock_response = MagicMock()
@@ -385,9 +364,7 @@ class TestBuildExecution:
         assert artifact.state == "failed"
 
     @pytest.mark.asyncio
-    async def test_build_executor_timeout(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_build_executor_timeout(self, build_runner, artifact_store, build_store):
         """Test build failure when executor times out."""
         # Create a pending build with slow_transform (0.1s timeout)
         artifact_id, version, build_id = create_test_artifact(
@@ -423,9 +400,7 @@ class TestBuildExecution:
         assert artifact.state == "failed"
 
     @pytest.mark.asyncio
-    async def test_build_transform_not_in_registry(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_build_transform_not_in_registry(self, build_runner, artifact_store, build_store):
         """Test build failure when transform is not in registry."""
         # Create a pending build with unknown transform
         artifact_id = str(uuid.uuid4())
@@ -467,25 +442,19 @@ class TestConcurrencyControls:
     """Tests for concurrency controls (semaphores)."""
 
     @pytest.mark.asyncio
-    async def test_global_concurrency_limit(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_global_concurrency_limit(self, build_runner, artifact_store, build_store):
         """Test that global concurrency limit is respected."""
         # Create more builds than global limit
         num_builds = 10
         builds = []
         for i in range(num_builds):
-            artifact_id, version, build_id = create_test_artifact(
-                artifact_store, build_store
-            )
+            artifact_id, version, build_id = create_test_artifact(artifact_store, build_store)
             builds.append(build_id)
 
         # Track concurrent executions
         max_concurrent = 0
         current_concurrent = 0
         lock = asyncio.Lock()
-
-        original_execute = build_runner._execute_build
 
         async def counting_execute(build):
             nonlocal max_concurrent, current_concurrent
@@ -509,9 +478,7 @@ class TestConcurrencyControls:
         assert max_concurrent <= build_runner.config.max_concurrent_builds
 
     @pytest.mark.asyncio
-    async def test_per_tenant_concurrency_limit(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_per_tenant_concurrency_limit(self, build_runner, artifact_store, build_store):
         """Test that per-tenant concurrency limit is respected."""
         tenant_id = "test-tenant"
         num_builds = 5
@@ -534,9 +501,7 @@ class TestConcurrencyControls:
             tid = build.tenant_id or "__default__"
             async with lock:
                 tenant_concurrent[tid] = tenant_concurrent.get(tid, 0) + 1
-                max_tenant_concurrent = max(
-                    max_tenant_concurrent, tenant_concurrent[tid]
-                )
+                max_tenant_concurrent = max(max_tenant_concurrent, tenant_concurrent[tid])
             try:
                 await asyncio.sleep(0.05)  # Simulate work
             finally:
@@ -610,14 +575,10 @@ class TestBuildPolling:
     """Tests for build polling loop."""
 
     @pytest.mark.asyncio
-    async def test_pending_builds_picked_up(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_pending_builds_picked_up(self, build_runner, artifact_store, build_store):
         """Test that pending builds are picked up by the polling loop."""
         # Create a pending build
-        artifact_id, version, build_id = create_test_artifact(
-            artifact_store, build_store
-        )
+        artifact_id, version, build_id = create_test_artifact(artifact_store, build_store)
 
         # Mock successful execution
         executed_builds = []
@@ -636,14 +597,10 @@ class TestBuildPolling:
         assert build_id in executed_builds
 
     @pytest.mark.asyncio
-    async def test_shutdown_cancels_builds(
-        self, build_runner, artifact_store, build_store
-    ):
+    async def test_shutdown_cancels_builds(self, build_runner, artifact_store, build_store):
         """Test that shutdown cancels in-progress builds."""
         # Create a pending build
-        artifact_id, version, build_id = create_test_artifact(
-            artifact_store, build_store
-        )
+        artifact_id, version, build_id = create_test_artifact(artifact_store, build_store)
 
         # Mock slow execution
         async def slow_execute(build, already_claimed=False):

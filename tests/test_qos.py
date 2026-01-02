@@ -16,7 +16,6 @@ from pyiceberg.schema import Schema
 from pyiceberg.types import LongType, NestedField, StringType
 
 from strata.config import StrataConfig
-
 from tests.conftest import find_free_port, run_server
 
 

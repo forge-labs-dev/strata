@@ -8,26 +8,17 @@ These tests verify:
 5. Error handling - hide forbidden as not found when configured
 """
 
-import json
-import tempfile
-import time
-import uuid
-from pathlib import Path
-
 import pytest
 
 from strata.artifact_store import (
     ArtifactStore,
-    TransformSpec,
     get_artifact_store,
     reset_artifact_store,
 )
 from strata.config import StrataConfig
 from strata.tenant_acl import (
     TenantAccessError,
-    TenantContext,
     authorize_resource_tenant,
-    get_principal,
     get_tenant_context,
     require_tenant,
     set_principal,
@@ -162,16 +153,12 @@ class TestAuthorizeResourceTenant:
         principal = Principal(id="user-1", tenant="team-a")
         set_principal(principal)
         with pytest.raises(TenantAccessError) as exc_info:
-            authorize_resource_tenant(
-                service_config_show_forbidden, "team-b", "artifact"
-            )
+            authorize_resource_tenant(service_config_show_forbidden, "team-b", "artifact")
         assert exc_info.value.status_code == 403
 
     def test_admin_scope_bypasses_tenant_check(self, service_config_with_auth):
         """Admin scope should bypass tenant checks."""
-        principal = Principal(
-            id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"])
-        )
+        principal = Principal(id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"]))
         set_principal(principal)
         # Should not raise even though tenant doesn't match
         authorize_resource_tenant(service_config_with_auth, "team-b", "artifact")
@@ -207,9 +194,7 @@ class TestTenantScopedLookup:
 
     def test_admin_bypasses(self, service_config_with_auth):
         """Admin scope should bypass tenant check."""
-        principal = Principal(
-            id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"])
-        )
+        principal = Principal(id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"]))
         set_principal(principal)
         assert tenant_scoped_lookup("team-a", "team-b", service_config_with_auth)
 
@@ -219,9 +204,7 @@ class TestTenantContext:
 
     def test_tenant_context_properties(self, service_config_with_auth):
         """TenantContext should expose principal properties."""
-        principal = Principal(
-            id="user-1", tenant="team-a", scopes=frozenset(["scan:create"])
-        )
+        principal = Principal(id="user-1", tenant="team-a", scopes=frozenset(["scan:create"]))
         set_principal(principal)
         ctx = get_tenant_context(service_config_with_auth)
 
@@ -232,9 +215,7 @@ class TestTenantContext:
 
     def test_admin_context(self, service_config_with_auth):
         """TenantContext should detect admin scope."""
-        principal = Principal(
-            id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"])
-        )
+        principal = Principal(id="admin-user", tenant="team-a", scopes=frozenset(["admin:*"]))
         set_principal(principal)
         ctx = get_tenant_context(service_config_with_auth)
 

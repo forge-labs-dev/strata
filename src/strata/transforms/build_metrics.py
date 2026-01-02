@@ -112,7 +112,9 @@ class BuildMetricsCollector:
         collector = BuildMetricsCollector()
         collector.record_started(build_id, tenant_id, transform_ref)
         ...
-        collector.record_succeeded(build_id, tenant_id, transform_ref, duration_ms, bytes_in, bytes_out)
+        collector.record_succeeded(
+            build_id, tenant_id, transform_ref, duration_ms, bytes_in, bytes_out
+        )
     """
 
     def __init__(self, max_events: int = 1000, max_transforms: int = 100, max_tenants: int = 100):
@@ -554,7 +556,9 @@ class BuildMetricsCollector:
             )[:20]
 
             if transform_list:
-                lines.append("# HELP strata_build_transform_started_total Builds started by transform")
+                lines.append(
+                    "# HELP strata_build_transform_started_total Builds started by transform"
+                )
                 lines.append("# TYPE strata_build_transform_started_total counter")
                 for stats in transform_list:
                     ref = stats.transform_ref.replace('"', '\\"')
@@ -562,15 +566,20 @@ class BuildMetricsCollector:
                         f'strata_build_transform_started_total{{transform="{ref}"}} {stats.started}'
                     )
 
-                lines.append("# HELP strata_build_transform_succeeded_total Builds succeeded by transform")
+                lines.append(
+                    "# HELP strata_build_transform_succeeded_total Builds succeeded by transform"
+                )
                 lines.append("# TYPE strata_build_transform_succeeded_total counter")
                 for stats in transform_list:
                     ref = stats.transform_ref.replace('"', '\\"')
+                    val = stats.succeeded
                     lines.append(
-                        f'strata_build_transform_succeeded_total{{transform="{ref}"}} {stats.succeeded}'
+                        f'strata_build_transform_succeeded_total{{transform="{ref}"}} {val}'
                     )
 
-                lines.append("# HELP strata_build_transform_failed_total Builds failed by transform")
+                lines.append(
+                    "# HELP strata_build_transform_failed_total Builds failed by transform"
+                )
                 lines.append("# TYPE strata_build_transform_failed_total counter")
                 for stats in transform_list:
                     ref = stats.transform_ref.replace('"', '\\"')
@@ -598,9 +607,8 @@ class BuildMetricsCollector:
                 lines.append("# TYPE strata_build_tenant_bytes_out_total counter")
                 for stats in tenant_list:
                     tenant = stats.tenant_id.replace('"', '\\"')
-                    lines.append(
-                        f'strata_build_tenant_bytes_out_total{{tenant="{tenant}"}} {stats.total_bytes_out}'
-                    )
+                    val = stats.total_bytes_out
+                    lines.append(f'strata_build_tenant_bytes_out_total{{tenant="{tenant}"}} {val}')
 
             # Error code breakdown
             if self._error_codes:

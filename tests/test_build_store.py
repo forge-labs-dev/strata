@@ -2,12 +2,10 @@
 
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 
 from strata.transforms.build_store import (
-    BuildState,
     BuildStore,
     get_build_store,
     reset_build_store,
@@ -208,9 +206,6 @@ class TestBuildStore:
     def test_list_builds_by_tenant(self, build_store):
         """List builds for a specific tenant."""
         # Create builds for different tenants
-        tenant1_id = str(uuid.uuid4())
-        tenant2_id = str(uuid.uuid4())
-
         build_store.create_build(
             build_id=str(uuid.uuid4()),
             artifact_id="art-1",
@@ -327,18 +322,10 @@ class TestBuildStore:
         b3 = str(uuid.uuid4())
         b4 = str(uuid.uuid4())
 
-        build_store.create_build(
-            build_id=b1, artifact_id="a", version=1, executor_ref="x"
-        )
-        build_store.create_build(
-            build_id=b2, artifact_id="a", version=2, executor_ref="x"
-        )
-        build_store.create_build(
-            build_id=b3, artifact_id="a", version=3, executor_ref="x"
-        )
-        build_store.create_build(
-            build_id=b4, artifact_id="a", version=4, executor_ref="x"
-        )
+        build_store.create_build(build_id=b1, artifact_id="a", version=1, executor_ref="x")
+        build_store.create_build(build_id=b2, artifact_id="a", version=2, executor_ref="x")
+        build_store.create_build(build_id=b3, artifact_id="a", version=3, executor_ref="x")
+        build_store.create_build(build_id=b4, artifact_id="a", version=4, executor_ref="x")
 
         build_store.start_build(b2)
         build_store.start_build(b3)

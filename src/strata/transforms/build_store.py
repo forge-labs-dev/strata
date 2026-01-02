@@ -246,12 +246,8 @@ class BuildStore:
 
                 if "lease_owner" not in columns:
                     # Add lease columns
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN lease_owner TEXT"
-                    )
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN lease_expires_at REAL"
-                    )
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN lease_owner TEXT")
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN lease_expires_at REAL")
                     conn.execute(
                         "CREATE INDEX IF NOT EXISTS idx_build_lease_expires "
                         "ON artifact_builds(state, lease_expires_at)"
@@ -260,22 +256,14 @@ class BuildStore:
 
                 # Check for pull model columns (added for Stage 2)
                 if "input_uris" not in columns:
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN input_uris TEXT"
-                    )
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN params TEXT"
-                    )
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN name TEXT"
-                    )
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN input_uris TEXT")
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN params TEXT")
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN name TEXT")
                     conn.commit()
 
                 # Check for logs column (added for observability)
                 if "logs" not in columns:
-                    conn.execute(
-                        "ALTER TABLE artifact_builds ADD COLUMN logs TEXT"
-                    )
+                    conn.execute("ALTER TABLE artifact_builds ADD COLUMN logs TEXT")
                     conn.commit()
             else:
                 # Fresh database: create schema

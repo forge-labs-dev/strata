@@ -45,7 +45,6 @@ import hashlib
 import json
 import logging
 import tempfile
-import time
 import traceback
 import uuid
 from dataclasses import dataclass, field
@@ -56,9 +55,8 @@ import httpx
 
 if TYPE_CHECKING:
     from strata.artifact_store import ArtifactStore
-    from strata.config import StrataConfig
     from strata.transforms.build_store import BuildState, BuildStore
-    from strata.transforms.registry import TransformDefinition, TransformRegistry
+    from strata.transforms.registry import TransformRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -111,9 +109,9 @@ class BuildRunner:
     """
 
     config: RunnerConfig
-    artifact_store: "ArtifactStore"
-    build_store: "BuildStore"
-    transform_registry: "TransformRegistry"
+    artifact_store: ArtifactStore
+    build_store: BuildStore
+    transform_registry: TransformRegistry
     artifact_dir: Path
 
     # Internal state
@@ -266,7 +264,7 @@ class BuildRunner:
 
             await asyncio.sleep(heartbeat_interval)
 
-    def _submit_build(self, build: "BuildState", already_claimed: bool = False) -> None:
+    def _submit_build(self, build: BuildState, already_claimed: bool = False) -> None:
         """Submit a build for async execution.
 
         Args:
@@ -277,9 +275,7 @@ class BuildRunner:
             return
 
         self._running_builds.add(build.build_id)
-        task = asyncio.create_task(
-            self._execute_build_with_semaphores(build, already_claimed)
-        )
+        task = asyncio.create_task(self._execute_build_with_semaphores(build, already_claimed))
         self._build_tasks[build.build_id] = task
 
         # Clean up when done
@@ -290,7 +286,7 @@ class BuildRunner:
         task.add_done_callback(cleanup)
 
     async def _execute_build_with_semaphores(
-        self, build: "BuildState", already_claimed: bool = False
+        self, build: BuildState, already_claimed: bool = False
     ) -> None:
         """Execute a build with concurrency controls.
 
@@ -302,9 +298,7 @@ class BuildRunner:
 
         # Get or create per-tenant semaphore
         if tenant_id not in self._tenant_sems:
-            self._tenant_sems[tenant_id] = asyncio.Semaphore(
-                self.config.max_builds_per_tenant
-            )
+            self._tenant_sems[tenant_id] = asyncio.Semaphore(self.config.max_builds_per_tenant)
 
         tenant_sem = self._tenant_sems[tenant_id]
 
@@ -313,9 +307,7 @@ class BuildRunner:
             async with tenant_sem:
                 await self._execute_build(build, already_claimed)
 
-    async def _execute_build(
-        self, build: "BuildState", already_claimed: bool = False
-    ) -> None:
+    async def _execute_build(self, build: BuildState, already_claimed: bool = False) -> None:
         """Execute a single build.
 
         This is the main build execution logic:
@@ -340,7 +332,6 @@ class BuildRunner:
         temp_files: list[Path] = []
         start_time = time_mod.time()
         build_started_recorded = False
-        provenance_hash = None  # Will be set after loading artifact
 
         # Wrap entire build execution in BuildContext for structured logging
         with BuildContext(
@@ -427,14 +418,13 @@ class BuildRunner:
                     "provenance_hash": artifact.provenance_hash,
                     "transform": {
                         "ref": build.executor_ref,
-                        "code_hash": hashlib.sha256(
-                            artifact.transform_spec.encode()
-                        ).hexdigest()[:16],
+                        "code_hash": hashlib.sha256(artifact.transform_spec.encode()).hexdigest()[
+                            :16
+                        ],
                         "params": transform_data.get("params", {}),
                     },
                     "inputs": [
-                        {"name": name, "format": "arrow_ipc_stream"}
-                        for name, _ in input_files
+                        {"name": name, "format": "arrow_ipc_stream"} for name, _ in input_files
                     ],
                 }
 
@@ -481,10 +471,7 @@ class BuildRunner:
                 if metrics is not None and build_started_recorded:
                     duration_ms = (time_mod.time() - start_time) * 1000.0
                     # Calculate input bytes from input files
-                    input_bytes = sum(
-                        f.stat().st_size if f.exists() else 0
-                        for _, f in input_files
-                    )
+                    input_bytes = sum(f.stat().st_size if f.exists() else 0 for _, f in input_files)
                     metrics.record_succeeded(
                         build_id=build_id,
                         tenant_id=build.tenant_id,
@@ -627,8 +614,6 @@ class BuildRunner:
         write the Arrow IPC stream to a file.
         """
         # Import here to avoid circular imports
-        from strata.planner import ReadPlanner
-        from strata.cache import CachedFetcher
 
         # Create a temp file for output
         temp_file = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
@@ -649,8 +634,8 @@ class BuildRunner:
         """Synchronous helper to scan a table and write to file."""
         # This is a simplified implementation
         # In production, you'd want to reuse the existing scan infrastructure
-        from strata.planner import ReadPlanner
         from strata.config import StrataConfig
+        from strata.planner import ReadPlanner
 
         # Get config from somewhere - for now use a simple approach
         # In practice, you'd pass the config through
@@ -674,7 +659,6 @@ class BuildRunner:
 
         # Read all tasks and write to file
         import pyarrow as pa
-        import pyarrow.ipc as ipc
 
         # Collect all batches
         batches = []

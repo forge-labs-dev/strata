@@ -358,11 +358,12 @@ class TestS3ConfigIntegration:
 
         get_fs_calls = []
 
-        def mock_get_fs():
+        def mock_get_fs(self):
             get_fs_calls.append(True)
             return MockObject()
 
-        monkeypatch.setattr(config, "get_s3_filesystem", mock_get_fs)
+        # Patch method on the class instead of instance (Pydantic models are frozen)
+        monkeypatch.setattr(StrataConfig, "get_s3_filesystem", mock_get_fs)
 
         from strata.planner import ReadPlanner
 

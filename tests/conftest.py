@@ -33,7 +33,6 @@ from pyiceberg.types import (
 from strata.client import StrataClient
 from strata.config import StrataConfig
 
-
 # =============================================================================
 # Common Utility Functions
 # =============================================================================
@@ -151,6 +150,7 @@ def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str
     # Reset global caches if requested (for test isolation)
     if reset_caches:
         from strata.metadata_cache import reset_caches as do_reset_caches
+
         do_reset_caches()
 
     # Initialize server state
