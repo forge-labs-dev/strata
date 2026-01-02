@@ -10,6 +10,12 @@ Disk layout:
         blobs/
             {id}@v={version}.arrow  # Arrow IPC stream files
 
+Blob storage:
+    The blob storage backend is pluggable via the BlobStore abstraction.
+    Supported backends:
+    - LocalBlobStore: Local filesystem (default)
+    - S3BlobStore: Amazon S3 / S3-compatible storage
+
 Provenance hash:
     Each artifact has a provenance_hash = sha256(sorted(input_hashes) + transform_spec)
     This enables deduplication: if the same inputs + transform exist, return existing artifact.
@@ -30,7 +36,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    pass
+    from strata.blob_store import BlobStore
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +296,9 @@ class ArtifactStore:
 
     Thread-safe: uses connection per operation with WAL mode.
 
+    The store separates metadata (SQLite) from blob data (BlobStore).
+    This enables pluggable blob storage backends (local, S3, GCS).
+
     Example usage:
         store = ArtifactStore(Path("~/.strata/artifacts"))
 
@@ -314,18 +323,34 @@ class ArtifactStore:
         artifact = store.resolve_name("daily_revenue")
     """
 
-    def __init__(self, artifact_dir: Path):
+    def __init__(self, artifact_dir: Path, blob_store: "BlobStore | None" = None):
         """Initialize artifact store.
 
         Args:
-            artifact_dir: Directory for artifacts (must exist)
+            artifact_dir: Directory for artifacts (contains metadata DB)
+            blob_store: Optional blob storage backend. If None, creates a
+                LocalBlobStore in {artifact_dir}/blobs.
         """
         self.artifact_dir = artifact_dir
         self.db_path = artifact_dir / "artifacts.sqlite"
-        self.blobs_dir = artifact_dir / "blobs"
 
-        # Ensure directories exist
-        self.blobs_dir.mkdir(parents=True, exist_ok=True)
+        # Initialize blob store (default to local filesystem)
+        if blob_store is None:
+            from strata.blob_store import LocalBlobStore
+            self.blobs_dir = artifact_dir / "blobs"
+            self.blobs_dir.mkdir(parents=True, exist_ok=True)
+            self.blob_store: BlobStore = LocalBlobStore(self.blobs_dir)
+        else:
+            self.blob_store = blob_store
+            # For backwards compatibility, set blobs_dir if using local store
+            from strata.blob_store import LocalBlobStore
+            if isinstance(blob_store, LocalBlobStore):
+                self.blobs_dir = blob_store.blobs_dir
+            else:
+                self.blobs_dir = artifact_dir / "blobs"  # May not exist for remote stores
+
+        # Ensure artifact_dir exists (for metadata DB)
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize schema
         self._init_schema()
@@ -427,7 +452,11 @@ class ArtifactStore:
             conn.close()
 
     def _blob_path(self, artifact_id: str, version: int) -> Path:
-        """Get path for artifact blob."""
+        """Get path for artifact blob (for local storage only).
+
+        Deprecated: Use blob_store methods directly instead.
+        Kept for backwards compatibility with code that accesses blob files directly.
+        """
         return self.blobs_dir / f"{artifact_id}@v={version}.arrow"
 
     # -----------------------------------------------------------------------
@@ -937,21 +966,21 @@ class ArtifactStore:
     # -----------------------------------------------------------------------
 
     def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write artifact blob to disk.
+        """Write artifact blob to storage.
+
+        Delegates to the configured blob store backend (local, S3, etc.).
 
         Args:
             artifact_id: Artifact ID
             version: Version number
             data: Arrow IPC stream bytes
         """
-        path = self._blob_path(artifact_id, version)
-        # Atomic write: write to temp then rename
-        temp_path = path.with_suffix(".tmp")
-        temp_path.write_bytes(data)
-        temp_path.rename(path)
+        self.blob_store.write_blob(artifact_id, version, data)
 
     def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read artifact blob from disk.
+        """Read artifact blob from storage.
+
+        Delegates to the configured blob store backend (local, S3, etc.).
 
         Args:
             artifact_id: Artifact ID
@@ -960,22 +989,21 @@ class ArtifactStore:
         Returns:
             Arrow IPC stream bytes, or None if not found
         """
-        path = self._blob_path(artifact_id, version)
-        if not path.exists():
-            return None
-        return path.read_bytes()
+        return self.blob_store.read_blob(artifact_id, version)
 
     def blob_exists(self, artifact_id: str, version: int) -> bool:
-        """Check if blob exists on disk.
+        """Check if blob exists in storage.
+
+        Delegates to the configured blob store backend (local, S3, etc.).
 
         Args:
             artifact_id: Artifact ID
             version: Version number
 
         Returns:
-            True if blob file exists
+            True if blob exists
         """
-        return self._blob_path(artifact_id, version).exists()
+        return self.blob_store.blob_exists(artifact_id, version)
 
     # -----------------------------------------------------------------------
     # Name Pointers
@@ -1455,10 +1483,8 @@ class ArtifactStore:
             )
             conn.commit()
 
-            # Delete blob
-            blob_path = self._blob_path(artifact_id, version)
-            if blob_path.exists():
-                blob_path.unlink()
+            # Delete blob via blob store
+            self.blob_store.delete_blob(artifact_id, version)
 
             return True
         finally:
@@ -1500,10 +1526,8 @@ class ArtifactStore:
             for row in rows:
                 artifact_id, version, byte_size = row["id"], row["version"], row["byte_size"] or 0
 
-                # Delete blob
-                blob_path = self._blob_path(artifact_id, version)
-                if blob_path.exists():
-                    blob_path.unlink()
+                # Delete blob via blob store
+                self.blob_store.delete_blob(artifact_id, version)
 
                 # Delete metadata
                 conn.execute(
@@ -1606,9 +1630,7 @@ class ArtifactStore:
 
             # Delete blobs and metadata
             for row in rows:
-                blob_path = self._blob_path(row["id"], row["version"])
-                if blob_path.exists():
-                    blob_path.unlink()
+                self.blob_store.delete_blob(row["id"], row["version"])
                 conn.execute(
                     "DELETE FROM artifact_versions WHERE id = ? AND version = ?",
                     (row["id"], row["version"]),
@@ -1664,18 +1686,22 @@ class ArtifactStore:
 _artifact_store: ArtifactStore | None = None
 
 
-def get_artifact_store(artifact_dir: Path | None = None) -> ArtifactStore | None:
+def get_artifact_store(
+    artifact_dir: Path | None = None,
+    blob_store: "BlobStore | None" = None,
+) -> ArtifactStore | None:
     """Get the artifact store singleton.
 
     Args:
         artifact_dir: Directory for artifacts (required on first call in personal mode)
+        blob_store: Optional blob storage backend. If None, uses LocalBlobStore.
 
     Returns:
         ArtifactStore instance, or None if not in personal mode
     """
     global _artifact_store
     if _artifact_store is None and artifact_dir is not None:
-        _artifact_store = ArtifactStore(artifact_dir)
+        _artifact_store = ArtifactStore(artifact_dir, blob_store=blob_store)
     return _artifact_store
 
 

@@ -78,6 +78,12 @@ def _get_env_overrides() -> dict:
     - STRATA_BULK_SLOTS: QoS slots for bulk/ETL queries
     - STRATA_PER_CLIENT_INTERACTIVE: Max concurrent interactive queries per client
     - STRATA_PER_CLIENT_BULK: Max concurrent bulk queries per client
+    - STRATA_ARTIFACT_GCS_BUCKET: GCS bucket name for artifact blob storage
+    - STRATA_ARTIFACT_GCS_PREFIX: GCS key prefix for artifact blobs
+    - STRATA_GCS_PROJECT_ID: GCP project ID
+    - STRATA_GCS_CREDENTIALS_JSON: Path to service account JSON key file
+    - STRATA_GCS_ANONYMOUS: Use anonymous access for public GCS buckets
+    - STRATA_GCS_ENDPOINT_OVERRIDE: Custom GCS endpoint for testing
     """
     overrides = {}
 
@@ -201,6 +207,37 @@ def _get_env_overrides() -> dict:
 
     if artifact_dir := os.environ.get("STRATA_ARTIFACT_DIR"):
         overrides["artifact_dir"] = Path(artifact_dir)
+
+    # Artifact blob storage backend
+    if artifact_blob_backend := os.environ.get("STRATA_ARTIFACT_BLOB_BACKEND"):
+        overrides["artifact_blob_backend"] = artifact_blob_backend
+
+    if artifact_s3_bucket := os.environ.get("STRATA_ARTIFACT_S3_BUCKET"):
+        overrides["artifact_s3_bucket"] = artifact_s3_bucket
+
+    if artifact_s3_prefix := os.environ.get("STRATA_ARTIFACT_S3_PREFIX"):
+        overrides["artifact_s3_prefix"] = artifact_s3_prefix
+
+    # GCS blob storage settings
+    if artifact_gcs_bucket := os.environ.get("STRATA_ARTIFACT_GCS_BUCKET"):
+        overrides["artifact_gcs_bucket"] = artifact_gcs_bucket
+
+    if artifact_gcs_prefix := os.environ.get("STRATA_ARTIFACT_GCS_PREFIX"):
+        overrides["artifact_gcs_prefix"] = artifact_gcs_prefix
+
+    if gcs_project_id := os.environ.get("STRATA_GCS_PROJECT_ID"):
+        overrides["gcs_project_id"] = gcs_project_id
+
+    if gcs_credentials_json := os.environ.get("STRATA_GCS_CREDENTIALS_JSON") or os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS"
+    ):
+        overrides["gcs_credentials_json"] = gcs_credentials_json
+
+    if os.environ.get("STRATA_GCS_ANONYMOUS", "").lower() == "true":
+        overrides["gcs_anonymous"] = True
+
+    if gcs_endpoint := os.environ.get("STRATA_GCS_ENDPOINT_OVERRIDE"):
+        overrides["gcs_endpoint_override"] = gcs_endpoint
 
     # Server-mode transforms
     if os.environ.get("STRATA_TRANSFORMS_ENABLED", "").lower() == "true":
@@ -464,6 +501,23 @@ class StrataConfig:
     # Defaults to ~/.strata/artifacts if not set
     artifact_dir: Path | None = None
 
+    # Artifact blob storage backend configuration
+    # - "local": Store blobs on local filesystem (default)
+    # - "s3": Store blobs in S3/S3-compatible storage
+    # - "gcs": Store blobs in Google Cloud Storage
+    artifact_blob_backend: str = "local"  # "local" | "s3" | "gcs"
+    # S3 blob storage settings (when artifact_blob_backend="s3")
+    artifact_s3_bucket: str | None = None  # Required for S3 backend
+    artifact_s3_prefix: str = "artifacts"  # Key prefix within bucket
+    # GCS blob storage settings (when artifact_blob_backend="gcs")
+    artifact_gcs_bucket: str | None = None  # Required for GCS backend
+    artifact_gcs_prefix: str = "artifacts"  # Key prefix within bucket
+    # GCS authentication and configuration
+    gcs_project_id: str | None = None  # GCP project ID (optional)
+    gcs_credentials_json: str | None = None  # Path to service account JSON key file
+    gcs_anonymous: bool = False  # Use anonymous access for public buckets
+    gcs_endpoint_override: str | None = None  # Custom endpoint for testing (fake-gcs-server)
+
     # Server-mode transforms configuration
     # When enabled, allows materialize in service mode with external executors
     # Transforms config is loaded from [tool.strata.transforms] section
@@ -569,6 +623,47 @@ class StrataConfig:
     def max_transform_output_bytes(self) -> int:
         """Get max transform output size in bytes."""
         return self.build_runner_default_max_output
+
+    def create_blob_store(self):
+        """Create blob store based on configuration.
+
+        Returns:
+            BlobStore instance for artifact storage.
+
+        Raises:
+            ValueError: If required configuration is missing.
+        """
+        from strata.blob_store import GCSBlobStore, LocalBlobStore, S3BlobStore
+
+        backend = self.artifact_blob_backend.lower()
+
+        if backend == "s3":
+            if not self.artifact_s3_bucket:
+                raise ValueError(
+                    "S3 blob backend requires artifact_s3_bucket configuration"
+                )
+            return S3BlobStore.from_config(
+                self,
+                bucket=self.artifact_s3_bucket,
+                prefix=self.artifact_s3_prefix,
+            )
+
+        if backend == "gcs":
+            if not self.artifact_gcs_bucket:
+                raise ValueError(
+                    "GCS blob backend requires artifact_gcs_bucket configuration"
+                )
+            return GCSBlobStore.from_config(
+                self,
+                bucket=self.artifact_gcs_bucket,
+                prefix=self.artifact_gcs_prefix,
+            )
+
+        # Default: local filesystem
+        if self.artifact_dir is None:
+            raise ValueError("Local blob store requires artifact_dir in configuration")
+        blobs_dir = self.artifact_dir / "blobs"
+        return LocalBlobStore(blobs_dir)
 
     def get_build_qos_config(self):
         """Create BuildQoSConfig from Strata configuration.

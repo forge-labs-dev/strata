@@ -202,6 +202,7 @@ Strata also provides snapshot-aware scanning for Apache Iceberg tables:
 - Lineage tracking (inputs → outputs, dependents)
 - Named aliases for artifact versions
 - External executor protocol (push model for simplicity, pull model for scale)
+- Pluggable blob storage (local filesystem, S3/S3-compatible, or GCS)
 
 **Iceberg Scanning** — snapshot-aware table access:
 - Snapshot-aware caching (cache keys include `snapshot_id`, no invalidation)
@@ -725,6 +726,80 @@ Rate limiting is also enabled by default to protect against abuse.
 | `STRATA_PRINCIPAL_HEADER` | Header for principal ID (default: X-Strata-Principal) |
 | `STRATA_SCOPES_HEADER` | Header for scopes (default: X-Strata-Scopes) |
 | `STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND` | Return 404 instead of 403 (default: true) |
+| `STRATA_ARTIFACT_BLOB_BACKEND` | Artifact storage: `local`, `s3`, or `gcs` (default: local) |
+| `STRATA_ARTIFACT_S3_BUCKET` | S3 bucket for artifact blobs |
+| `STRATA_ARTIFACT_S3_PREFIX` | Key prefix in bucket (default: artifacts) |
+| `STRATA_ARTIFACT_GCS_BUCKET` | GCS bucket for artifact blobs |
+| `STRATA_ARTIFACT_GCS_PREFIX` | Key prefix in bucket (default: artifacts) |
+| `STRATA_GCS_PROJECT_ID` | GCP project ID (optional) |
+| `STRATA_GCS_CREDENTIALS_JSON` | Path to service account JSON key file |
+| `STRATA_GCS_ANONYMOUS` | Use anonymous access for public buckets |
+| `STRATA_GCS_ENDPOINT_OVERRIDE` | Custom GCS endpoint for testing |
+
+### Artifact Blob Storage
+
+Artifacts can be stored on local disk (default), S3/S3-compatible storage, or Google Cloud Storage.
+
+**Local storage (default):**
+```bash
+export STRATA_ARTIFACT_DIR=/var/lib/strata/artifacts
+```
+
+**S3 storage:**
+```bash
+export STRATA_ARTIFACT_BLOB_BACKEND=s3
+export STRATA_ARTIFACT_S3_BUCKET=my-artifacts-bucket
+export STRATA_ARTIFACT_S3_PREFIX=strata-artifacts
+
+# S3 credentials (same as Iceberg scanning)
+export STRATA_S3_REGION=us-west-2
+export STRATA_S3_ACCESS_KEY=...
+export STRATA_S3_SECRET_KEY=...
+```
+
+**S3-compatible (MinIO, LocalStack):**
+```bash
+export STRATA_ARTIFACT_BLOB_BACKEND=s3
+export STRATA_ARTIFACT_S3_BUCKET=artifacts
+export STRATA_S3_ENDPOINT_URL=http://localhost:9000
+export STRATA_S3_ACCESS_KEY=minioadmin
+export STRATA_S3_SECRET_KEY=minioadmin
+```
+
+Or in `pyproject.toml`:
+```toml
+[tool.strata]
+artifact_blob_backend = "s3"
+artifact_s3_bucket = "my-artifacts-bucket"
+artifact_s3_prefix = "strata-artifacts"
+```
+
+**GCS storage:**
+```bash
+export STRATA_ARTIFACT_BLOB_BACKEND=gcs
+export STRATA_ARTIFACT_GCS_BUCKET=my-artifacts-bucket
+export STRATA_ARTIFACT_GCS_PREFIX=strata-artifacts
+
+# GCS credentials (Application Default Credentials or service account)
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+# Or use STRATA_GCS_CREDENTIALS_JSON=/path/to/service-account.json
+```
+
+**GCS with anonymous access (public buckets):**
+```bash
+export STRATA_ARTIFACT_BLOB_BACKEND=gcs
+export STRATA_ARTIFACT_GCS_BUCKET=public-bucket
+export STRATA_GCS_ANONYMOUS=true
+```
+
+Or in `pyproject.toml`:
+```toml
+[tool.strata]
+artifact_blob_backend = "gcs"
+artifact_gcs_bucket = "my-artifacts-bucket"
+artifact_gcs_prefix = "strata-artifacts"
+gcs_project_id = "my-project"
+```
 
 ### OpenTelemetry Tracing
 
@@ -861,7 +936,7 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 
 ## Future Work
 
-- **Distributed artifact storage** - S3/GCS backend for artifacts (currently local disk)
+- **Azure Blob Storage** - Azure backend for artifacts (S3/GCS are implemented)
 - **Executor SDK** - Python library for building custom executors with less boilerplate
 - **Artifact retention policies** - TTL and version-count-based automatic cleanup
 - **Webhook notifications** - Notify external systems when builds complete

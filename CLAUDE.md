@@ -56,7 +56,7 @@ What breaks first is not compute—it's **state**. Strata makes state explicit a
 
 ### Iceberg Table Scanning
 
-Strata also provides snapshot-aware scanning for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports both local filesystem and S3 storage backends.
+Strata also provides snapshot-aware scanning for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports local filesystem, S3, and GCS storage backends.
 
 ## Build & Development Commands
 
@@ -174,13 +174,24 @@ Strata supports materializing query results as reusable artifacts. The artifact 
 - `BuildState` - Async build lifecycle state (pending, building, ready, failed)
 
 **Key modules**:
-- **artifact_store.py** - SQLite-backed artifact metadata, blob storage, name pointers, lineage queries
+- **artifact_store.py** - SQLite-backed artifact metadata, name pointers, lineage queries, blob I/O delegation
+- **blob_store.py** - Pluggable blob storage abstraction (LocalBlobStore, S3BlobStore, GCSBlobStore)
 - **transforms/registry.py** - Transform definitions (executor URL, timeout, max output size)
 - **transforms/runner.py** - Background build runner, executor HTTP protocol, lease-based claiming
+
+**Blob storage backends**:
+- `LocalBlobStore` - Local filesystem (default), atomic writes via temp+rename
+- `S3BlobStore` - Amazon S3 / S3-compatible (MinIO, LocalStack) via PyArrow S3FileSystem
+- `GCSBlobStore` - Google Cloud Storage via PyArrow GcsFileSystem
+- Configure via `STRATA_ARTIFACT_BLOB_BACKEND` (`local`, `s3`, or `gcs`)
+- S3: `STRATA_ARTIFACT_S3_BUCKET`, `STRATA_ARTIFACT_S3_PREFIX`
+- GCS: `STRATA_ARTIFACT_GCS_BUCKET`, `STRATA_ARTIFACT_GCS_PREFIX`, `STRATA_GCS_PROJECT_ID`
+
+**Additional modules**:
 - **transforms/build_store.py** - Build state tracking, lease management, orphan recovery
 - **transforms/build_metrics.py** - Build duration, throughput, queue wait metrics
 
-**Executor protocol** (HTTP v1, push model):
+**Executor protocol v1** (push model - Strata sends inputs):
 ```
 POST {executor_url}/v1/execute
 Content-Type: multipart/form-data
@@ -192,6 +203,13 @@ Parts:
 
 Response: Arrow IPC stream
 ```
+
+**Executor protocol v2** (pull model - executor pulls via signed URLs):
+- Strata sends a `BuildManifest` with signed URLs for inputs and output
+- Executor downloads inputs from `inputs[].url`, uploads result to `output.url`, then POSTs to `finalize_url`
+- Benefits: No bandwidth bottleneck at Strata, supports large inputs/outputs, executor can parallelize downloads
+- Key module: **transforms/signed_urls.py** - `SignedDownloadURL`, `SignedUploadURL`, `BuildManifest`, HMAC-SHA256 signing
+- Enable via `pull_model_enabled=True` and `signed_url_expiry_seconds` config
 
 ### Key Modules
 
@@ -218,6 +236,7 @@ Response: Arrow IPC stream
 - **transforms/build_store.py** - `BuildStore`, `BuildState`, lease-based claiming, orphan recovery
 - **transforms/build_metrics.py** - Build throughput, latency, queue wait time metrics
 - **transforms/build_qos.py** - Per-tenant build concurrency limits
+- **transforms/signed_urls.py** - Pull model signed URL generation (`BuildManifest`, `SignedDownloadURL`, `SignedUploadURL`)
 
 ### Observability Modules
 
