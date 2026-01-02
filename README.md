@@ -4,30 +4,84 @@
 [![Pre-commit](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml)
 [![Docker](https://github.com/fangchenli/strata/actions/workflows/docker.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/docker.yml)
 
-**A Snapshot-Aware Serving Layer for Iceberg Tables**
+**A Persistence Substrate for Long-Horizon Computation**
 
-Modern data lakes are built on immutable files and versioned metadata, yet every query engine still treats reads as a fresh execution problem.
+Strata is a materialization and persistence layer for long-running, iterative, and expensive computations.
 
-Strata changes that.
+It provides a single primitive:
 
-Strata is a snapshot-aware serving layer for Apache Iceberg tables. It turns Iceberg snapshots into reusable, persistent read artifacts that can be fetched efficiently, streamed safely, and reused across queries, processes, and restarts.
+```
+materialize(inputs, transform) → artifact
+```
 
-Instead of re-planning and re-reading the same Parquet data over and over, Strata:
+This primitive ensures that:
+- Results are **immutable and versioned**
+- Identical computations are **deduplicated**
+- Lineage is **explicit and inspectable**
+- Reuse is **correct by construction**
 
-- Understands Iceberg snapshot semantics
-- Materializes stable row-group read units
-- Persists them across process lifetimes
-- Serves them directly in Arrow IPC stream format
+Strata is designed to sit **below orchestration** and **outside execution**.
 
-The result is predictable, low-latency reads for repeated queries—without changing file formats, rewriting engines, or sacrificing correctness.
+## The Problem
+
+Modern data and AI workflows increasingly have these properties:
+- **Long-horizon**: minutes to hours, not milliseconds
+- **Iterative**: evaluate → refine → repeat
+- **Branching**: explore multiple variants
+- **Expensive**: LLM calls, embeddings, large scans
+- **Failure-prone**: crashes, retries, restarts are normal
+
+What breaks first is not compute—it's **state**.
+
+Typical systems rely on implicit task state, in-memory caches, ad-hoc checkpointing, and best-effort retries. These approaches fail under iteration, branching, and scale.
+
+## The Solution
+
+Once results are treated as first-class artifacts:
+- Retries become **safe**
+- Reuse becomes **trivial**
+- Crashes become **recoverable**
+- Lineage becomes **inspectable**
+
+Strata makes this explicit and reliable.
+
+## What Strata Is Not
+
+Strata is **not**:
+- A workflow engine or DAG runner
+- A scheduler or agent framework
+- A query engine or SQL layer
+
+Those responsibilities belong elsewhere. Strata is the persistence substrate they should build on.
+
+```
+┌─────────────────────────────────────────────┐
+│ Orchestration Layer                         │
+│ (DAGs, agents, control flow, retries)       │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Executors / Compute Engines                 │
+│ (SQL engines, ML jobs, LLMs, feature code)  │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Strata                                      │
+│ (materialize, artifacts, lineage, dedupe)   │
+└─────────────────────────────────────────────┘
+```
 
 **Is Strata for you?**
 
 | Good fit | Not a fit |
 |----------|-----------|
-| Dashboard/BI reads against Iceberg | Joins, aggregations (use a query engine) |
-| Repeated scans on immutable snapshots | Real-time mutable tables |
-| Serving Arrow to DuckDB/Polars | Sub-second write latency requirements |
+| Long-running AI/ML pipelines | Simple single-shot computations |
+| Iterative evaluation workflows | Systems that need control flow |
+| Expensive computations worth caching | Real-time streaming workloads |
+| Multi-step data transformations | Sub-second latency requirements |
+| Dashboard reads against Iceberg tables | Joins/aggregations (use a query engine) |
 
 ## Quick Start (2 minutes)
 
@@ -61,38 +115,57 @@ for batch in client.scan("file:///path/to/warehouse#namespace.table"):
 
 ---
 
-## Why Strata?
+## Core Concepts
 
-Iceberg snapshots are immutable. Parquet row groups are immutable. Yet today, every scan re-resolves manifests, re-reads metadata, re-parses Parquet, and discards the result on restart.
+### Materialization Model
 
-Strata sits between storage and execution and treats immutable data like immutable data should be treated: as cacheable, restart-safe serving artifacts.
+Every expensive computation is a **materialization** defined by:
+- **Pinned inputs**: Iceberg snapshots or artifact versions
+- **Transform identity**: executor + parameters + code hash
 
-**When Strata shines:**
-- Same Iceberg snapshot queried repeatedly
+From these, Strata derives a **provenance hash**. If the same materialization is requested again, Strata returns the existing artifact—no recomputation occurs.
+
+### Artifact States
+
+Materialization has observable states:
+- `ready` — artifact exists and is usable
+- `building` — computation in progress
+- `failed` — computation failed with error
+
+There is no hidden state inside user code. This makes it possible to poll progress, retry safely, resume after crashes, and reason about system behavior.
+
+### Why Immutability Matters
+
+Artifacts are:
+- **Immutable**: never change once created
+- **Versioned**: each computation produces a new version
+- **Addressable**: can be referenced as inputs to other transforms
+- **Reusable**: across processes, runs, and systems
+
+### Iceberg Table Scanning
+
+Strata also provides snapshot-aware scanning for Apache Iceberg tables:
+- Caches Parquet row groups as Arrow IPC streams
+- Keys by immutable snapshot IDs (no invalidation needed)
+- Streams with bounded memory (O(row group), not O(result))
+- Two-tier QoS prevents bulk queries from starving dashboards
+
+**When scanning shines:**
+- Same snapshot queried repeatedly
 - Interactive or dashboard-driven workloads
 - Cold starts are expensive
 - Object storage latency dominates
 
-### Benchmark It Yourself
-
-```bash
-uv run python benchmarks/bench_restart.py --rows 100000
-```
-
-This runs cold start → warm cache → server restart → warm cache, proving cache persistence works. You'll see output like:
-
-```
-Phase              Total       Plan      Fetch     Hits     Miss
-1. Cold Start     245.3ms    42.1ms    198.2ms        0        5
-2. Warm Cache      18.7ms    12.3ms      4.1ms        5        0
-3. Post-Restart    21.2ms    15.8ms      3.9ms        5        0
-```
-
-For multi-scale comparison: `uv run python benchmarks/bench_restart.py --scale`
-
 ## Features
 
-**Core** — what every user gets:
+**Materialization** — the core primitive:
+- Provenance-based deduplication (same inputs + transform → existing artifact)
+- Explicit artifact states (`ready`, `building`, `failed`)
+- Lineage tracking (inputs → outputs, dependents)
+- Named aliases for artifact versions
+- External executor protocol (HTTP-based, push model)
+
+**Iceberg Scanning** — snapshot-aware table access:
 - Snapshot-aware caching (cache keys include `snapshot_id`, no invalidation)
 - Row-group level caching in Arrow IPC format
 - Two-tier filter pruning (Iceberg manifests → Parquet statistics)
@@ -105,6 +178,7 @@ For multi-scale comparison: `uv run python benchmarks/bench_restart.py --scale`
 - Rate limiting, health checks, pre-flight size limits
 - Prometheus metrics, structured JSON logging
 - Multi-tenancy with cache isolation
+- Trusted proxy authentication with ACL
 
 **Optional** — enable if needed:
 - OpenTelemetry tracing (`pip install strata[otel]`)
@@ -216,15 +290,40 @@ See [Configuration Reference](#configuration-reference) for all options.
 
 ## How It Works
 
-Strata sits between query engines and Iceberg-backed storage. It does not execute queries—it plans, materializes, and serves snapshot-consistent read units.
+### Materialization Flow
 
-### Three Phases
+1. **Request**: `POST /v1/artifacts/materialize` with inputs + transform spec
+2. **Dedupe check**: Compute provenance hash, check for existing artifact
+3. **Build** (if needed): Claim lease, invoke executor, store result
+4. **Serve**: `GET /v1/artifacts/{id}/v/{version}/data` streams Arrow IPC
+
+```
+materialize(inputs, transform)
+         │
+         ▼
+┌─────────────────┐
+│ Provenance Hash │ ← hash(inputs, transform)
+└────────┬────────┘
+         │
+    ┌────┴────┐
+    │ exists? │
+    └────┬────┘
+         │
+    yes  │  no
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+ return    build
+ existing  new artifact
+```
+
+### Iceberg Scanning Flow
 
 1. **Plan** – Resolve what to read (metadata-only, cheap)
 2. **Fetch** – Read immutable row groups (I/O-bound, expensive)
 3. **Serve** – Stream Arrow IPC bytes (CPU-light, cheap)
 
-Because Iceberg snapshots and Parquet row groups are immutable, Strata can safely persist the results of phases 1 and 2.
+Because Iceberg snapshots and Parquet row groups are immutable, Strata can safely persist the results.
 
 ### Cache Key Structure
 
@@ -232,50 +331,48 @@ Because Iceberg snapshots and Parquet row groups are immutable, Strata can safel
 hash(tenant_id, table_uri, snapshot_id, file_path, row_group_id, projection_fingerprint)
 ```
 
-Since Iceberg snapshots are immutable, cached objects never need invalidation. In multi-tenant mode, tenant ID is included in the cache key for complete isolation.
+Since Iceberg snapshots are immutable, cached objects never need invalidation.
 
 ### Design Principles
 
-- **Correctness first**: Cache keys include snapshot identity
+- **Immutability over mutation**: Results never change once created
+- **Explicit state over implicit progress**: Materialization is observable and inspectable
+- **Persistence before orchestration**: Durable results are the foundation; control flow is layered on top
+- **Correctness first**: Cache keys include snapshot/provenance identity
 - **Conservative pruning**: If in doubt, read rather than risk dropping data
-- **Bounded memory**: Large scans stream incrementally (O(single row group))
-- **No magic**: All data served is valid Arrow IPC
-
-### What Strata Is Not
-
-Strata is **not** a query engine, SQL layer, or in-memory cache. It's a long-lived service that:
-- Plans reads using Iceberg metadata
-- Prunes at file and row-group granularity
-- Persists Arrow IPC streams on disk
-- Streams results with bounded memory
-
-Engines like DuckDB, Polars, and Spark can fetch data from Strata as if reading a local Arrow stream—except the expensive work has already been done.
+- **Bounded memory**: Large results stream incrementally
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Client                               │
-│  (Python SDK / DuckDB / HTTP)                               │
+│                    Orchestration Layer                       │
+│  (Your DAGs, agents, pipelines - control flow lives here)   │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Strata Server                            │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Planner   │  │   Fetcher   │  │   Disk Cache        │  │
-│  │             │  │  (Python/   │  │   (Arrow IPC)       │  │
-│  │ - Iceberg   │  │   Rust)     │  │                     │  │
-│  │ - Pruning   │  │             │  │ key = hash(         │  │
-│  │             │  │             │  │   table, snapshot,  │  │
-│  └─────────────┘  └─────────────┘  │   file, rg, proj)   │  │
-│                                     └─────────────────────┘  │
+│  │  Artifact   │  │  Iceberg    │  │   Persistence       │  │
+│  │  Store      │  │  Scanner    │  │   Layer             │  │
+│  │             │  │             │  │                     │  │
+│  │ - Materialize│ │ - Planner   │  │ - Artifact blobs    │  │
+│  │ - Dedupe    │  │ - Fetcher   │  │ - Row-group cache   │  │
+│  │ - Lineage   │  │ - Pruning   │  │ - Metadata (SQLite) │  │
+│  └─────────────┘  └─────────────┘  └─────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    External Executors                        │
+│  (SQL engines, ML jobs, LLMs - computation lives here)      │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Storage Layer                            │
-│  (Local filesystem, S3 - via pyiceberg)                     │
+│  (Local filesystem, S3, Iceberg tables)                     │
 └─────────────────────────────────────────────────────────────┘
 ```
 

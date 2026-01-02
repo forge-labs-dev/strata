@@ -4,7 +4,59 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Strata?
 
-Strata is a snapshot-aware serving layer for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports both local filesystem and S3 storage backends.
+Strata is a **materialization and persistence layer** for long-running, iterative, and expensive computations.
+
+It provides a single primitive:
+```
+materialize(inputs, transform) → artifact
+```
+
+This primitive ensures that:
+- Results are **immutable and versioned**
+- Identical computations are **deduplicated** (via provenance hash)
+- Lineage is **explicit and inspectable**
+- Reuse is **correct by construction**
+
+Strata is designed to sit **below orchestration** and **outside execution**. It is not a workflow engine, scheduler, DAG runner, or query engine. Those responsibilities belong elsewhere.
+
+### Why This Matters
+
+Long-horizon workflows (AI agents, data pipelines, evaluation loops) have these properties:
+- **Expensive**: LLM calls, embeddings, large scans
+- **Iterative**: evaluate → refine → repeat
+- **Branching**: explore multiple variants
+- **Failure-prone**: crashes, retries, restarts are normal
+
+What breaks first is not compute—it's **state**. Strata makes state explicit and durable.
+
+### The Layering Model
+
+```
+┌─────────────────────────────────────────────┐
+│ Orchestration Layer                         │
+│ (DAGs, agents, control flow, retries)       │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Executors / Compute Engines                 │
+│ (SQL engines, ML jobs, LLMs, feature code)  │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Strata                                      │
+│ (materialize, artifacts, lineage, dedupe)   │
+└─────────────────────────────────────────────┘
+```
+
+- **Orchestrators** decide what to run next
+- **Executors** decide how to compute
+- **Strata** decides whether it already exists and persists it
+
+### Iceberg Table Scanning
+
+Strata also provides snapshot-aware scanning for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports both local filesystem and S3 storage backends.
 
 ## Build & Development Commands
 
