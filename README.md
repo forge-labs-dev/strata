@@ -201,7 +201,7 @@ Strata also provides snapshot-aware scanning for Apache Iceberg tables:
 - Explicit artifact states (`ready`, `building`, `failed`)
 - Lineage tracking (inputs → outputs, dependents)
 - Named aliases for artifact versions
-- External executor protocol (HTTP-based, push model)
+- External executor protocol (push model for simplicity, pull model for scale)
 
 **Iceberg Scanning** — snapshot-aware table access:
 - Snapshot-aware caching (cache keys include `snapshot_id`, no invalidation)
@@ -465,7 +465,10 @@ curl -X POST http://localhost:8765/v1/cache/warm \
 
 ## Executor Protocol
 
-Executors are external HTTP services that perform the actual computation. Strata pushes inputs to executors and stores their outputs as artifacts.
+Executors are external HTTP services that perform the actual computation. Strata supports two execution models:
+
+1. **Push Model** - Strata sends inputs directly to the executor (simpler, good for small inputs)
+2. **Pull Model** - Strata sends signed URLs, executor pulls inputs and pushes output (scalable, good for large inputs)
 
 ### Protocol v1 (Push Model)
 
@@ -560,6 +563,48 @@ async def execute(request: Request):
         media_type="application/vnd.apache.arrow.stream",
     )
 ```
+
+### Protocol v2 (Pull Model)
+
+For large inputs, executors can pull data via signed URLs instead of receiving it in the request:
+
+**Build Manifest (sent to executor):**
+```json
+{
+  "build_id": "build-abc123",
+  "metadata": {
+    "transform": {"ref": "duckdb_sql@v1", "params": {...}},
+    "tenant": "team-data",
+    "principal": "user@example.com"
+  },
+  "inputs": [
+    {
+      "url": "http://strata:8765/v1/artifacts/download?artifact_id=xyz&version=1&signature=...",
+      "artifact_id": "xyz",
+      "version": 1,
+      "expires_at": 1704067200
+    }
+  ],
+  "output": {
+    "url": "http://strata:8765/v1/artifacts/upload?build_id=abc123&signature=...",
+    "max_bytes": 1073741824,
+    "expires_at": 1704067200
+  },
+  "finalize_url": "http://strata:8765/v1/builds/build-abc123/finalize"
+}
+```
+
+**Executor workflow:**
+1. Download each input from `inputs[].url` (Arrow IPC stream)
+2. Execute transform
+3. Upload result to `output.url` (Arrow IPC stream)
+4. POST to `finalize_url` to complete the build
+
+**Benefits:**
+- No bandwidth bottleneck at Strata during execution
+- Native retries for failed downloads/uploads
+- Supports very large inputs/outputs
+- Executor can parallelize input downloads
 
 ### Executor Registration
 
@@ -816,10 +861,11 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 
 ## Future Work
 
-- Distributed artifact storage across servers
-- Executor SDK for building custom transforms
-- Query pushdown to Parquet/Iceberg
-- Garbage collection for orphaned artifacts
+- **Distributed artifact storage** - S3/GCS backend for artifacts (currently local disk)
+- **Executor SDK** - Python library for building custom executors with less boilerplate
+- **Artifact retention policies** - TTL and version-count-based automatic cleanup
+- **Webhook notifications** - Notify external systems when builds complete
+- **Query pushdown** - Push filters to Parquet/Iceberg for reduced I/O
 
 Strata focuses on persistence and materialization. Orchestration, scheduling, and control flow belong in layers above.
 
