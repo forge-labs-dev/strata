@@ -298,6 +298,18 @@ GET  /metrics              Aggregate metrics (JSON)
 GET  /metrics/prometheus   Prometheus format
 GET  /v1/admin/tenants     List all tenants (multi-tenant mode)
 GET  /v1/admin/tenants/{id} Get tenant metrics
+
+# Artifact API (materialized views / transforms)
+POST /v1/artifacts/materialize           Start artifact materialization
+GET  /v1/artifacts/{id}/v/{version}      Get artifact metadata
+GET  /v1/artifacts/{id}/v/{version}/data Stream artifact data as Arrow IPC
+GET  /v1/artifacts/builds/{build_id}     Poll async build status
+POST /v1/artifacts/upload/{id}/v/{ver}   Upload artifact data (personal mode)
+POST /v1/artifacts/finalize              Finalize artifact after upload
+GET  /v1/artifacts/{id}/v/{ver}/lineage  Get artifact input dependencies
+GET  /v1/artifacts/{id}/v/{ver}/dependents Find downstream dependents
+PUT  /v1/artifacts/names/{name}          Set name alias for artifact version
+GET  /v1/artifacts/names/{name}          Get artifact by name
 ```
 
 ### Cache Warming
@@ -530,10 +542,15 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 | `cache.py` | Disk cache using Arrow IPC |
 | `iceberg.py` | Iceberg catalog integration |
 | `config.py` | Configuration |
-| `types.py` | Core types (CacheKey, ReadPlan, Task) |
+| `types.py` | Core types (CacheKey, ReadPlan, Task, Principal) |
 | `tenant.py` | Multi-tenancy context and config |
 | `tenant_registry.py` | Per-tenant metrics tracking |
 | `auth.py` | Trusted proxy authentication and ACL evaluation |
+| `tenant_acl.py` | Tenant-scoped authorization helpers |
+| `artifact_store.py` | Artifact metadata, blob storage, lineage tracking |
+| `transforms/registry.py` | Transform definitions (executor URL, timeouts) |
+| `transforms/runner.py` | Background build runner, executor HTTP protocol |
+| `transforms/build_store.py` | Build state tracking, lease management |
 | `rate_limiter.py` | Token bucket rate limiting |
 | `health.py` | Dependency health checks |
 | `circuit_breaker.py` | Circuit breaker pattern |

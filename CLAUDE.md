@@ -101,13 +101,54 @@ Key modules:
 - **types.py** - `Principal`, `TableRef` types; `ReadPlan.owner_principal`, `ReadPlan.owner_tenant` fields
 - **config.py** - `AclRule`, `AclConfig`, auth settings (`auth_mode`, `proxy_token`, etc.)
 
+### Artifact Store & Transforms
+
+Strata supports materializing query results as reusable artifacts. The artifact system enables:
+- **Deduplication**: Same inputs + transform → return existing artifact (via provenance hash)
+- **Chaining**: Artifacts can be inputs to other transforms (DAG pipelines)
+- **Naming**: Human-readable aliases for artifact versions (e.g., `daily_summary`)
+- **Lineage**: Track input dependencies and downstream dependents
+
+**Artifact lifecycle**:
+1. `POST /v1/artifacts/materialize` - Start materialization (returns `build_id` if async)
+2. `GET /v1/artifacts/builds/{build_id}` - Poll build status (for service-mode async builds)
+3. `GET /v1/artifacts/{id}/v/{version}` - Get artifact metadata
+4. `GET /v1/artifacts/{id}/v/{version}/data` - Stream artifact data as Arrow IPC
+
+**Key types**:
+- `ArtifactVersion` - Immutable artifact metadata (id, version, state, provenance_hash, schema, row_count)
+- `ArtifactName` - Mutable name pointer to specific artifact version
+- `TransformSpec` - Transform specification (executor, params, inputs)
+- `BuildState` - Async build lifecycle state (pending, building, ready, failed)
+
+**Key modules**:
+- **artifact_store.py** - SQLite-backed artifact metadata, blob storage, name pointers, lineage queries
+- **transforms/registry.py** - Transform definitions (executor URL, timeout, max output size)
+- **transforms/runner.py** - Background build runner, executor HTTP protocol, lease-based claiming
+- **transforms/build_store.py** - Build state tracking, lease management, orphan recovery
+- **transforms/build_metrics.py** - Build duration, throughput, queue wait metrics
+
+**Executor protocol** (HTTP v1, push model):
+```
+POST {executor_url}/v1/execute
+Content-Type: multipart/form-data
+X-Strata-Executor-Protocol: v1
+
+Parts:
+  - metadata (application/json): build_id, tenant, principal, transform spec
+  - input0, input1, ... (application/vnd.apache.arrow.stream)
+
+Response: Arrow IPC stream
+```
+
 ### Key Modules
 
 - **types.py** - Core types: `CacheKey`, `ReadPlan`, `Task`, `Filter`, `TableIdentity`, `Principal`, `TableRef`
 - **planner.py** - `ReadPlanner` resolves snapshots, applies pruning, builds plans; S3 path normalization utilities
 - **cache.py** - `DiskCache` + `CachedFetcher` for row-group caching with LRU eviction
-- **server.py** - FastAPI endpoints, streaming responses, two-tier QoS admission control, prefetch
+- **server.py** - FastAPI endpoints, streaming responses, two-tier QoS admission control, prefetch, artifact API
 - **config.py** - Configuration with S3 support (`s3_region`, `s3_endpoint_url`, etc.) and timeout settings
+- **artifact_store.py** - Artifact metadata, blob storage, name pointers, provenance deduplication
 - **metadata_cache.py** - Two-level `ManifestCache` (filtered + unfiltered) and `ParquetMetadataCache`
 - **metadata_store.py** - SQLite-backed persistent metadata storage
 - **fetcher.py** - `PyArrowFetcher` reads Parquet row groups with S3 filesystem support
@@ -115,7 +156,16 @@ Key modules:
 - **tracing.py** - OpenTelemetry integration (optional, requires `strata[otel]`)
 - **logging.py** - Structured JSON logging with correlation IDs (request_id, scan_id, trace_id)
 - **auth.py** - Trusted proxy authentication, principal parsing, ACL evaluation
+- **tenant_acl.py** - Tenant-scoped authorization helpers for multi-tenant isolation
 - **rust/src/lib.rs** - Arrow IPC stream manipulation (concatenation, format conversion)
+
+### Transforms Modules
+
+- **transforms/registry.py** - `TransformRegistry`, `TransformDefinition` (executor URL, timeouts, limits)
+- **transforms/runner.py** - `BuildRunner` background worker, executor HTTP protocol, concurrency control
+- **transforms/build_store.py** - `BuildStore`, `BuildState`, lease-based claiming, orphan recovery
+- **transforms/build_metrics.py** - Build throughput, latency, queue wait time metrics
+- **transforms/build_qos.py** - Per-tenant build concurrency limits
 
 ### Observability Modules
 
