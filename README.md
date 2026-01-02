@@ -102,7 +102,45 @@ uv run python examples/hello_world.py
 
 This creates a 100K-row Iceberg table and runs cold → warm → restart benchmarks. You'll see cache speedup immediately.
 
-**Or use your own table:**
+### Materialize (the core primitive)
+
+```python
+from strata import StrataClient
+
+client = StrataClient()
+
+# Create a materialized artifact from an Iceberg table
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={
+        "ref": "duckdb_sql@v1",
+        "params": {"sql": "SELECT category, COUNT(*) as cnt FROM input0 GROUP BY 1"},
+    },
+    name="category_counts",  # Optional: assign a name
+)
+
+# Access the result
+print(f"Artifact: {artifact.uri}")
+print(f"Cache hit: {artifact.cache_hit}")
+df = artifact.to_pandas()
+
+# Chain artifacts - use the result as input to another transform
+filtered = client.materialize(
+    inputs=[artifact.uri],
+    transform={
+        "ref": "duckdb_sql@v1",
+        "params": {"sql": "SELECT * FROM input0 WHERE cnt > 100"},
+    },
+)
+```
+
+**Key behaviors:**
+- Same inputs + transform → returns existing artifact (no recomputation)
+- Artifacts are immutable and versioned
+- Names are mutable pointers to specific versions
+
+### Scan Iceberg Tables
+
 ```python
 from strata import StrataClient
 
@@ -425,6 +463,130 @@ curl -X POST http://localhost:8765/v1/cache/warm \
 
 ---
 
+## Executor Protocol
+
+Executors are external HTTP services that perform the actual computation. Strata pushes inputs to executors and stores their outputs as artifacts.
+
+### Protocol v1 (Push Model)
+
+**Request:**
+```
+POST {executor_url}/v1/execute
+Content-Type: multipart/form-data
+X-Strata-Executor-Protocol: v1
+
+Parts:
+  - metadata (application/json)
+  - input0, input1, ... (application/vnd.apache.arrow.stream)
+```
+
+**Metadata JSON:**
+```json
+{
+  "build_id": "build-abc123",
+  "tenant": "team-data",
+  "principal": "user@example.com",
+  "transform": {
+    "ref": "duckdb_sql@v1",
+    "params": {"sql": "SELECT * FROM input0 WHERE value > 100"}
+  },
+  "inputs": [
+    {"name": "input0", "type": "artifact", "uri": "strata://artifact/abc@v=1"},
+    {"name": "input1", "type": "table", "uri": "file:///warehouse#db.events"}
+  ]
+}
+```
+
+**Response (success):**
+```
+HTTP/1.1 200 OK
+Content-Type: application/vnd.apache.arrow.stream
+X-Strata-Logs: <base64-encoded logs>  # Optional
+
+<Arrow IPC stream bytes>
+```
+
+**Response (error):**
+```
+HTTP/1.1 4xx/5xx
+Content-Type: application/json
+
+{"success": false, "error": "Invalid SQL syntax", "logs": "..."}
+```
+
+### Implementing an Executor
+
+A minimal executor in Python (using FastAPI):
+
+```python
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
+import pyarrow as pa
+import pyarrow.ipc as ipc
+import duckdb
+import io
+
+app = FastAPI()
+
+@app.post("/v1/execute")
+async def execute(request: Request):
+    form = await request.form()
+
+    # Parse metadata
+    metadata = json.loads(await form["metadata"].read())
+    sql = metadata["transform"]["params"]["sql"]
+
+    # Read input Arrow streams
+    tables = {}
+    for key in form:
+        if key.startswith("input"):
+            data = await form[key].read()
+            reader = ipc.open_stream(io.BytesIO(data))
+            tables[key] = reader.read_all()
+
+    # Execute query
+    conn = duckdb.connect()
+    for name, table in tables.items():
+        conn.register(name, table)
+    result = conn.execute(sql).arrow()
+
+    # Return Arrow IPC stream
+    sink = io.BytesIO()
+    with ipc.new_stream(sink, result.schema) as writer:
+        writer.write_table(result)
+
+    return Response(
+        content=sink.getvalue(),
+        media_type="application/vnd.apache.arrow.stream",
+    )
+```
+
+### Executor Registration
+
+Register executors in `pyproject.toml`:
+
+```toml
+[tool.strata.transforms]
+duckdb_sql = { url = "http://localhost:9000", timeout = 300, max_output_bytes = 1073741824 }
+embedding = { url = "http://embedding-service:8080", timeout = 600 }
+```
+
+Or programmatically:
+
+```python
+from strata.transforms.registry import TransformRegistry, TransformDefinition
+
+registry = TransformRegistry()
+registry.register(TransformDefinition(
+    ref="duckdb_sql@v1",
+    executor_url="http://localhost:9000",
+    timeout_seconds=300.0,
+    max_output_bytes=1024 * 1024 * 1024,
+))
+```
+
+---
+
 ## Configuration Reference
 
 ### Security & Authorization
@@ -654,10 +816,12 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 
 ## Future Work
 
-- Distributed cache across servers
+- Distributed artifact storage across servers
+- Executor SDK for building custom transforms
 - Query pushdown to Parquet/Iceberg
+- Garbage collection for orphaned artifacts
 
-Strata is read-only by design. Write operations belong in your Iceberg writer (Spark, Flink, pyiceberg).
+Strata focuses on persistence and materialization. Orchestration, scheduling, and control flow belong in layers above.
 
 ## License
 
