@@ -1158,6 +1158,132 @@ class TestUnifiedMaterializeAPI:
             agg_df = aggregated.to_pandas()
             assert agg_df["avg_value"].iloc[0] == 40.0  # (30 + 40 + 50) / 3
 
+    def test_materialize_multi_input_chain(self, personal_mode_server):
+        """Chain artifacts with multiple inputs (fan-in pattern).
+
+        This tests the common pattern where multiple data sources are
+        processed independently and then joined together:
+        - Create two independent data sources
+        - Process each independently
+        - Join the processed results together
+        - Verify caching works correctly for the entire DAG
+        """
+        with StrataClient(base_url=personal_mode_server["base_url"]) as client:
+            # Create two independent source artifacts
+            orders = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT 1 as order_id, 100 as customer_id, 50.00 as amount
+                            UNION ALL SELECT 2, 100, 75.00
+                            UNION ALL SELECT 3, 200, 120.00
+                            UNION ALL SELECT 4, 200, 30.00
+                        """
+                    },
+                },
+                name="orders",
+            )
+            assert orders.cache_hit is False
+
+            customers = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT 100 as customer_id, 'Alice' as name
+                            UNION ALL SELECT 200, 'Bob'
+                        """
+                    },
+                },
+                name="customers",
+            )
+            assert customers.cache_hit is False
+
+            # Process each independently (aggregation)
+            order_totals = client.materialize(
+                inputs=[orders.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT customer_id, SUM(amount) as total_amount
+                            FROM input0
+                            GROUP BY customer_id
+                        """
+                    },
+                },
+                name="order_totals",
+            )
+            assert order_totals.cache_hit is False
+
+            # Join the two processed artifacts together
+            joined = client.materialize(
+                inputs=[order_totals.uri, customers.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT c.name, o.total_amount
+                            FROM input0 o
+                            JOIN input1 c ON o.customer_id = c.customer_id
+                            ORDER BY c.name
+                        """
+                    },
+                },
+                name="customer_order_totals",
+            )
+            assert joined.cache_hit is False
+
+            # Verify the joined result
+            result = joined.to_table().to_pydict()
+            assert result == {
+                "name": ["Alice", "Bob"],
+                "total_amount": [125.0, 150.0],  # Alice: 50+75, Bob: 120+30
+            }
+
+            # Verify the entire DAG is cached on re-request
+            orders2 = client.materialize(
+                inputs=[],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT 1 as order_id, 100 as customer_id, 50.00 as amount
+                            UNION ALL SELECT 2, 100, 75.00
+                            UNION ALL SELECT 3, 200, 120.00
+                            UNION ALL SELECT 4, 200, 30.00
+                        """
+                    },
+                },
+            )
+            assert orders2.cache_hit is True
+            assert orders2.uri == orders.uri
+
+            joined2 = client.materialize(
+                inputs=[order_totals.uri, customers.uri],
+                transform={
+                    "ref": "duckdb_sql@v1",
+                    "params": {
+                        "sql": """
+                            SELECT c.name, o.total_amount
+                            FROM input0 o
+                            JOIN input1 c ON o.customer_id = c.customer_id
+                            ORDER BY c.name
+                        """
+                    },
+                },
+            )
+            assert joined2.cache_hit is True
+            assert joined2.uri == joined.uri
+
+            # Verify names resolve correctly
+            resolved = client.get_artifact_by_name("customer_order_totals")
+            assert resolved.uri == joined.uri
+            assert resolved.to_table().to_pydict() == result
+
     def test_materialize_with_refresh(self, artifact_server_with_warehouse):
         """Force refresh recomputes even if cached."""
         table_uri = artifact_server_with_warehouse["table_uri"]
