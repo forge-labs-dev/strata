@@ -139,17 +139,27 @@ filtered = client.materialize(
 - Artifacts are immutable and versioned
 - Names are mutable pointers to specific versions
 
-### Scan Iceberg Tables
+### Fetch Iceberg Tables
 
 ```python
 from strata import StrataClient
 
 client = StrataClient()
-for batch in client.scan("file:///path/to/warehouse#namespace.table"):
-    print(f"Got {batch.num_rows} rows")
+
+# Simple fetch - returns Arrow Table
+table = client.fetch("file:///path/to/warehouse#namespace.table")
+print(f"Got {table.num_rows} rows")
+
+# With column projection and filters
+from strata.client import gt, lt
+table = client.fetch(
+    "file:///warehouse#db.events",
+    columns=["id", "timestamp", "value"],
+    filters=[gt("value", 100)],
+)
 ```
 
-**Streaming guarantee:** All-or-error. You get a complete Arrow IPC stream or the connection aborts—never silently truncated data.
+**Cache guarantee:** Results are cached as artifacts. Repeat requests with the same table, snapshot, columns, and filters return immediately from cache.
 
 ---
 
@@ -180,15 +190,15 @@ Artifacts are:
 - **Addressable**: can be referenced as inputs to other transforms
 - **Reusable**: across processes, runs, and systems
 
-### Iceberg Table Scanning
+### Iceberg Table Fetching
 
-Strata also provides snapshot-aware scanning for Apache Iceberg tables:
-- Caches Parquet row groups as Arrow IPC streams
-- Keys by immutable snapshot IDs (no invalidation needed)
+Strata provides snapshot-aware fetching for Apache Iceberg tables via the unified `/v1/materialize` endpoint:
+- Uses built-in `identity@v1` transform for direct table reads
+- Caches results as artifacts keyed by provenance hash (table + snapshot + columns + filters)
 - Streams with bounded memory (O(row group), not O(result))
 - Two-tier QoS prevents bulk queries from starving dashboards
 
-**When scanning shines:**
+**When fetching shines:**
 - Same snapshot queried repeatedly
 - Interactive or dashboard-driven workloads
 - Cold starts are expensive
@@ -204,8 +214,8 @@ Strata also provides snapshot-aware scanning for Apache Iceberg tables:
 - External executor protocol (push model for simplicity, pull model for scale)
 - Pluggable blob storage (local filesystem, S3/S3-compatible, or GCS)
 
-**Iceberg Scanning** — snapshot-aware table access:
-- Snapshot-aware caching (cache keys include `snapshot_id`, no invalidation)
+**Iceberg Fetching** — snapshot-aware table access via unified API:
+- Provenance-based caching (keys include table + snapshot + columns + filters)
 - Row-group level caching in Arrow IPC format
 - Two-tier filter pruning (Iceberg manifests → Parquet statistics)
 - Streaming with bounded memory (O(row group), not O(result))
@@ -234,18 +244,18 @@ from strata.client import lt, gt
 client = StrataClient()
 
 # With column projection
-for batch in client.scan(
+table = client.fetch(
     "file:///warehouse#db.events",
-    columns=["id", "timestamp", "value"]
-):
-    process(batch)
+    columns=["id", "timestamp", "value"],
+)
+print(f"Got {table.num_rows} rows")
 
 # With filters (enables two-tier pruning)
-for batch in client.scan(
+table = client.fetch(
     "file:///warehouse#db.events",
-    filters=[gt("value", 100), lt("timestamp", some_datetime)]
-):
-    process(batch)
+    filters=[gt("value", 100), lt("timestamp", some_datetime)],
+)
+print(f"Filtered to {table.num_rows} rows")
 ```
 
 ### DuckDB Integration
@@ -356,13 +366,15 @@ materialize(inputs, transform)
  existing  new artifact
 ```
 
-### Iceberg Scanning Flow
+### Iceberg Fetching Flow
+
+For Iceberg tables, the unified `/v1/materialize` endpoint with `identity@v1` transform:
 
 1. **Plan** – Resolve what to read (metadata-only, cheap)
 2. **Fetch** – Read immutable row groups (I/O-bound, expensive)
-3. **Serve** – Stream Arrow IPC bytes (CPU-light, cheap)
+3. **Stream** – Tee Arrow IPC bytes to client AND persist as artifact
 
-Because Iceberg snapshots and Parquet row groups are immutable, Strata can safely persist the results.
+Because Iceberg snapshots and Parquet row groups are immutable, Strata can safely persist the results. Repeat requests with the same provenance (table + snapshot + columns + filters) return the cached artifact.
 
 ### Cache Key Structure
 
@@ -422,23 +434,13 @@ Since Iceberg snapshots are immutable, cached objects never need invalidation.
 ### HTTP Endpoints
 
 ```
-POST /v1/scan              Create a scan, returns metadata + estimated_bytes
-GET  /v1/scan/{id}/batches Stream Arrow IPC batches
-DELETE /v1/scan/{id}       Delete scan resources
-POST /v1/cache/warm        Warm cache for specified tables
-POST /v1/cache/clear       Clear disk cache
-GET  /health               Liveness check
-GET  /health/ready         Readiness check
-GET  /health/dependencies  Detailed dependency health
-GET  /metrics              Aggregate metrics (JSON)
-GET  /metrics/prometheus   Prometheus format
-GET  /v1/admin/tenants     List all tenants (multi-tenant mode)
-GET  /v1/admin/tenants/{id} Get tenant metrics
+# Unified Materialize API (primary interface)
+POST /v1/materialize                     Materialize an artifact (fetch or transform)
+GET  /v1/streams/{stream_id}             Stream Arrow IPC data
 
-# Artifact API (materialized views / transforms)
-POST /v1/artifacts/materialize           Start artifact materialization
+# Artifact Management
 GET  /v1/artifacts/{id}/v/{version}      Get artifact metadata
-GET  /v1/artifacts/{id}/v/{version}/data Stream artifact data as Arrow IPC
+GET  /v1/artifacts/{id}/v/{version}/data Download artifact data as Arrow IPC
 GET  /v1/artifacts/builds/{build_id}     Poll async build status
 POST /v1/artifacts/upload/{id}/v/{ver}   Upload artifact data (personal mode)
 POST /v1/artifacts/finalize              Finalize artifact after upload
@@ -446,6 +448,21 @@ GET  /v1/artifacts/{id}/v/{ver}/lineage  Get artifact input dependencies
 GET  /v1/artifacts/{id}/v/{ver}/dependents Find downstream dependents
 PUT  /v1/artifacts/names/{name}          Set name alias for artifact version
 GET  /v1/artifacts/names/{name}          Get artifact by name
+
+# Cache Management
+POST /v1/cache/warm        Warm cache for specified tables
+POST /v1/cache/clear       Clear disk cache
+
+# Health & Observability
+GET  /health               Liveness check
+GET  /health/ready         Readiness check
+GET  /health/dependencies  Detailed dependency health
+GET  /metrics              Aggregate metrics (JSON)
+GET  /metrics/prometheus   Prometheus format
+
+# Multi-Tenant Admin
+GET  /v1/admin/tenants     List all tenants (multi-tenant mode)
+GET  /v1/admin/tenants/{id} Get tenant metrics
 ```
 
 ### Cache Warming
