@@ -801,6 +801,43 @@ artifact_gcs_prefix = "strata-artifacts"
 gcs_project_id = "my-project"
 ```
 
+**Azure Blob Storage:**
+```bash
+pip install strata[azure]
+
+export STRATA_ARTIFACT_BLOB_BACKEND=azure
+export STRATA_ARTIFACT_AZURE_CONTAINER=my-container
+export STRATA_ARTIFACT_AZURE_PREFIX=strata-artifacts
+
+# Connection string auth (easiest for local development)
+export STRATA_AZURE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+
+# Or account key auth
+export STRATA_AZURE_ACCOUNT_NAME=mystorageaccount
+export STRATA_AZURE_ACCOUNT_KEY=myaccountkey
+
+# Or use DefaultAzureCredential (managed identity, env vars, CLI, etc.)
+export STRATA_AZURE_USE_DEFAULT_CREDENTIAL=true
+```
+
+**Azure with Azurite emulator (local development):**
+```bash
+export STRATA_ARTIFACT_BLOB_BACKEND=azure
+export STRATA_ARTIFACT_AZURE_CONTAINER=test-container
+export STRATA_AZURE_CONNECTION_STRING="UseDevelopmentStorage=true"
+# Or with custom endpoint:
+export STRATA_AZURE_ENDPOINT_URL=http://127.0.0.1:10000/devstoreaccount1
+```
+
+Or in `pyproject.toml`:
+```toml
+[tool.strata]
+artifact_blob_backend = "azure"
+artifact_azure_container = "my-container"
+artifact_azure_prefix = "strata-artifacts"
+azure_account_name = "mystorageaccount"
+```
+
 ### OpenTelemetry Tracing
 
 ```bash
@@ -936,7 +973,6 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 
 ## Future Work
 
-- **Azure Blob Storage** - Azure backend for artifacts (S3/GCS are implemented)
 - **Executor SDK** - Python library for building custom executors with less boilerplate
 - **Artifact retention policies** - TTL and version-count-based automatic cleanup
 - **Webhook notifications** - Notify external systems when builds complete

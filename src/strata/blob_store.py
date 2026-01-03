@@ -12,6 +12,7 @@ Implementations:
 - LocalBlobStore: Local filesystem storage (default)
 - S3BlobStore: Amazon S3 / S3-compatible storage (MinIO, LocalStack)
 - GCSBlobStore: Google Cloud Storage
+- AzureBlobStore: Azure Blob Storage
 """
 
 from __future__ import annotations
@@ -399,6 +400,162 @@ class GCSBlobStore(BlobStore):
         )
 
 
+class AzureBlobStore(BlobStore):
+    """Azure Blob Storage backend.
+
+    Stores blobs in an Azure Storage container with key structure:
+        {prefix}/{artifact_id}@v={version}.arrow
+
+    Supports multiple authentication methods:
+    - Connection string (easiest for local development)
+    - Account key (account name + key)
+    - SAS token (shared access signature)
+    - DefaultAzureCredential (managed identity, environment vars, CLI, etc.)
+
+    Requires the `azure` optional dependency:
+        pip install strata[azure]
+    """
+
+    def __init__(
+        self,
+        account_name: str,
+        container_name: str,
+        prefix: str = "artifacts",
+        account_key: str | None = None,
+        connection_string: str | None = None,
+        sas_token: str | None = None,
+        use_default_credential: bool = False,
+        endpoint_url: str | None = None,
+    ):
+        """Initialize Azure Blob Storage backend.
+
+        Args:
+            account_name: Azure Storage account name
+            container_name: Azure Blob container name
+            prefix: Key prefix within container (default: "artifacts")
+            account_key: Account access key (or use connection_string/sas_token)
+            connection_string: Full connection string (alternative to account_key)
+            sas_token: Shared Access Signature token (alternative to account_key)
+            use_default_credential: Use Azure DefaultAzureCredential for auth
+            endpoint_url: Custom endpoint URL (for Azurite emulator)
+        """
+        try:
+            from azure.storage.blob import ContainerClient
+        except ImportError as e:
+            raise ImportError(
+                "Azure Blob Storage support requires the 'azure' extra. "
+                "Install with: pip install strata[azure]"
+            ) from e
+
+        self.account_name = account_name
+        self.container_name = container_name
+        self.prefix = prefix.strip("/")
+
+        # Build the container client based on auth method
+        if connection_string:
+            self._client = ContainerClient.from_connection_string(
+                conn_str=connection_string,
+                container_name=container_name,
+            )
+        elif use_default_credential:
+            from azure.identity import DefaultAzureCredential
+
+            credential = DefaultAzureCredential()
+            account_url = endpoint_url or f"https://{account_name}.blob.core.windows.net"
+            self._client = ContainerClient(
+                account_url=account_url,
+                container_name=container_name,
+                credential=credential,
+            )
+        elif sas_token:
+            account_url = endpoint_url or f"https://{account_name}.blob.core.windows.net"
+            # SAS token can be passed as credential
+            self._client = ContainerClient(
+                account_url=account_url,
+                container_name=container_name,
+                credential=sas_token,
+            )
+        elif account_key:
+            account_url = endpoint_url or f"https://{account_name}.blob.core.windows.net"
+            self._client = ContainerClient(
+                account_url=account_url,
+                container_name=container_name,
+                credential=account_key,
+            )
+        else:
+            raise ValueError(
+                "Azure Blob Storage requires one of: connection_string, account_key, "
+                "sas_token, or use_default_credential=True"
+            )
+
+    def _azure_key(self, artifact_id: str, version: int) -> str:
+        """Get full Azure blob key."""
+        blob_key = self._blob_key(artifact_id, version)
+        if self.prefix:
+            return f"{self.prefix}/{blob_key}"
+        return blob_key
+
+    def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
+        """Write blob to Azure Blob Storage."""
+        key = self._azure_key(artifact_id, version)
+        blob_client = self._client.get_blob_client(key)
+        blob_client.upload_blob(data, overwrite=True)
+
+    def read_blob(self, artifact_id: str, version: int) -> bytes | None:
+        """Read blob from Azure Blob Storage."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        key = self._azure_key(artifact_id, version)
+        blob_client = self._client.get_blob_client(key)
+        try:
+            return blob_client.download_blob().readall()
+        except ResourceNotFoundError:
+            return None
+
+    def blob_exists(self, artifact_id: str, version: int) -> bool:
+        """Check if blob exists in Azure Blob Storage."""
+        key = self._azure_key(artifact_id, version)
+        blob_client = self._client.get_blob_client(key)
+        return blob_client.exists()
+
+    def delete_blob(self, artifact_id: str, version: int) -> bool:
+        """Delete blob from Azure Blob Storage."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        key = self._azure_key(artifact_id, version)
+        blob_client = self._client.get_blob_client(key)
+        try:
+            blob_client.delete_blob()
+            return True
+        except ResourceNotFoundError:
+            return False
+
+    @classmethod
+    def from_config(
+        cls, config: StrataConfig, container_name: str, prefix: str = "artifacts"
+    ) -> AzureBlobStore:
+        """Create AzureBlobStore from Strata configuration.
+
+        Args:
+            config: Strata configuration with Azure settings
+            container_name: Azure Blob container name
+            prefix: Key prefix within container
+
+        Returns:
+            Configured AzureBlobStore instance
+        """
+        return cls(
+            account_name=config.azure_account_name or "",
+            container_name=container_name,
+            prefix=prefix,
+            account_key=config.azure_account_key,
+            connection_string=config.azure_connection_string,
+            sas_token=config.azure_sas_token,
+            use_default_credential=config.azure_use_default_credential,
+            endpoint_url=config.azure_endpoint_url,
+        )
+
+
 def create_blob_store(config: StrataConfig) -> BlobStore:
     """Create appropriate blob store based on configuration.
 
@@ -419,12 +576,19 @@ def create_blob_store(config: StrataConfig) -> BlobStore:
         artifact_gcs_bucket = "my-bucket"
         artifact_gcs_prefix = "artifacts"
 
+        # Azure Blob Storage
+        artifact_blob_backend = "azure"
+        artifact_azure_container = "my-container"
+        artifact_azure_prefix = "artifacts"
+
     Environment variables:
-        STRATA_ARTIFACT_BLOB_BACKEND: "local" | "s3" | "gcs"
+        STRATA_ARTIFACT_BLOB_BACKEND: "local" | "s3" | "gcs" | "azure"
         STRATA_ARTIFACT_S3_BUCKET: S3 bucket name
         STRATA_ARTIFACT_S3_PREFIX: Key prefix in bucket
         STRATA_ARTIFACT_GCS_BUCKET: GCS bucket name
         STRATA_ARTIFACT_GCS_PREFIX: Key prefix in bucket
+        STRATA_ARTIFACT_AZURE_CONTAINER: Azure Blob container name
+        STRATA_ARTIFACT_AZURE_PREFIX: Key prefix in container
 
     Args:
         config: Strata configuration
@@ -455,6 +619,15 @@ def create_blob_store(config: StrataConfig) -> BlobStore:
             )
         prefix = os.environ.get("STRATA_ARTIFACT_GCS_PREFIX", "artifacts")
         return GCSBlobStore.from_config(config, bucket=bucket, prefix=prefix)
+
+    if backend == "azure":
+        container = os.environ.get("STRATA_ARTIFACT_AZURE_CONTAINER")
+        if not container:
+            raise ValueError(
+                "Azure blob backend requires STRATA_ARTIFACT_AZURE_CONTAINER environment variable"
+            )
+        prefix = os.environ.get("STRATA_ARTIFACT_AZURE_PREFIX", "artifacts")
+        return AzureBlobStore.from_config(config, container_name=container, prefix=prefix)
 
     # Default: local filesystem
     if config.artifact_dir is None:

@@ -292,17 +292,27 @@ class StrataConfig(BaseSettings):
     artifact_dir: Path | None = None
 
     # Artifact blob storage backend configuration
-    artifact_blob_backend: Literal["local", "s3", "gcs"] = "local"
+    artifact_blob_backend: Literal["local", "s3", "gcs", "azure"] = "local"
     artifact_s3_bucket: str | None = None
     artifact_s3_prefix: str = "artifacts"
     artifact_gcs_bucket: str | None = None
     artifact_gcs_prefix: str = "artifacts"
+    artifact_azure_container: str | None = None
+    artifact_azure_prefix: str = "artifacts"
 
     # GCS configuration
     gcs_project_id: str | None = None
     gcs_credentials_json: str | None = None
     gcs_anonymous: bool = False
     gcs_endpoint_override: str | None = None
+
+    # Azure Blob Storage configuration
+    azure_account_name: str | None = None
+    azure_account_key: str | None = None
+    azure_connection_string: str | None = None
+    azure_sas_token: str | None = None
+    azure_use_default_credential: bool = False
+    azure_endpoint_url: str | None = None  # For Azurite emulator
 
     # Server-mode transforms configuration
     transforms_config: dict = Field(default_factory=dict)
@@ -435,7 +445,12 @@ class StrataConfig(BaseSettings):
         Raises:
             ValueError: If required configuration is missing.
         """
-        from strata.blob_store import GCSBlobStore, LocalBlobStore, S3BlobStore
+        from strata.blob_store import (
+            AzureBlobStore,
+            GCSBlobStore,
+            LocalBlobStore,
+            S3BlobStore,
+        )
 
         backend = self.artifact_blob_backend.lower()
 
@@ -455,6 +470,17 @@ class StrataConfig(BaseSettings):
                 self,
                 bucket=self.artifact_gcs_bucket,
                 prefix=self.artifact_gcs_prefix,
+            )
+
+        if backend == "azure":
+            if not self.artifact_azure_container:
+                raise ValueError(
+                    "Azure blob backend requires artifact_azure_container configuration"
+                )
+            return AzureBlobStore.from_config(
+                self,
+                container_name=self.artifact_azure_container,
+                prefix=self.artifact_azure_prefix,
             )
 
         # Default: local filesystem

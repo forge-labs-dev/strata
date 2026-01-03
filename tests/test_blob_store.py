@@ -314,6 +314,122 @@ class TestGCSBlobStore:
         assert result == data
 
 
+class TestAzureBlobStore:
+    """Tests for AzureBlobStore.
+
+    Note: The Azure SDK doesn't have great mocking support like moto.
+    These tests verify the key generation logic and error handling.
+    Full Azure integration requires actual Azure Storage or Azurite emulator.
+    """
+
+    def test_azure_key_format_with_prefix(self):
+        """Test the Azure key format includes prefix."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        # Create a store using connection string (won't actually connect)
+        # We use a fake connection string format for testing key generation
+        store = AzureBlobStore(
+            account_name="testaccount",
+            container_name="test-container",
+            prefix="artifacts",
+            connection_string="DefaultEndpointsProtocol=https;AccountName=testaccount;AccountKey=dGVzdGtleQ==;EndpointSuffix=core.windows.net",
+        )
+
+        key = store._azure_key("abc123", 5)
+
+        assert key == "artifacts/abc123@v=5.arrow"
+
+    def test_azure_key_format_without_prefix(self):
+        """Test Azure key format without prefix."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        store = AzureBlobStore(
+            account_name="testaccount",
+            container_name="test-container",
+            prefix="",
+            connection_string="DefaultEndpointsProtocol=https;AccountName=testaccount;AccountKey=dGVzdGtleQ==;EndpointSuffix=core.windows.net",
+        )
+
+        key = store._azure_key("abc123", 5)
+
+        assert key == "abc123@v=5.arrow"
+
+    def test_blob_key_format(self):
+        """Test the blob key format."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        store = AzureBlobStore(
+            account_name="testaccount",
+            container_name="test-container",
+            prefix="artifacts",
+            connection_string="DefaultEndpointsProtocol=https;AccountName=testaccount;AccountKey=dGVzdGtleQ==;EndpointSuffix=core.windows.net",
+        )
+
+        key = store._blob_key("abc123", 5)
+
+        assert key == "abc123@v=5.arrow"
+
+    def test_requires_auth_method(self):
+        """Test that Azure store raises error without auth method."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        with pytest.raises(ValueError, match="requires one of"):
+            AzureBlobStore(
+                account_name="testaccount",
+                container_name="test-container",
+                prefix="artifacts",
+                # No auth method provided
+            )
+
+    def test_import_error_message_contents(self):
+        """Test that AzureBlobStore has a helpful error message for missing package."""
+        # This test verifies the error message text exists in the source
+        # without actually triggering module manipulation that causes test pollution
+        import inspect
+
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        source = inspect.getsource(AzureBlobStore.__init__)
+        assert "azure" in source.lower()
+        assert "pip install strata[azure]" in source
+
+    @pytest.mark.skip(reason="Requires actual Azure Storage or Azurite emulator")
+    def test_write_and_read_blob_integration(self):
+        """Test writing and reading a blob from actual Azure Storage.
+
+        This test is skipped by default. To run it, start Azurite and set:
+            STRATA_AZURE_CONNECTION_STRING=UseDevelopmentStorage=true
+
+        Or use actual Azure Storage with a connection string.
+        """
+        import os
+
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        connection_string = os.environ.get("STRATA_AZURE_CONNECTION_STRING")
+        if not connection_string:
+            pytest.skip("STRATA_AZURE_CONNECTION_STRING not set")
+
+        store = AzureBlobStore(
+            account_name="devstoreaccount1",  # Azurite default
+            container_name="test-container",
+            prefix="artifacts",
+            connection_string=connection_string,
+        )
+
+        data = b"test artifact data"
+        store.write_blob("artifact-1", 1, data)
+        result = store.read_blob("artifact-1", 1)
+
+        assert result == data
+
+
 class TestCreateBlobStore:
     """Tests for the create_blob_store factory function."""
 
@@ -415,6 +531,40 @@ class TestCreateBlobStore:
         with pytest.raises(ValueError, match="GCS blob backend requires"):
             create_blob_store(config)
 
+    def test_creates_azure_store_from_env(self, tmp_path: Path, monkeypatch):
+        """Test that Azure store is created when configured via env."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        monkeypatch.setenv("STRATA_ARTIFACT_BLOB_BACKEND", "azure")
+        monkeypatch.setenv("STRATA_ARTIFACT_AZURE_CONTAINER", "my-container")
+        monkeypatch.setenv("STRATA_ARTIFACT_AZURE_PREFIX", "custom-prefix")
+
+        config = StrataConfig(
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+            azure_connection_string="DefaultEndpointsProtocol=https;AccountName=test;AccountKey=dGVzdA==;EndpointSuffix=core.windows.net",
+        )
+
+        store = create_blob_store(config)
+
+        assert isinstance(store, AzureBlobStore)
+        assert store.container_name == "my-container"
+        assert store.prefix == "custom-prefix"
+
+    def test_raises_without_azure_container(self, tmp_path: Path, monkeypatch):
+        """Test that Azure store raises error without container."""
+        monkeypatch.setenv("STRATA_ARTIFACT_BLOB_BACKEND", "azure")
+        monkeypatch.delenv("STRATA_ARTIFACT_AZURE_CONTAINER", raising=False)
+
+        config = StrataConfig(
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+        )
+
+        with pytest.raises(ValueError, match="Azure blob backend requires"):
+            create_blob_store(config)
+
 
 class TestConfigCreateBlobStore:
     """Tests for StrataConfig.create_blob_store() method."""
@@ -495,4 +645,36 @@ class TestConfigCreateBlobStore:
         )
 
         with pytest.raises(ValueError, match="requires artifact_gcs_bucket"):
+            config.create_blob_store()
+
+    def test_creates_azure_store(self, tmp_path: Path):
+        """Test creating Azure store from config."""
+        pytest.importorskip("azure.storage.blob")
+        from strata.blob_store import AzureBlobStore
+
+        config = StrataConfig(
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+            artifact_blob_backend="azure",
+            artifact_azure_container="my-container",
+            artifact_azure_prefix="my-prefix",
+            azure_connection_string="DefaultEndpointsProtocol=https;AccountName=test;AccountKey=dGVzdA==;EndpointSuffix=core.windows.net",
+        )
+
+        store = config.create_blob_store()
+
+        assert isinstance(store, AzureBlobStore)
+        assert store.container_name == "my-container"
+        assert store.prefix == "my-prefix"
+
+    def test_raises_without_azure_container(self, tmp_path: Path):
+        """Test that Azure store raises error without container in config."""
+        config = StrataConfig(
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+            artifact_blob_backend="azure",
+            artifact_azure_container=None,
+        )
+
+        with pytest.raises(ValueError, match="requires artifact_azure_container"):
             config.create_blob_store()

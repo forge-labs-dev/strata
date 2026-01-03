@@ -56,7 +56,7 @@ What breaks first is not compute—it's **state**. Strata makes state explicit a
 
 ### Iceberg Table Scanning
 
-Strata also provides snapshot-aware scanning for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports local filesystem, S3, and GCS storage backends.
+Strata also provides snapshot-aware scanning for Apache Iceberg tables. It caches Parquet row groups as Arrow IPC streams, keyed by immutable snapshot IDs—eliminating cache invalidation complexity. The server streams results with bounded memory, uses two-tier QoS to prevent bulk queries from starving dashboards, and a Rust extension accelerates I/O. Supports local filesystem, S3, GCS, and Azure Blob Storage backends.
 
 ## Build & Development Commands
 
@@ -175,7 +175,7 @@ Strata supports materializing query results as reusable artifacts. The artifact 
 
 **Key modules**:
 - **artifact_store.py** - SQLite-backed artifact metadata, name pointers, lineage queries, blob I/O delegation
-- **blob_store.py** - Pluggable blob storage abstraction (LocalBlobStore, S3BlobStore, GCSBlobStore)
+- **blob_store.py** - Pluggable blob storage abstraction (LocalBlobStore, S3BlobStore, GCSBlobStore, AzureBlobStore)
 - **transforms/registry.py** - Transform definitions (executor URL, timeout, max output size)
 - **transforms/runner.py** - Background build runner, executor HTTP protocol, lease-based claiming
 
@@ -183,9 +183,11 @@ Strata supports materializing query results as reusable artifacts. The artifact 
 - `LocalBlobStore` - Local filesystem (default), atomic writes via temp+rename
 - `S3BlobStore` - Amazon S3 / S3-compatible (MinIO, LocalStack) via PyArrow S3FileSystem
 - `GCSBlobStore` - Google Cloud Storage via PyArrow GcsFileSystem
-- Configure via `STRATA_ARTIFACT_BLOB_BACKEND` (`local`, `s3`, or `gcs`)
+- `AzureBlobStore` - Azure Blob Storage via azure-storage-blob SDK (requires `strata[azure]`)
+- Configure via `STRATA_ARTIFACT_BLOB_BACKEND` (`local`, `s3`, `gcs`, or `azure`)
 - S3: `STRATA_ARTIFACT_S3_BUCKET`, `STRATA_ARTIFACT_S3_PREFIX`
 - GCS: `STRATA_ARTIFACT_GCS_BUCKET`, `STRATA_ARTIFACT_GCS_PREFIX`, `STRATA_GCS_PROJECT_ID`
+- Azure: `STRATA_ARTIFACT_AZURE_CONTAINER`, `STRATA_ARTIFACT_AZURE_PREFIX`, `STRATA_AZURE_CONNECTION_STRING` (or account_key/SAS/DefaultAzureCredential)
 
 **Additional modules**:
 - **transforms/build_store.py** - Build state tracking, lease management, orphan recovery
