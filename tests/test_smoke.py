@@ -301,6 +301,8 @@ class TestEndToEnd:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            artifact_dir=tmp_path / "artifacts",
+            deployment_mode="personal",  # Enable artifact store for unified API
         )
 
         # Start server in a thread
@@ -335,43 +337,40 @@ class TestEndToEnd:
 
         client.close()
 
-    def test_scan_and_cache_hit(self, server_with_client):
-        """Test scanning twice to demonstrate cache hit."""
+    def test_fetch_and_cache_hit(self, server_with_client):
+        """Test fetching twice to demonstrate cache hit."""
         client = server_with_client["client"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # First scan - all cache misses
-        batches1 = list(client.scan(table_uri))
-        assert len(batches1) > 0
-        total_rows1 = sum(b.num_rows for b in batches1)
-        assert total_rows1 == 500
+        # First fetch - cache miss
+        artifact1 = client.fetch_artifact(table_uri)
+        table1 = artifact1.to_table()
+        assert table1.num_rows == 500
+        assert artifact1.cache_hit is False
 
-        # Check metrics
-        metrics1 = client.metrics()
-        initial_hits = metrics1["cache_hits"]
+        # Small delay for artifact finalization
+        time.sleep(0.5)
 
-        # Second scan - should have cache hits
-        batches2 = list(client.scan(table_uri))
-        total_rows2 = sum(b.num_rows for b in batches2)
-        assert total_rows2 == 500
+        # Second fetch - should have artifact cache hit
+        artifact2 = client.fetch_artifact(table_uri)
+        table2 = artifact2.to_table()
+        assert table2.num_rows == 500
+        assert artifact2.cache_hit is True
+        assert artifact2.artifact_id == artifact1.artifact_id
 
-        metrics2 = client.metrics()
-        assert metrics2["cache_hits"] > initial_hits
-
-    def test_scan_with_filters(self, server_with_client):
-        """Test scanning with filters."""
+    def test_fetch_with_filters(self, server_with_client):
+        """Test fetching with filters."""
         client = server_with_client["client"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Scan with filter
+        # Fetch with filter
         filters = [lt("value", 100.0)]
-        batches = list(client.scan(table_uri, filters=filters))
+        table = client.fetch(table_uri, filters=filters)
 
-        # Should have fewer rows (value < 100 means roughly id < 67)
-        total_rows = sum(b.num_rows for b in batches)
+        # Should have rows (exact count depends on row group pruning)
         # May include all rows if row groups aren't pruned,
         # but the filter is at least accepted
-        assert total_rows >= 0
+        assert table.num_rows >= 0
 
     def test_duckdb_integration(self, server_with_client):
         """Test DuckDB integration."""
@@ -405,9 +404,9 @@ class TestEndToEnd:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Do a scan to populate caches
-        batches = list(client.scan(table_uri))
-        assert len(batches) > 0
+        # Do a fetch to populate caches
+        table = client.fetch(table_uri)
+        assert table.num_rows > 0
 
         # Check metadata stats endpoint
         response = requests.get(f"http://127.0.0.1:{config.port}/v1/metadata/stats")
@@ -485,9 +484,9 @@ class TestEndToEnd:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Do a scan to generate some metrics
-        batches = list(client.scan(table_uri))
-        assert len(batches) > 0
+        # Do a fetch to generate some metrics
+        table = client.fetch(table_uri)
+        assert table.num_rows > 0
 
         # Fetch Prometheus metrics
         response = requests.get(f"http://127.0.0.1:{config.port}/metrics/prometheus")
@@ -519,9 +518,9 @@ class TestEndToEnd:
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Do a scan to populate cache
-        batches = list(client.scan(table_uri))
-        assert len(batches) > 0
+        # Do a fetch to populate cache
+        table = client.fetch(table_uri)
+        assert table.num_rows > 0
 
         # Test basic inspect (no filters)
         response = requests.get(f"http://127.0.0.1:{config.port}/v1/debug/cache/inspect")

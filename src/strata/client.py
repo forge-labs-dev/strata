@@ -48,7 +48,7 @@ import pyarrow as pa
 import pyarrow.ipc as ipc
 
 from strata.config import StrataConfig
-from strata.types import Filter, FilterOp, serialize_filter
+from strata.types import Filter, FilterOp, FilterSpec, serialize_filter
 
 
 @dataclass
@@ -82,14 +82,14 @@ class RetryConfig:
 class Artifact:
     """An immutable, versioned artifact from Strata.
 
-    Returned by `client.materialize()`. Provides access to artifact data
-    and metadata.
+    Returned by `client.materialize()` or `client.fetch_artifact()`.
+    Provides access to artifact data and metadata.
 
     Attributes:
         artifact_id: Unique artifact identifier
         version: Artifact version number
         cache_hit: True if artifact was returned from cache
-        execution: How the artifact was obtained ("cache", "local", "server")
+        execution: How the artifact was obtained ("cache", "local", "server", "stream")
         build_id: Build ID if artifact was built asynchronously
         name: Name pointer if one was assigned
 
@@ -105,15 +105,20 @@ class Artifact:
         print(f"Artifact: {artifact.uri}")
         print(f"Cache hit: {artifact.cache_hit}")
         df = artifact.to_pandas()
+
+        # Or use fetch for table scans:
+        artifact = client.fetch_artifact("file:///warehouse#db.events")
+        table = artifact.to_table()
     """
 
     _client: "StrataClient"
     artifact_id: str
     version: int
     cache_hit: bool = False
-    execution: str = "cache"  # "cache" | "local" | "server"
+    execution: str = "cache"  # "cache" | "local" | "server" | "stream"
     build_id: str | None = None
     name: str | None = None
+    _stream_data: bytes | None = None  # Cached stream data from fetch()
 
     @property
     def uri(self) -> str:
@@ -138,6 +143,12 @@ class Artifact:
 
     def to_table(self) -> pa.Table:
         """Download artifact data as Arrow Table."""
+        # Use cached stream data if available (from fetch with stream mode)
+        if self._stream_data is not None:
+            if not self._stream_data:
+                return pa.table({})
+            reader = ipc.open_stream(pa.BufferReader(self._stream_data))
+            return reader.read_all()
         return self._client._fetch_artifact_data(self.artifact_id, self.version)
 
     def to_pandas(self):
@@ -360,6 +371,283 @@ class StrataClient:
         if not batches:
             return pa.table({})
         return pa.Table.from_batches(batches)
+
+    # -----------------------------------------------------------------------
+    # Unified Materialize API
+    # -----------------------------------------------------------------------
+
+    def fetch(
+        self,
+        table_uri: str,
+        columns: list[str] | None = None,
+        filters: list[Filter] | None = None,
+        snapshot_id: int | None = None,
+        name: str | None = None,
+        mode: str = "stream",
+        wait: bool = True,
+        timeout: float = 300.0,
+    ) -> pa.Table:
+        """Fetch data from an Iceberg table using the unified materialize API.
+
+        This is the recommended way to read table data. It uses the unified
+        /v1/materialize endpoint with identity@v1 transform, which:
+        - Caches results as artifacts for query-level deduplication
+        - Supports both streaming and artifact modes
+        - Tracks lineage and provenance
+
+        Args:
+            table_uri: Table identifier (e.g., "file:///warehouse#db.table")
+            columns: Columns to project (None for all columns)
+            filters: Row filters for pruning (applied at Parquet row-group level)
+            snapshot_id: Specific snapshot to read (None for current snapshot)
+            name: Optional name to assign to the resulting artifact
+            mode: "stream" (default) for immediate data, "artifact" for async build
+            wait: If mode="artifact", wait for build to complete (default True)
+            timeout: Maximum seconds to wait for build (default 300)
+
+        Returns:
+            Arrow Table containing the query results
+
+        Example:
+            # Simple table scan
+            table = client.fetch("file:///warehouse#db.events")
+
+            # With projection and filters
+            from strata.client import lt, eq
+            table = client.fetch(
+                "file:///warehouse#db.events",
+                columns=["id", "value", "timestamp"],
+                filters=[lt("value", 100.0), eq("status", "active")],
+            )
+
+            # Named artifact for caching
+            table = client.fetch(
+                "file:///warehouse#db.events",
+                name="daily_events",
+            )
+        """
+        artifact = self._fetch_via_materialize(
+            table_uri=table_uri,
+            columns=columns,
+            filters=filters,
+            snapshot_id=snapshot_id,
+            name=name,
+            mode=mode,
+            wait=wait,
+            timeout=timeout,
+        )
+        return artifact.to_table()
+
+    def fetch_artifact(
+        self,
+        table_uri: str,
+        columns: list[str] | None = None,
+        filters: list[Filter] | None = None,
+        snapshot_id: int | None = None,
+        name: str | None = None,
+        mode: str = "stream",
+        wait: bool = True,
+        timeout: float = 300.0,
+    ) -> "Artifact":
+        """Fetch data from an Iceberg table, returning an Artifact handle.
+
+        Like fetch(), but returns an Artifact object instead of the data directly.
+        Useful when you need access to artifact metadata, lineage, or want to
+        defer data download.
+
+        Args:
+            table_uri: Table identifier (e.g., "file:///warehouse#db.table")
+            columns: Columns to project (None for all columns)
+            filters: Row filters for pruning
+            snapshot_id: Specific snapshot to read (None for current)
+            name: Optional name to assign to the resulting artifact
+            mode: "stream" (default) or "artifact"
+            wait: If mode="artifact", wait for build to complete
+            timeout: Maximum seconds to wait for build
+
+        Returns:
+            Artifact object with access to data and metadata
+
+        Example:
+            artifact = client.fetch_artifact(
+                "file:///warehouse#db.events",
+                name="daily_events",
+            )
+            print(f"Artifact: {artifact.uri}")
+            print(f"Cache hit: {artifact.cache_hit}")
+
+            # Check lineage
+            lineage = artifact.lineage()
+
+            # Get data when needed
+            table = artifact.to_table()
+        """
+        return self._fetch_via_materialize(
+            table_uri=table_uri,
+            columns=columns,
+            filters=filters,
+            snapshot_id=snapshot_id,
+            name=name,
+            mode=mode,
+            wait=wait,
+            timeout=timeout,
+        )
+
+    def _fetch_via_materialize(
+        self,
+        table_uri: str,
+        columns: list[str] | None,
+        filters: list[Filter] | None,
+        snapshot_id: int | None,
+        name: str | None,
+        mode: str,
+        wait: bool,
+        timeout: float,
+    ) -> "Artifact":
+        """Internal: fetch table data via unified /v1/materialize endpoint."""
+        # Build identity@v1 transform params
+        identity_params: dict[str, Any] = {}
+        if columns:
+            identity_params["columns"] = columns
+        if filters:
+            identity_params["filters"] = [
+                {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+            ]
+        if snapshot_id is not None:
+            identity_params["snapshot_id"] = snapshot_id
+
+        # Build request
+        request_body = {
+            "inputs": [table_uri],
+            "transform": {
+                "executor": "identity@v1",
+                "params": identity_params,
+            },
+            "mode": mode,
+        }
+        if name:
+            request_body["name"] = name
+
+        # Send request to unified endpoint
+        response = self._client.post("/v1/materialize", json=request_body)
+        response.raise_for_status()
+        data = response.json()
+
+        artifact_uri = data["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+        hit = data.get("hit", False)
+        state = data.get("state", "ready")
+        stream_id = data.get("stream_id")
+        stream_url = data.get("stream_url")
+        build_id = data.get("build_id")
+
+        # Cache hit - artifact is ready
+        if hit or state == "ready":
+            # On cache hit with stream mode, fetch the data via stream_url
+            stream_data = None
+            if stream_url and mode == "stream":
+                stream_data = self._fetch_stream_with_retry(stream_url)
+
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=hit,
+                execution="cache" if hit else "server",
+                name=name,
+                _stream_data=stream_data,
+            )
+
+        # Stream mode - fetch data via stream URL
+        if mode == "stream" and stream_url:
+            # Fetch the stream with retry support
+            content = self._fetch_stream_with_retry(stream_url)
+
+            # Return artifact (data was streamed and persisted)
+            return Artifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=False,
+                execution="stream",
+                name=name,
+                _stream_data=content,  # Cache for to_table() call
+            )
+
+        # Artifact mode - poll for completion if wait=True
+        if build_id and wait:
+            start_time = time.time()
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
+
+                # Check build status
+                status_resp = self._client.get(f"/v1/builds/{build_id}")
+                if status_resp.status_code == 404:
+                    # Build endpoint may not exist yet, try artifact status
+                    status_resp = self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
+
+                status_resp.raise_for_status()
+                build_status = status_resp.json()
+
+                current_state = build_status.get("state", "building")
+                if current_state == "ready":
+                    return Artifact(
+                        _client=self,
+                        artifact_id=artifact_id,
+                        version=version,
+                        cache_hit=False,
+                        execution="server",
+                        build_id=build_id,
+                        name=name,
+                    )
+                elif current_state == "failed":
+                    error_msg = build_status.get("error_message", "Unknown error")
+                    raise RuntimeError(f"Build failed: {error_msg}")
+
+                time.sleep(0.5)
+
+        # Not waiting or no build_id - return artifact in building state
+        return Artifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=False,
+            execution="server",
+            build_id=build_id or stream_id,
+            name=name,
+        )
+
+    def _fetch_stream_with_retry(self, stream_url: str) -> bytes:
+        """Fetch stream data with retry on 429 responses."""
+        last_response = None
+        for attempt in range(self.retry_config.max_retries + 1):
+            response = self._client.get(stream_url)
+
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.content
+
+            last_response = response
+
+            if attempt >= self.retry_config.max_retries:
+                break
+
+            # Calculate delay
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    delay = float(retry_after) + random.uniform(0, self.retry_config.jitter)
+                except ValueError:
+                    delay = self.retry_config.calculate_delay(attempt)
+            else:
+                delay = self.retry_config.calculate_delay(attempt)
+
+            time.sleep(delay)
+
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
 
     def clear_cache(self) -> dict:
         """Clear the server's disk cache."""
@@ -1180,6 +1468,250 @@ class AsyncStrataClient:
         """
         return [batch async for batch in self.scan(table_uri, snapshot_id, columns, filters)]
 
+    # -----------------------------------------------------------------------
+    # Unified Materialize API
+    # -----------------------------------------------------------------------
+
+    async def fetch(
+        self,
+        table_uri: str,
+        columns: list[str] | None = None,
+        filters: list[Filter] | None = None,
+        snapshot_id: int | None = None,
+        name: str | None = None,
+        mode: str = "stream",
+        wait: bool = True,
+        timeout: float = 300.0,
+    ) -> pa.Table:
+        """Fetch data from an Iceberg table using the unified materialize API.
+
+        This is the recommended way to read table data. It uses the unified
+        /v1/materialize endpoint with identity@v1 transform, which:
+        - Caches results as artifacts for query-level deduplication
+        - Supports both streaming and artifact modes
+        - Tracks lineage and provenance
+
+        Args:
+            table_uri: Table identifier (e.g., "file:///warehouse#db.table")
+            columns: Columns to project (None for all columns)
+            filters: Row filters for pruning (applied at Parquet row-group level)
+            snapshot_id: Specific snapshot to read (None for current snapshot)
+            name: Optional name to assign to the resulting artifact
+            mode: "stream" (default) for immediate data, "artifact" for async build
+            wait: If mode="artifact", wait for build to complete (default True)
+            timeout: Maximum seconds to wait for build (default 300)
+
+        Returns:
+            Arrow Table containing the query results
+
+        Example:
+            # Simple table scan
+            table = await client.fetch("file:///warehouse#db.events")
+
+            # With projection and filters
+            from strata.client import lt, eq
+            table = await client.fetch(
+                "file:///warehouse#db.events",
+                columns=["id", "value", "timestamp"],
+                filters=[lt("value", 100.0), eq("status", "active")],
+            )
+        """
+        artifact = await self._fetch_via_materialize(
+            table_uri=table_uri,
+            columns=columns,
+            filters=filters,
+            snapshot_id=snapshot_id,
+            name=name,
+            mode=mode,
+            wait=wait,
+            timeout=timeout,
+        )
+        return await artifact.to_table()
+
+    async def fetch_artifact(
+        self,
+        table_uri: str,
+        columns: list[str] | None = None,
+        filters: list[Filter] | None = None,
+        snapshot_id: int | None = None,
+        name: str | None = None,
+        mode: str = "stream",
+        wait: bool = True,
+        timeout: float = 300.0,
+    ) -> "AsyncArtifact":
+        """Fetch data from an Iceberg table, returning an AsyncArtifact handle.
+
+        Like fetch(), but returns an AsyncArtifact object instead of the data directly.
+        Useful when you need access to artifact metadata, lineage, or want to
+        defer data download.
+
+        Args:
+            table_uri: Table identifier (e.g., "file:///warehouse#db.table")
+            columns: Columns to project (None for all columns)
+            filters: Row filters for pruning
+            snapshot_id: Specific snapshot to read (None for current)
+            name: Optional name to assign to the resulting artifact
+            mode: "stream" (default) or "artifact"
+            wait: If mode="artifact", wait for build to complete
+            timeout: Maximum seconds to wait for build
+
+        Returns:
+            AsyncArtifact object with access to data and metadata
+        """
+        return await self._fetch_via_materialize(
+            table_uri=table_uri,
+            columns=columns,
+            filters=filters,
+            snapshot_id=snapshot_id,
+            name=name,
+            mode=mode,
+            wait=wait,
+            timeout=timeout,
+        )
+
+    async def _fetch_via_materialize(
+        self,
+        table_uri: str,
+        columns: list[str] | None,
+        filters: list[Filter] | None,
+        snapshot_id: int | None,
+        name: str | None,
+        mode: str,
+        wait: bool,
+        timeout: float,
+    ) -> "AsyncArtifact":
+        """Internal: fetch table data via unified /v1/materialize endpoint."""
+        # Build identity@v1 transform params
+        identity_params: dict[str, Any] = {}
+        if columns:
+            identity_params["columns"] = columns
+        if filters:
+            identity_params["filters"] = [
+                {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+            ]
+        if snapshot_id is not None:
+            identity_params["snapshot_id"] = snapshot_id
+
+        # Build request
+        request_body = {
+            "inputs": [table_uri],
+            "transform": {
+                "executor": "identity@v1",
+                "params": identity_params,
+            },
+            "mode": mode,
+        }
+        if name:
+            request_body["name"] = name
+
+        # Send request to unified endpoint
+        response = await self._client.post("/v1/materialize", json=request_body)
+        response.raise_for_status()
+        data = response.json()
+
+        artifact_uri = data["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+        hit = data.get("hit", False)
+        state = data.get("state", "ready")
+        stream_id = data.get("stream_id")
+        stream_url = data.get("stream_url")
+        build_id = data.get("build_id")
+
+        # Cache hit - artifact is ready
+        if hit or state == "ready":
+            return AsyncArtifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=hit,
+                execution="cache" if hit else "server",
+                name=name,
+            )
+
+        # Stream mode - fetch data via stream URL
+        if mode == "stream" and stream_url:
+            content = await self._fetch_stream_with_retry(stream_url)
+            return AsyncArtifact(
+                _client=self,
+                artifact_id=artifact_id,
+                version=version,
+                cache_hit=False,
+                execution="stream",
+                name=name,
+                _stream_data=content,
+            )
+
+        # Artifact mode - poll for completion if wait=True
+        if build_id and wait:
+            start_time = time.time()
+            while True:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
+
+                status_resp = await self._client.get(f"/v1/builds/{build_id}")
+                if status_resp.status_code == 404:
+                    status_resp = await self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
+
+                status_resp.raise_for_status()
+                build_status = status_resp.json()
+
+                current_state = build_status.get("state", "building")
+                if current_state == "ready":
+                    return AsyncArtifact(
+                        _client=self,
+                        artifact_id=artifact_id,
+                        version=version,
+                        cache_hit=False,
+                        execution="server",
+                        build_id=build_id,
+                        name=name,
+                    )
+                elif current_state == "failed":
+                    error_msg = build_status.get("error_message", "Unknown error")
+                    raise RuntimeError(f"Build failed: {error_msg}")
+
+                await asyncio.sleep(0.5)
+
+        return AsyncArtifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=False,
+            execution="server",
+            build_id=build_id or stream_id,
+            name=name,
+        )
+
+    async def _fetch_stream_with_retry(self, stream_url: str) -> bytes:
+        """Fetch stream data with retry on 429 responses."""
+        last_response = None
+        for attempt in range(self.retry_config.max_retries + 1):
+            response = await self._client.get(stream_url)
+
+            if response.status_code != 429:
+                response.raise_for_status()
+                return response.content
+
+            last_response = response
+
+            if attempt >= self.retry_config.max_retries:
+                break
+
+            retry_after = response.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    delay = float(retry_after) + random.uniform(0, self.retry_config.jitter)
+                except ValueError:
+                    delay = self.retry_config.calculate_delay(attempt)
+            else:
+                delay = self.retry_config.calculate_delay(attempt)
+
+            await asyncio.sleep(delay)
+
+        if last_response is not None:
+            last_response.raise_for_status()
+        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
+
     async def clear_cache(self) -> dict:
         """Clear the server's disk cache."""
         response = await self._client.post("/v1/cache/clear")
@@ -1370,17 +1902,18 @@ class AsyncStrataClient:
 class AsyncArtifact:
     """An immutable, versioned artifact from Strata (async version).
 
-    Returned by `AsyncStrataClient.materialize()`. Provides async access
-    to artifact data and metadata.
+    Returned by `AsyncStrataClient.materialize()` or `AsyncStrataClient.fetch_artifact()`.
+    Provides async access to artifact data and metadata.
     """
 
     _client: "AsyncStrataClient"
     artifact_id: str
     version: int
     cache_hit: bool = False
-    execution: str = "cache"
+    execution: str = "cache"  # "cache" | "server" | "stream"
     build_id: str | None = None
     name: str | None = None
+    _stream_data: bytes | None = None  # Cached stream data from fetch()
 
     @property
     def uri(self) -> str:
@@ -1402,6 +1935,12 @@ class AsyncArtifact:
 
     async def to_table(self) -> pa.Table:
         """Download artifact data as Arrow Table."""
+        # Use cached stream data if available (from fetch with stream mode)
+        if self._stream_data is not None:
+            if not self._stream_data:
+                return pa.table({})
+            reader = ipc.open_stream(pa.BufferReader(self._stream_data))
+            return reader.read_all()
         response = await self._client._client.get(
             f"/v1/artifacts/{self.artifact_id}/v/{self.version}/data"
         )

@@ -85,12 +85,18 @@ uv run python -m strata --warehouse "file:///path/to/warehouse"
 
 ## Architecture Overview
 
-### Request Flow
+### Request Flow (Unified Materialize API)
 
-1. **Client** sends `POST /v1/scan` with table URI, optional filters, columns
-2. **Planner** (`planner.py`) resolves Iceberg snapshot → produces `ReadPlan` with row-group `Task`s
-3. **Fetcher** (`cache.py`) checks disk cache, reads Parquet if miss, writes Arrow IPC to cache
-4. **Server** (`server.py`) streams cached Arrow IPC bytes via `GET /v1/scan/{id}/batches`
+1. **Client** sends `POST /v1/materialize` with inputs (table URIs) and transform (e.g., `identity@v1`)
+2. **Server** checks artifact cache via provenance hash → returns immediately if cache hit
+3. **Planner** (`planner.py`) resolves Iceberg snapshot → produces `ReadPlan` with row-group `Task`s
+4. **Fetcher** (`cache.py`) checks disk cache, reads Parquet if miss, writes Arrow IPC to cache
+5. **Server** streams Arrow IPC bytes via `GET /v1/streams/{stream_id}` while persisting to artifact store
+6. On completion, artifact is finalized and available for future cache hits
+
+**Legacy flow** (deprecated, use unified API instead):
+1. Client sends `POST /v1/scan` → receives `scan_id`
+2. Client fetches `GET /v1/scan/{scan_id}/batches` → receives Arrow IPC stream
 
 ### Two-Tier Pruning
 
@@ -138,8 +144,8 @@ Strata uses a trusted proxy model for authentication and authorization. It does 
 3. Default action applied (`allow` or `deny`)
 
 **Enforcement points**:
-- `POST /v1/scan` - ACL check on table access
-- `GET /v1/scan/{id}/batches` - Scan ownership check (only creator can retrieve)
+- `POST /v1/materialize` - ACL check on table/artifact access
+- `GET /v1/streams/{id}` - Stream ownership check (only creator can retrieve)
 - `POST /v1/cache/clear` - Requires `admin:cache` scope
 
 **Key types**:
@@ -161,11 +167,11 @@ Strata supports materializing query results as reusable artifacts. The artifact 
 - **Naming**: Human-readable aliases for artifact versions (e.g., `daily_summary`)
 - **Lineage**: Track input dependencies and downstream dependents
 
-**Artifact lifecycle**:
-1. `POST /v1/artifacts/materialize` - Start materialization (returns `build_id` if async)
-2. `GET /v1/artifacts/builds/{build_id}` - Poll build status (for service-mode async builds)
+**Artifact lifecycle (via unified API)**:
+1. `POST /v1/materialize` - Unified endpoint for all data access (replaces `/v1/scan` and `/v1/artifacts/materialize`)
+2. `GET /v1/streams/{stream_id}` - Stream data immediately (for `mode="stream"`)
 3. `GET /v1/artifacts/{id}/v/{version}` - Get artifact metadata
-4. `GET /v1/artifacts/{id}/v/{version}/data` - Stream artifact data as Arrow IPC
+4. `GET /v1/artifacts/{id}/v/{version}/data` - Fetch persisted artifact data (for `mode="artifact"` or cache hits)
 
 **Key types**:
 - `ArtifactVersion` - Immutable artifact metadata (id, version, state, provenance_hash, schema, row_count)
@@ -257,6 +263,53 @@ Located in `rust/`, built via maturin. Provides:
 - `file_to_stream_format` - IPC file → stream format conversion
 
 The extension is exposed as `strata._strata_core` and wrapped by `fast_io.py`.
+
+## Client SDK Usage
+
+The Python client provides a simple API for fetching data:
+
+```python
+from strata.client import StrataClient, lt, gt
+
+# Connect to server
+client = StrataClient(base_url="http://localhost:8765")
+
+# Fetch table data (uses unified /v1/materialize with identity@v1)
+table = client.fetch(
+    "file:///warehouse#db.events",
+    columns=["id", "value"],
+    filters=[gt("id", 100)],
+)
+
+# Fetch with artifact handle (for metadata access)
+artifact = client.fetch_artifact(
+    "file:///warehouse#db.events",
+    columns=["id", "name"],
+)
+print(f"Cache hit: {artifact.cache_hit}")
+print(f"Artifact: {artifact.uri}")
+table = artifact.to_table()
+
+# Close when done
+client.close()
+```
+
+**Integration modules**:
+```python
+# Pandas integration
+from strata.integration.pandas import scan_to_pandas
+df = scan_to_pandas("file:///warehouse#db.events")
+
+# Polars integration
+from strata.integration.polars import scan_to_polars
+df = scan_to_polars("file:///warehouse#db.events")
+
+# DuckDB integration
+from strata.integration.duckdb import StrataScanner
+with StrataScanner() as scanner:
+    scanner.register("events", "file:///warehouse#db.events")
+    result = scanner.query("SELECT * FROM events WHERE id > 100")
+```
 
 ## Testing Patterns
 

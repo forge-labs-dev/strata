@@ -162,17 +162,14 @@ class TestServerResourceLimits:
         assert isinstance(limits["max_response_bytes"], int)
         assert isinstance(limits["active_scans"], int)
 
-    def test_scan_completes_within_limits(self, server_with_client):
-        """Test that a normal scan completes successfully."""
+    def test_fetch_completes_within_limits(self, server_with_client):
+        """Test that a normal fetch completes successfully."""
         client = server_with_client["client"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # Should complete without hitting limits
-        batches = list(client.scan(table_uri))
-
-        assert len(batches) > 0
-        total_rows = sum(b.num_rows for b in batches)
-        assert total_rows == 100
+        table = client.fetch(table_uri)
+        assert table.num_rows == 100
 
 
 class TestTaskLimitEnforcement:

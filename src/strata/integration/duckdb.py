@@ -97,7 +97,7 @@ def register_strata_scan(
 
     try:
         # Fetch data as Arrow Table
-        arrow_table = client.scan_to_table(
+        arrow_table = client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,

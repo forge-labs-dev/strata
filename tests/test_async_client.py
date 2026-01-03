@@ -18,7 +18,7 @@ class TestAsyncStrataClient:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.scan_to_table(table_uri)
+            table = await client.fetch(table_uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
 
@@ -41,52 +41,37 @@ class TestAsyncStrataClient:
             assert isinstance(metrics, dict)
 
     @pytest.mark.asyncio
-    async def test_scan_yields_batches(self, server_with_client):
-        """scan() yields RecordBatches asynchronously."""
+    async def test_fetch_returns_table(self, server_with_client):
+        """fetch() returns Arrow Table."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            batches = []
-            async for batch in client.scan(table_uri):
-                assert isinstance(batch, pa.RecordBatch)
-                batches.append(batch)
-
-            assert len(batches) > 0
-            total_rows = sum(b.num_rows for b in batches)
-            assert total_rows == 500
-
-    @pytest.mark.asyncio
-    async def test_scan_to_table(self, server_with_client):
-        """scan_to_table() returns Arrow Table."""
-        config = server_with_client["config"]
-        table_uri = server_with_client["warehouse"]["table_uri"]
-
-        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.scan_to_table(table_uri)
+            table = await client.fetch(table_uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
 
     @pytest.mark.asyncio
-    async def test_scan_to_batches(self, server_with_client):
-        """scan_to_batches() returns list of RecordBatches."""
+    async def test_fetch_artifact(self, server_with_client):
+        """fetch_artifact() returns Artifact."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            batches = await client.scan_to_batches(table_uri)
-            assert isinstance(batches, list)
-            assert len(batches) > 0
-            assert all(isinstance(b, pa.RecordBatch) for b in batches)
+            artifact = await client.fetch_artifact(table_uri, columns=["id"])
+            assert artifact.artifact_id is not None
+            table = await artifact.to_table()
+            assert table.num_rows == 500
+            assert set(table.column_names) == {"id"}
 
     @pytest.mark.asyncio
     async def test_column_projection(self, server_with_client):
-        """scan respects column projection."""
+        """fetch respects column projection."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.scan_to_table(table_uri, columns=["id", "value"])
+            table = await client.fetch(table_uri, columns=["id", "value"])
             assert table.num_columns == 2
             assert "id" in table.column_names
             assert "value" in table.column_names
@@ -94,13 +79,13 @@ class TestAsyncStrataClient:
 
     @pytest.mark.asyncio
     async def test_with_filters(self, server_with_client):
-        """scan accepts filters for row-group pruning."""
+        """fetch accepts filters for row-group pruning."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Filters are for row-group pruning
-            table = await client.scan_to_table(table_uri, filters=[gt("id", 99), lt("id", 200)])
+            table = await client.fetch(table_uri, filters=[gt("id", 99), lt("id", 200)])
             assert isinstance(table, pa.Table)
 
 
@@ -108,17 +93,17 @@ class TestAsyncConcurrency:
     """Tests for concurrent async operations."""
 
     @pytest.mark.asyncio
-    async def test_concurrent_scans(self, server_with_client):
-        """Multiple scans can run concurrently."""
+    async def test_concurrent_fetches(self, server_with_client):
+        """Multiple fetches can run concurrently."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            # Run multiple scans concurrently
+            # Run multiple fetches concurrently
             results = await asyncio.gather(
-                client.scan_to_table(table_uri, columns=["id"]),
-                client.scan_to_table(table_uri, columns=["value"]),
-                client.scan_to_table(table_uri, columns=["name"]),
+                client.fetch(table_uri, columns=["id"]),
+                client.fetch(table_uri, columns=["value"]),
+                client.fetch(table_uri, columns=["name"]),
             )
 
             assert len(results) == 3
@@ -128,15 +113,15 @@ class TestAsyncConcurrency:
                 assert table.num_columns == 1
 
     @pytest.mark.asyncio
-    async def test_concurrent_scans_different_projections(self, server_with_client):
-        """Concurrent scans with different projections work correctly."""
+    async def test_concurrent_fetches_different_projections(self, server_with_client):
+        """Concurrent fetches with different projections work correctly."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             table1, table2 = await asyncio.gather(
-                client.scan_to_table(table_uri, columns=["id", "value"]),
-                client.scan_to_table(table_uri, columns=["name"]),
+                client.fetch(table_uri, columns=["id", "value"]),
+                client.fetch(table_uri, columns=["name"]),
             )
 
             assert table1.num_columns == 2
@@ -156,7 +141,7 @@ class TestAsyncClientManualClose:
 
         client = AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}")
         try:
-            table = await client.scan_to_table(table_uri)
+            table = await client.fetch(table_uri)
             assert table.num_rows == 500
         finally:
             await client.close()
@@ -172,12 +157,12 @@ class TestAsyncClientManualClose:
             health = await client.health()
             assert "status" in health
 
-            # First scan
-            table1 = await client.scan_to_table(table_uri, columns=["id"])
+            # First fetch
+            table1 = await client.fetch(table_uri, columns=["id"])
             assert table1.num_rows == 500
 
-            # Second scan
-            table2 = await client.scan_to_table(table_uri, columns=["value"])
+            # Second fetch
+            table2 = await client.fetch(table_uri, columns=["value"])
             assert table2.num_rows == 500
 
             # Metrics

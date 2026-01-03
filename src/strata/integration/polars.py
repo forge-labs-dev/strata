@@ -1,18 +1,18 @@
 """Polars integration for Strata.
 
-Provides helpers to convert Strata scans to Polars DataFrames.
+Provides helpers to convert Strata fetches to Polars DataFrames.
 Polars is Arrow-native, so conversions are typically zero-copy when
 Arrow types are supported (may copy for dictionary encoding, large
 strings, or extension types).
 
 Important: Polars filter operations (e.g., df.filter(...)) are applied
 *after* data is fetched from Strata. To get Strata-side pruning, pass
-filters to the scan functions. For example:
+filters to the fetch functions. For example:
 
     # Strata-side pruning (fast, reduces data transfer):
     df = scan_to_polars(uri, filters=[gt("value", 100)])
 
-    # Polars-side filtering (after full scan):
+    # Polars-side filtering (after full fetch):
     df = scan_to_polars(uri).filter(pl.col("value") > 100)
 
 For best performance, use Strata filters for coarse pruning and Polars
@@ -40,7 +40,7 @@ def scan_to_polars(
     config: StrataConfig | None = None,
     base_url: str | None = None,
 ) -> "pl.DataFrame":
-    """Scan an Iceberg table via Strata and return a Polars DataFrame.
+    """Fetch an Iceberg table via Strata and return a Polars DataFrame.
 
     This is the simplest way to get Iceberg data into Polars.
     Arrow-native; typically zero-copy when types are supported.
@@ -54,7 +54,7 @@ def scan_to_polars(
         base_url: Override server URL (default: http://127.0.0.1:8765)
 
     Returns:
-        Polars DataFrame with the scan results
+        Polars DataFrame with the fetch results
 
     Example:
         from strata.integration.polars import scan_to_polars
@@ -72,7 +72,7 @@ def scan_to_polars(
     client = StrataClient(config=config, base_url=base_url)
 
     try:
-        arrow_table = client.scan_to_table(
+        arrow_table = client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
@@ -140,7 +140,7 @@ def scan_to_lazy(
 class StrataPolarsScanner:
     """A reusable scanner for Polars integration.
 
-    Maintains a connection to the Strata server for multiple scans.
+    Maintains a connection to the Strata server for multiple fetches.
 
     Example:
         from strata.integration.polars import StrataPolarsScanner
@@ -177,10 +177,10 @@ class StrataPolarsScanner:
         columns: list[str] | None = None,
         filters: list[Filter] | None = None,
     ) -> "pl.DataFrame":
-        """Scan a table and return a Polars DataFrame."""
+        """Fetch a table and return a Polars DataFrame."""
         import polars as pl
 
-        arrow_table = self.client.scan_to_table(
+        arrow_table = self.client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
@@ -195,7 +195,7 @@ class StrataPolarsScanner:
         columns: list[str] | None = None,
         filters: list[Filter] | None = None,
     ) -> "pl.LazyFrame":
-        """Scan a table and return a Polars LazyFrame.
+        """Fetch a table and return a Polars LazyFrame.
 
         NOTE: Data is fetched eagerly, then wrapped in LazyFrame.
         For streaming, use scan_batches().
@@ -214,11 +214,10 @@ class StrataPolarsScanner:
         columns: list[str] | None = None,
         filters: list[Filter] | None = None,
     ) -> Iterator[pa.RecordBatch]:
-        """Scan a table and yield Arrow RecordBatches as they arrive.
+        """Fetch a table and yield Arrow RecordBatches.
 
-        This is the streaming interface: batches are yielded incrementally
-        as Strata streams them, enabling memory-efficient processing of
-        large tables.
+        Uses the unified materialize API and returns all batches from the
+        Arrow IPC stream.
 
         Args:
             table_uri: Iceberg table URI
@@ -227,18 +226,20 @@ class StrataPolarsScanner:
             filters: Filters for row-group pruning
 
         Yields:
-            pyarrow.RecordBatch objects as they arrive from Strata
+            pyarrow.RecordBatch objects from the fetched data
 
         Example:
             with StrataPolarsScanner() as scanner:
                 for batch in scanner.scan_batches("file:///warehouse#db.events"):
-                    # Process each batch incrementally
+                    # Process each batch
                     df = pl.from_arrow(batch)
                     process(df)
         """
-        yield from self.client.scan(
+        # Use fetch and iterate over the table's batches
+        arrow_table = self.client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
             filters=filters,
         )
+        yield from arrow_table.to_batches()

@@ -580,48 +580,129 @@ def serialize_filter(f: Filter) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Artifact API Types (Personal Mode Only)
+# Unified Materialize API Types
 # ---------------------------------------------------------------------------
 
 
-class MaterializeRequest(BaseModel):
-    """Request to materialize a computed artifact.
+class TransformSpec(BaseModel):
+    """Transform specification for materialize requests.
 
-    The client computes the result locally if not cached. The server
-    never executes transforms - it only stores and deduplicates results.
+    Defines the executor and parameters for transforming inputs.
+    Built-in executors like identity@v1 are handled by Strata directly.
+
+    Attributes:
+        executor: Executor reference (e.g., "identity@v1", "duckdb_sql@v1")
+        params: Executor-specific parameters
+    """
+
+    executor: str  # "identity@v1", "duckdb_sql@v1", etc.
+    params: dict[str, Any] = {}  # Executor-specific parameters
+
+
+class FilterSpec(BaseModel):
+    """Row filter specification for identity transform.
+
+    Attributes:
+        column: Column name to filter on
+        op: Comparison operator
+        value: Value to compare against
+    """
+
+    column: str
+    op: str  # "=", "!=", "<", "<=", ">", ">="
+    value: Any
+
+
+class IdentityParams(BaseModel):
+    """Parameters for the identity@v1 built-in transform.
+
+    The identity transform reads from exactly one Iceberg table input,
+    applies optional column projection and row filtering, and returns
+    the data unchanged. It's executed internally by Strata (no external
+    executor needed).
+
+    Attributes:
+        columns: Column projection (None = all columns)
+        filters: Row filters (all filters are AND'd together)
+        snapshot_id: Specific snapshot to read (None = current)
+    """
+
+    columns: list[str] | None = None
+    filters: list[FilterSpec] | None = None
+    snapshot_id: int | None = None
+
+    def to_strata_filters(self) -> list[Filter]:
+        """Convert FilterSpec list to internal Filter objects."""
+        if not self.filters:
+            return []
+        result = []
+        for f in self.filters:
+            result.append(
+                Filter(
+                    column=f.column,
+                    op=FilterOp(f.op),
+                    value=f.value,
+                )
+            )
+        return result
+
+
+class MaterializeRequest(BaseModel):
+    """Unified request to materialize data.
+
+    This is the single entry point for all data access in Strata.
+    Scanning an Iceberg table is expressed as a materialize with
+    the identity@v1 transform.
 
     Attributes:
         inputs: List of input URIs (table URIs or artifact URIs)
         transform: Transform specification (executor + params)
         name: Optional name to assign to the result
+        mode: Delivery mode - "stream" for immediate consumption,
+              "artifact" for async build with later retrieval
+        stream_timeout_seconds: Timeout for streaming mode
     """
 
     inputs: list[str]  # Input URIs: "file:///warehouse#db.events" or "strata://artifact/..."
-    transform: dict[str, Any]  # {"executor": "local://duckdb_sql@v1", "params": {...}}
+    transform: TransformSpec
     name: str | None = None  # Optional name to assign (e.g., "daily_revenue")
+    mode: str = "stream"  # "stream" | "artifact"
+    stream_timeout_seconds: float | None = None
 
 
 class MaterializeResponse(BaseModel):
     """Response from materialize request.
 
     Returns either:
-    - Cache hit: artifact exists, no build needed
-    - Personal mode miss: build_spec for client-side execution
-    - Server mode miss: build_id for async server-side execution
+    - Cache hit: artifact exists (state="ready"), can fetch immediately
+    - Cache miss: artifact being built (state="building")
+
+    For artifact mode:
+    - Client polls /v1/builds/{build_id} or fetches when ready
+
+    For stream mode:
+    - Client streams from stream_url while artifact builds in parallel
+
+    Both modes create and persist artifacts. The mode only affects
+    how the client receives data, not whether it's cached.
 
     Attributes:
-        hit: True if artifact exists in cache
-        artifact_uri: URI of the artifact (hit) or placeholder for upload (miss)
+        hit: True if artifact already existed (cache hit)
+        artifact_uri: URI of the artifact (always present)
+        state: Current state ("ready", "building")
         build_spec: If miss in personal mode, spec for client to build locally
-        build_id: If miss in server mode, ID to poll for async build status
-        state: Current artifact state ("ready", "building", "pending")
+        build_id: Build ID for polling status (artifact mode, cache miss)
+        stream_id: Stream ID for immediate consumption (stream mode)
+        stream_url: URL to stream data from (stream mode)
     """
 
-    hit: bool  # True = artifact exists, False = client must build
+    hit: bool  # True = artifact exists, False = building
     artifact_uri: str  # "strata://artifact/{id}@v={version}"
+    state: str = "ready"  # "ready", "building"
     build_spec: dict[str, Any] | None = None  # Present if hit=False (personal mode)
-    build_id: str | None = None  # Present if hit=False (server mode)
-    state: str = "ready"  # "ready", "building", "pending"
+    build_id: str | None = None  # Present if hit=False (server/artifact mode)
+    stream_id: str | None = None  # Present for stream mode
+    stream_url: str | None = None  # "/v1/streams/{stream_id}"
 
 
 class BuildSpec(BaseModel):
@@ -798,10 +879,30 @@ class NameStatusResponse(BaseModel):
     changed_inputs: list[InputChangeInfo] | None = None
 
 
+class BuildProgress(BaseModel):
+    """Progress information for an in-progress build.
+
+    Provides optional progress metrics for builds that support them.
+    For identity transforms, this tracks bytes processed from Parquet files.
+
+    Attributes:
+        bytes_processed: Bytes read/processed so far
+        estimated_total_bytes: Estimated total bytes to process
+        rows_processed: Rows processed so far (if known)
+        estimated_total_rows: Estimated total rows (if known)
+    """
+
+    bytes_processed: int = 0
+    estimated_total_bytes: int | None = None
+    rows_processed: int | None = None
+    estimated_total_rows: int | None = None
+
+
 class BuildStatusResponse(BaseModel):
     """Response with async build status for server-mode transforms.
 
-    Use GET /v1/artifacts/builds/{build_id} to poll build status.
+    Use GET /v1/builds/{build_id} to poll build status.
+    Supports long-polling via ?wait=true&timeout=30 query params.
 
     Attributes:
         build_id: Unique build identifier
@@ -810,6 +911,7 @@ class BuildStatusResponse(BaseModel):
         state: Current state (pending, building, ready, failed)
         artifact_uri: URI of the artifact (available when state=ready)
         executor_ref: Executor reference
+        progress: Optional progress information (while building)
         created_at: When the build was created
         started_at: When execution started (if started)
         completed_at: When execution finished (if finished)
@@ -823,6 +925,7 @@ class BuildStatusResponse(BaseModel):
     state: str  # "pending", "building", "ready", "failed"
     artifact_uri: str
     executor_ref: str
+    progress: BuildProgress | None = None  # Present while state="building"
     created_at: float
     started_at: float | None = None
     completed_at: float | None = None
@@ -840,7 +943,7 @@ class ExplainMaterializeRequest(BaseModel):
     """
 
     inputs: list[str]
-    transform: dict[str, Any]
+    transform: TransformSpec
     name: str | None = None
 
 

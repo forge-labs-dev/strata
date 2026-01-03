@@ -1,6 +1,6 @@
 """Pandas integration for Strata.
 
-Provides helpers to convert Strata scans to pandas DataFrames.
+Provides helpers to convert Strata fetches to pandas DataFrames.
 Uses Arrow as the intermediate format, then converts to pandas.
 
 Note on memory: Unlike Polars, Arrow → pandas conversion typically
@@ -9,12 +9,12 @@ expected behavior and acceptable for most use cases.
 
 Important: pandas filter operations (e.g., df[df["value"] > 100]) are
 applied *after* data is fetched from Strata. To get Strata-side pruning,
-pass filters to the scan functions. For example:
+pass filters to the fetch functions. For example:
 
     # Strata-side pruning (fast, reduces data transfer):
     df = scan_to_pandas(uri, filters=[gt("value", 100)])
 
-    # pandas-side filtering (after full scan):
+    # pandas-side filtering (after full fetch):
     df = scan_to_pandas(uri)
     df = df[df["value"] > 100]
 
@@ -43,7 +43,7 @@ def scan_to_pandas(
     config: StrataConfig | None = None,
     base_url: str | None = None,
 ) -> "pd.DataFrame":
-    """Scan an Iceberg table via Strata and return a pandas DataFrame.
+    """Fetch an Iceberg table via Strata and return a pandas DataFrame.
 
     This is the simplest way to get Iceberg data into pandas.
     Converts via Arrow (may copy data due to pandas memory layout).
@@ -57,7 +57,7 @@ def scan_to_pandas(
         base_url: Override server URL (default: http://127.0.0.1:8765)
 
     Returns:
-        pandas DataFrame with the scan results
+        pandas DataFrame with the fetch results
 
     Example:
         from strata.integration.pandas import scan_to_pandas
@@ -73,7 +73,7 @@ def scan_to_pandas(
     client = StrataClient(config=config, base_url=base_url)
 
     try:
-        arrow_table = client.scan_to_table(
+        arrow_table = client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
@@ -88,7 +88,7 @@ def scan_to_pandas(
 class StrataPandasScanner:
     """A reusable scanner for pandas integration.
 
-    Maintains a connection to the Strata server for multiple scans.
+    Maintains a connection to the Strata server for multiple fetches.
 
     Example:
         from strata.integration.pandas import StrataPandasScanner
@@ -125,8 +125,8 @@ class StrataPandasScanner:
         columns: list[str] | None = None,
         filters: list[Filter] | None = None,
     ) -> "pd.DataFrame":
-        """Scan a table and return a pandas DataFrame."""
-        arrow_table = self.client.scan_to_table(
+        """Fetch a table and return a pandas DataFrame."""
+        arrow_table = self.client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
@@ -141,11 +141,10 @@ class StrataPandasScanner:
         columns: list[str] | None = None,
         filters: list[Filter] | None = None,
     ) -> Iterator[pa.RecordBatch]:
-        """Scan a table and yield Arrow RecordBatches as they arrive.
+        """Fetch a table and yield Arrow RecordBatches.
 
-        This is the streaming interface: batches are yielded incrementally
-        as Strata streams them, enabling memory-efficient processing of
-        large tables.
+        Uses the unified materialize API and returns all batches from the
+        Arrow IPC stream.
 
         Args:
             table_uri: Iceberg table URI
@@ -154,18 +153,20 @@ class StrataPandasScanner:
             filters: Filters for row-group pruning
 
         Yields:
-            pyarrow.RecordBatch objects as they arrive from Strata
+            pyarrow.RecordBatch objects from the fetched data
 
         Example:
             with StrataPandasScanner() as scanner:
                 for batch in scanner.scan_batches("file:///warehouse#db.events"):
-                    # Process each batch incrementally
+                    # Process each batch
                     df = batch.to_pandas()
                     process(df)
         """
-        yield from self.client.scan(
+        # Use fetch and iterate over the table's batches
+        arrow_table = self.client.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
             filters=filters,
         )
+        yield from arrow_table.to_batches()

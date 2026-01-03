@@ -309,8 +309,8 @@ class TestConcurrentRequestsNoThunderingHerd:
 
         def scan_worker():
             try:
-                batches = list(client.scan(table_uri))
-                results.append(sum(b.num_rows for b in batches))
+                table = client.fetch(table_uri)
+                results.append(table.num_rows)
             except Exception as e:
                 errors.append(e)
 

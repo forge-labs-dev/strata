@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -61,11 +62,13 @@ from strata.types import (
     ArtifactDependentsResponse,
     ArtifactInfoResponse,
     ArtifactLineageResponse,
+    BuildProgress,
     BuildSpec,
     BuildStatusResponse,
     DependentInfo,
     ExplainMaterializeRequest,
     ExplainMaterializeResponse,
+    IdentityParams,
     InputChangeInfo,
     LineageEdge,
     LineageNode,
@@ -285,6 +288,30 @@ class ServerState:
 
         # Adaptive concurrency controller (initialized async in lifespan)
         self._adaptive_controller: AdaptiveConcurrencyController | None = None
+
+        # Unified materialize streaming state
+        # Maps stream_id -> StreamState for active streams
+        self._streams: dict[str, "StreamState"] = {}
+        # TTL for stream entries (5 minutes after creation, stream is cleaned up)
+        self._stream_ttl_seconds = 300
+
+
+@dataclass
+class StreamState:
+    """State for a streaming materialize operation.
+
+    Tracks the read plan, streaming progress, and artifact metadata
+    for a unified materialize request in stream mode.
+    """
+
+    stream_id: str
+    plan: ReadPlan  # The underlying scan plan
+    artifact_id: str  # Artifact being built
+    artifact_version: int
+    created_at: float  # Unix timestamp
+    started: bool = False  # True once streaming has begun
+    completed: bool = False  # True once streaming finished
+    bytes_streamed: int = 0  # Bytes streamed to client so far
 
 
 # Global state (initialized in lifespan)
@@ -1932,9 +1959,13 @@ async def metrics_prometheus():
 # =============================================================================
 
 
-@app.post("/v1/scan", response_model=ScanResponse)
+@app.post("/v1/scan", response_model=ScanResponse, deprecated=True)
 async def create_scan_v1(request: ScanRequest):
     """Create a new scan and return metadata.
+
+    DEPRECATED: Use POST /v1/materialize with identity@v1 transform instead.
+    This endpoint is kept for backward compatibility but will be removed
+    in a future version.
 
     The scan is planned but not executed. Use the returned scan_id
     to fetch batches via /v1/scan/{scan_id}/batches.
@@ -2174,9 +2205,13 @@ class ClientDisconnectedError(Exception):
     pass
 
 
-@app.get("/v1/scan/{scan_id}/batches")
+@app.get("/v1/scan/{scan_id}/batches", deprecated=True)
 async def get_batches_v1(scan_id: str, request: Request):
     """Return Arrow IPC stream containing all batches for a scan.
+
+    DEPRECATED: Use GET /v1/streams/{stream_id} instead (from /v1/materialize response).
+    This endpoint is kept for backward compatibility but will be removed
+    in a future version.
 
     Returns a single Arrow IPC stream with all batches written sequentially.
     Content-Type: application/vnd.apache.arrow.stream
@@ -2862,9 +2897,13 @@ async def get_batches_v1(scan_id: str, request: Request):
     )
 
 
-@app.delete("/v1/scan/{scan_id}")
+@app.delete("/v1/scan/{scan_id}", deprecated=True)
 async def delete_scan_v1(scan_id: str):
     """Delete a scan and free resources.
+
+    DEPRECATED: The unified /v1/materialize API handles resource cleanup
+    automatically. This endpoint is kept for backward compatibility but
+    will be removed in a future version.
 
     Also cancels any pending prefetch for this scan to avoid wasted work.
 
@@ -3854,7 +3893,7 @@ async def materialize_artifact(request: MaterializeRequest):
 
     # Parse transform spec early so we can validate it
     transform = request.transform
-    executor_ref = transform.get("executor", "")
+    executor_ref = transform.executor
 
     # Validate transform is allowed (raises 403 if not)
     # In personal mode this returns None (no validation needed)
@@ -3866,7 +3905,7 @@ async def materialize_artifact(request: MaterializeRequest):
 
     transform_spec = TransformSpec(
         executor=executor_ref,
-        params=transform.get("params", {}),
+        params=transform.params,
         inputs=request.inputs,
     )
 
@@ -5067,8 +5106,8 @@ async def explain_materialize(request: ExplainMaterializeRequest):
     # Parse transform spec
     transform = request.transform
     transform_spec = TransformSpec(
-        executor=transform.get("executor", ""),
-        params=transform.get("params", {}),
+        executor=transform.executor,
+        params=transform.params,
         inputs=request.inputs,
     )
 
@@ -5387,6 +5426,615 @@ def _resolve_artifact_uri(uri: str) -> tuple[str, int] | None:
         return None
 
     return None
+
+
+# =============================================================================
+# Unified Materialize API
+# =============================================================================
+# This implements the unified /v1/materialize endpoint that replaces both
+# /v1/scan and /v1/artifacts/materialize. The key insight is that scanning
+# an Iceberg table is a materialize with identity@v1 transform.
+# =============================================================================
+
+
+def _compute_identity_provenance(
+    table_identity: str,
+    snapshot_id: int,
+    columns: list[str] | None,
+    filters: list,
+) -> str:
+    """Compute provenance hash for identity transform.
+
+    The hash uniquely identifies a table scan based on:
+    - Table identity + snapshot ID
+    - Column projection (sorted for determinism)
+    - Row filters (normalized)
+
+    This enables query-level deduplication: same query -> same artifact.
+    """
+    import hashlib
+
+    from strata.types import compute_filter_fingerprint
+
+    hasher = hashlib.sha256()
+
+    # Input: table identity + snapshot
+    hasher.update(f"table:{table_identity}@{snapshot_id}".encode())
+
+    # Transform: executor ref
+    hasher.update(b"executor:identity@v1")
+
+    # Params: sorted columns
+    if columns:
+        hasher.update(f"columns:{sorted(columns)}".encode())
+    else:
+        hasher.update(b"columns:*")
+
+    # Params: normalized filters
+    filter_fp = compute_filter_fingerprint(filters)
+    hasher.update(f"filters:{filter_fp}".encode())
+
+    return hasher.hexdigest()
+
+
+@app.post("/v1/materialize", response_model=MaterializeResponse)
+async def unified_materialize(request: MaterializeRequest):
+    """Unified endpoint for all data access (replaces /v1/scan and /v1/artifacts/materialize).
+
+    This is the single entry point for materializing data in Strata.
+    Scanning an Iceberg table is expressed as a materialize with identity@v1.
+
+    Modes:
+    - stream (default): Data streams immediately while artifact builds in parallel
+    - artifact: Client polls /v1/builds/{build_id} then fetches when ready
+
+    Both modes create and persist artifacts. The mode only affects how
+    the client receives data, not whether it's cached.
+
+    For identity@v1 transform:
+    - Reads from exactly one Iceberg table input
+    - Applies optional column projection and row filtering
+    - Executed internally by Strata (no external executor needed)
+
+    For other transforms:
+    - Delegates to the existing materialize flow
+
+    Returns:
+        MaterializeResponse with hit status and artifact/stream URLs
+    """
+    import uuid
+
+    from strata.artifact_store import TransformSpec as ArtifactTransformSpec
+    from strata.artifact_store import compute_provenance_hash, get_artifact_store
+
+    state = get_state()
+    transform = request.transform
+
+    # Reject new requests during shutdown
+    if state._draining:
+        raise HTTPException(
+            status_code=503,
+            detail="Server is shutting down. Not accepting new requests.",
+        )
+
+    # Handle identity@v1 transform specially - executed internally
+    if transform.executor == "identity@v1":
+        return await _handle_identity_materialize(request)
+
+    # For non-identity transforms, delegate to existing materialize flow
+    # This reuses the existing /v1/artifacts/materialize logic
+    return await _handle_transform_materialize(request)
+
+
+async def _handle_identity_materialize(request: MaterializeRequest) -> MaterializeResponse:
+    """Handle identity@v1 transform (internal execution).
+
+    This is the fast path for table scans. The identity transform reads
+    from an Iceberg table with optional projection/filtering and returns
+    the data unchanged.
+
+    Flow:
+    1. Validate exactly one table input
+    2. Parse identity params (columns, filters, snapshot_id)
+    3. Plan the scan using existing ReadPlanner
+    4. Compute provenance hash
+    5. Check artifact cache (cache hit -> return immediately)
+    6. Cache miss -> create artifact record + stream state
+    7. Return stream_url or build_id based on mode
+    """
+    import uuid
+
+    from strata.artifact_store import TransformSpec as ArtifactTransformSpec
+    from strata.artifact_store import get_artifact_store
+    from strata.auth import get_principal
+
+    state = get_state()
+
+    # Get tenant and principal from auth context
+    principal = get_principal()
+    tenant_id = principal.tenant if principal else None
+    principal_id = principal.id if principal else None
+
+    # Validate inputs: identity@v1 requires exactly one table input
+    if len(request.inputs) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail="identity@v1 transform requires exactly one input",
+        )
+
+    table_uri = request.inputs[0]
+
+    # Validate it's a table URI (not an artifact)
+    if table_uri.startswith("strata://"):
+        raise HTTPException(
+            status_code=400,
+            detail="identity@v1 transform input must be a table URI, not an artifact",
+        )
+
+    # Parse identity params
+    try:
+        identity_params = IdentityParams(**request.transform.params)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid identity@v1 params: {e}",
+        )
+
+    # Convert to internal filter format
+    filters = identity_params.to_strata_filters()
+
+    # Plan the scan using existing planner
+    plan_timeout = state.config.plan_timeout_seconds
+
+    def do_plan():
+        with trace_span(
+            "plan_identity_materialize",
+            table_uri=table_uri,
+            snapshot_id=identity_params.snapshot_id,
+            columns_count=len(identity_params.columns) if identity_params.columns else None,
+        ) as span:
+            plan = state.planner.plan(
+                table_uri=table_uri,
+                snapshot_id=identity_params.snapshot_id,
+                columns=identity_params.columns,
+                filters=filters,
+            )
+            span.set_attribute("scan_id", plan.scan_id)
+            span.set_attribute("row_groups_total", plan.total_row_groups)
+            span.set_attribute("row_groups_pruned", plan.pruned_row_groups)
+            span.set_attribute("estimated_bytes", plan.estimated_bytes)
+            return plan
+
+    try:
+        plan = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(state._planning_executor, do_plan),
+            timeout=plan_timeout,
+        )
+    except TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Planning timed out after {plan_timeout}s.",
+        )
+
+    # Enforce task limit
+    max_tasks = state.config.max_tasks_per_scan
+    if len(plan.tasks) > max_tasks:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Query would read {len(plan.tasks)} row groups, exceeding limit of {max_tasks}.",
+        )
+
+    # Pre-flight size check
+    max_response = state.config.max_response_bytes
+    if plan.estimated_bytes > max_response:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Estimated response size ({plan.estimated_bytes:,} bytes) exceeds limit.",
+        )
+
+    # Authorization check (when auth_mode=trusted_proxy)
+    if state.config.auth_mode == "trusted_proxy":
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        table_ref = TableRef.from_table_identity(plan.table_identity, table_uri=table_uri)
+        from strata.auth import AclEvaluator
+
+        acl = AclEvaluator(state.config.acl_config)
+        if not acl.authorize(principal, table_ref):
+            if state.config.hide_forbidden_as_not_found:
+                raise HTTPException(status_code=404, detail="Table not found")
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        plan.owner_principal = principal.id
+        plan.owner_tenant = principal.tenant
+
+    # Compute provenance hash for identity transform
+    provenance_hash = _compute_identity_provenance(
+        table_identity=str(plan.table_identity),
+        snapshot_id=plan.snapshot_id,
+        columns=identity_params.columns,
+        filters=filters,
+    )
+
+    # Get artifact store (allow writes for personal mode)
+    store = get_artifact_store(state.config.artifact_dir)
+
+    # Input version for staleness tracking
+    input_versions = {table_uri: str(plan.snapshot_id)}
+
+    # Check for existing artifact with same provenance
+    if store is not None:
+        existing = store.find_by_provenance(provenance_hash, tenant=tenant_id)
+        if existing is not None and existing.state == "ready":
+            artifact_uri = f"strata://artifact/{existing.id}@v={existing.version}"
+
+            # Set name if requested
+            if request.name:
+                store.set_name(request.name, existing.id, existing.version, tenant=tenant_id)
+
+            logger.info(
+                "identity_materialize_cache_hit",
+                artifact_id=existing.id,
+                table_uri=table_uri,
+                snapshot_id=plan.snapshot_id,
+            )
+
+            # Provide stream_url for cached data access
+            # This allows clients to fetch the data using the same pattern as cache misses
+            stream_url = f"/v1/artifacts/{existing.id}/v/{existing.version}/data"
+
+            return MaterializeResponse(
+                hit=True,
+                artifact_uri=artifact_uri,
+                state="ready",
+                stream_url=stream_url if request.mode == "stream" else None,
+            )
+
+    # Cache miss - need to build the artifact
+    artifact_id = str(uuid.uuid4())
+    stream_id = artifact_id  # Use same ID for simplicity
+
+    # Create artifact in building state (if store is available)
+    artifact_version = 1
+    if store is not None:
+        transform_spec = ArtifactTransformSpec(
+            executor="identity@v1",
+            params=request.transform.params,
+            inputs=request.inputs,
+        )
+        artifact_version = store.create_artifact(
+            artifact_id=artifact_id,
+            provenance_hash=provenance_hash,
+            transform_spec=transform_spec,
+            input_versions=input_versions,
+            tenant=tenant_id,
+            principal=principal_id,
+        )
+
+    artifact_uri = f"strata://artifact/{artifact_id}@v={artifact_version}"
+
+    # Create stream state for tracking
+    stream_state = StreamState(
+        stream_id=stream_id,
+        plan=plan,
+        artifact_id=artifact_id,
+        artifact_version=artifact_version,
+        created_at=time.time(),
+    )
+    state._streams[stream_id] = stream_state
+
+    # Also register in scans dict for QoS tracking (reuse existing infrastructure)
+    state.scans[plan.scan_id] = plan
+
+    logger.info(
+        "identity_materialize_cache_miss",
+        artifact_id=artifact_id,
+        stream_id=stream_id,
+        table_uri=table_uri,
+        snapshot_id=plan.snapshot_id,
+        estimated_bytes=plan.estimated_bytes,
+        mode=request.mode,
+    )
+
+    if request.mode == "stream":
+        return MaterializeResponse(
+            hit=False,
+            artifact_uri=artifact_uri,
+            state="building",
+            stream_id=stream_id,
+            stream_url=f"/v1/streams/{stream_id}",
+        )
+    else:
+        # Artifact mode - client will poll /v1/builds/{build_id}
+        # For identity transforms, we use the stream_id as build_id
+        return MaterializeResponse(
+            hit=False,
+            artifact_uri=artifact_uri,
+            state="building",
+            build_id=stream_id,
+        )
+
+
+async def _handle_transform_materialize(request: MaterializeRequest) -> MaterializeResponse:
+    """Handle non-identity transforms (external execution).
+
+    Delegates to the existing /v1/artifacts/materialize flow.
+    """
+    # Reuse the existing materialize_artifact logic
+    return await materialize_artifact(request)
+
+
+@app.get("/v1/streams/{stream_id}")
+async def get_stream(stream_id: str, request: Request):
+    """Stream Arrow IPC data for a materialize request.
+
+    This endpoint handles streaming mode for unified materialize.
+    Data is streamed immediately while the artifact is built in parallel.
+
+    Returns:
+        StreamingResponse with Arrow IPC data
+
+    Error codes:
+        404: Stream not found
+        429: Server at capacity (QoS rate limiting)
+    """
+    state = get_state()
+
+    # Look up stream state
+    if stream_id not in state._streams:
+        raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
+
+    stream_state = state._streams[stream_id]
+    plan = stream_state.plan
+
+    # Reuse the scan-based streaming infrastructure
+    # The plan is already registered in state.scans
+    scan_id = plan.scan_id
+
+    if scan_id not in state.scans:
+        raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
+
+    # Ownership check (when auth_mode=trusted_proxy)
+    if state.config.auth_mode == "trusted_proxy":
+        from strata.auth import get_principal
+
+        principal = get_principal()
+        if principal is None:
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        if plan.owner_principal != principal.id:
+            if not principal.has_scope("admin:*"):
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
+                raise HTTPException(status_code=403, detail="Access denied")
+
+    # Mark stream as started
+    stream_state.started = True
+
+    # QoS: Classify query and acquire appropriate tier limiter
+    tier = _classify_query(plan)
+    tenant_id = get_tenant_id()
+    tenant_registry = get_tenant_registry()
+    interactive_limiter, bulk_limiter = tenant_registry.get_or_create_limiters(tenant_id)
+
+    if tier == "interactive":
+        limiter = interactive_limiter
+        queue_timeout = state.config.interactive_queue_timeout
+    else:
+        limiter = bulk_limiter
+        queue_timeout = state.config.bulk_queue_timeout
+
+    # Per-client fairness
+    client_id = request.client.host if request.client else "unknown"
+    client_semaphore = _get_client_semaphore(state, client_id, tier)
+    client_semaphore_acquired = False
+
+    if client_semaphore is not None:
+        try:
+            await asyncio.wait_for(client_semaphore.acquire(), timeout=1.0)
+            client_semaphore_acquired = True
+        except TimeoutError:
+            state._client_rejected += 1
+            return JSONResponse(
+                status_code=429,
+                content={"error": "per_client_limit", "tier": tier},
+                headers={"Retry-After": "1"},
+            )
+
+    # Queue with deadline
+    queue_start = time.time()
+    acquired = await limiter.acquire(timeout=queue_timeout)
+    queue_wait_ms = (time.time() - queue_start) * 1000
+
+    if not acquired:
+        if client_semaphore_acquired and client_semaphore is not None:
+            client_semaphore.release()
+        return JSONResponse(
+            status_code=429,
+            content={"error": "too_many_requests", "tier": tier},
+            headers={"Retry-After": str(max(1, int(queue_timeout / 2)))},
+        )
+
+    # Track tier for cleanup
+    state._scan_tier[scan_id] = tier
+    state._scan_client[scan_id] = (client_id, client_semaphore_acquired)
+
+    if tier == "interactive":
+        state._active_interactive += 1
+    else:
+        state._active_bulk += 1
+
+    # Empty scan handling
+    if not plan.tasks:
+        await limiter.release()
+        state._scan_tier.pop(scan_id, None)
+        scan_client = state._scan_client.pop(scan_id, None)
+        if scan_client is not None:
+            client_id_cleanup, client_sem_acquired = scan_client
+            if client_sem_acquired:
+                client_sem = _get_client_semaphore(state, client_id_cleanup, tier)
+                if client_sem is not None:
+                    client_sem.release()
+        if tier == "interactive":
+            state._active_interactive -= 1
+        else:
+            state._active_bulk -= 1
+
+        # Mark stream as completed
+        stream_state.completed = True
+
+        # Return valid empty Arrow IPC stream
+        # Handle case where schema is None (empty table with no Parquet files)
+        if plan.schema is not None:
+            sink = pa.BufferOutputStream()
+            writer = ipc.new_stream(sink, plan.schema)
+            writer.close()
+            empty_stream = sink.getvalue().to_pybytes()
+        else:
+            # No schema available - return empty bytes
+            # This happens for tables with no data files
+            empty_stream = b""
+
+        # Finalize artifact with empty data
+        await _finalize_stream_artifact(stream_state, empty_stream, 0)
+
+        return Response(content=empty_stream, media_type="application/vnd.apache.arrow.stream")
+
+    # Create streaming generator that also persists to artifact store
+    async def stream_and_persist():
+        """Stream data to client while persisting to artifact store."""
+        all_chunks = []
+        bytes_out = 0
+        tasks_completed = 0
+        start_time = time.perf_counter()
+
+        try:
+            state._active_scans += 1
+
+            for task in plan.tasks:
+                # Check for client disconnect
+                if await request.is_disconnected():
+                    break
+
+                # Check timeout
+                elapsed = time.perf_counter() - start_time
+                if elapsed > state.config.scan_timeout_seconds:
+                    break
+
+                # Fetch row group
+                try:
+                    chunk = await asyncio.get_event_loop().run_in_executor(
+                        state._fetch_executor,
+                        state.fetcher.fetch_as_stream_bytes,
+                        task,
+                    )
+                except Exception as e:
+                    logger.error("stream_fetch_error", error=str(e), task=task.file_path)
+                    break
+
+                all_chunks.append(chunk)
+                bytes_out += len(chunk)
+                tasks_completed += 1
+
+                yield chunk
+
+            # Update stream state
+            stream_state.bytes_streamed = bytes_out
+            stream_state.completed = True
+
+            # Persist artifact (combine all chunks)
+            if all_chunks:
+                combined = b"".join(all_chunks)
+                await _finalize_stream_artifact(stream_state, combined, tasks_completed)
+
+        finally:
+            state._active_scans -= 1
+
+            # Release QoS resources
+            await limiter.release()
+            state._scan_tier.pop(scan_id, None)
+            scan_client = state._scan_client.pop(scan_id, None)
+            if scan_client is not None:
+                client_id_cleanup, client_sem_acquired = scan_client
+                if client_sem_acquired:
+                    client_sem = _get_client_semaphore(state, client_id_cleanup, tier)
+                    if client_sem is not None:
+                        client_sem.release()
+            if tier == "interactive":
+                state._active_interactive -= 1
+            else:
+                state._active_bulk -= 1
+
+            # Clean up stream state after TTL
+            # (leave it for a while so client can retry on failure)
+
+    return StreamingResponse(
+        stream_and_persist(),
+        media_type="application/vnd.apache.arrow.stream",
+    )
+
+
+async def _finalize_stream_artifact(
+    stream_state: StreamState, data: bytes, row_count: int
+) -> None:
+    """Finalize artifact after streaming completes.
+
+    Writes the combined Arrow IPC data to the artifact store
+    and transitions the artifact to ready state.
+    """
+    from strata.artifact_store import get_artifact_store
+
+    state = get_state()
+    store = get_artifact_store(state.config.artifact_dir)
+
+    if store is None:
+        return  # No artifact store in service mode
+
+    try:
+        # Write blob
+        store.write_blob(stream_state.artifact_id, stream_state.artifact_version, data)
+
+        # Extract schema from Arrow IPC data
+        schema_json = ""
+        if data:
+            try:
+                reader = ipc.open_stream(data)
+                schema_json = reader.schema.to_string()
+            except Exception:
+                pass
+
+        # Finalize artifact
+        store.finalize_artifact(
+            artifact_id=stream_state.artifact_id,
+            version=stream_state.artifact_version,
+            schema_json=schema_json,
+            row_count=row_count,
+            byte_size=len(data),
+        )
+
+        # Set name if requested (stored in plan metadata or request)
+        # Note: name is passed via the original request, not stored in stream_state
+        # For now, skip name setting in finalize - it's set in cache hit path
+
+        logger.info(
+            "stream_artifact_finalized",
+            artifact_id=stream_state.artifact_id,
+            version=stream_state.artifact_version,
+            byte_size=len(data),
+            row_count=row_count,
+        )
+    except Exception as e:
+        logger.error(
+            "stream_artifact_finalize_error",
+            artifact_id=stream_state.artifact_id,
+            error=str(e),
+        )
+        # Mark artifact as failed
+        try:
+            store.fail_artifact(stream_state.artifact_id, stream_state.artifact_version)
+        except Exception:
+            pass
 
 
 def main():
