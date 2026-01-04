@@ -106,6 +106,7 @@ class TestServerResourceLimits:
             max_tasks_per_scan=10,  # Low limit for testing
             scan_timeout_seconds=5.0,  # Short timeout for testing
             max_response_bytes=1024 * 1024,  # 1 MB for testing
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -168,7 +169,11 @@ class TestServerResourceLimits:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # Should complete without hitting limits
-        table = client.fetch(table_uri)
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "scan@v1", "params": {}},
+        )
+        table = client.fetch(artifact.uri)
         assert table.num_rows == 100
 
 

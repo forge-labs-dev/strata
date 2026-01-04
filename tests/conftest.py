@@ -343,6 +343,7 @@ def server_with_client(temp_warehouse, tmp_path):
         host="127.0.0.1",
         port=port,
         cache_dir=tmp_path / "cache",
+        deployment_mode="personal",
     )
 
     # Initialize state manually for testing

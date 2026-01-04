@@ -157,14 +157,16 @@ class RateLimiter:
 
     def _get_endpoint_bucket(self, endpoint: str) -> TokenBucket | None:
         """Get or create a bucket for an endpoint (if configured)."""
-        if endpoint == "/v1/scan":
-            if endpoint not in self._endpoint_buckets:
-                self._endpoint_buckets[endpoint] = TokenBucket(
+        # Both /v1/scan (legacy) and /v1/materialize use the same rate limit
+        if endpoint in ("/v1/scan", "/v1/materialize"):
+            key = "/v1/materialize"  # Use single bucket for both endpoints
+            if key not in self._endpoint_buckets:
+                self._endpoint_buckets[key] = TokenBucket(
                     capacity=self.config.scan_burst,
                     refill_rate=self.config.scan_requests_per_second,
                     _clock=self._clock,
                 )
-            return self._endpoint_buckets[endpoint]
+            return self._endpoint_buckets[key]
         elif endpoint.startswith("/v1/cache/warm"):
             key = "/v1/cache/warm"
             if key not in self._endpoint_buckets:

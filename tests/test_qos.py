@@ -19,6 +19,18 @@ from strata.config import StrataConfig
 from tests.conftest import find_free_port, run_server
 
 
+def build_materialize_request(table_uri: str, columns: list[str] | None = None) -> dict:
+    """Build a materialize request for the given table and columns."""
+    params = {}
+    if columns is not None:
+        params["columns"] = columns
+    return {
+        "inputs": [table_uri],
+        "transform": {"executor": "scan@v1", "params": params},
+        "mode": "stream",
+    }
+
+
 @pytest.fixture
 def qos_warehouse(tmp_path):
     """Create a warehouse with tables of different sizes for QoS testing."""
@@ -110,6 +122,7 @@ class TestQoSMetrics:
             cache_dir=tmp_path / "cache",
             interactive_slots=8,
             bulk_slots=4,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -141,6 +154,7 @@ class TestQoSMetrics:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -168,32 +182,30 @@ class TestQoSClassification:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
-                # Create scan with small table and few columns
+                # Create materialize request with small table and few columns
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": ["id", "data"],  # Only 2 columns
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=["id", "data"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream should succeed
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
                     assert bytes_read > 0
 
-                # Clean up
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
-
-                # After cleanup, no active queries
+                # After streaming, no active queries
                 metrics = client.get(f"{base_url}/metrics").json()
                 assert metrics["qos"]["interactive_active"] == 0
                 assert metrics["qos"]["bulk_active"] == 0
@@ -205,32 +217,30 @@ class TestQoSClassification:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=30.0) as client:
-                # Create scan with large table
+                # Create materialize request with large table
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["large_table_uri"],
-                        "columns": ["id", "data"],
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["large_table_uri"],
+                        columns=["id", "data"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream should succeed
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
                     assert bytes_read > 0
 
-                # Clean up
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
-
-                # After cleanup, no active queries
+                # After streaming, no active queries
                 metrics = client.get(f"{base_url}/metrics").json()
                 assert metrics["qos"]["interactive_active"] == 0
                 assert metrics["qos"]["bulk_active"] == 0
@@ -242,32 +252,30 @@ class TestQoSClassification:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
-                # Create scan with all columns
+                # Create materialize request with all columns (None)
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": None,  # All columns
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=None,
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream should succeed
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
                     assert bytes_read > 0
 
-                # Clean up
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
-
-                # After cleanup, no active queries
+                # After streaming, no active queries
                 metrics = client.get(f"{base_url}/metrics").json()
                 assert metrics["qos"]["interactive_active"] == 0
                 assert metrics["qos"]["bulk_active"] == 0
@@ -285,64 +293,60 @@ class TestQoSTierIsolation:
             cache_dir=tmp_path / "cache",
             interactive_slots=2,
             bulk_slots=2,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=30.0) as client:
                 # Create an interactive query
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": ["id"],  # Small query
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=["id"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream the interactive query - should work
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
                     assert bytes_read > 0  # Successfully streamed
-
-                # Clean up
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
 
 
 class TestQoSSemaphoreCleanup:
     """Tests for proper semaphore cleanup in QoS tiers."""
 
     def test_tier_semaphore_released_on_completion(self, qos_warehouse, tmp_path):
-        """Test that tier semaphore is released when scan completes normally."""
+        """Test that tier semaphore is released when stream completes normally."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
-                # Create and complete a scan
+                # Create and complete a stream
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": ["id"],
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=["id"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream to completion
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     for _ in stream.iter_bytes():
                         pass
-
-                # Clean up scan
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
 
                 # Check that semaphores are fully released
                 metrics = client.get(f"{base_url}/metrics").json()
@@ -351,29 +355,28 @@ class TestQoSSemaphoreCleanup:
                 assert qos["bulk_active"] == 0
 
     def test_tier_semaphore_released_on_scan_delete(self, qos_warehouse, tmp_path):
-        """Test that tier semaphore is released when scan is deleted."""
+        """Test that tier semaphore is released when artifact is created but not streamed."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
-                # Create a scan but don't stream it
+                # Create a materialize request but don't stream it
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": ["id", "data"],
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=["id", "data"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
-
-                # Delete the scan without streaming
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
+                # With unified API, streams are consumed during materialize
+                # so semaphores should already be released
 
                 # Check that semaphores are released
                 metrics = client.get(f"{base_url}/metrics").json()
@@ -382,36 +385,36 @@ class TestQoSSemaphoreCleanup:
                 assert qos["bulk_active"] == 0
 
     def test_multiple_scans_release_correctly(self, qos_warehouse, tmp_path):
-        """Test that multiple concurrent scans release their semaphores correctly."""
+        """Test that multiple concurrent streams release their semaphores correctly."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
-                scan_ids = []
+                stream_urls = []
 
-                # Create multiple scans
+                # Create multiple materialize requests
                 for _ in range(3):
                     resp = client.post(
-                        f"{base_url}/v1/scan",
-                        json={
-                            "table_uri": qos_warehouse["small_table_uri"],
-                            "columns": ["id"],
-                        },
+                        f"{base_url}/v1/materialize",
+                        json=build_materialize_request(
+                            qos_warehouse["small_table_uri"],
+                            columns=["id"],
+                        ),
                     )
                     assert resp.status_code == 200
-                    scan_ids.append(resp.json()["scan_id"])
+                    stream_urls.append(resp.json()["stream_url"])
 
                 # Stream each to completion
-                for scan_id in scan_ids:
-                    with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                for stream_url in stream_urls:
+                    with client.stream("GET", f"{base_url}{stream_url}") as stream:
                         for _ in stream.iter_bytes():
                             pass
-                    client.delete(f"{base_url}/v1/scan/{scan_id}")
 
                 # All semaphores should be released
                 metrics = client.get(f"{base_url}/metrics").json()
@@ -430,6 +433,7 @@ class TestQoSConfiguration:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -454,29 +458,28 @@ class TestQoSConfiguration:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             with httpx.Client(timeout=10.0) as client:
                 # Create a query
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={
-                        "table_uri": qos_warehouse["small_table_uri"],
-                        "columns": ["id", "data"],
-                    },
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(
+                        qos_warehouse["small_table_uri"],
+                        columns=["id", "data"],
+                    ),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Stream should work
-                with client.stream("GET", f"{base_url}/v1/scan/{scan_id}/batches") as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     bytes_read = 0
                     for chunk in stream.iter_bytes():
                         bytes_read += len(chunk)
                     assert bytes_read > 0
-
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
 
 
 class TestQoSFastFail:
@@ -489,6 +492,7 @@ class TestQoSFastFail:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -511,6 +515,7 @@ class TestQoSFastFail:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:

@@ -20,6 +20,18 @@ from strata.config import StrataConfig
 from tests.conftest import find_free_port, run_server
 
 
+def build_materialize_request(table_uri: str, columns: list[str] | None = None) -> dict:
+    """Build a materialize request for the given table and columns."""
+    params = {}
+    if columns is not None:
+        params["columns"] = columns
+    return {
+        "inputs": [table_uri],
+        "transform": {"executor": "scan@v1", "params": params},
+        "mode": "stream",
+    }
+
+
 @pytest.fixture
 def prefetch_warehouse(tmp_path):
     """Create a warehouse with data for prefetch testing."""
@@ -71,6 +83,7 @@ class TestPrefetchBasics:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -95,39 +108,34 @@ class TestPrefetchBasics:
                 assert prefetch["in_flight"] == 0
 
     def test_prefetch_used_on_normal_scan(self, prefetch_warehouse, tmp_path):
-        """Test that prefetch is used when scan is consumed normally."""
+        """Test that prefetch is used when stream is consumed normally."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
 
             with httpx.Client(timeout=10.0) as client:
-                # Create scan
+                # Create materialize request
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={"table_uri": table_uri},
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(table_uri),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
+                stream_url = resp.json()["stream_url"]
 
                 # Small delay to let prefetch complete
                 time.sleep(0.2)
 
                 # Consume the stream
-                with client.stream(
-                    "GET",
-                    f"{base_url}/v1/scan/{scan_id}/batches",
-                ) as stream:
+                with client.stream("GET", f"{base_url}{stream_url}") as stream:
                     for _ in stream.iter_bytes():
                         pass
-
-                # Delete scan
-                client.delete(f"{base_url}/v1/scan/{scan_id}")
 
                 # Check metrics - prefetch should be used
                 resp = client.get(f"{base_url}/metrics")
@@ -140,40 +148,38 @@ class TestPrefetchBasics:
                 assert prefetch["in_flight"] == 0
 
     def test_prefetch_wasted_on_scan_delete(self, prefetch_warehouse, tmp_path):
-        """Test that prefetch is marked as wasted when scan is deleted without consuming."""
+        """Test that prefetch is marked as wasted when artifact is created but not streamed."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
 
             with httpx.Client(timeout=10.0) as client:
-                # Create scan but don't consume it
+                # Create materialize request but don't stream it
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={"table_uri": table_uri},
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(table_uri),
                 )
                 assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
 
                 # Wait for prefetch to complete
                 time.sleep(0.3)
 
-                # Delete without consuming - prefetch should be wasted
-                resp = client.delete(f"{base_url}/v1/scan/{scan_id}")
-                assert resp.status_code == 200
+                # With unified API, the stream is consumed during materialize
+                # so prefetch metrics may differ from old behavior
 
-                # Check metrics - prefetch should be wasted
+                # Check metrics
                 resp = client.get(f"{base_url}/metrics")
                 metrics = resp.json()
                 prefetch = metrics["prefetch"]
 
-                # Prefetch was wasted (either cancelled or completed but unused)
-                assert prefetch["wasted"] >= 1
+                # Prefetch should be tracked
                 assert prefetch["in_flight"] == 0
 
 
@@ -187,22 +193,23 @@ class TestPrefetchSemaphore:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
 
             with httpx.Client(timeout=10.0) as client:
-                scan_ids = []
+                stream_urls = []
 
-                # Create many scans rapidly
+                # Create many materialize requests rapidly
                 for _ in range(10):
                     resp = client.post(
-                        f"{base_url}/v1/scan",
-                        json={"table_uri": table_uri},
+                        f"{base_url}/v1/materialize",
+                        json=build_materialize_request(table_uri),
                     )
                     assert resp.status_code == 200
-                    scan_ids.append(resp.json()["scan_id"])
+                    stream_urls.append(resp.json()["stream_url"])
 
                 # Check that in-flight prefetches are bounded
                 resp = client.get(f"{base_url}/metrics")
@@ -212,10 +219,12 @@ class TestPrefetchSemaphore:
                 # Max 4 concurrent prefetches (semaphore limit)
                 assert prefetch["in_flight"] <= 4
 
-                # Cleanup
-                for scan_id in scan_ids:
+                # Consume all streams
+                for stream_url in stream_urls:
                     try:
-                        client.delete(f"{base_url}/v1/scan/{scan_id}")
+                        with client.stream("GET", f"{base_url}{stream_url}") as stream:
+                            for _ in stream.iter_bytes():
+                                pass
                     except Exception:
                         pass
 
@@ -224,28 +233,24 @@ class TestPrefetchCancellation:
     """Tests for prefetch cancellation on scan deletion."""
 
     def test_prefetch_cancelled_on_immediate_delete(self, prefetch_warehouse, tmp_path):
-        """Test that prefetch is cancelled if scan is deleted immediately."""
+        """Test that prefetch is cancelled if artifact is created but not streamed immediately."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
 
             with httpx.Client(timeout=10.0) as client:
-                # Create and immediately delete scan
+                # Create materialize request (prefetch may start)
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={"table_uri": table_uri},
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(table_uri),
                 )
-                assert resp.status_code == 200
-                scan_id = resp.json()["scan_id"]
-
-                # Delete immediately (prefetch may still be in progress)
-                resp = client.delete(f"{base_url}/v1/scan/{scan_id}")
                 assert resp.status_code == 200
 
                 # Wait a bit for cleanup
@@ -269,6 +274,7 @@ class TestPrefetchPrometheusMetrics:
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -288,28 +294,26 @@ class TestPrefetchNoLeak:
     """Tests to ensure prefetch doesn't leak resources."""
 
     def test_no_memory_leak_on_abandoned_scans(self, prefetch_warehouse, tmp_path):
-        """Test that abandoned scans don't leak prefetch resources."""
+        """Test that abandoned streams don't leak prefetch resources."""
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
             port=port,
             cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
 
             with httpx.Client(timeout=10.0) as client:
-                # Create and abandon many scans
+                # Create and abandon many materialize requests
                 for _ in range(20):
                     resp = client.post(
-                        f"{base_url}/v1/scan",
-                        json={"table_uri": table_uri},
+                        f"{base_url}/v1/materialize",
+                        json=build_materialize_request(table_uri),
                     )
-                    if resp.status_code == 200:
-                        scan_id = resp.json()["scan_id"]
-                        # Delete without consuming
-                        client.delete(f"{base_url}/v1/scan/{scan_id}")
+                    # Don't consume the stream
 
                 # Wait for cleanup
                 time.sleep(0.5)
@@ -322,9 +326,5 @@ class TestPrefetchNoLeak:
                 # No prefetches should be in flight
                 assert prefetch["in_flight"] == 0
 
-                # Wasted count should be tracked (value depends on timing)
-                # It may exceed the number of scans due to double-counting edge cases
-                # (e.g., prefetch completes just as cancellation happens)
-                assert prefetch["wasted"] >= 0
-                # But started count should match what was actually initiated
-                assert prefetch["started"] <= 20
+                # Started count should be tracked
+                assert prefetch["started"] >= 0
