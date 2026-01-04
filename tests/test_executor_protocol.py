@@ -364,7 +364,7 @@ class TestBaseExecutorInterface:
             """Simple executor that returns first input unchanged."""
 
             def get_transform_refs(self) -> list[str]:
-                return ["identity@v1"]
+                return ["scan@v1"]
 
             def execute(
                 self,
@@ -385,11 +385,11 @@ class TestBaseExecutorInterface:
                 )
 
         executor = IdentityExecutor()
-        assert executor.get_transform_refs() == ["identity@v1"]
+        assert executor.get_transform_refs() == ["scan@v1"]
 
         table = pa.table({"x": [42]})
         result = executor.execute(
-            transform_ref="identity@v1",
+            transform_ref="scan@v1",
             params={},
             inputs=[ExecutorInput(name="input0", data=table_to_ipc_bytes(table))],
         )

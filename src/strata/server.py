@@ -4461,7 +4461,7 @@ def _resolve_artifact_uri(uri: str) -> tuple[str, int] | None:
 # =============================================================================
 # This implements the unified /v1/materialize endpoint that replaces both
 # /v1/scan and /v1/artifacts/materialize. The key insight is that scanning
-# an Iceberg table is a materialize with identity@v1 transform.
+# an Iceberg table is a materialize with scan@v1 transform.
 # =============================================================================
 
 
@@ -4490,7 +4490,7 @@ def _compute_identity_provenance(
     hasher.update(f"table:{table_identity}@{snapshot_id}".encode())
 
     # Transform: executor ref
-    hasher.update(b"executor:identity@v1")
+    hasher.update(b"executor:scan@v1")
 
     # Params: sorted columns
     if columns:
@@ -4510,7 +4510,7 @@ async def unified_materialize(request: MaterializeRequest):
     """Unified endpoint for all data access (replaces /v1/scan and /v1/artifacts/materialize).
 
     This is the single entry point for materializing data in Strata.
-    Scanning an Iceberg table is expressed as a materialize with identity@v1.
+    Scanning an Iceberg table is expressed as a materialize with scan@v1.
 
     Modes:
     - stream (default): Data streams immediately while artifact builds in parallel
@@ -4519,7 +4519,7 @@ async def unified_materialize(request: MaterializeRequest):
     Both modes create and persist artifacts. The mode only affects how
     the client receives data, not whether it's cached.
 
-    For identity@v1 transform:
+    For scan@v1 transform:
     - Reads from exactly one Iceberg table input
     - Applies optional column projection and row filtering
     - Executed internally by Strata (no external executor needed)
@@ -4545,8 +4545,8 @@ async def unified_materialize(request: MaterializeRequest):
             detail="Server is shutting down. Not accepting new requests.",
         )
 
-    # Handle identity@v1 transform specially - executed internally
-    if transform.executor == "identity@v1":
+    # Handle scan@v1 transform specially - executed internally
+    if transform.executor == "scan@v1":
         return await _handle_identity_materialize(request)
 
     # For non-identity transforms, delegate to existing materialize flow
@@ -4555,7 +4555,7 @@ async def unified_materialize(request: MaterializeRequest):
 
 
 async def _handle_identity_materialize(request: MaterializeRequest) -> MaterializeResponse:
-    """Handle identity@v1 transform (internal execution).
+    """Handle scan@v1 transform (internal execution).
 
     This is the fast path for table scans. The identity transform reads
     from an Iceberg table with optional projection/filtering and returns
@@ -4583,11 +4583,11 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     tenant_id = principal.tenant if principal else None
     principal_id = principal.id if principal else None
 
-    # Validate inputs: identity@v1 requires exactly one table input
+    # Validate inputs: scan@v1 requires exactly one table input
     if len(request.inputs) != 1:
         raise HTTPException(
             status_code=400,
-            detail="identity@v1 transform requires exactly one input",
+            detail="scan@v1 transform requires exactly one input",
         )
 
     table_uri = request.inputs[0]
@@ -4596,7 +4596,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     if table_uri.startswith("strata://"):
         raise HTTPException(
             status_code=400,
-            detail="identity@v1 transform input must be a table URI, not an artifact",
+            detail="scan@v1 transform input must be a table URI, not an artifact",
         )
 
     # Parse identity params
@@ -4605,7 +4605,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid identity@v1 params: {e}",
+            detail=f"Invalid scan@v1 params: {e}",
         )
 
     # Convert to internal filter format
@@ -4727,7 +4727,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     artifact_version = 1
     if store is not None:
         transform_spec = ArtifactTransformSpec(
-            executor="identity@v1",
+            executor="scan@v1",
             params=request.transform.params,
             inputs=request.inputs,
         )

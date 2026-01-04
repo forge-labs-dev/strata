@@ -9,7 +9,7 @@ Provides both sync and async clients for interacting with Strata:
         # Materialize creates/finds an artifact
         artifact = client.materialize(
             inputs=["file:///warehouse#db.events"],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         # Fetch downloads the data
         table = client.fetch(artifact.uri)
@@ -20,7 +20,7 @@ Provides both sync and async clients for interacting with Strata:
     async with AsyncStrataClient() as client:
         artifact = await client.materialize(
             inputs=["file:///warehouse#db.events"],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table = await client.fetch(artifact.uri)
 
@@ -104,7 +104,7 @@ class Artifact:
     Example:
         artifact = client.materialize(
             inputs=["file:///warehouse#db.events"],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         print(f"Artifact: {artifact.uri}")
         print(f"Cache hit: {artifact.cache_hit}")
@@ -210,7 +210,7 @@ class StrataClient:
         # Materialize creates/finds an artifact
         artifact = client.materialize(
             inputs=["file:///warehouse#db.events"],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
 
         # Fetch downloads the data (blocks until artifact is ready)
@@ -286,7 +286,7 @@ class StrataClient:
             # Step 1: Materialize creates/finds an artifact
             artifact = client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
 
             # Step 2: Fetch downloads the data
@@ -389,7 +389,7 @@ class StrataClient:
         Args:
             inputs: List of input URIs (table URIs or artifact URIs)
             transform: Transform specification with "executor" and "params"
-                Example: {"executor": "identity@v1", "params": {}}
+                Example: {"executor": "scan@v1", "params": {}}
             name: Optional name to assign to the result
             mode: "stream" (default) for immediate data, "artifact" for async build
             refresh: Force recompute even if cached
@@ -404,7 +404,7 @@ class StrataClient:
             # Identity transform (read from table)
             artifact = client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
             table = client.fetch(artifact.uri)
 
@@ -412,7 +412,7 @@ class StrataClient:
             artifact = client.materialize(
                 inputs=["file:///warehouse#db.events"],
                 transform={
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {
                         "columns": ["id", "value"],
                         "filters": [{"column": "value", "op": ">", "value": 100}],
@@ -844,7 +844,7 @@ class AsyncStrataClient:
             # Materialize creates/finds an artifact
             artifact = await client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
 
             # Fetch downloads the data
@@ -854,11 +854,11 @@ class AsyncStrataClient:
         async with AsyncStrataClient() as client:
             artifact1 = await client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
             artifact2 = await client.materialize(
                 inputs=["file:///warehouse#db.users"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
             tables = await asyncio.gather(
                 client.fetch(artifact1.uri),
@@ -936,7 +936,7 @@ class AsyncStrataClient:
             # Step 1: Materialize creates/finds an artifact
             artifact = await client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
 
             # Step 2: Fetch downloads the data
@@ -1035,7 +1035,7 @@ class AsyncStrataClient:
         Args:
             inputs: List of input URIs (table URIs or artifact URIs)
             transform: Transform specification with "executor" and "params"
-                Example: {"executor": "identity@v1", "params": {}}
+                Example: {"executor": "scan@v1", "params": {}}
             name: Optional name to assign to the result
             mode: "stream" (default) for immediate data, "artifact" for async build
             refresh: Force recompute even if cached
@@ -1050,7 +1050,7 @@ class AsyncStrataClient:
             # Identity transform (read from table)
             artifact = await client.materialize(
                 inputs=["file:///warehouse#db.events"],
-                transform={"executor": "identity@v1", "params": {}},
+                transform={"executor": "scan@v1", "params": {}},
             )
             table = await client.fetch(artifact.uri)
         """
@@ -1222,7 +1222,7 @@ class AsyncArtifact:
     Example:
         artifact = await client.materialize(
             inputs=["file:///warehouse#db.events"],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         print(f"Artifact: {artifact.uri}")
 

@@ -57,7 +57,7 @@ Scanning a table becomes:
 materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {
             "columns": ["id", "name"],
             "filters": [{"column": "id", "op": ">", "value": 100}]
@@ -68,7 +68,7 @@ materialize(
 
 ### Identity Transform
 
-The `identity@v1` transform is a special built-in that:
+The `scan@v1` transform is a special built-in that:
 
 1. Reads from exactly one Iceberg table input
 2. Applies optional column projection and row filtering
@@ -102,7 +102,7 @@ class MaterializeRequest(BaseModel):
 class TransformSpec(BaseModel):
     """Transform to apply to inputs."""
 
-    executor: str  # "identity@v1", "duckdb_sql@v1", etc.
+    executor: str  # "scan@v1", "duckdb_sql@v1", etc.
     params: dict[str, Any]  # Executor-specific parameters
 ```
 
@@ -157,7 +157,7 @@ Both modes:
 # Artifact mode: fetch later
 response = materialize(
     inputs=["file:///warehouse#db.events"],
-    transform={"executor": "identity@v1", "params": {}},
+    transform={"executor": "scan@v1", "params": {}},
     mode="artifact"
 )
 # response.artifact_uri = "strata://artifact/abc123@v=1"
@@ -167,7 +167,7 @@ response = materialize(
 # Stream mode: consume immediately
 response = materialize(
     inputs=["file:///warehouse#db.events"],
-    transform={"executor": "identity@v1", "params": {}},
+    transform={"executor": "scan@v1", "params": {}},
     mode="stream"
 )
 # response.artifact_uri = "strata://artifact/abc123@v=1"  # Still creates artifact!
@@ -196,7 +196,7 @@ def compute_identity_provenance(table_uri: str, snapshot_id: int,
     hasher.update(f"table:{table_identity}@{snapshot_id}".encode())
 
     # Transform: executor ref
-    hasher.update(b"executor:identity@v1")
+    hasher.update(b"executor:scan@v1")
 
     # Params: sorted columns + normalized filters
     hasher.update(f"columns:{sorted(columns)}".encode())
@@ -225,7 +225,7 @@ Content-Type: application/json
 {
     "inputs": ["file:///warehouse#db.events"],
     "transform": {
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {
             "columns": ["id", "name", "value"],
             "filters": [{"column": "id", "op": ">", "value": 100}]
@@ -254,7 +254,7 @@ Response (cache miss, personal mode):
     "build_spec": {
         "artifact_id": "def456",
         "version": 1,
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {...},
         "input_uris": [...]
     }
@@ -351,7 +351,7 @@ The client SDK abstracts build waiting. Most users never poll manually.
 # Materialize in artifact mode
 response = client.materialize(
     inputs=["file:///warehouse#db.events"],
-    transform={"executor": "identity@v1", "params": {}},
+    transform={"executor": "scan@v1", "params": {}},
     mode="artifact"
 )
 
@@ -423,14 +423,14 @@ async def run_pipeline():
 ### Executor Reference
 
 ```
-identity@v1
+scan@v1
 ```
 
 ### Parameters
 
 ```python
 class IdentityParams(BaseModel):
-    """Parameters for identity@v1 transform."""
+    """Parameters for scan@v1 transform."""
 
     # Column projection (None = all columns)
     columns: list[str] | None = None
@@ -478,7 +478,7 @@ async def execute_identity(input_uri: str, params: IdentityParams) -> AsyncItera
 ## Migration Path
 
 The legacy `/v1/scan` endpoint is deprecated and will be removed in a future version.
-Use the unified `/v1/materialize` endpoint with `identity@v1` transform instead.
+Use the unified `/v1/materialize` endpoint with `scan@v1` transform instead.
 
 ### Implementation Status
 
@@ -577,7 +577,7 @@ small queries (dashboards), bulk tier for large queries (ETL).
 
 ### 4. Transform Versioning
 
-**Decision**: New version for breaking changes (`identity@v1` → `identity@v2`).
+**Decision**: New version for breaking changes (`scan@v1` → `identity@v2`).
 
 - Semantic-preserving bug fixes stay in same version
 - Breaking changes (different results for same input) get new version
@@ -597,7 +597,7 @@ collection (`max_age_days`) for unreferenced artifacts.
 ## Implementation Checklist
 
 - [x] Define `IdentityParams`, `TransformSpec`, `FilterSpec` schemas in `types.py`
-- [x] Register `identity@v1` as built-in transform (no external executor)
+- [x] Register `scan@v1` as built-in transform (no external executor)
 - [x] Implement identity executor (wraps existing planner/fetcher)
 - [x] Add unified `/v1/materialize` endpoint with `mode` parameter
 - [x] Implement streaming mode with tee to blob store
@@ -621,7 +621,7 @@ collection (`max_age_days`) for unreferenced artifacts.
 response = client.materialize(
     inputs=["file:///warehouse#analytics.page_views"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {
             "columns": ["user_id", "page", "timestamp"],
             "filters": [{"column": "timestamp", "op": ">=", "value": "2024-01-01"}]
@@ -642,7 +642,7 @@ response = client.materialize(
 response = client.materialize(
     inputs=["file:///warehouse#raw.logs"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {"columns": ["message", "level"]}
     },
     mode="stream"  # Stream immediately, artifact builds in parallel
@@ -662,7 +662,7 @@ async for batch in client.stream(response.stream_id):
 # Step 1: Filter raw data (identity transform)
 raw = client.materialize(
     inputs=["file:///warehouse#raw.events"],
-    transform={"executor": "identity@v1", "params": {"filters": [...]}},
+    transform={"executor": "scan@v1", "params": {"filters": [...]}},
     name="filtered_events"
 )
 

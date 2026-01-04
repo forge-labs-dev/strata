@@ -546,14 +546,14 @@ class TransformSpec(BaseModel):
     """Transform specification for materialize requests.
 
     Defines the executor and parameters for transforming inputs.
-    Built-in executors like identity@v1 are handled by Strata directly.
+    Built-in executors like scan@v1 are handled by Strata directly.
 
     Attributes:
-        executor: Executor reference (e.g., "identity@v1", "duckdb_sql@v1")
+        executor: Executor reference (e.g., "scan@v1", "duckdb_sql@v1")
         params: Executor-specific parameters
     """
 
-    executor: str  # "identity@v1", "duckdb_sql@v1", etc.
+    executor: str  # "scan@v1", "duckdb_sql@v1", etc.
     params: dict[str, Any] = {}  # Executor-specific parameters
 
 
@@ -572,7 +572,7 @@ class FilterSpec(BaseModel):
 
 
 class IdentityParams(BaseModel):
-    """Parameters for the identity@v1 built-in transform.
+    """Parameters for the scan@v1 built-in transform.
 
     The identity transform reads from exactly one Iceberg table input,
     applies optional column projection and row filtering, and returns
@@ -610,7 +610,7 @@ class MaterializeRequest(BaseModel):
 
     This is the single entry point for all data access in Strata.
     Scanning an Iceberg table is expressed as a materialize with
-    the identity@v1 transform.
+    the scan@v1 transform.
 
     Attributes:
         inputs: List of input URIs (table URIs or artifact URIs)

@@ -345,7 +345,7 @@ class TestEndToEnd:
         # First fetch - cache miss
         artifact1 = client.materialize(
             inputs=[table_uri],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table1 = client.fetch(artifact1.uri)
         assert table1.num_rows == 500
@@ -357,7 +357,7 @@ class TestEndToEnd:
         # Second fetch - should have artifact cache hit
         artifact2 = client.materialize(
             inputs=[table_uri],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table2 = client.fetch(artifact2.uri)
         assert table2.num_rows == 500
@@ -375,7 +375,7 @@ class TestEndToEnd:
         artifact = client.materialize(
             inputs=[table_uri],
             transform={
-                "executor": "identity@v1",
+                "executor": "scan@v1",
                 "params": {"filters": filters},
             },
         )
@@ -421,7 +421,7 @@ class TestEndToEnd:
         # Do a fetch to populate caches
         artifact = client.materialize(
             inputs=[table_uri],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table = client.fetch(artifact.uri)
         assert table.num_rows > 0
@@ -505,7 +505,7 @@ class TestEndToEnd:
         # Do a fetch to generate some metrics
         artifact = client.materialize(
             inputs=[table_uri],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table = client.fetch(artifact.uri)
         assert table.num_rows > 0
@@ -543,7 +543,7 @@ class TestEndToEnd:
         # Do a fetch to populate cache
         artifact = client.materialize(
             inputs=[table_uri],
-            transform={"executor": "identity@v1", "params": {}},
+            transform={"executor": "scan@v1", "params": {}},
         )
         table = client.fetch(artifact.uri)
         assert table.num_rows > 0

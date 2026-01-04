@@ -87,7 +87,7 @@ uv run python -m strata --warehouse "file:///path/to/warehouse"
 
 ### Request Flow (Unified Materialize API)
 
-1. **Client** sends `POST /v1/materialize` with inputs (table URIs) and transform (e.g., `identity@v1`)
+1. **Client** sends `POST /v1/materialize` with inputs (table URIs) and transform (e.g., `scan@v1`)
 2. **Server** checks artifact cache via provenance hash → returns immediately if cache hit
 3. **Planner** (`planner.py`) resolves Iceberg snapshot → produces `ReadPlan` with row-group `Task`s
 4. **Fetcher** (`cache.py`) checks disk cache, reads Parquet if miss, writes Arrow IPC to cache
@@ -270,11 +270,11 @@ from strata.client import StrataClient, lt, gt
 # Connect to server
 client = StrataClient(base_url="http://localhost:8765")
 
-# Materialize an Iceberg table (uses identity@v1 transform)
+# Materialize an Iceberg table (uses scan@v1 transform)
 artifact = client.materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {"columns": ["id", "value"], "filters": [{"column": "id", "op": "gt", "value": 100}]}
     },
 )

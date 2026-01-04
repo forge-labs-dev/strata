@@ -117,17 +117,17 @@ class TestUnifiedMaterialize:
     """Tests for the unified /v1/materialize endpoint."""
 
     def test_identity_materialize_stream_mode(self, server_with_personal_mode):
-        """Test identity@v1 transform in stream mode."""
+        """Test scan@v1 transform in stream mode."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
 
-        # Request materialize with identity@v1
+        # Request materialize with scan@v1
         response = requests.post(
             f"{base_url}/v1/materialize",
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {},
                 },
                 "mode": "stream",
@@ -161,7 +161,7 @@ class TestUnifiedMaterialize:
         assert set(table.column_names) == {"id", "value", "name", "timestamp"}
 
     def test_identity_materialize_with_projection(self, server_with_personal_mode):
-        """Test identity@v1 with column projection."""
+        """Test scan@v1 with column projection."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
 
@@ -170,7 +170,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {
                         "columns": ["id", "name"],
                     },
@@ -198,7 +198,7 @@ class TestUnifiedMaterialize:
         assert set(table.column_names) == {"id", "name"}
 
     def test_identity_materialize_with_filters(self, server_with_personal_mode):
-        """Test identity@v1 with row filters."""
+        """Test scan@v1 with row filters."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
 
@@ -207,7 +207,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {
                         "filters": [
                             {"column": "id", "op": "<", "value": 50},
@@ -248,7 +248,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {"columns": ["id"]},
                 },
                 "mode": "stream",
@@ -274,7 +274,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {"columns": ["id"]},
                 },
                 "mode": "stream",
@@ -288,7 +288,7 @@ class TestUnifiedMaterialize:
         assert data2["artifact_uri"] == data1["artifact_uri"]
 
     def test_identity_materialize_artifact_mode(self, server_with_personal_mode):
-        """Test identity@v1 in artifact mode."""
+        """Test scan@v1 in artifact mode."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
 
@@ -297,7 +297,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {},
                 },
                 "mode": "artifact",
@@ -316,7 +316,7 @@ class TestUnifiedMaterialize:
         assert data.get("stream_url") is None
 
     def test_identity_requires_single_input(self, server_with_personal_mode):
-        """Test that identity@v1 rejects multiple inputs."""
+        """Test that scan@v1 rejects multiple inputs."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
 
@@ -325,7 +325,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri, table_uri],  # Two inputs
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {},
                 },
             },
@@ -335,7 +335,7 @@ class TestUnifiedMaterialize:
         assert "exactly one input" in response.json()["detail"]
 
     def test_identity_rejects_artifact_input(self, server_with_personal_mode):
-        """Test that identity@v1 rejects artifact URIs as input."""
+        """Test that scan@v1 rejects artifact URIs as input."""
         base_url = server_with_personal_mode["base_url"]
 
         response = requests.post(
@@ -343,7 +343,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": ["strata://artifact/abc123@v=1"],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {},
                 },
             },
@@ -370,7 +370,7 @@ class TestUnifiedMaterialize:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {
                         "filters": "not_a_list",  # Invalid type
                     },
@@ -395,7 +395,7 @@ class TestUnifiedMaterializeEdgeCases:
             json={
                 "inputs": [table_uri],
                 "transform": {
-                    "executor": "identity@v1",
+                    "executor": "scan@v1",
                     "params": {},
                 },
                 # mode not specified - should default to "stream"
@@ -413,7 +413,7 @@ class TestClientFetch:
     """Tests for the client SDK fetch() method."""
 
     def test_client_fetch_basic(self, server_with_personal_mode):
-        """Test basic client.fetch() usage."""
+        """Test basic materialize() + fetch() usage."""
         from strata.client import StrataClient
 
         base_url = server_with_personal_mode["base_url"]
@@ -422,7 +422,11 @@ class TestClientFetch:
         client = StrataClient(base_url=base_url)
 
         try:
-            table = client.fetch(table_uri)
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {}},
+            )
+            table = client.fetch(artifact.uri)
 
             assert table.num_rows == 100
             assert set(table.column_names) == {"id", "value", "name", "timestamp"}
@@ -430,7 +434,7 @@ class TestClientFetch:
             client.close()
 
     def test_client_fetch_with_projection(self, server_with_personal_mode):
-        """Test client.fetch() with column projection."""
+        """Test materialize() + fetch() with column projection."""
         from strata.client import StrataClient
 
         base_url = server_with_personal_mode["base_url"]
@@ -439,7 +443,11 @@ class TestClientFetch:
         client = StrataClient(base_url=base_url)
 
         try:
-            table = client.fetch(table_uri, columns=["id", "value"])
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id", "value"]}},
+            )
+            table = client.fetch(artifact.uri)
 
             assert table.num_rows == 100
             assert set(table.column_names) == {"id", "value"}
@@ -447,8 +455,8 @@ class TestClientFetch:
             client.close()
 
     def test_client_fetch_with_filters(self, server_with_personal_mode):
-        """Test client.fetch() with row filters."""
-        from strata.client import StrataClient, lt
+        """Test materialize() + fetch() with row filters."""
+        from strata.client import StrataClient
 
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
@@ -456,7 +464,14 @@ class TestClientFetch:
         client = StrataClient(base_url=base_url)
 
         try:
-            table = client.fetch(table_uri, filters=[lt("id", 50)])
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={
+                    "executor": "scan@v1",
+                    "params": {"filters": [{"column": "id", "op": "<", "value": 50}]},
+                },
+            )
+            table = client.fetch(artifact.uri)
 
             # Filters are applied at row-group level, so we may get all rows
             # depending on pruning. The test verifies the request succeeds.
@@ -464,8 +479,8 @@ class TestClientFetch:
         finally:
             client.close()
 
-    def test_client_fetch_artifact(self, server_with_personal_mode):
-        """Test client.fetch_artifact() returns an Artifact."""
+    def test_client_materialize_returns_artifact(self, server_with_personal_mode):
+        """Test that materialize() returns an Artifact with metadata."""
         from strata.client import StrataClient
 
         base_url = server_with_personal_mode["base_url"]
@@ -474,21 +489,24 @@ class TestClientFetch:
         client = StrataClient(base_url=base_url)
 
         try:
-            artifact = client.fetch_artifact(table_uri, columns=["id"])
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id"]}},
+            )
 
             assert artifact.artifact_id is not None
             assert artifact.version == 1
             assert artifact.uri.startswith("strata://artifact/")
 
             # Get data from artifact
-            table = artifact.to_table()
+            table = client.fetch(artifact.uri)
             assert table.num_rows == 100
             assert set(table.column_names) == {"id"}
         finally:
             client.close()
 
-    def test_client_fetch_cache_hit(self, server_with_personal_mode):
-        """Test that repeated fetch() calls return cache hits."""
+    def test_client_materialize_cache_hit(self, server_with_personal_mode):
+        """Test that repeated materialize() calls return cache hits."""
         from strata.client import StrataClient
 
         base_url = server_with_personal_mode["base_url"]
@@ -497,8 +515,11 @@ class TestClientFetch:
         client = StrataClient(base_url=base_url)
 
         try:
-            # First fetch - cache miss
-            artifact1 = client.fetch_artifact(table_uri, columns=["id", "name"])
+            # First materialize - cache miss
+            artifact1 = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id", "name"]}},
+            )
             assert artifact1.cache_hit is False
 
             # Small delay for artifact finalization
@@ -506,8 +527,11 @@ class TestClientFetch:
 
             time.sleep(0.5)
 
-            # Second fetch - should be cache hit
-            artifact2 = client.fetch_artifact(table_uri, columns=["id", "name"])
+            # Second materialize - should be cache hit
+            artifact2 = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id", "name"]}},
+            )
             assert artifact2.cache_hit is True
             assert artifact2.artifact_id == artifact1.artifact_id
         finally:

@@ -152,7 +152,7 @@ client = StrataClient()
 # Materialize creates/finds an artifact from a table
 artifact = client.materialize(
     inputs=["file:///path/to/warehouse#namespace.table"],
-    transform={"executor": "identity@v1", "params": {}},
+    transform={"executor": "scan@v1", "params": {}},
 )
 # Fetch downloads the data
 table = client.fetch(artifact.uri)
@@ -162,7 +162,7 @@ print(f"Got {table.num_rows} rows")
 artifact = client.materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {
             "columns": ["id", "timestamp", "value"],
             "filters": [{"column": "value", "op": ">", "value": 100}],
@@ -206,7 +206,7 @@ Artifacts are:
 ### Iceberg Table Fetching
 
 Strata provides snapshot-aware fetching for Apache Iceberg tables via the unified `/v1/materialize` endpoint:
-- Uses built-in `identity@v1` transform for direct table reads
+- Uses built-in `scan@v1` transform for direct table reads
 - Caches results as artifacts keyed by provenance hash (table + snapshot + columns + filters)
 - Streams with bounded memory (O(row group), not O(result))
 - Two-tier QoS prevents bulk queries from starving dashboards
@@ -259,7 +259,7 @@ client = StrataClient()
 artifact = client.materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {"columns": ["id", "timestamp", "value"]},
     },
 )
@@ -270,7 +270,7 @@ print(f"Got {table.num_rows} rows")
 artifact = client.materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "executor": "identity@v1",
+        "executor": "scan@v1",
         "params": {
             "filters": [
                 {"column": "value", "op": ">", "value": 100},
@@ -394,7 +394,7 @@ materialize(inputs, transform)
 
 ### Iceberg Fetching Flow
 
-For Iceberg tables, the unified `/v1/materialize` endpoint with `identity@v1` transform:
+For Iceberg tables, the unified `/v1/materialize` endpoint with `scan@v1` transform:
 
 1. **Plan** – Resolve what to read (metadata-only, cheap)
 2. **Fetch** – Read immutable row groups (I/O-bound, expensive)

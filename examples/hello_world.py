@@ -132,12 +132,20 @@ def run_benchmark(server_url: str, table_uri: str) -> dict:
         print("\nClearing cache for cold run...")
         client.clear_cache()
 
+        # Helper to fetch table data
+        def fetch_table():
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {}},
+            )
+            return client.fetch(artifact.uri)
+
         # COLD RUN
         print("\n[1/3] COLD RUN (no cache)...")
         start = time.perf_counter()
-        batches = list(client.scan(table_uri))
+        table = fetch_table()
         cold_time = (time.perf_counter() - start) * 1000
-        total_rows = sum(b.num_rows for b in batches)
+        total_rows = table.num_rows
         results["cold_ms"] = cold_time
         print(f"  Time: {cold_time:.1f}ms")
         print(f"  Rows: {total_rows:,}")
@@ -145,7 +153,7 @@ def run_benchmark(server_url: str, table_uri: str) -> dict:
         # WARM RUN
         print("\n[2/3] WARM RUN (cache hit)...")
         start = time.perf_counter()
-        batches = list(client.scan(table_uri))
+        table = fetch_table()
         warm_time = (time.perf_counter() - start) * 1000
         results["warm_ms"] = warm_time
         print(f"  Time: {warm_time:.1f}ms")
@@ -165,7 +173,7 @@ def run_benchmark(server_url: str, table_uri: str) -> dict:
         requests.post(f"{server_url}/v1/metadata/cleanup")
 
         start = time.perf_counter()
-        batches = list(client.scan(table_uri))
+        table = fetch_table()
         restart_time = (time.perf_counter() - start) * 1000
         results["restart_ms"] = restart_time
         print(f"  Time: {restart_time:.1f}ms")

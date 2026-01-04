@@ -35,12 +35,12 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-def _build_identity_transform(
+def _build_scan_transform(
     columns: list[str] | None = None,
     filters: list[Filter] | None = None,
     snapshot_id: int | None = None,
 ) -> dict[str, Any]:
-    """Build an identity@v1 transform specification."""
+    """Build a scan@v1 transform specification."""
     params: dict[str, Any] = {}
     if columns:
         params["columns"] = columns
@@ -50,7 +50,7 @@ def _build_identity_transform(
         ]
     if snapshot_id is not None:
         params["snapshot_id"] = snapshot_id
-    return {"executor": "identity@v1", "params": params}
+    return {"executor": "scan@v1", "params": params}
 
 
 def fetch_to_pandas(
@@ -94,7 +94,7 @@ def fetch_to_pandas(
         # Materialize the table data
         artifact = client.materialize(
             inputs=[table_uri],
-            transform=_build_identity_transform(columns, filters, snapshot_id),
+            transform=_build_scan_transform(columns, filters, snapshot_id),
         )
         # Fetch the artifact data
         arrow_table = client.fetch(artifact.uri)
@@ -152,7 +152,7 @@ class StrataPandasScanner:
         # Materialize the table data
         artifact = self.client.materialize(
             inputs=[table_uri],
-            transform=_build_identity_transform(columns, filters, snapshot_id),
+            transform=_build_scan_transform(columns, filters, snapshot_id),
         )
         # Fetch the artifact data
         arrow_table = self.client.fetch(artifact.uri)
@@ -192,7 +192,7 @@ class StrataPandasScanner:
         # Materialize and fetch
         artifact = self.client.materialize(
             inputs=[table_uri],
-            transform=_build_identity_transform(columns, filters, snapshot_id),
+            transform=_build_scan_transform(columns, filters, snapshot_id),
         )
         arrow_table = self.client.fetch(artifact.uri)
         yield from arrow_table.to_batches()
