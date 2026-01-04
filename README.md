@@ -113,7 +113,7 @@ client = StrataClient()
 artifact = client.materialize(
     inputs=["file:///warehouse#db.events"],
     transform={
-        "ref": "duckdb_sql@v1",
+        "executor": "duckdb_sql@v1",
         "params": {"sql": "SELECT category, COUNT(*) as cnt FROM input0 GROUP BY 1"},
     },
     name="category_counts",  # Optional: assign a name
@@ -122,13 +122,16 @@ artifact = client.materialize(
 # Access the result
 print(f"Artifact: {artifact.uri}")
 print(f"Cache hit: {artifact.cache_hit}")
-df = artifact.to_pandas()
+
+# Fetch downloads the data
+table = client.fetch(artifact.uri)
+df = table.to_pandas()
 
 # Chain artifacts - use the result as input to another transform
 filtered = client.materialize(
     inputs=[artifact.uri],
     transform={
-        "ref": "duckdb_sql@v1",
+        "executor": "duckdb_sql@v1",
         "params": {"sql": "SELECT * FROM input0 WHERE cnt > 100"},
     },
 )
@@ -146,20 +149,30 @@ from strata import StrataClient
 
 client = StrataClient()
 
-# Simple fetch - returns Arrow Table
-table = client.fetch("file:///path/to/warehouse#namespace.table")
+# Materialize creates/finds an artifact from a table
+artifact = client.materialize(
+    inputs=["file:///path/to/warehouse#namespace.table"],
+    transform={"executor": "identity@v1", "params": {}},
+)
+# Fetch downloads the data
+table = client.fetch(artifact.uri)
 print(f"Got {table.num_rows} rows")
 
 # With column projection and filters
-from strata.client import gt, lt
-table = client.fetch(
-    "file:///warehouse#db.events",
-    columns=["id", "timestamp", "value"],
-    filters=[gt("value", 100)],
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={
+        "executor": "identity@v1",
+        "params": {
+            "columns": ["id", "timestamp", "value"],
+            "filters": [{"column": "value", "op": ">", "value": 100}],
+        },
+    },
 )
+table = client.fetch(artifact.uri)
 ```
 
-**Cache guarantee:** Results are cached as artifacts. Repeat requests with the same table, snapshot, columns, and filters return immediately from cache.
+**Cache guarantee:** Results are cached as artifacts. Repeat requests with the same provenance (table + snapshot + columns + filters) return immediately from cache.
 
 ---
 
@@ -239,22 +252,34 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 
 ```python
 from strata import StrataClient
-from strata.client import lt, gt
 
 client = StrataClient()
 
 # With column projection
-table = client.fetch(
-    "file:///warehouse#db.events",
-    columns=["id", "timestamp", "value"],
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={
+        "executor": "identity@v1",
+        "params": {"columns": ["id", "timestamp", "value"]},
+    },
 )
+table = client.fetch(artifact.uri)
 print(f"Got {table.num_rows} rows")
 
 # With filters (enables two-tier pruning)
-table = client.fetch(
-    "file:///warehouse#db.events",
-    filters=[gt("value", 100), lt("timestamp", some_datetime)],
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={
+        "executor": "identity@v1",
+        "params": {
+            "filters": [
+                {"column": "value", "op": ">", "value": 100},
+                {"column": "timestamp", "op": "<", "value": "2024-01-01"},
+            ],
+        },
+    },
 )
+table = client.fetch(artifact.uri)
 print(f"Filtered to {table.num_rows} rows")
 ```
 
@@ -278,9 +303,10 @@ print(result.to_pandas())
 
 ```python
 import polars as pl
-from strata.integration.polars import scan_to_polars
+from strata.integration.polars import fetch_to_polars
 
-df = scan_to_polars(
+# fetch_to_polars handles materialize + fetch internally
+df = fetch_to_polars(
     "file:///warehouse#db.events",
     columns=["id", "value", "category"],
 )

@@ -94,10 +94,6 @@ uv run python -m strata --warehouse "file:///path/to/warehouse"
 5. **Server** streams Arrow IPC bytes via `GET /v1/streams/{stream_id}` while persisting to artifact store
 6. On completion, artifact is finalized and available for future cache hits
 
-**Legacy flow** (deprecated, use unified API instead):
-1. Client sends `POST /v1/scan` → receives `scan_id`
-2. Client fetches `GET /v1/scan/{scan_id}/batches` → receives Arrow IPC stream
-
 ### Two-Tier Pruning
 
 Filters are applied at two levels:
@@ -168,7 +164,7 @@ Strata supports materializing query results as reusable artifacts. The artifact 
 - **Lineage**: Track input dependencies and downstream dependents
 
 **Artifact lifecycle (via unified API)**:
-1. `POST /v1/materialize` - Unified endpoint for all data access (replaces `/v1/scan` and `/v1/artifacts/materialize`)
+1. `POST /v1/materialize` - Unified endpoint for all data access
 2. `GET /v1/streams/{stream_id}` - Stream data immediately (for `mode="stream"`)
 3. `GET /v1/artifacts/{id}/v/{version}` - Get artifact metadata
 4. `GET /v1/artifacts/{id}/v/{version}/data` - Fetch persisted artifact data (for `mode="artifact"` or cache hits)
@@ -274,21 +270,19 @@ from strata.client import StrataClient, lt, gt
 # Connect to server
 client = StrataClient(base_url="http://localhost:8765")
 
-# Fetch table data (uses unified /v1/materialize with identity@v1)
-table = client.fetch(
-    "file:///warehouse#db.events",
-    columns=["id", "value"],
-    filters=[gt("id", 100)],
-)
-
-# Fetch with artifact handle (for metadata access)
-artifact = client.fetch_artifact(
-    "file:///warehouse#db.events",
-    columns=["id", "name"],
+# Materialize an Iceberg table (uses identity@v1 transform)
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={
+        "executor": "identity@v1",
+        "params": {"columns": ["id", "value"], "filters": [{"column": "id", "op": "gt", "value": 100}]}
+    },
 )
 print(f"Cache hit: {artifact.cache_hit}")
-print(f"Artifact: {artifact.uri}")
-table = artifact.to_table()
+print(f"Artifact URI: {artifact.uri}")
+
+# Fetch the artifact data as Arrow table
+table = client.fetch(artifact.uri)
 
 # Close when done
 client.close()
@@ -297,12 +291,12 @@ client.close()
 **Integration modules**:
 ```python
 # Pandas integration
-from strata.integration.pandas import scan_to_pandas
-df = scan_to_pandas("file:///warehouse#db.events")
+from strata.integration.pandas import fetch_to_pandas
+df = fetch_to_pandas("file:///warehouse#db.events")
 
 # Polars integration
-from strata.integration.polars import scan_to_polars
-df = scan_to_polars("file:///warehouse#db.events")
+from strata.integration.polars import fetch_to_polars
+df = fetch_to_polars("file:///warehouse#db.events")
 
 # DuckDB integration
 from strata.integration.duckdb import StrataScanner

@@ -191,12 +191,12 @@ class TestRateLimiter:
         )
         limiter = RateLimiter(config, clock=clock)
 
-        # First 2 scan requests allowed
-        assert limiter.check("client1", endpoint="/v1/scan").allowed is True
-        assert limiter.check("client1", endpoint="/v1/scan").allowed is True
+        # First 2 materialize requests allowed
+        assert limiter.check("client1", endpoint="/v1/materialize").allowed is True
+        assert limiter.check("client1", endpoint="/v1/materialize").allowed is True
 
-        # Third scan request rejected
-        result = limiter.check("client1", endpoint="/v1/scan")
+        # Third materialize request rejected
+        result = limiter.check("client1", endpoint="/v1/materialize")
         assert result.allowed is False
         assert result.limit_type == "endpoint"
 

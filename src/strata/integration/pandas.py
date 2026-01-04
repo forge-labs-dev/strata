@@ -12,10 +12,10 @@ applied *after* data is fetched from Strata. To get Strata-side pruning,
 pass filters to the fetch functions. For example:
 
     # Strata-side pruning (fast, reduces data transfer):
-    df = scan_to_pandas(uri, filters=[gt("value", 100)])
+    df = fetch_to_pandas(uri, filters=[gt("value", 100)])
 
     # pandas-side filtering (after full fetch):
-    df = scan_to_pandas(uri)
+    df = fetch_to_pandas(uri)
     df = df[df["value"] > 100]
 
 For best performance, use Strata filters for coarse pruning and pandas
@@ -23,7 +23,7 @@ filters for fine-grained predicates.
 """
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
@@ -35,7 +35,25 @@ if TYPE_CHECKING:
     import pandas as pd
 
 
-def scan_to_pandas(
+def _build_identity_transform(
+    columns: list[str] | None = None,
+    filters: list[Filter] | None = None,
+    snapshot_id: int | None = None,
+) -> dict[str, Any]:
+    """Build an identity@v1 transform specification."""
+    params: dict[str, Any] = {}
+    if columns:
+        params["columns"] = columns
+    if filters:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    if snapshot_id is not None:
+        params["snapshot_id"] = snapshot_id
+    return {"executor": "identity@v1", "params": params}
+
+
+def fetch_to_pandas(
     table_uri: str,
     snapshot_id: int | None = None,
     columns: list[str] | None = None,
@@ -60,10 +78,10 @@ def scan_to_pandas(
         pandas DataFrame with the fetch results
 
     Example:
-        from strata.integration.pandas import scan_to_pandas
+        from strata.integration.pandas import fetch_to_pandas
         from strata.client import gt
 
-        df = scan_to_pandas(
+        df = fetch_to_pandas(
             "file:///warehouse#db.events",
             columns=["id", "value", "timestamp"],
             filters=[gt("value", 100.0)],
@@ -73,16 +91,21 @@ def scan_to_pandas(
     client = StrataClient(config=config, base_url=base_url)
 
     try:
-        arrow_table = client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize the table data
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        # Fetch the artifact data
+        arrow_table = client.fetch(artifact.uri)
         # Convert Arrow table to pandas (may copy due to memory layout)
         return arrow_table.to_pandas()
     finally:
         client.close()
+
+
+# Backwards compatibility alias
+scan_to_pandas = fetch_to_pandas
 
 
 class StrataPandasScanner:
@@ -94,8 +117,8 @@ class StrataPandasScanner:
         from strata.integration.pandas import StrataPandasScanner
 
         with StrataPandasScanner() as scanner:
-            events = scanner.scan("file:///warehouse#db.events")
-            users = scanner.scan("file:///warehouse#db.users")
+            events = scanner.fetch("file:///warehouse#db.events")
+            users = scanner.fetch("file:///warehouse#db.users")
 
             # Merge in pandas
             result = events.merge(users, on="user_id")
@@ -118,7 +141,7 @@ class StrataPandasScanner:
         """Close the client connection."""
         self.client.close()
 
-    def scan(
+    def fetch(
         self,
         table_uri: str,
         snapshot_id: int | None = None,
@@ -126,15 +149,19 @@ class StrataPandasScanner:
         filters: list[Filter] | None = None,
     ) -> "pd.DataFrame":
         """Fetch a table and return a pandas DataFrame."""
-        arrow_table = self.client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize the table data
+        artifact = self.client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        # Fetch the artifact data
+        arrow_table = self.client.fetch(artifact.uri)
         return arrow_table.to_pandas()
 
-    def scan_batches(
+    # Backwards compatibility alias
+    scan = fetch
+
+    def fetch_batches(
         self,
         table_uri: str,
         snapshot_id: int | None = None,
@@ -157,16 +184,18 @@ class StrataPandasScanner:
 
         Example:
             with StrataPandasScanner() as scanner:
-                for batch in scanner.scan_batches("file:///warehouse#db.events"):
+                for batch in scanner.fetch_batches("file:///warehouse#db.events"):
                     # Process each batch
                     df = batch.to_pandas()
                     process(df)
         """
-        # Use fetch and iterate over the table's batches
-        arrow_table = self.client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize and fetch
+        artifact = self.client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        arrow_table = self.client.fetch(artifact.uri)
         yield from arrow_table.to_batches()
+
+    # Backwards compatibility alias
+    scan_batches = fetch_batches

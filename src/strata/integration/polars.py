@@ -10,17 +10,17 @@ Important: Polars filter operations (e.g., df.filter(...)) are applied
 filters to the fetch functions. For example:
 
     # Strata-side pruning (fast, reduces data transfer):
-    df = scan_to_polars(uri, filters=[gt("value", 100)])
+    df = fetch_to_polars(uri, filters=[gt("value", 100)])
 
     # Polars-side filtering (after full fetch):
-    df = scan_to_polars(uri).filter(pl.col("value") > 100)
+    df = fetch_to_polars(uri).filter(pl.col("value") > 100)
 
 For best performance, use Strata filters for coarse pruning and Polars
 filters for fine-grained predicates.
 """
 
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pyarrow as pa
 
@@ -32,7 +32,25 @@ if TYPE_CHECKING:
     import polars as pl
 
 
-def scan_to_polars(
+def _build_identity_transform(
+    columns: list[str] | None = None,
+    filters: list[Filter] | None = None,
+    snapshot_id: int | None = None,
+) -> dict[str, Any]:
+    """Build an identity@v1 transform specification."""
+    params: dict[str, Any] = {}
+    if columns:
+        params["columns"] = columns
+    if filters:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    if snapshot_id is not None:
+        params["snapshot_id"] = snapshot_id
+    return {"executor": "identity@v1", "params": params}
+
+
+def fetch_to_polars(
     table_uri: str,
     snapshot_id: int | None = None,
     columns: list[str] | None = None,
@@ -57,10 +75,10 @@ def scan_to_polars(
         Polars DataFrame with the fetch results
 
     Example:
-        from strata.integration.polars import scan_to_polars
+        from strata.integration.polars import fetch_to_polars
         from strata.client import gt
 
-        df = scan_to_polars(
+        df = fetch_to_polars(
             "file:///warehouse#db.events",
             columns=["id", "value", "timestamp"],
             filters=[gt("value", 100.0)],
@@ -72,19 +90,24 @@ def scan_to_polars(
     client = StrataClient(config=config, base_url=base_url)
 
     try:
-        arrow_table = client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize the table data
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        # Fetch the artifact data
+        arrow_table = client.fetch(artifact.uri)
         # Arrow-native; typically zero-copy when types are supported
         return pl.from_arrow(arrow_table)
     finally:
         client.close()
 
 
-def scan_to_lazy(
+# Backwards compatibility alias
+scan_to_polars = fetch_to_polars
+
+
+def fetch_to_lazy(
     table_uri: str,
     snapshot_id: int | None = None,
     columns: list[str] | None = None,
@@ -92,15 +115,12 @@ def scan_to_lazy(
     config: StrataConfig | None = None,
     base_url: str | None = None,
 ) -> "pl.LazyFrame":
-    """Scan an Iceberg table via Strata and return a Polars LazyFrame.
+    """Fetch an Iceberg table via Strata and return a Polars LazyFrame.
 
     NOTE: Data is fetched eagerly from Strata, then wrapped in a LazyFrame
     for downstream lazy transforms. This is NOT true lazy evaluation from
     storage—use this when you want Polars' lazy API for chaining operations
     after the fetch is complete.
-
-    For true streaming, use StrataPolarsScanner.scan_batches() which yields
-    Arrow RecordBatches as they arrive.
 
     Args:
         table_uri: Iceberg table URI
@@ -114,10 +134,10 @@ def scan_to_lazy(
         Polars LazyFrame wrapping eagerly-fetched data
 
     Example:
-        from strata.integration.polars import scan_to_lazy
+        from strata.integration.polars import fetch_to_lazy
 
         # Data is fetched immediately, but downstream ops are lazy
-        lf = scan_to_lazy("file:///warehouse#db.events")
+        lf = fetch_to_lazy("file:///warehouse#db.events")
         result = (
             lf
             .filter(pl.col("value") > 100)
@@ -126,7 +146,7 @@ def scan_to_lazy(
             .collect()  # Only this triggers Polars computation
         )
     """
-    df = scan_to_polars(
+    df = fetch_to_polars(
         table_uri=table_uri,
         snapshot_id=snapshot_id,
         columns=columns,
@@ -135,6 +155,10 @@ def scan_to_lazy(
         base_url=base_url,
     )
     return df.lazy()
+
+
+# Backwards compatibility alias
+scan_to_lazy = fetch_to_lazy
 
 
 class StrataPolarsScanner:
@@ -146,8 +170,8 @@ class StrataPolarsScanner:
         from strata.integration.polars import StrataPolarsScanner
 
         with StrataPolarsScanner() as scanner:
-            events = scanner.scan("file:///warehouse#db.events")
-            users = scanner.scan("file:///warehouse#db.users")
+            events = scanner.fetch("file:///warehouse#db.events")
+            users = scanner.fetch("file:///warehouse#db.users")
 
             # Join in Polars
             result = events.join(users, on="user_id")
@@ -170,7 +194,7 @@ class StrataPolarsScanner:
         """Close the client connection."""
         self.client.close()
 
-    def scan(
+    def fetch(
         self,
         table_uri: str,
         snapshot_id: int | None = None,
@@ -180,15 +204,19 @@ class StrataPolarsScanner:
         """Fetch a table and return a Polars DataFrame."""
         import polars as pl
 
-        arrow_table = self.client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize the table data
+        artifact = self.client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        # Fetch the artifact data
+        arrow_table = self.client.fetch(artifact.uri)
         return pl.from_arrow(arrow_table)
 
-    def scan_lazy(
+    # Backwards compatibility alias
+    scan = fetch
+
+    def fetch_lazy(
         self,
         table_uri: str,
         snapshot_id: int | None = None,
@@ -198,16 +226,18 @@ class StrataPolarsScanner:
         """Fetch a table and return a Polars LazyFrame.
 
         NOTE: Data is fetched eagerly, then wrapped in LazyFrame.
-        For streaming, use scan_batches().
         """
-        return self.scan(
+        return self.fetch(
             table_uri=table_uri,
             snapshot_id=snapshot_id,
             columns=columns,
             filters=filters,
         ).lazy()
 
-    def scan_batches(
+    # Backwards compatibility alias
+    scan_lazy = fetch_lazy
+
+    def fetch_batches(
         self,
         table_uri: str,
         snapshot_id: int | None = None,
@@ -230,16 +260,18 @@ class StrataPolarsScanner:
 
         Example:
             with StrataPolarsScanner() as scanner:
-                for batch in scanner.scan_batches("file:///warehouse#db.events"):
+                for batch in scanner.fetch_batches("file:///warehouse#db.events"):
                     # Process each batch
                     df = pl.from_arrow(batch)
                     process(df)
         """
-        # Use fetch and iterate over the table's batches
-        arrow_table = self.client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize and fetch
+        artifact = self.client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        arrow_table = self.client.fetch(artifact.uri)
         yield from arrow_table.to_batches()
+
+    # Backwards compatibility alias
+    scan_batches = fetch_batches

@@ -17,7 +17,7 @@ from pyiceberg.types import (
 )
 
 from strata.cache import CachedFetcher, DiskCache
-from strata.client import StrataClient, lt
+from strata.client import StrataClient
 from strata.config import StrataConfig
 from strata.duckdb_ext import StrataScanner
 from strata.planner import ReadPlanner
@@ -343,8 +343,11 @@ class TestEndToEnd:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # First fetch - cache miss
-        artifact1 = client.fetch_artifact(table_uri)
-        table1 = artifact1.to_table()
+        artifact1 = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "identity@v1", "params": {}},
+        )
+        table1 = client.fetch(artifact1.uri)
         assert table1.num_rows == 500
         assert artifact1.cache_hit is False
 
@@ -352,9 +355,13 @@ class TestEndToEnd:
         time.sleep(0.5)
 
         # Second fetch - should have artifact cache hit
-        artifact2 = client.fetch_artifact(table_uri)
-        table2 = artifact2.to_table()
+        artifact2 = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "identity@v1", "params": {}},
+        )
+        table2 = client.fetch(artifact2.uri)
         assert table2.num_rows == 500
+        # Artifact cache hit means we found an existing artifact with same provenance
         assert artifact2.cache_hit is True
         assert artifact2.artifact_id == artifact1.artifact_id
 
@@ -363,9 +370,16 @@ class TestEndToEnd:
         client = server_with_client["client"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Fetch with filter
-        filters = [lt("value", 100.0)]
-        table = client.fetch(table_uri, filters=filters)
+        # Fetch with filter using identity transform params
+        filters = [{"column": "value", "op": "<", "value": 100.0}]
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform={
+                "executor": "identity@v1",
+                "params": {"filters": filters},
+            },
+        )
+        table = client.fetch(artifact.uri)
 
         # Should have rows (exact count depends on row group pruning)
         # May include all rows if row groups aren't pruned,
@@ -405,7 +419,11 @@ class TestEndToEnd:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # Do a fetch to populate caches
-        table = client.fetch(table_uri)
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "identity@v1", "params": {}},
+        )
+        table = client.fetch(artifact.uri)
         assert table.num_rows > 0
 
         # Check metadata stats endpoint
@@ -485,7 +503,11 @@ class TestEndToEnd:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # Do a fetch to generate some metrics
-        table = client.fetch(table_uri)
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "identity@v1", "params": {}},
+        )
+        table = client.fetch(artifact.uri)
         assert table.num_rows > 0
 
         # Fetch Prometheus metrics
@@ -519,7 +541,11 @@ class TestEndToEnd:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         # Do a fetch to populate cache
-        table = client.fetch(table_uri)
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform={"executor": "identity@v1", "params": {}},
+        )
+        table = client.fetch(artifact.uri)
         assert table.num_rows > 0
 
         # Test basic inspect (no filters)

@@ -17,7 +17,7 @@ For best performance, use Strata filters for coarse pruning and DuckDB
 filters for fine-grained predicates.
 """
 
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import duckdb
 import pyarrow as pa
@@ -43,6 +43,24 @@ class StrataTableParams(TypedDict, total=False):
     snapshot_id: int | None
     columns: list[str] | None
     filters: list[Filter] | None
+
+
+def _build_identity_transform(
+    columns: list[str] | None = None,
+    filters: list[Filter] | None = None,
+    snapshot_id: int | None = None,
+) -> dict[str, Any]:
+    """Build an identity@v1 transform specification."""
+    params: dict[str, Any] = {}
+    if columns:
+        params["columns"] = columns
+    if filters:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    if snapshot_id is not None:
+        params["snapshot_id"] = snapshot_id
+    return {"executor": "identity@v1", "params": params}
 
 
 def register_strata_scan(
@@ -96,13 +114,13 @@ def register_strata_scan(
     client = StrataClient(config=config, base_url=base_url)
 
     try:
-        # Fetch data as Arrow Table
-        arrow_table = client.fetch(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Materialize the table data
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform=_build_identity_transform(columns, filters, snapshot_id),
         )
+        # Fetch the artifact data
+        arrow_table = client.fetch(artifact.uri)
 
         # Register as a view in DuckDB (overwrites if exists)
         conn.register(name, arrow_table)

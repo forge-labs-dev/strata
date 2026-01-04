@@ -425,48 +425,6 @@ class ReadPlan:
     owner_tenant: str | None = None  # Tenant of the owner
 
 
-class ScanRequest(BaseModel):
-    """API request to scan a table."""
-
-    table_uri: str
-    snapshot_id: int | None = None  # None means current snapshot
-    columns: list[str] | None = None  # None means all columns
-    filters: list[dict[str, Any]] | None = None  # Serialized filters
-
-    def parse_filters(self) -> list[Filter]:
-        """Parse serialized filters into Filter objects."""
-        if not self.filters:
-            return []
-        result = []
-        for f in self.filters:
-            result.append(
-                Filter(
-                    column=f["column"],
-                    op=FilterOp(f["op"]),
-                    value=_deserialize_value(f["value"]),
-                )
-            )
-        return result
-
-
-class ScanResponse(BaseModel):
-    """API response containing scan metadata.
-
-    v1 Contract:
-    - All fields are stable and will not be removed
-    - New optional fields may be added in future versions
-    """
-
-    scan_id: str
-    snapshot_id: int
-    num_tasks: int
-    total_row_groups: int
-    pruned_row_groups: int
-    columns: list[str]
-    planning_time_ms: float
-    estimated_bytes: int  # Estimated response size from Parquet metadata
-
-
 class ErrorResponse(BaseModel):
     """Standard error response format.
 
