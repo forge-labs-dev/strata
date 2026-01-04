@@ -30,6 +30,7 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
+import pyarrow.ipc as ipc
 
 from strata.client import StrataClient
 from strata.config import StrataConfig
@@ -37,6 +38,21 @@ from strata.types import Filter
 
 if TYPE_CHECKING:
     pass
+
+
+def _build_scan_transform(
+    columns: list[str] | None = None,
+    filters: list[Filter] | None = None,
+) -> dict:
+    """Build a scan@v1 transform specification."""
+    params: dict = {}
+    if columns is not None:
+        params["columns"] = columns
+    if filters is not None:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    return {"executor": "scan@v1", "params": params}
 
 
 class StrataScanner:
@@ -82,12 +98,14 @@ class StrataScanner:
         Yields:
             pyarrow.RecordBatch objects
         """
-        yield from self._client.scan(
-            table_uri=self._table_uri,
-            snapshot_id=self._snapshot_id,
-            columns=self._columns,
-            filters=self._filters,
+        # Use the unified materialize API
+        artifact = self._client.materialize(
+            inputs=[self._table_uri],
+            transform=_build_scan_transform(self._columns, self._filters),
         )
+        table = artifact.to_table()
+        for batch in table.to_batches():
+            yield batch
 
     def to_table(self) -> pa.Table:
         """Read all data as an Arrow Table.
@@ -95,12 +113,12 @@ class StrataScanner:
         Returns:
             pyarrow.Table containing all scan results
         """
-        return self._client.scan_to_table(
-            table_uri=self._table_uri,
-            snapshot_id=self._snapshot_id,
-            columns=self._columns,
-            filters=self._filters,
+        # Use the unified materialize API
+        artifact = self._client.materialize(
+            inputs=[self._table_uri],
+            transform=_build_scan_transform(self._columns, self._filters),
         )
+        return artifact.to_table()
 
     def to_reader(self) -> pa.RecordBatchReader:
         """Get a RecordBatchReader for zero-copy handoff.
@@ -237,12 +255,13 @@ class StrataDataset:
         Fetches schema on first access by reading a small sample.
         """
         if self._schema is None:
-            # Fetch schema by reading first batch
-            for batch in self._client.scan(self._table_uri, self._snapshot_id):
-                self._schema = batch.schema
-                break
-            if self._schema is None:
-                self._schema = pa.schema([])
+            # Fetch schema by reading data using the unified materialize API
+            artifact = self._client.materialize(
+                inputs=[self._table_uri],
+                transform=_build_scan_transform(),
+            )
+            table = artifact.to_table()
+            self._schema = table.schema if table.num_rows > 0 else pa.schema([])
         return self._schema
 
     def scanner(

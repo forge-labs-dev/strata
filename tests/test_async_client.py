@@ -8,6 +8,18 @@ import pytest
 from strata.client import AsyncStrataClient, gt, lt
 
 
+def build_scan_transform(columns: list[str] | None = None, filters=None) -> dict:
+    """Build a scan@v1 transform specification."""
+    params = {}
+    if columns is not None:
+        params["columns"] = columns
+    if filters is not None:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    return {"executor": "scan@v1", "params": params}
+
+
 class TestAsyncStrataClient:
     """Tests for AsyncStrataClient class."""
 
@@ -18,7 +30,11 @@ class TestAsyncStrataClient:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.fetch(table_uri)
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(),
+            )
+            table = await client.fetch(artifact.uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
 
@@ -47,31 +63,42 @@ class TestAsyncStrataClient:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.fetch(table_uri)
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(),
+            )
+            table = await client.fetch(artifact.uri)
             assert isinstance(table, pa.Table)
             assert table.num_rows == 500
 
     @pytest.mark.asyncio
-    async def test_fetch_artifact(self, server_with_client):
-        """fetch_artifact() returns Artifact."""
+    async def test_materialize_returns_artifact(self, server_with_client):
+        """materialize() returns Artifact with metadata."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            artifact = await client.fetch_artifact(table_uri, columns=["id"])
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(columns=["id"]),
+            )
             assert artifact.artifact_id is not None
-            table = await artifact.to_table()
+            table = await client.fetch(artifact.uri)
             assert table.num_rows == 500
             assert set(table.column_names) == {"id"}
 
     @pytest.mark.asyncio
     async def test_column_projection(self, server_with_client):
-        """fetch respects column projection."""
+        """materialize respects column projection."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            table = await client.fetch(table_uri, columns=["id", "value"])
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(columns=["id", "value"]),
+            )
+            table = await client.fetch(artifact.uri)
             assert table.num_columns == 2
             assert "id" in table.column_names
             assert "value" in table.column_names
@@ -79,13 +106,17 @@ class TestAsyncStrataClient:
 
     @pytest.mark.asyncio
     async def test_with_filters(self, server_with_client):
-        """fetch accepts filters for row-group pruning."""
+        """materialize accepts filters for row-group pruning."""
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Filters are for row-group pruning
-            table = await client.fetch(table_uri, filters=[gt("id", 99), lt("id", 200)])
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(filters=[gt("id", 99), lt("id", 200)]),
+            )
+            table = await client.fetch(artifact.uri)
             assert isinstance(table, pa.Table)
 
 
@@ -99,11 +130,18 @@ class TestAsyncConcurrency:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
-            # Run multiple fetches concurrently
+            # Materialize with different projections
+            artifacts = await asyncio.gather(
+                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["id"])),
+                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["value"])),
+                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["name"])),
+            )
+
+            # Fetch all artifacts concurrently
             results = await asyncio.gather(
-                client.fetch(table_uri, columns=["id"]),
-                client.fetch(table_uri, columns=["value"]),
-                client.fetch(table_uri, columns=["name"]),
+                client.fetch(artifacts[0].uri),
+                client.fetch(artifacts[1].uri),
+                client.fetch(artifacts[2].uri),
             )
 
             assert len(results) == 3
@@ -119,9 +157,13 @@ class TestAsyncConcurrency:
         table_uri = server_with_client["warehouse"]["table_uri"]
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
+            artifact1, artifact2 = await asyncio.gather(
+                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["id", "value"])),
+                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["name"])),
+            )
             table1, table2 = await asyncio.gather(
-                client.fetch(table_uri, columns=["id", "value"]),
-                client.fetch(table_uri, columns=["name"]),
+                client.fetch(artifact1.uri),
+                client.fetch(artifact2.uri),
             )
 
             assert table1.num_columns == 2
@@ -141,7 +183,11 @@ class TestAsyncClientManualClose:
 
         client = AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}")
         try:
-            table = await client.fetch(table_uri)
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(),
+            )
+            table = await client.fetch(artifact.uri)
             assert table.num_rows == 500
         finally:
             await client.close()
@@ -158,11 +204,19 @@ class TestAsyncClientManualClose:
             assert "status" in health
 
             # First fetch
-            table1 = await client.fetch(table_uri, columns=["id"])
+            artifact1 = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(columns=["id"]),
+            )
+            table1 = await client.fetch(artifact1.uri)
             assert table1.num_rows == 500
 
             # Second fetch
-            table2 = await client.fetch(table_uri, columns=["value"])
+            artifact2 = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(columns=["value"]),
+            )
+            table2 = await client.fetch(artifact2.uri)
             assert table2.num_rows == 500
 
             # Metrics

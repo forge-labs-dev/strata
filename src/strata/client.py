@@ -453,9 +453,14 @@ class StrataClient:
         timeout: float,
     ) -> Artifact:
         """Request server-side execution via unified /v1/materialize endpoint."""
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
         request_body: dict[str, Any] = {
             "inputs": inputs,
-            "transform": transform,
+            "transform": server_transform,
             "mode": mode,
         }
         if name:
@@ -1054,9 +1059,14 @@ class AsyncStrataClient:
             )
             table = await client.fetch(artifact.uri)
         """
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
         request_body: dict[str, Any] = {
             "inputs": inputs,
-            "transform": transform,
+            "transform": server_transform,
             "mode": mode,
         }
         if name:

@@ -38,6 +38,21 @@ if TYPE_CHECKING:
     import pyarrow as pa
 
 
+def _build_scan_transform(
+    columns: list[str] | None = None,
+    filters: list[Filter] | None = None,
+) -> dict:
+    """Build a scan@v1 transform specification."""
+    params: dict = {}
+    if columns is not None:
+        params["columns"] = columns
+    if filters is not None:
+        params["filters"] = [
+            {"column": f.column, "op": f.op.value, "value": f.value} for f in filters
+        ]
+    return {"executor": "scan@v1", "params": params}
+
+
 def register_strata_table(
     name: str,
     table_uri: str,
@@ -86,13 +101,12 @@ def register_strata_table(
 
     client = StrataClient(config=config, base_url=base_url)
     try:
-        # Fetch data as Arrow table
-        arrow_table = client.scan_to_table(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Fetch data as Arrow table using unified materialize API
+        artifact = client.materialize(
+            inputs=[table_uri],
+            transform=_build_scan_transform(columns, filters),
         )
+        arrow_table = artifact.to_table()
 
         # Register with DataFusion using from_arrow_table
         # This creates a DataFrame internally, we need to register it as a table
@@ -149,14 +163,13 @@ def strata_query(
 
     client = StrataClient(config=config, base_url=base_url)
     try:
-        # Register all tables
+        # Register all tables using unified materialize API
         for name, uri in tables.items():
-            arrow_table = client.scan_to_table(
-                table_uri=uri,
-                snapshot_id=snapshot_id,
-                columns=columns.get(name),
-                filters=filters.get(name),
+            artifact = client.materialize(
+                inputs=[uri],
+                transform=_build_scan_transform(columns.get(name), filters.get(name)),
             )
+            arrow_table = artifact.to_table()
             ctx.register_record_batches(name, [arrow_table.to_batches()])
 
         # Execute query and collect results
@@ -228,12 +241,12 @@ class StrataDataFusionContext:
         Returns:
             self for method chaining
         """
-        arrow_table = self.client.scan_to_table(
-            table_uri=table_uri,
-            snapshot_id=snapshot_id,
-            columns=columns,
-            filters=filters,
+        # Fetch data using unified materialize API
+        artifact = self.client.materialize(
+            inputs=[table_uri],
+            transform=_build_scan_transform(columns, filters),
         )
+        arrow_table = artifact.to_table()
 
         # Keep reference to prevent garbage collection
         self._tables[name] = arrow_table

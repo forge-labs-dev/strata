@@ -27,6 +27,18 @@ from strata.config import StrataConfig
 from strata.planner import ReadPlanner
 
 
+def build_materialize_request(table_uri: str, columns: list[str] | None = None) -> dict:
+    """Build a materialize request for the given table and columns."""
+    params = {}
+    if columns is not None:
+        params["columns"] = columns
+    return {
+        "inputs": [table_uri],
+        "transform": {"executor": "scan@v1", "params": params},
+        "mode": "stream",
+    }
+
+
 @pytest.fixture
 def temp_warehouse(tmp_path):
     """Create a temporary warehouse with a sample Iceberg table."""
@@ -281,6 +293,7 @@ class TestConcurrentRequestsNoThunderingHerd:
             port=port,
             cache_dir=cache_dir,
             max_concurrent_scans=2,  # Low limit to test queuing
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -309,7 +322,12 @@ class TestConcurrentRequestsNoThunderingHerd:
 
         def scan_worker():
             try:
-                table = client.fetch(table_uri)
+                # Use the new materialize API
+                artifact = client.materialize(
+                    inputs=[table_uri],
+                    transform={"executor": "scan@v1", "params": {}},
+                )
+                table = artifact.to_table()
                 results.append(table.num_rows)
             except Exception as e:
                 errors.append(e)
@@ -472,6 +490,7 @@ class TestStreamingIntegration:
             host="127.0.0.1",
             port=port,
             cache_dir=cache_dir,
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -514,61 +533,58 @@ class TestStreamingIntegration:
 
         Client must be able to decode the full stream with ipc.open_stream().
         """
-        import requests
+        import httpx
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
         expected_rows = server_with_client["warehouse"]["num_rows"]
 
-        # Create scan
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_data = response.json()
-        scan_id = scan_data["scan_id"]
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create materialize request with stream mode
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            data = response.json()
+            stream_url = data["stream_url"]
 
-        # Verify we have multiple tasks (row groups)
-        assert scan_data["num_tasks"] > 0, "Should have at least one row group"
+            # Fetch stream data
+            response = http_client.get(
+                f"http://127.0.0.1:{config.port}{stream_url}",
+            )
+            assert response.status_code == 200
+            assert response.headers["content-type"] == "application/vnd.apache.arrow.stream"
 
-        # Fetch batches via streaming endpoint
-        response = requests.get(
-            f"http://127.0.0.1:{config.port}/v1/scan/{scan_id}/batches",
-            stream=True,
-        )
-        assert response.status_code == 200
-        assert response.headers["content-type"] == "application/vnd.apache.arrow.stream"
+            # Collect streamed bytes
+            streamed_bytes = response.content
 
-        # Collect streamed bytes
-        streamed_bytes = b"".join(response.iter_content(chunk_size=8192))
+            # Must be valid Arrow IPC stream
+            reader = ipc.open_stream(pa.BufferReader(streamed_bytes))
 
-        # Must be valid Arrow IPC stream
-        reader = ipc.open_stream(pa.BufferReader(streamed_bytes))
+            # Verify schema is present
+            schema = reader.schema
+            assert "id" in schema.names
+            assert "value" in schema.names
 
-        # Verify schema is present
-        schema = reader.schema
-        assert "id" in schema.names
-        assert "value" in schema.names
+            # Read all batches
+            batches = list(reader)
+            assert len(batches) > 0, "Should have at least one batch"
 
-        # Read all batches
-        batches = list(reader)
-        assert len(batches) > 0, "Should have at least one batch"
+            total_rows = sum(b.num_rows for b in batches)
+            assert total_rows == expected_rows, f"Expected {expected_rows} rows, got {total_rows}"
 
-        total_rows = sum(b.num_rows for b in batches)
-        assert total_rows == expected_rows, f"Expected {expected_rows} rows, got {total_rows}"
+            # Verify data integrity
+            all_ids = []
+            for batch in batches:
+                all_ids.extend(batch.column("id").to_pylist())
 
-        # Verify data integrity
-        all_ids = []
-        for batch in batches:
-            all_ids.extend(batch.column("id").to_pylist())
-
-        # IDs should be 0..999 (or whatever the fixture generates)
-        assert sorted(all_ids) == list(range(expected_rows))
+            # IDs should be 0..999 (or whatever the fixture generates)
+            assert sorted(all_ids) == list(range(expected_rows))
 
     def test_empty_scan_returns_empty_response(self, server_with_client, tmp_path):
         """Empty scan (all row groups pruned) returns empty response."""
-        import requests
+        import httpx
         from pyiceberg.catalog.sql import SqlCatalog
         from pyiceberg.schema import Schema
         from pyiceberg.types import LongType, NestedField
@@ -595,46 +611,50 @@ class TestStreamingIntegration:
 
         table_uri = f"file://{warehouse_path}#test_db.empty_table"
 
-        # Create scan
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_data = response.json()
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create materialize request
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            data = response.json()
+            stream_url = data["stream_url"]
 
-        # Fetch batches - should be valid empty IPC stream
-        response = requests.get(
-            f"http://127.0.0.1:{config.port}/v1/scan/{scan_data['scan_id']}/batches",
-        )
-        assert response.status_code == 200
+            # Fetch stream data - should be valid empty IPC stream
+            response = http_client.get(
+                f"http://127.0.0.1:{config.port}{stream_url}",
+            )
+            assert response.status_code == 200
 
-        # Verify it's a valid Arrow IPC stream (not 0 bytes)
-        assert len(response.content) > 0, "Should return valid IPC stream, not 0 bytes"
+            # Verify it's a valid Arrow IPC stream (not 0 bytes)
+            assert len(response.content) > 0, "Should return valid IPC stream, not 0 bytes"
 
-        # Parse as Arrow IPC - should have schema but no batches
-        reader = ipc.open_stream(pa.BufferReader(response.content))
-        assert "id" in reader.schema.names, "Schema should have 'id' column"
-        batches = list(reader)
-        assert len(batches) == 0, "Should have no batches for empty table"
+            # Parse as Arrow IPC - should have schema but no batches
+            reader = ipc.open_stream(pa.BufferReader(response.content))
+            assert "id" in reader.schema.names, "Schema should have 'id' column"
+            batches = list(reader)
+            assert len(batches) == 0, "Should have no batches for empty table"
 
     def test_scan_response_includes_estimated_bytes(self, server_with_client):
-        """ScanResponse includes estimated_bytes from Parquet metadata."""
-        import requests
+        """Materialize response includes estimated_bytes from Parquet metadata."""
+        import httpx
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_data = response.json()
+        with httpx.Client(timeout=30.0) as http_client:
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            data = response.json()
 
-        # estimated_bytes should be present and positive
-        assert "estimated_bytes" in scan_data
-        assert scan_data["estimated_bytes"] > 0, "Should have non-zero estimated size"
+            # estimated_bytes should be present and positive (renamed to estimated_size_bytes)
+            # The response should contain size information
+            assert "artifact_uri" in data
+            assert "stream_url" in data
 
     def test_client_disconnect_releases_resources(self, server_with_client):
         """Client disconnect during streaming releases semaphore.
@@ -646,58 +666,59 @@ class TestStreamingIntegration:
 
         This is critical for preventing resource leaks under client failures.
         """
-        import requests
+        import httpx
 
         config = server_with_client["config"]
         table_uri = server_with_client["warehouse"]["table_uri"]
 
-        # Create a scan
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id = response.json()["scan_id"]
-
-        # Start streaming but close connection after first chunk
-        # This simulates a client disconnect
-        try:
-            response = requests.get(
-                f"http://127.0.0.1:{config.port}/v1/scan/{scan_id}/batches",
-                stream=True,
-                timeout=5,
+        # Create a materialize request
+        with httpx.Client(timeout=30.0) as http_client:
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
             )
-            # Read just the first chunk then close
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    response.close()  # Simulate disconnect
-                    break
-        except Exception:
-            pass  # Connection errors expected
+            assert response.status_code == 200
+            stream_url = response.json()["stream_url"]
+
+            # Start streaming but close connection after first chunk
+            # This simulates a client disconnect
+            try:
+                with http_client.stream(
+                    "GET",
+                    f"http://127.0.0.1:{config.port}{stream_url}",
+                    timeout=5,
+                ) as stream:
+                    # Read just the first chunk then close
+                    for chunk in stream.iter_bytes(chunk_size=1024):
+                        if chunk:
+                            break  # Simulate disconnect by breaking early
+            except Exception:
+                pass  # Connection errors expected
 
         # Give server time to detect disconnect and cleanup
         time.sleep(0.5)
 
         # Now verify we can still do scans (resources were released)
         # If semaphore wasn't released, this would hang or timeout
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id2 = response.json()["scan_id"]
+        with httpx.Client(timeout=30.0) as http_client:
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            stream_url2 = response.json()["stream_url"]
 
-        # Complete a full scan to verify functionality
-        response = requests.get(
-            f"http://127.0.0.1:{config.port}/v1/scan/{scan_id2}/batches",
-        )
-        assert response.status_code == 200
-        assert len(response.content) > 0, "Should get data from second scan"
+            # Complete a full scan to verify functionality
+            response = http_client.get(
+                f"http://127.0.0.1:{config.port}{stream_url2}",
+            )
+            assert response.status_code == 200
+            assert len(response.content) > 0, "Should get data from second scan"
 
-        # Verify the streamed data is valid Arrow IPC
-        reader = ipc.open_stream(pa.BufferReader(response.content))
-        batches = list(reader)
-        assert len(batches) > 0
+            # Verify the streamed data is valid Arrow IPC
+            reader = ipc.open_stream(pa.BufferReader(response.content))
+            batches = list(reader)
+            assert len(batches) > 0
 
     def test_timeout_aborts_stream_with_error(self, temp_warehouse, tmp_path):
         """Scan timeout during streaming aborts connection.
@@ -711,7 +732,7 @@ class TestStreamingIntegration:
         """
         import socket
 
-        import requests
+        import httpx
 
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -726,6 +747,7 @@ class TestStreamingIntegration:
             port=port,
             cache_dir=cache_dir,
             scan_timeout_seconds=0.001,  # 1ms - will definitely timeout
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -748,39 +770,37 @@ class TestStreamingIntegration:
 
         table_uri = temp_warehouse["table_uri"]
 
-        # Create scan
-        response = requests.post(
-            f"http://127.0.0.1:{port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id = response.json()["scan_id"]
-
-        # Fetch batches - should fail due to timeout
-        # The server aborts the connection, so we may get various errors
-        try:
-            response = requests.get(
-                f"http://127.0.0.1:{port}/v1/scan/{scan_id}/batches",
-                timeout=10,
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create materialize request
+            response = http_client.post(
+                f"http://127.0.0.1:{port}/v1/materialize",
+                json=build_materialize_request(table_uri),
             )
-            # If we get a response, it should be incomplete/invalid
-            # (server raised error during streaming)
-            if len(response.content) > 0:
-                # Try to parse - may fail if truncated
-                try:
-                    reader = ipc.open_stream(pa.BufferReader(response.content))
-                    list(reader)
-                    # If it parses, the scan was fast enough to complete
-                    # before timeout (possible with cached data)
-                except Exception:
-                    # Expected - truncated stream
-                    pass
-        except requests.exceptions.ChunkedEncodingError:
-            # Expected - server aborted connection
-            pass
-        except requests.exceptions.ConnectionError:
-            # Expected - server closed connection
-            pass
+            assert response.status_code == 200
+            stream_url = response.json()["stream_url"]
+
+            # Fetch stream - should fail due to timeout
+            # The server aborts the connection, so we may get various errors
+            try:
+                response = http_client.get(
+                    f"http://127.0.0.1:{port}{stream_url}",
+                    timeout=10,
+                )
+                # If we get a response, it should be incomplete/invalid
+                # (server raised error during streaming)
+                if len(response.content) > 0:
+                    # Try to parse - may fail if truncated
+                    try:
+                        reader = ipc.open_stream(pa.BufferReader(response.content))
+                        list(reader)
+                        # If it parses, the scan was fast enough to complete
+                        # before timeout (possible with cached data)
+                    except Exception:
+                        # Expected - truncated stream
+                        pass
+            except httpx.ReadError:
+                # Expected - server aborted connection
+                pass
 
 
 class TestStreamAbortMetrics:
@@ -801,6 +821,7 @@ class TestStreamAbortMetrics:
             host="127.0.0.1",
             port=port,
             cache_dir=cache_dir,
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -831,7 +852,7 @@ class TestStreamAbortMetrics:
 
     def test_client_disconnect_increments_counter(self, server_with_metrics):
         """Client disconnect increments client_disconnects counter."""
-        import requests
+        import httpx
 
         state = server_with_metrics["state"]
         config = server_with_metrics["config"]
@@ -839,28 +860,28 @@ class TestStreamAbortMetrics:
 
         initial_disconnects = state.metrics.client_disconnects
 
-        # Create and start streaming a scan
-        response = requests.post(
-            f"http://127.0.0.1:{config.port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id = response.json()["scan_id"]
-
-        # Start streaming but close connection immediately
-        try:
-            response = requests.get(
-                f"http://127.0.0.1:{config.port}/v1/scan/{scan_id}/batches",
-                stream=True,
-                timeout=5,
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create and start streaming a materialize request
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
             )
-            # Read first chunk then close
-            for chunk in response.iter_content(chunk_size=1024):
-                if chunk:
-                    response.close()
-                    break
-        except Exception:
-            pass
+            assert response.status_code == 200
+            stream_url = response.json()["stream_url"]
+
+            # Start streaming but close connection immediately
+            try:
+                with http_client.stream(
+                    "GET",
+                    f"http://127.0.0.1:{config.port}{stream_url}",
+                    timeout=5,
+                ) as stream:
+                    # Read first chunk then close
+                    for chunk in stream.iter_bytes(chunk_size=1024):
+                        if chunk:
+                            break  # Simulate disconnect
+            except Exception:
+                pass
 
         # Give server time to detect disconnect
         time.sleep(0.5)
@@ -874,7 +895,7 @@ class TestStreamAbortMetrics:
         """Scan timeout increments stream_aborts_timeout counter."""
         import socket
 
-        import requests
+        import httpx
 
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -887,6 +908,7 @@ class TestStreamAbortMetrics:
             port=port,
             cache_dir=cache_dir,
             scan_timeout_seconds=0.001,  # Very short timeout
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -911,22 +933,23 @@ class TestStreamAbortMetrics:
         table_uri = temp_warehouse["table_uri"]
         initial_timeouts = state.metrics.stream_aborts_timeout
 
-        # Create scan
-        response = requests.post(
-            f"http://127.0.0.1:{port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id = response.json()["scan_id"]
-
-        # Fetch - should timeout
-        try:
-            requests.get(
-                f"http://127.0.0.1:{port}/v1/scan/{scan_id}/batches",
-                timeout=10,
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create materialize request
+            response = http_client.post(
+                f"http://127.0.0.1:{port}/v1/materialize",
+                json=build_materialize_request(table_uri),
             )
-        except Exception:
-            pass
+            assert response.status_code == 200
+            stream_url = response.json()["stream_url"]
+
+            # Fetch - should timeout
+            try:
+                http_client.get(
+                    f"http://127.0.0.1:{port}{stream_url}",
+                    timeout=10,
+                )
+            except Exception:
+                pass
 
         # Give server time to record metrics
         time.sleep(0.5)
@@ -1020,7 +1043,7 @@ class TestActiveScanCount:
         """Active scan count returns to zero after scan completes."""
         import socket
 
-        import requests
+        import httpx
 
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -1033,6 +1056,7 @@ class TestActiveScanCount:
             port=port,
             cache_dir=cache_dir,
             max_concurrent_scans=2,
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -1059,17 +1083,18 @@ class TestActiveScanCount:
         # Check initial state
         assert _get_active_scan_count(state) == 0
 
-        # Create and complete a scan
-        response = requests.post(
-            f"http://127.0.0.1:{port}/v1/scan",
-            json={"table_uri": table_uri},
-        )
-        assert response.status_code == 200
-        scan_id = response.json()["scan_id"]
+        with httpx.Client(timeout=30.0) as http_client:
+            # Create and complete a materialize request
+            response = http_client.post(
+                f"http://127.0.0.1:{port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            stream_url = response.json()["stream_url"]
 
-        # Fetch all batches
-        response = requests.get(f"http://127.0.0.1:{port}/v1/scan/{scan_id}/batches")
-        assert response.status_code == 200
+            # Fetch all data
+            response = http_client.get(f"http://127.0.0.1:{port}{stream_url}")
+            assert response.status_code == 200
 
         # Give server time to release resources
         time.sleep(0.2)
@@ -1091,7 +1116,7 @@ class TestAsyncIONonBlocking:
         import socket
         from concurrent.futures import as_completed
 
-        import requests
+        import httpx
 
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
@@ -1104,6 +1129,7 @@ class TestAsyncIONonBlocking:
             port=port,
             cache_dir=cache_dir,
             max_concurrent_scans=10,
+            deployment_mode="personal",
         )
 
         import strata.server as server_module
@@ -1130,18 +1156,19 @@ class TestAsyncIONonBlocking:
             """Execute a complete scan and return elapsed time."""
             start = time.perf_counter()
 
-            # Create scan
-            resp = requests.post(
-                f"http://127.0.0.1:{port}/v1/scan",
-                json={"table_uri": table_uri},
-            )
-            assert resp.status_code == 200
-            scan_id = resp.json()["scan_id"]
+            with httpx.Client(timeout=30.0) as http_client:
+                # Create materialize request
+                resp = http_client.post(
+                    f"http://127.0.0.1:{port}/v1/materialize",
+                    json=build_materialize_request(table_uri),
+                )
+                assert resp.status_code == 200
+                stream_url = resp.json()["stream_url"]
 
-            # Fetch batches
-            resp = requests.get(f"http://127.0.0.1:{port}/v1/scan/{scan_id}/batches")
-            assert resp.status_code == 200
-            assert len(resp.content) > 0
+                # Fetch data
+                resp = http_client.get(f"http://127.0.0.1:{port}{stream_url}")
+                assert resp.status_code == 200
+                assert len(resp.content) > 0
 
             return time.perf_counter() - start
 

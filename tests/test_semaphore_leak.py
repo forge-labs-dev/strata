@@ -28,6 +28,18 @@ from strata.config import StrataConfig
 from tests.conftest import find_free_port, run_server
 
 
+def build_materialize_request(table_uri: str, columns: list[str] | None = None) -> dict:
+    """Build a materialize request for the given table and columns."""
+    params = {}
+    if columns is not None:
+        params["columns"] = columns
+    return {
+        "inputs": [table_uri],
+        "transform": {"executor": "scan@v1", "params": params},
+        "mode": "stream",
+    }
+
+
 @pytest.fixture
 def large_warehouse(tmp_path):
     """Create a warehouse with enough data to cause slow responses."""
@@ -91,6 +103,7 @@ class TestSemaphoreLeakRegression:
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=5,  # Low limit to make leak visible quickly
             scan_timeout_seconds=300.0,  # Server-side timeout (long)
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -102,34 +115,25 @@ class TestSemaphoreLeakRegression:
             for i in range(10):
                 try:
                     with httpx.Client(timeout=0.001) as client:  # 1ms timeout
-                        # Create scan
+                        # Create materialize request
                         resp = client.post(
-                            f"{base_url}/v1/scan",
-                            json={"table_uri": table_uri},
+                            f"{base_url}/v1/materialize",
+                            json=build_materialize_request(table_uri),
                             timeout=0.5,  # Longer timeout for POST
                         )
                         if resp.status_code == 200:
-                            scan_id = resp.json()["scan_id"]
+                            stream_url = resp.json()["stream_url"]
                             # Try to stream - this should timeout
                             try:
                                 with client.stream(
                                     "GET",
-                                    f"{base_url}/v1/scan/{scan_id}/batches",
+                                    f"{base_url}{stream_url}",
                                     timeout=0.001,  # Very short timeout
                                 ) as stream:
                                     for _ in stream.iter_bytes():
                                         pass
                             except httpx.TimeoutException:
                                 timeout_count += 1
-                            finally:
-                                # Always try to delete scan
-                                try:
-                                    client.delete(
-                                        f"{base_url}/v1/scan/{scan_id}",
-                                        timeout=1.0,
-                                    )
-                                except Exception:
-                                    pass
                 except Exception:
                     timeout_count += 1
 
@@ -163,10 +167,10 @@ class TestSemaphoreLeakRegression:
                     f"(should be 0 after all requests complete)"
                 )
 
-                # New scans should succeed (not 503)
+                # New materialize should succeed (not 503)
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={"table_uri": table_uri},
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(table_uri),
                 )
                 assert resp.status_code == 200, (
                     f"Expected 200, got {resp.status_code}. "
@@ -181,6 +185,7 @@ class TestSemaphoreLeakRegression:
             port=port,
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=5,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -190,31 +195,25 @@ class TestSemaphoreLeakRegression:
             for i in range(10):
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(
-                        f"{base_url}/v1/scan",
-                        json={"table_uri": table_uri},
+                        f"{base_url}/v1/materialize",
+                        json=build_materialize_request(table_uri),
                     )
                     if resp.status_code != 200:
                         continue
 
-                    scan_id = resp.json()["scan_id"]
+                    stream_url = resp.json()["stream_url"]
 
                     # Start streaming but disconnect after reading some data
                     try:
                         with client.stream(
                             "GET",
-                            f"{base_url}/v1/scan/{scan_id}/batches",
+                            f"{base_url}{stream_url}",
                         ) as stream:
                             bytes_read = 0
                             for chunk in stream.iter_bytes(chunk_size=1024):
                                 bytes_read += len(chunk)
                                 if bytes_read > 1000:  # Disconnect after 1KB
                                     break
-                    except Exception:
-                        pass
-
-                    # Delete scan to be a good citizen
-                    try:
-                        client.delete(f"{base_url}/v1/scan/{scan_id}")
                     except Exception:
                         pass
 
@@ -245,6 +244,7 @@ class TestSemaphoreLeakRegression:
             port=port,
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=max_scans,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -258,30 +258,22 @@ class TestSemaphoreLeakRegression:
                 try:
                     with httpx.Client(timeout=0.001) as client:
                         resp = client.post(
-                            f"{base_url}/v1/scan",
-                            json={"table_uri": table_uri},
+                            f"{base_url}/v1/materialize",
+                            json=build_materialize_request(table_uri),
                             timeout=1.0,
                         )
                         if resp.status_code == 200:
-                            scan_id = resp.json()["scan_id"]
+                            stream_url = resp.json()["stream_url"]
                             try:
                                 with client.stream(
                                     "GET",
-                                    f"{base_url}/v1/scan/{scan_id}/batches",
+                                    f"{base_url}{stream_url}",
                                     timeout=0.001,
                                 ) as stream:
                                     for _ in stream.iter_bytes():
                                         pass
                             except httpx.TimeoutException:
                                 pass
-                            finally:
-                                try:
-                                    client.delete(
-                                        f"{base_url}/v1/scan/{scan_id}",
-                                        timeout=1.0,
-                                    )
-                                except Exception:
-                                    pass
                 except Exception:
                     pass
 
@@ -293,8 +285,8 @@ class TestSemaphoreLeakRegression:
                 # This is the key assertion: even after many timeouts,
                 # we should NOT get 503 "Server at capacity"
                 resp = client.post(
-                    f"{base_url}/v1/scan",
-                    json={"table_uri": table_uri},
+                    f"{base_url}/v1/materialize",
+                    json=build_materialize_request(table_uri),
                 )
 
                 assert resp.status_code != 503, (
@@ -313,28 +305,29 @@ class TestSemaphoreLeakRegression:
             port=port,
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=max_scans,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
             table_uri = large_warehouse["table_uri"]
 
             async def disconnect_after_partial_read():
-                """Start a scan, read some data, then disconnect."""
+                """Start a materialize, read some data, then disconnect."""
                 async with httpx.AsyncClient(timeout=10.0) as client:
                     try:
                         resp = await client.post(
-                            f"{base_url}/v1/scan",
-                            json={"table_uri": table_uri},
+                            f"{base_url}/v1/materialize",
+                            json=build_materialize_request(table_uri),
                         )
                         if resp.status_code != 200:
                             return
 
-                        scan_id = resp.json()["scan_id"]
+                        stream_url = resp.json()["stream_url"]
 
                         try:
                             async with client.stream(
                                 "GET",
-                                f"{base_url}/v1/scan/{scan_id}/batches",
+                                f"{base_url}{stream_url}",
                             ) as stream:
                                 bytes_read = 0
                                 async for chunk in stream.aiter_bytes(chunk_size=512):
@@ -344,11 +337,6 @@ class TestSemaphoreLeakRegression:
                                         break
                         except Exception:
                             pass
-                        finally:
-                            try:
-                                await client.delete(f"{base_url}/v1/scan/{scan_id}")
-                            except Exception:
-                                pass
                     except Exception:
                         pass
 
@@ -382,6 +370,7 @@ class TestSemaphoreInvariants:
             port=port,
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=5,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
@@ -392,26 +381,21 @@ class TestSemaphoreInvariants:
                 with httpx.Client(timeout=5.0) as client:
                     try:
                         resp = client.post(
-                            f"{base_url}/v1/scan",
-                            json={"table_uri": table_uri},
+                            f"{base_url}/v1/materialize",
+                            json=build_materialize_request(table_uri),
                         )
                         if resp.status_code == 200:
-                            scan_id = resp.json()["scan_id"]
+                            stream_url = resp.json()["stream_url"]
                             # Sometimes complete, sometimes disconnect
                             try:
                                 with client.stream(
                                     "GET",
-                                    f"{base_url}/v1/scan/{scan_id}/batches",
+                                    f"{base_url}{stream_url}",
                                 ) as stream:
                                     for chunk in stream.iter_bytes():
                                         pass  # Complete the stream
                             except Exception:
                                 pass
-                            finally:
-                                try:
-                                    client.delete(f"{base_url}/v1/scan/{scan_id}")
-                                except Exception:
-                                    pass
                     except Exception:
                         pass
 
@@ -434,6 +418,7 @@ class TestSemaphoreInvariants:
             port=port,
             cache_dir=tmp_path / "cache",
             max_concurrent_scans=max_scans,
+            deployment_mode="personal",
         )
 
         with run_server(config) as base_url:
