@@ -317,6 +317,13 @@ class StrataConfig(BaseSettings):
     # Server-mode transforms configuration
     transforms_config: dict = Field(default_factory=dict)
 
+    # Transform execution mode:
+    # - "embedded": Use embedded executor for local deployment (default)
+    #   Common transforms like duckdb_sql@v1 run in-process, no external service needed.
+    # - "registry": Only use transforms explicitly configured in transforms_config.
+    #   Requires external executor services for all transforms.
+    transform_mode: Literal["embedded", "registry"] = "embedded"
+
     # Build runner configuration
     build_runner_poll_interval_ms: Annotated[int, Field(ge=1)] = 500
     build_runner_max_concurrent: Annotated[int, Field(ge=1)] = 10

@@ -126,7 +126,38 @@ class TransformRegistry:
         return self.get(executor_ref) is not None
 
     @classmethod
-    def from_config(cls, config: dict) -> TransformRegistry:
+    def create_embedded_registry(cls) -> TransformRegistry:
+        """Create a registry with default embedded executors.
+
+        This is used for local deployment where no external executor
+        services are configured. Common transforms like duckdb_sql@v1
+        run directly in the server process.
+
+        Returns:
+            TransformRegistry with embedded executor definitions
+        """
+        # Transforms that can run embedded (no external HTTP calls)
+        embedded_transforms = ["duckdb_sql@v1"]
+
+        definitions = [
+            TransformDefinition(
+                ref=ref,
+                executor_url="embedded://local",  # Special URL for embedded execution
+                timeout_seconds=300.0,
+                max_output_bytes=1024 * 1024 * 1024,  # 1GB
+                max_input_bytes=1024 * 1024 * 1024,  # 1GB
+            )
+            for ref in embedded_transforms
+        ]
+
+        logger.info(
+            f"Created embedded registry with transforms: {embedded_transforms}"
+        )
+
+        return cls(enabled=True, definitions=definitions)
+
+    @classmethod
+    def from_config(cls, config: dict, embedded_mode: bool = True) -> TransformRegistry:
         """Create registry from configuration dictionary.
 
         Expected format (from pyproject.toml [tool.strata.transforms]):
@@ -145,11 +176,16 @@ class TransformRegistry:
 
         Args:
             config: Configuration dictionary
+            embedded_mode: If True and no config provided, enable embedded
+                           executors for common transforms (default for local deployment)
 
         Returns:
             Configured TransformRegistry
         """
         if not config:
+            if embedded_mode:
+                # Local mode with embedded executors for common transforms
+                return cls.create_embedded_registry()
             return cls(enabled=False, definitions=[])
 
         enabled = config.get("enabled", False)

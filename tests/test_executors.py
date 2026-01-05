@@ -1,12 +1,14 @@
 """Unit tests for local executors.
 
-These tests verify client-side execution without requiring a server.
+These tests verify embedded executor functionality.
 """
 
 import pyarrow as pa
 import pytest
 
-from strata.executors import _run_duckdb_sql, run_local
+from strata.executors import _run_local as run_local
+from strata.transforms import DuckDBSQLTransform
+from strata.transforms.base import _run_transform as run_transform
 
 
 class TestRunLocal:
@@ -23,10 +25,10 @@ class TestRunLocal:
         assert result.num_rows == 1
         assert result.column_names == ["x"]
 
-    def test_duckdb_executor_without_version(self):
-        """DuckDB executor works without version suffix."""
+    def test_duckdb_executor_without_prefix(self):
+        """DuckDB executor works without local:// prefix."""
         build_spec = {
-            "executor": "local://duckdb_sql",
+            "executor": "duckdb_sql@v1",
             "params": {"sql": "SELECT 42 as answer"},
             "input_uris": [],
         }
@@ -42,7 +44,7 @@ class TestRunLocal:
         }
         with pytest.raises(ValueError) as exc_info:
             run_local(build_spec, {})
-        assert "Unsupported executor" in str(exc_info.value)
+        assert "Unknown transform" in str(exc_info.value)
         assert "unknown_executor" in str(exc_info.value)
 
     def test_empty_executor_raises(self):
@@ -54,7 +56,7 @@ class TestRunLocal:
         }
         with pytest.raises(ValueError) as exc_info:
             run_local(build_spec, {})
-        assert "Unsupported executor" in str(exc_info.value)
+        assert "Unknown transform" in str(exc_info.value)
 
 
 class TestDuckDBExecutor:
@@ -62,24 +64,22 @@ class TestDuckDBExecutor:
 
     def test_simple_query(self):
         """Execute a simple query without inputs."""
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": "SELECT 1 as a, 'hello' as b"},
-            "input_uris": [],
-        }
-        result = _run_duckdb_sql(build_spec, {})
+        result = run_transform(
+            "duckdb_sql@v1",
+            inputs=[],
+            params={"sql": "SELECT 1 as a, 'hello' as b"},
+        )
         assert result.num_rows == 1
         assert result.to_pydict() == {"a": [1], "b": ["hello"]}
 
     def test_single_input_table(self):
         """Execute query with one input table."""
         input_table = pa.table({"id": [1, 2, 3], "value": [10, 20, 30]})
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": "SELECT sum(value) as total FROM input0"},
-            "input_uris": ["file:///warehouse#db.events"],
-        }
-        result = _run_duckdb_sql(build_spec, {"file:///warehouse#db.events": input_table})
+        result = run_transform(
+            "duckdb_sql@v1",
+            inputs=[input_table],
+            params={"sql": "SELECT sum(value) as total FROM input0"},
+        )
         assert result.to_pydict() == {"total": [60]}
 
     def test_multiple_input_tables(self):
@@ -87,9 +87,10 @@ class TestDuckDBExecutor:
         users = pa.table({"user_id": [1, 2], "name": ["Alice", "Bob"]})
         orders = pa.table({"user_id": [1, 1, 2], "amount": [100, 200, 150]})
 
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {
+        result = run_transform(
+            "duckdb_sql@v1",
+            inputs=[users, orders],
+            params={
                 "sql": """
                 SELECT u.name, sum(o.amount) as total
                 FROM input0 u
@@ -98,50 +99,42 @@ class TestDuckDBExecutor:
                 ORDER BY u.name
                 """
             },
-            "input_uris": ["strata://artifact/users@v=1", "strata://artifact/orders@v=1"],
-        }
-        result = _run_duckdb_sql(
-            build_spec,
-            {
-                "strata://artifact/users@v=1": users,
-                "strata://artifact/orders@v=1": orders,
-            },
         )
         assert result.to_pydict() == {"name": ["Alice", "Bob"], "total": [300, 150]}
 
     def test_missing_sql_raises(self):
-        """Missing SQL parameter raises ValueError."""
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {},
-            "input_uris": [],
-        }
-        with pytest.raises(ValueError) as exc_info:
-            _run_duckdb_sql(build_spec, {})
-        assert "requires 'sql' in params" in str(exc_info.value)
+        """Missing SQL parameter raises ValidationError."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            run_transform(
+                "duckdb_sql@v1",
+                inputs=[],
+                params={},
+            )
 
     def test_empty_sql_raises(self):
-        """Empty SQL parameter raises ValueError."""
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": ""},
-            "input_uris": [],
-        }
-        with pytest.raises(ValueError) as exc_info:
-            _run_duckdb_sql(build_spec, {})
-        assert "requires 'sql' in params" in str(exc_info.value)
+        """Empty SQL parameter raises ValidationError."""
+        from pydantic import ValidationError
 
-    def test_missing_input_table_raises(self):
-        """Missing input table raises ValueError."""
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": "SELECT * FROM input0"},
-            "input_uris": ["file:///warehouse#db.events"],
-        }
-        with pytest.raises(ValueError) as exc_info:
-            _run_duckdb_sql(build_spec, {})
-        assert "Missing input table" in str(exc_info.value)
-        assert "file:///warehouse#db.events" in str(exc_info.value)
+        with pytest.raises(ValidationError):
+            run_transform(
+                "duckdb_sql@v1",
+                inputs=[],
+                params={"sql": ""},
+            )
+
+    def test_query_with_missing_table_raises(self):
+        """Query referencing missing table raises DuckDB error."""
+        # DuckDB will fail when SQL references input0 but no inputs provided
+        import duckdb
+
+        with pytest.raises(duckdb.CatalogException):
+            run_transform(
+                "duckdb_sql@v1",
+                inputs=[],
+                params={"sql": "SELECT * FROM input0"},
+            )
 
     def test_filter_and_aggregate(self):
         """Test filtering and aggregation."""
@@ -151,9 +144,10 @@ class TestDuckDBExecutor:
                 "count": [1, 2, 3, 4, 5],
             }
         )
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {
+        result = run_transform(
+            "duckdb_sql@v1",
+            inputs=[events],
+            params={
                 "sql": """
                 SELECT event_type, sum(count) as total
                 FROM input0
@@ -162,9 +156,7 @@ class TestDuckDBExecutor:
                 ORDER BY event_type
                 """
             },
-            "input_uris": ["events"],
-        }
-        result = _run_duckdb_sql(build_spec, {"events": events})
+        )
         assert result.to_pydict() == {
             "event_type": ["click", "view"],
             "total": [4, 7],
@@ -179,13 +171,61 @@ class TestDuckDBExecutor:
                 "str_col": pa.array(["a", "b", "c"], type=pa.string()),
             }
         )
-        build_spec = {
-            "executor": "local://duckdb_sql@v1",
-            "params": {"sql": "SELECT * FROM input0"},
-            "input_uris": ["input"],
-        }
-        result = _run_duckdb_sql(build_spec, {"input": input_table})
+        result = run_transform(
+            "duckdb_sql@v1",
+            inputs=[input_table],
+            params={"sql": "SELECT * FROM input0"},
+        )
         assert result.num_rows == 3
         assert "int_col" in result.column_names
         assert "float_col" in result.column_names
         assert "str_col" in result.column_names
+
+
+class TestRunLocalWithBuildSpec:
+    """Tests for run_local with build_spec format (mimicking server response)."""
+
+    def test_run_local_with_uri_mapping(self):
+        """Test run_local with URI -> table mapping."""
+        events = pa.table({"value": [10, 20, 30]})
+
+        build_spec = {
+            "executor": "duckdb_sql@v1",
+            "params": {"sql": "SELECT AVG(value) as avg_val FROM input0"},
+            "input_uris": ["file:///warehouse#db.events"],
+        }
+        input_tables = {"file:///warehouse#db.events": events}
+
+        result = run_local(build_spec, input_tables)
+        assert result.column("avg_val").to_pylist() == [20.0]
+
+    def test_run_local_missing_input_raises(self):
+        """Missing input table raises ValueError."""
+        build_spec = {
+            "executor": "duckdb_sql@v1",
+            "params": {"sql": "SELECT * FROM input0"},
+            "input_uris": ["file:///warehouse#db.events"],
+        }
+        with pytest.raises(ValueError) as exc_info:
+            run_local(build_spec, {})
+        assert "Missing input table" in str(exc_info.value)
+        assert "file:///warehouse#db.events" in str(exc_info.value)
+
+    def test_run_local_preserves_input_order(self):
+        """Input order is preserved from input_uris, not dict order."""
+        first = pa.table({"val": [1]})
+        second = pa.table({"val": [2]})
+
+        build_spec = {
+            "executor": "duckdb_sql@v1",
+            "params": {
+                "sql": "SELECT (SELECT val FROM input0) as first, (SELECT val FROM input1) as second"
+            },
+            "input_uris": ["uri://first", "uri://second"],
+        }
+        # Dict order doesn't matter
+        input_tables = {"uri://second": second, "uri://first": first}
+
+        result = run_local(build_spec, input_tables)
+        assert result.column("first").to_pylist() == [1]
+        assert result.column("second").to_pylist() == [2]

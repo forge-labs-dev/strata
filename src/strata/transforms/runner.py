@@ -694,7 +694,120 @@ class BuildRunner:
         max_output_bytes: int,
         temp_files: list[Path],
     ) -> tuple[Path, str | None]:
-        """Call the external executor with inputs and receive output.
+        """Call executor - either embedded or via HTTP.
+
+        For embedded execution (executor_url == "embedded://local" or empty),
+        runs the transform directly in-process. Otherwise, makes an HTTP call
+        to an external executor service.
+
+        Args:
+            executor_url: Base URL of the executor, or "embedded://local" for embedded
+            metadata: Build metadata JSON
+            input_files: List of (name, path) tuples for inputs
+            timeout: Request timeout in seconds
+            max_output_bytes: Maximum output size in bytes
+            temp_files: List to append temp files for cleanup
+
+        Returns:
+            Tuple of (Path to temp file containing output Arrow IPC stream,
+                      executor logs from X-Strata-Logs header or None)
+
+        Raises:
+            ValueError: If output exceeds max_output_bytes
+            httpx.HTTPStatusError: If executor returns non-200 status
+            asyncio.TimeoutError: If request times out
+        """
+        # Check for embedded executor (special URL or empty)
+        if executor_url == "embedded://local" or not executor_url:
+            return await self._call_embedded_executor(
+                metadata, input_files, timeout, max_output_bytes, temp_files
+            )
+
+        # External executor via HTTP
+        return await self._call_http_executor(
+            executor_url, metadata, input_files, timeout, max_output_bytes, temp_files
+        )
+
+    async def _call_embedded_executor(
+        self,
+        metadata: dict,
+        input_files: list[tuple[str, Path]],
+        timeout: float,
+        max_output_bytes: int,
+        temp_files: list[Path],
+    ) -> tuple[Path, str | None]:
+        """Execute transform locally using embedded executor.
+
+        This runs the transform directly in-process, without HTTP overhead.
+        Used for local deployment where no external executor service is needed.
+
+        Args:
+            metadata: Build metadata JSON with transform ref and params
+            input_files: List of (name, path) tuples for inputs
+            timeout: Execution timeout in seconds
+            max_output_bytes: Maximum output size in bytes
+            temp_files: List to append temp files for cleanup
+
+        Returns:
+            Tuple of (Path to output file, None for logs)
+        """
+        import io
+
+        import pyarrow as pa
+        import pyarrow.ipc as ipc
+
+        from strata.transforms.base import _run_transform
+
+        # Parse inputs from files
+        inputs = []
+        for name, path in sorted(input_files, key=lambda x: x[0]):
+            with ipc.open_stream(str(path)) as reader:
+                inputs.append(reader.read_all())
+
+        # Get transform info from metadata
+        transform = metadata.get("transform", {})
+        transform_ref = transform.get("ref", "")
+        params = transform.get("params", {})
+
+        # Execute in thread pool to avoid blocking event loop
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _run_transform(transform_ref, inputs, params),
+            ),
+            timeout=timeout,
+        )
+
+        # Serialize result to Arrow IPC
+        output_buffer = io.BytesIO()
+        with ipc.new_stream(output_buffer, result.schema) as writer:
+            writer.write_table(result)
+        output_bytes = output_buffer.getvalue()
+
+        # Check output size
+        if len(output_bytes) > max_output_bytes:
+            raise ValueError(
+                f"Output exceeds maximum size: {len(output_bytes)} > {max_output_bytes}"
+            )
+
+        # Write to temp file
+        output_path = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+        temp_files.append(output_path)
+        output_path.write_bytes(output_bytes)
+
+        return output_path, None
+
+    async def _call_http_executor(
+        self,
+        executor_url: str,
+        metadata: dict,
+        input_files: list[tuple[str, Path]],
+        timeout: float,
+        max_output_bytes: int,
+        temp_files: list[Path],
+    ) -> tuple[Path, str | None]:
+        """Call external executor via HTTP.
 
         Uses multipart/form-data to stream inputs to the executor.
         The executor returns an Arrow IPC stream which is written to

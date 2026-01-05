@@ -94,9 +94,19 @@ class TestTransformRegistry:
         assert registry.is_allowed("duckdb_sql@v1")
         assert not registry.is_allowed("unknown@v1")
 
-    def test_from_config_empty(self):
-        """from_config with empty config returns disabled registry."""
+    def test_from_config_empty_embedded_mode(self):
+        """from_config with empty config returns embedded registry by default."""
         registry = TransformRegistry.from_config({})
+        assert registry.enabled
+        # Should have embedded duckdb_sql@v1
+        assert registry.is_allowed("duckdb_sql@v1")
+        defn = registry.get("duckdb_sql@v1")
+        assert defn is not None
+        assert defn.executor_url == "embedded://local"
+
+    def test_from_config_empty_registry_mode(self):
+        """from_config with empty config and embedded_mode=False returns disabled registry."""
+        registry = TransformRegistry.from_config({}, embedded_mode=False)
         assert not registry.enabled
         assert len(registry.definitions) == 0
 
