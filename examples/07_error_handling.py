@@ -7,7 +7,7 @@ This example shows how to handle common errors when using Strata.
 What you'll learn:
     - Common error types and their meanings
     - How to handle connection errors
-    - How to handle scan errors
+    - How to handle materialize/fetch errors
 """
 
 import httpx
@@ -25,20 +25,30 @@ except httpx.ConnectError:
 
 # Example 2: Handle invalid table URI
 try:
-    batches = list(client.scan("invalid://table/uri"))
+    artifact = client.materialize(
+        inputs=["invalid://table/uri"],
+        transform={"executor": "scan@v1", "params": {}},
+    )
 except Exception as e:
     print(f"Invalid table URI: {e}")
 
 # Example 3: Handle table not found
 try:
-    batches = list(client.scan("file:///nonexistent#db.table"))
+    artifact = client.materialize(
+        inputs=["file:///nonexistent#db.table"],
+        transform={"executor": "scan@v1", "params": {}},
+    )
 except Exception as e:
     print(f"Table not found: {e}")
 
 # Example 4: Handle scan timeout (504)
 # Large scans may exceed the server's scan_timeout_seconds
 try:
-    batches = list(client.scan("file:///warehouse#db.huge_table"))
+    artifact = client.materialize(
+        inputs=["file:///warehouse#db.huge_table"],
+        transform={"executor": "scan@v1", "params": {}},
+    )
+    table = client.fetch(artifact.uri)
 except Exception as e:
     if "504" in str(e) or "timeout" in str(e).lower():
         print("Scan timed out - try adding filters to reduce data")
@@ -48,7 +58,11 @@ except Exception as e:
 # Example 5: Handle response too large (413)
 # Scans exceeding max_response_bytes will fail
 try:
-    batches = list(client.scan("file:///warehouse#db.huge_table"))
+    artifact = client.materialize(
+        inputs=["file:///warehouse#db.huge_table"],
+        transform={"executor": "scan@v1", "params": {}},
+    )
+    table = client.fetch(artifact.uri)
 except Exception as e:
     if "413" in str(e) or "exceeds limit" in str(e).lower():
         print("Response too large - use column projection or filters")
@@ -57,7 +71,11 @@ except Exception as e:
 
 # Example 6: Handle server at capacity (503)
 try:
-    batches = list(client.scan("file:///warehouse#db.table"))
+    artifact = client.materialize(
+        inputs=["file:///warehouse#db.table"],
+        transform={"executor": "scan@v1", "params": {}},
+    )
+    table = client.fetch(artifact.uri)
 except Exception as e:
     if "503" in str(e):
         print("Server at capacity - retry later")

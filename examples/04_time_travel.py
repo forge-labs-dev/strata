@@ -16,16 +16,27 @@ client = StrataClient(base_url="http://127.0.0.1:8765")
 table_uri = "file:///path/to/warehouse#my_db.events"
 
 # Query the current (latest) snapshot
-# snapshot_id=None means "use the latest"
-current_batches = list(client.scan(table_uri))
-print(f"Current snapshot: {sum(b.num_rows for b in current_batches)} rows")
+# No snapshot_id in params means "use the latest"
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={"executor": "scan@v1", "params": {}},
+)
+current_table = client.fetch(artifact.uri)
+print(f"Current snapshot: {current_table.num_rows} rows")
 
 # Query a specific historical snapshot
 # You can get snapshot IDs from Iceberg table metadata
 historical_snapshot_id = 1234567890123456789
 
-historical_batches = list(client.scan(table_uri, snapshot_id=historical_snapshot_id))
-print(f"Historical snapshot: {sum(b.num_rows for b in historical_batches)} rows")
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {"snapshot_id": historical_snapshot_id},
+    },
+)
+historical_table = client.fetch(artifact.uri)
+print(f"Historical snapshot: {historical_table.num_rows} rows")
 
 # Use case: Compare current vs historical data
 # This is useful for:

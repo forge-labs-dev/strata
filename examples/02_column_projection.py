@@ -14,13 +14,21 @@ from strata.client import StrataClient
 client = StrataClient(base_url="http://127.0.0.1:8765")
 table_uri = "file:///path/to/warehouse#my_db.my_table"
 
-# Read only specific columns
+# Read only specific columns using the scan transform params
 # This reduces network transfer and memory usage
-batches = list(client.scan(table_uri, columns=["user_id", "event_type", "timestamp"]))
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {"columns": ["user_id", "event_type", "timestamp"]},
+    },
+)
+
+# Fetch the data
+table = client.fetch(artifact.uri)
 
 # Verify we only got the requested columns
-if batches:
-    print(f"Columns returned: {batches[0].schema.names}")
-    # Output: ['user_id', 'event_type', 'timestamp']
+print(f"Columns returned: {table.schema.names}")
+# Output: ['user_id', 'event_type', 'timestamp']
 
 client.close()

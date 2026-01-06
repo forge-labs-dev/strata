@@ -10,55 +10,76 @@ operations. The async client is ideal for:
 
 What you'll learn:
     - How to use AsyncStrataClient
-    - Concurrent scanning of multiple tables
+    - Concurrent fetching of multiple tables
     - Async context managers
 """
 
 import asyncio
 
-from strata.client import AsyncStrataClient, gt
+from strata.client import AsyncStrataClient
 
 
-async def basic_async_scan():
-    """Basic async scan example."""
+# Helper to build filter specs for the transform params
+def make_filter(column: str, op: str, value) -> dict:
+    """Create a filter dict for the transform params."""
+    return {"column": column, "op": op, "value": value}
+
+
+async def basic_async_fetch():
+    """Basic async fetch example."""
     async with AsyncStrataClient(base_url="http://127.0.0.1:8765") as client:
         # Check server health
         health = await client.health()
         print(f"Server status: {health['status']}")
 
-        # Scan a table asynchronously
+        # Materialize and fetch a table asynchronously
         table_uri = "file:///path/to/warehouse#analytics.events"
 
-        # Stream batches as they arrive
-        async for batch in client.scan(table_uri, columns=["id", "value"]):
-            print(f"Received batch with {batch.num_rows} rows")
-
-        # Or collect to Arrow table
-        table = await client.scan_to_table(
-            table_uri,
-            columns=["id", "value", "category"],
-            filters=[gt("value", 100.0)],
+        # Materialize with filters
+        artifact = await client.materialize(
+            inputs=[table_uri],
+            transform={
+                "executor": "scan@v1",
+                "params": {
+                    "columns": ["id", "value", "category"],
+                    "filters": [make_filter("value", ">", 100.0)],
+                },
+            },
         )
-        print(f"\nTotal rows: {table.num_rows}")
+
+        # Fetch the data
+        table = await client.fetch(artifact.uri)
+        print(f"Total rows: {table.num_rows}")
+
+        # Or use the artifact's async helper
+        df = await artifact.to_pandas()
+        print(f"DataFrame shape: {df.shape}")
 
 
-async def concurrent_scans():
+async def concurrent_fetches():
     """Fetch multiple tables concurrently."""
     async with AsyncStrataClient() as client:
-        # Define tables to scan
+        # Define tables to fetch
         tables = [
             ("file:///warehouse#db.events", ["id", "value"]),
             ("file:///warehouse#db.users", ["id", "name"]),
             ("file:///warehouse#db.products", ["id", "price"]),
         ]
 
-        # Create scan tasks
-        async def scan_table(uri: str, columns: list[str]):
-            return await client.scan_to_table(uri, columns=columns)
+        # Create fetch tasks
+        async def fetch_table(uri: str, columns: list[str]):
+            artifact = await client.materialize(
+                inputs=[uri],
+                transform={
+                    "executor": "scan@v1",
+                    "params": {"columns": columns},
+                },
+            )
+            return await client.fetch(artifact.uri)
 
         # Run concurrently
         results = await asyncio.gather(
-            *[scan_table(uri, cols) for uri, cols in tables],
+            *[fetch_table(uri, cols) for uri, cols in tables],
             return_exceptions=True,
         )
 
@@ -70,35 +91,45 @@ async def concurrent_scans():
 
 
 async def async_with_timeout():
-    """Async scan with custom timeout."""
-    async with AsyncStrataClient(timeout=30.0) as client:
+    """Async fetch with custom timeout."""
+    async with AsyncStrataClient() as client:
         table_uri = "file:///warehouse#db.large_table"
 
         try:
-            table = await asyncio.wait_for(
-                client.scan_to_table(table_uri),
+            # Set timeout on the materialize call
+            artifact = await asyncio.wait_for(
+                client.materialize(
+                    inputs=[table_uri],
+                    transform={"executor": "scan@v1", "params": {}},
+                ),
                 timeout=10.0,  # 10 second timeout
             )
+            table = await client.fetch(artifact.uri)
             print(f"Got {table.num_rows} rows")
         except TimeoutError:
-            print("Scan timed out - try adding filters")
+            print("Fetch timed out - try adding filters")
 
 
-async def stream_to_processor():
-    """Stream batches to an async processor."""
+async def process_artifact_data():
+    """Process artifact data asynchronously."""
     async with AsyncStrataClient() as client:
         table_uri = "file:///warehouse#db.events"
 
-        # Process batches as they arrive
-        total_value = 0.0
-        row_count = 0
+        # Materialize and fetch
+        artifact = await client.materialize(
+            inputs=[table_uri],
+            transform={
+                "executor": "scan@v1",
+                "params": {"columns": ["value"]},
+            },
+        )
+        table = await client.fetch(artifact.uri)
 
-        async for batch in client.scan(table_uri, columns=["value"]):
-            # Process each batch without collecting all in memory
-            import pyarrow.compute as pc
+        # Process the data
+        import pyarrow.compute as pc
 
-            total_value += pc.sum(batch.column("value")).as_py() or 0.0
-            row_count += batch.num_rows
+        total_value = pc.sum(table.column("value")).as_py() or 0.0
+        row_count = table.num_rows
 
         print(f"Processed {row_count} rows")
         print(f"Total value: {total_value:,.2f}")
@@ -106,17 +137,17 @@ async def stream_to_processor():
 
 async def main():
     """Run all examples."""
-    print("=== Basic Async Scan ===")
-    await basic_async_scan()
+    print("=== Basic Async Fetch ===")
+    await basic_async_fetch()
 
-    print("\n=== Concurrent Scans ===")
-    await concurrent_scans()
+    print("\n=== Concurrent Fetches ===")
+    await concurrent_fetches()
 
     print("\n=== Async with Timeout ===")
     await async_with_timeout()
 
-    print("\n=== Stream to Processor ===")
-    await stream_to_processor()
+    print("\n=== Process Artifact Data ===")
+    await process_artifact_data()
 
 
 if __name__ == "__main__":

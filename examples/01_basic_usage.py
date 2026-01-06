@@ -10,7 +10,7 @@ Prerequisites:
 
 What you'll learn:
     - How to connect to a Strata server
-    - How to scan a table and get Arrow batches
+    - How to materialize a table and fetch data as Arrow
     - How to convert results to pandas
 """
 
@@ -23,22 +23,27 @@ client = StrataClient(base_url="http://127.0.0.1:8765")
 # Format: file://<warehouse_path>#<namespace>.<table>
 table_uri = "file:///path/to/warehouse#my_db.my_table"
 
-# Scan the table - returns an iterator of Arrow RecordBatches
-batches = client.scan(table_uri)
+# Materialize the table - returns an Artifact with metadata
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={"executor": "scan@v1", "params": {}},
+)
 
-# Option 1: Process batches one at a time (memory efficient)
-for batch in batches:
-    print(f"Got batch with {batch.num_rows} rows")
-    print(f"Columns: {batch.schema.names}")
+print(f"Artifact URI: {artifact.uri}")
+print(f"Cache hit: {artifact.cache_hit}")
 
-# Option 2: Collect all batches and convert to pandas
-batches = list(client.scan(table_uri))
-if batches:
-    import pyarrow as pa
+# Fetch the data as an Arrow table
+table = client.fetch(artifact.uri)
+print(f"Got table with {table.num_rows} rows")
+print(f"Columns: {table.schema.names}")
 
-    table = pa.Table.from_batches(batches)
-    df = table.to_pandas()
-    print(df.head())
+# Option 1: Use the Artifact's helper method
+df = artifact.to_pandas()
+print(df.head())
+
+# Option 2: Convert Arrow table to pandas directly
+df = table.to_pandas()
+print(df.head())
 
 # Always close the client when done
 client.close()

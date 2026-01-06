@@ -132,13 +132,13 @@ def run_benchmark(server_url: str, table_uri: str) -> dict:
         print("\nClearing cache for cold run...")
         client.clear_cache()
 
-        # Helper to fetch table data
+        # Helper to fetch table data using the unified materialize API
         def fetch_table():
             artifact = client.materialize(
                 inputs=[table_uri],
                 transform={"executor": "scan@v1", "params": {}},
             )
-            return client.fetch(artifact.uri)
+            return artifact.to_table()
 
         # COLD RUN
         print("\n[1/3] COLD RUN (no cache)...")

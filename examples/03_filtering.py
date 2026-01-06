@@ -17,40 +17,76 @@ What you'll learn:
     - How filters enable two-tier pruning
 """
 
-from strata.client import StrataClient, eq, ge, gt, le, lt
+from strata.client import StrataClient
 
 client = StrataClient(base_url="http://127.0.0.1:8765")
 table_uri = "file:///path/to/warehouse#my_db.events"
+
+
+# Helper to build filter specs for the transform params
+def make_filter(column: str, op: str, value) -> dict:
+    """Create a filter dict for the transform params."""
+    return {"column": column, "op": op, "value": value}
+
 
 # Filter with greater-than
 # Two-tier pruning:
 #   1. Iceberg skips files where max(timestamp) < 1704067200000000
 #   2. Parquet skips row groups where max(timestamp) < 1704067200000000
-batches = list(
-    client.scan(
-        table_uri,
-        filters=[gt("timestamp", 1704067200000000)],  # After 2024-01-01
-    )
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {
+            "filters": [make_filter("timestamp", ">", 1704067200000000)],  # After 2024-01-01
+        },
+    },
 )
+table = client.fetch(artifact.uri)
+print(f"Rows after timestamp filter: {table.num_rows}")
 
 # Filter with less-than
-batches = list(client.scan(table_uri, filters=[lt("value", 100.0)]))
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {"filters": [make_filter("value", "<", 100.0)]},
+    },
+)
+table = client.fetch(artifact.uri)
+print(f"Rows with value < 100: {table.num_rows}")
 
 # Filter with equality
-batches = list(client.scan(table_uri, filters=[eq("category", "electronics")]))
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {"filters": [make_filter("category", "=", "electronics")]},
+    },
+)
+table = client.fetch(artifact.uri)
+print(f"Rows in electronics category: {table.num_rows}")
 
 # Combine multiple filters (AND logic)
 # All conditions must be true for a row to be included
-batches = list(
-    client.scan(
-        table_uri,
-        columns=["id", "value", "category"],
-        filters=[ge("value", 10.0), le("value", 100.0), eq("category", "electronics")],
-    )
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {
+            "columns": ["id", "value", "category"],
+            "filters": [
+                make_filter("value", ">=", 10.0),
+                make_filter("value", "<=", 100.0),
+                make_filter("category", "=", "electronics"),
+            ],
+        },
+    },
 )
+table = client.fetch(artifact.uri)
+print(f"Rows matching all filters: {table.num_rows}")
 
-# Check how many row groups were pruned
-# (visible in server metrics)
+# Check server metrics for pruning stats
 metrics = client.metrics()
 print(f"Row groups pruned: {metrics.get('row_groups_pruned', 0)}")
 

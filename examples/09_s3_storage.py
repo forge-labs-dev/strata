@@ -17,7 +17,7 @@ Prerequisites:
 
 import os
 
-from strata.client import StrataClient, gt
+from strata.client import StrataClient
 from strata.config import StrataConfig
 
 # Method 1: Configure S3 via StrataConfig
@@ -52,24 +52,39 @@ table_uri = "s3://my-data-lake/warehouse#analytics.events"
 # Use the client normally - S3 is transparent
 client = StrataClient(config=config, base_url="http://127.0.0.1:8765")
 
-# Scan with filters (row-group pruning works with S3 too!)
-batches = list(
-    client.scan(
-        table_uri,
-        columns=["id", "value", "timestamp"],
-        filters=[gt("value", 100.0)],
-    )
+
+# Helper to build filter specs for the transform params
+def make_filter(column: str, op: str, value) -> dict:
+    """Create a filter dict for the transform params."""
+    return {"column": column, "op": op, "value": value}
+
+
+# Materialize with filters (row-group pruning works with S3 too!)
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {
+            "columns": ["id", "value", "timestamp"],
+            "filters": [make_filter("value", ">", 100.0)],
+        },
+    },
 )
 
-print(f"Retrieved {len(batches)} batches from S3")
-for batch in batches[:3]:
-    print(f"  Batch: {batch.num_rows} rows, {batch.nbytes:,} bytes")
+# Fetch the data
+table = client.fetch(artifact.uri)
+print(f"Retrieved {table.num_rows} rows from S3")
+print(f"Columns: {table.schema.names}")
 
-# Collect to Arrow table
-table = client.scan_to_table(
-    table_uri,
-    columns=["id", "value"],
+# Collect to Arrow table with different columns
+artifact = client.materialize(
+    inputs=[table_uri],
+    transform={
+        "executor": "scan@v1",
+        "params": {"columns": ["id", "value"]},
+    },
 )
+table = client.fetch(artifact.uri)
 print(f"\nTotal rows: {table.num_rows}")
 
 client.close()
