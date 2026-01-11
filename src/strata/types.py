@@ -721,6 +721,44 @@ class UploadFinalizeResponse(BaseModel):
     name_uri: str | None = None  # "strata://name/{name}" if name was set
 
 
+class PutArtifactRequest(BaseModel):
+    """Request to directly upload and persist an artifact.
+
+    This is a simplified API for clients that execute transforms locally
+    and want to persist the result with full provenance tracking.
+    Supports deduplication: if an artifact with the same provenance hash
+    already exists, returns the existing artifact (cache hit).
+
+    Attributes:
+        inputs: List of input URIs (artifact URIs or table URIs)
+        transform: Transform specification (executor + params)
+            The params are opaque to Strata and used only for provenance.
+        data: The artifact data as JSON (will be stored as Arrow)
+        name: Optional name to assign to the artifact
+    """
+
+    inputs: list[str]  # Input URIs: "strata://artifact/..." or "file:///..."
+    transform: TransformSpec  # Opaque transform spec for provenance
+    data: dict[str, Any]  # JSON data to persist
+    name: str | None = None  # Optional name pointer
+
+
+class PutArtifactResponse(BaseModel):
+    """Response from put artifact request.
+
+    Attributes:
+        artifact_uri: The artifact URI
+        hit: True if this was a cache hit (existing artifact)
+        byte_size: Size of the stored artifact in bytes
+        name_uri: Name URI if a name was assigned
+    """
+
+    artifact_uri: str  # "strata://artifact/{id}@v={version}"
+    hit: bool  # True if deduplicated to existing artifact
+    byte_size: int
+    name_uri: str | None = None  # "strata://name/{name}" if name was set
+
+
 class NameResolveRequest(BaseModel):
     """Request to resolve a name to an artifact.
 

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
@@ -17,9 +19,7 @@ import pyarrow.ipc as ipc
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from strata import fast_io
 from strata.auth import (
-    AclEvaluator,
     AuthError,
     get_principal,
     parse_principal,
@@ -37,10 +37,9 @@ from strata.logging import (
     configure_logging,
     get_logger,
     request_context_middleware,
-    set_request_context,
 )
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
-from strata.metrics import MetricsCollector, ScanMetrics, Timer
+from strata.metrics import MetricsCollector
 from strata.planner import ReadPlanner
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
@@ -48,7 +47,7 @@ from strata.rate_limiter import (
     get_rate_limiter,
     init_rate_limiter,
 )
-from strata.slow_ops import get_latency_stats, record_latency
+from strata.slow_ops import get_latency_stats
 from strata.tenant import (
     DEFAULT_TENANT_ID,
     clear_tenant_context,
@@ -62,7 +61,6 @@ from strata.types import (
     ArtifactDependentsResponse,
     ArtifactInfoResponse,
     ArtifactLineageResponse,
-    BuildProgress,
     BuildSpec,
     BuildStatusResponse,
     DependentInfo,
@@ -78,6 +76,8 @@ from strata.types import (
     NameSetRequest,
     NameSetResponse,
     NameStatusResponse,
+    PutArtifactRequest,
+    PutArtifactResponse,
     ReadPlan,
     TableRef,
     Task,
@@ -289,7 +289,7 @@ class ServerState:
 
         # Unified materialize streaming state
         # Maps stream_id -> StreamState for active streams
-        self._streams: dict[str, "StreamState"] = {}
+        self._streams: dict[str, StreamState] = {}
         # TTL for stream entries (5 minutes after creation, stream is cleaned up)
         self._stream_ttl_seconds = 300
 
@@ -3174,6 +3174,157 @@ async def finalize_artifact(request: UploadFinalizeRequest):
     )
 
 
+@app.put("/v1/artifacts", response_model=PutArtifactResponse)
+async def put_artifact(request: PutArtifactRequest):
+    """Directly upload and persist an artifact with provenance tracking.
+
+    This is a simplified API for clients that execute transforms locally
+    and want to persist the result with full provenance tracking and deduplication.
+
+    The request includes:
+    - inputs: Prior artifact/table URIs (for lineage)
+    - transform: Opaque transform spec (for provenance hash)
+    - data: JSON data to persist (converted to Arrow internally)
+    - name: Optional name pointer
+
+    Deduplication: If an artifact with the same provenance hash already exists,
+    returns the existing artifact (hit=True) without storing duplicate data.
+
+    Returns:
+        PutArtifactResponse with artifact URI and cache hit status
+    """
+    store = _get_artifact_store()
+    tenant_id = get_tenant_id()
+
+    # Resolve input versions for provenance
+    input_versions: dict[str, str] = {}
+    for input_uri in request.inputs:
+        try:
+            # Try to resolve artifact URIs
+            if input_uri.startswith("strata://artifact/"):
+                match = re.match(r"^strata://artifact/([^@]+)@v=(\d+)$", input_uri)
+                if match:
+                    input_versions[input_uri] = f"{match.group(1)}@v={match.group(2)}"
+                else:
+                    input_versions[input_uri] = input_uri
+            elif input_uri.startswith("strata://name/"):
+                name = input_uri[len("strata://name/") :]
+                resolved = store.resolve_name(name, tenant=tenant_id)
+                if resolved:
+                    input_versions[input_uri] = f"{resolved.id}@v={resolved.version}"
+                else:
+                    input_versions[input_uri] = input_uri
+            else:
+                # Table URI or unknown - use as-is
+                input_versions[input_uri] = input_uri
+        except Exception:
+            # Fallback: use URI as version
+            input_versions[input_uri] = input_uri
+
+    # Compute provenance hash
+    from strata.artifact_store import TransformSpec as ArtifactTransformSpec
+    from strata.artifact_store import compute_provenance_hash
+
+    # Convert API TransformSpec to internal TransformSpec
+    artifact_transform = ArtifactTransformSpec(
+        executor=request.transform.executor,
+        params=request.transform.params,
+        inputs=request.inputs,
+    )
+
+    input_hashes = [f"{uri}:{ver}" for uri, ver in sorted(input_versions.items())]
+    provenance_hash = compute_provenance_hash(input_hashes, artifact_transform)
+
+    # Check for existing artifact with same provenance
+    existing = store.find_by_provenance(provenance_hash, tenant=tenant_id)
+    if existing is not None and existing.state == "ready":
+        artifact_uri = f"strata://artifact/{existing.id}@v={existing.version}"
+        name_uri = None
+
+        # Set name if requested
+        if request.name:
+            try:
+                store.set_name(request.name, existing.id, existing.version, tenant=tenant_id)
+                name_uri = f"strata://name/{request.name}"
+            except ValueError:
+                pass
+
+        return PutArtifactResponse(
+            artifact_uri=artifact_uri,
+            hit=True,
+            byte_size=existing.byte_size or 0,
+            name_uri=name_uri,
+        )
+
+    # Convert JSON data to Arrow IPC
+    import pyarrow as pa
+    import pyarrow.ipc as ipc
+
+    # Convert dict to Arrow table
+    # Handle nested JSON by storing as a single JSON column if complex
+    try:
+        if isinstance(request.data, dict) and all(
+            isinstance(v, list) for v in request.data.values()
+        ):
+            # Columnar data - convert directly
+            table = pa.Table.from_pydict(request.data)
+        else:
+            # Non-columnar - store as single JSON column
+            import json
+
+            json_str = json.dumps(request.data)
+            table = pa.Table.from_pydict({"data": [json_str]})
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to convert data to Arrow: {e}")
+
+    # Serialize to Arrow IPC
+    sink = pa.BufferOutputStream()
+    with ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    arrow_bytes = sink.getvalue().to_pybytes()
+
+    # Create artifact
+    artifact_id = str(uuid.uuid4())
+    version = store.create_artifact(
+        artifact_id=artifact_id,
+        provenance_hash=provenance_hash,
+        transform_spec=artifact_transform,
+        input_versions=input_versions,
+        tenant=tenant_id,
+    )
+
+    # Write blob
+    store.write_blob(artifact_id, version, arrow_bytes)
+
+    # Finalize
+    schema_json = table.schema.to_string()
+    store.finalize_artifact(
+        artifact_id=artifact_id,
+        version=version,
+        schema_json=schema_json,
+        row_count=table.num_rows,
+        byte_size=len(arrow_bytes),
+    )
+
+    artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
+    name_uri = None
+
+    # Set name if requested
+    if request.name:
+        try:
+            store.set_name(request.name, artifact_id, version, tenant=tenant_id)
+            name_uri = f"strata://name/{request.name}"
+        except Exception as e:
+            logger.warning(f"Failed to set name {request.name}: {e}")
+
+    return PutArtifactResponse(
+        artifact_uri=artifact_uri,
+        hit=False,
+        byte_size=len(arrow_bytes),
+        name_uri=name_uri,
+    )
+
+
 @app.get("/v1/artifacts/{artifact_id}/v/{version}", response_model=ArtifactInfoResponse)
 async def get_artifact_info(artifact_id: str, version: int):
     """Get artifact metadata (personal mode only).
@@ -4530,10 +4681,6 @@ async def unified_materialize(request: MaterializeRequest):
     Returns:
         MaterializeResponse with hit status and artifact/stream URLs
     """
-    import uuid
-
-    from strata.artifact_store import TransformSpec as ArtifactTransformSpec
-    from strata.artifact_store import compute_provenance_hash, get_artifact_store
 
     state = get_state()
     transform = request.transform
@@ -5003,9 +5150,7 @@ async def get_stream(stream_id: str, request: Request):
     )
 
 
-async def _finalize_stream_artifact(
-    stream_state: StreamState, data: bytes, row_count: int
-) -> None:
+async def _finalize_stream_artifact(stream_state: StreamState, data: bytes, row_count: int) -> None:
     """Finalize artifact after streaming completes.
 
     Writes the combined Arrow IPC data to the artifact store

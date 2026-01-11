@@ -656,6 +656,110 @@ class StrataClient:
         return response.json()
 
     # -------------------------------------------------------------------------
+    # Direct Artifact Upload (for local execution)
+    # -------------------------------------------------------------------------
+
+    def put_json(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        data: dict[str, Any],
+        name: str | None = None,
+    ) -> Artifact:
+        """Directly upload and persist a JSON artifact with provenance tracking.
+
+        This is for clients that execute transforms locally and want to persist
+        the result with full provenance tracking and deduplication.
+
+        Args:
+            inputs: List of input URIs (artifact URIs or table URIs) for lineage
+            transform: Transform specification (executor + params) for provenance
+                The params are opaque to Strata and used only for deduplication.
+            data: JSON data to persist
+            name: Optional name to assign to the artifact
+
+        Returns:
+            Artifact object with access to metadata and data
+
+        Example:
+            # Persist a locally-computed result
+            artifact = client.put_json(
+                inputs=["strata://artifact/parent@v=1"],
+                transform={
+                    "executor": "delibera@v1",
+                    "params": {
+                        "operation": "WORK",
+                        "step_id": "PROPOSE",
+                        "role": "Proposer",
+                        "code_hash": "sha256:abc123",
+                    }
+                },
+                data={"proposal": "...", "claims": [...]},
+                name="proposal_node_42",
+            )
+            print(f"Artifact: {artifact.uri}")
+            print(f"Cache hit: {artifact.cache_hit}")
+        """
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
+        request_body = {
+            "inputs": inputs,
+            "transform": server_transform,
+            "data": data,
+        }
+        if name:
+            request_body["name"] = name
+
+        response = self._client.put("/v1/artifacts", json=request_body)
+        response.raise_for_status()
+        result = response.json()
+
+        # Parse artifact URI
+        artifact_uri = result["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+
+        return Artifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=result.get("hit", False),
+            execution="cache" if result.get("hit") else "local",
+            name=name,
+        )
+
+    def get_json(self, artifact_uri: str) -> dict[str, Any]:
+        """Get JSON data from an artifact.
+
+        Fetches the artifact data and returns it as a Python dict.
+        If the artifact was stored as columnar data, returns the columns.
+        If it was stored as a single JSON column, returns the parsed JSON.
+
+        Args:
+            artifact_uri: Artifact URI (e.g., "strata://artifact/{id}@v={version}")
+
+        Returns:
+            The artifact data as a Python dict
+
+        Example:
+            data = client.get_json("strata://artifact/abc@v=1")
+            print(data["proposal"])
+        """
+        table = self.fetch(artifact_uri)
+
+        # Check if this is a single-column JSON artifact
+        if table.num_columns == 1 and table.column_names[0] == "data":
+            import json
+
+            json_str = table.column("data")[0].as_py()
+            return json.loads(json_str)
+
+        # Otherwise return as columnar dict
+        return table.to_pydict()
+
+    # -------------------------------------------------------------------------
     # Artifact Lifecycle Management
     # -------------------------------------------------------------------------
 
