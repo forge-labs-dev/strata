@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-Example 12: Delibera Integration Pattern
+Example 12: Direct Artifact Upload with put()
 
-This example shows how to integrate Delibera (a protocol-driven deliberation
-engine) with Strata for persistence, deduplication, and lineage tracking.
+This example shows how to use Strata's put() API for direct artifact upload
+with full provenance tracking and deduplication.
 
-Delibera executes locally and uses Strata's put_json API to persist results.
+The put() API supports multiple data types:
+- dict: JSON data (nested dicts, lists, primitives)
+- pa.Table: Apache Arrow Table
+- pd.DataFrame: Pandas DataFrame
+- pl.DataFrame: Polars DataFrame
+- bytes: Raw Arrow IPC bytes
+
 This pattern is useful for any system that:
 - Executes computations locally (LLM calls, ML inference, etc.)
 - Needs to persist results with full provenance
@@ -13,7 +19,7 @@ This pattern is useful for any system that:
 - Requires lineage tracking between steps
 
 What you'll learn:
-    - How to use put_json for direct artifact upload
+    - How to use put() for direct artifact upload with different data types
     - How to track lineage through input references
     - How to detect cache hits for replay/restart
     - How to structure opaque transform specs for provenance
@@ -309,6 +315,124 @@ def branching_deliberation():
 
 
 # =============================================================================
+# Example 6: Using put() with Arrow Table
+# =============================================================================
+
+
+def put_with_arrow_table():
+    """Demonstrate put() with Arrow Table data.
+
+    Arrow Tables are efficient for columnar data and are the native
+    format for Strata's storage layer.
+    """
+    import pyarrow as pa
+
+    with StrataClient(base_url="http://127.0.0.1:8765") as client:
+        # Create an Arrow Table with computed results
+        table = pa.table({
+            "feature_id": [1, 2, 3, 4, 5],
+            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8], [0.9, 1.0]],
+            "score": [0.95, 0.87, 0.72, 0.91, 0.88],
+        })
+
+        artifact = client.put(
+            inputs=[],
+            transform={"executor": "embeddings@v1", "params": {"model": "text-ada-002"}},
+            data=table,  # Arrow Table
+        )
+
+        print(f"Artifact: {artifact.uri}")
+        print(f"Cache hit: {artifact.cache_hit}")
+
+        # Retrieve as Arrow Table
+        retrieved = client.fetch(artifact.uri)
+        print(f"Retrieved {retrieved.num_rows} rows, {retrieved.num_columns} columns")
+
+
+# =============================================================================
+# Example 7: Using put() with Pandas DataFrame
+# =============================================================================
+
+
+def put_with_pandas():
+    """Demonstrate put() with Pandas DataFrame.
+
+    DataFrames are automatically converted to Arrow for storage.
+    """
+    import pandas as pd
+
+    with StrataClient(base_url="http://127.0.0.1:8765") as client:
+        # Create a Pandas DataFrame with analysis results
+        df = pd.DataFrame({
+            "metric": ["accuracy", "precision", "recall", "f1"],
+            "value": [0.95, 0.92, 0.89, 0.90],
+            "threshold": [0.5, 0.5, 0.5, 0.5],
+        })
+
+        artifact = client.put(
+            inputs=[],
+            transform={"executor": "eval@v1", "params": {"model_version": "2.0"}},
+            data=df,  # Pandas DataFrame
+        )
+
+        print(f"Artifact: {artifact.uri}")
+
+        # Retrieve as Pandas DataFrame
+        retrieved_df = artifact.to_pandas()
+        print(f"Retrieved DataFrame:\n{retrieved_df}")
+
+
+# =============================================================================
+# Example 8: Mixed data types in a pipeline
+# =============================================================================
+
+
+def mixed_data_pipeline():
+    """Demonstrate a pipeline using different data types at each stage."""
+    import pyarrow as pa
+
+    with StrataClient(base_url="http://127.0.0.1:8765") as client:
+        # Stage 1: JSON config
+        config = client.put(
+            inputs=[],
+            transform={"executor": "config@v1", "params": {}},
+            data={"model": "gpt-4", "temperature": 0.7, "max_tokens": 1000},
+        )
+        print(f"Config: {config.uri}")
+
+        # Stage 2: Arrow Table of input data
+        input_data = pa.table({
+            "id": [1, 2, 3],
+            "text": ["Query 1", "Query 2", "Query 3"],
+        })
+        inputs_artifact = client.put(
+            inputs=[config.uri],
+            transform={"executor": "prepare@v1", "params": {}},
+            data=input_data,
+        )
+        print(f"Inputs: {inputs_artifact.uri}")
+
+        # Stage 3: JSON results from LLM
+        results = client.put(
+            inputs=[config.uri, inputs_artifact.uri],
+            transform={"executor": "llm@v1", "params": {}},
+            data={
+                "responses": [
+                    {"id": 1, "response": "Answer 1", "tokens": 50},
+                    {"id": 2, "response": "Answer 2", "tokens": 75},
+                    {"id": 3, "response": "Answer 3", "tokens": 60},
+                ],
+                "total_cost": 0.015,
+            },
+        )
+        print(f"Results: {results.uri}")
+
+        # All three artifacts form a lineage chain
+        print("\nPipeline complete:")
+        print(f"  config ({type({})}) -> inputs (Arrow) -> results (JSON)")
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -327,6 +451,15 @@ if __name__ == "__main__":
 
     print("\n=== Branching Deliberation ===")
     # branching_deliberation()
+
+    print("\n=== Arrow Table ===")
+    # put_with_arrow_table()
+
+    print("\n=== Pandas DataFrame ===")
+    # put_with_pandas()
+
+    print("\n=== Mixed Data Pipeline ===")
+    # mixed_data_pipeline()
 
     print("\nNote: Uncomment the function calls to run examples")
     print("Requires a running Strata server with artifacts enabled")

@@ -76,7 +76,6 @@ from strata.types import (
     NameSetRequest,
     NameSetResponse,
     NameStatusResponse,
-    PutArtifactRequest,
     PutArtifactResponse,
     ReadPlan,
     TableRef,
@@ -3175,17 +3174,17 @@ async def finalize_artifact(request: UploadFinalizeRequest):
 
 
 @app.put("/v1/artifacts", response_model=PutArtifactResponse)
-async def put_artifact(request: PutArtifactRequest):
+async def put_artifact(request: Request):
     """Directly upload and persist an artifact with provenance tracking.
 
     This is a simplified API for clients that execute transforms locally
     and want to persist the result with full provenance tracking and deduplication.
 
-    The request includes:
-    - inputs: Prior artifact/table URIs (for lineage)
-    - transform: Opaque transform spec (for provenance hash)
-    - data: JSON data to persist (converted to Arrow internally)
-    - name: Optional name pointer
+    Accepts two content types:
+    1. application/json: JSON body with inputs, transform, data, name
+    2. multipart/form-data: metadata (JSON) + data (Arrow IPC bytes)
+
+    The multipart format is more efficient for large data or pre-serialized Arrow.
 
     Deduplication: If an artifact with the same provenance hash already exists,
     returns the existing artifact (hit=True) without storing duplicate data.
@@ -3193,12 +3192,87 @@ async def put_artifact(request: PutArtifactRequest):
     Returns:
         PutArtifactResponse with artifact URI and cache hit status
     """
+    import json as json_module
+
+    content_type = request.headers.get("content-type", "")
+
+    # Parse request based on content type
+    if "multipart/form-data" in content_type:
+        # Multipart: metadata JSON + Arrow IPC data
+        form = await request.form()
+
+        # Get metadata
+        metadata_file = form.get("metadata")
+        if metadata_file is None:
+            raise HTTPException(status_code=400, detail="Missing 'metadata' field in multipart request")
+        metadata_content = await metadata_file.read()
+        try:
+            metadata = json_module.loads(metadata_content)
+        except json_module.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {e}")
+
+        inputs = metadata.get("inputs", [])
+        transform_dict = metadata.get("transform", {})
+        artifact_name = metadata.get("name")
+
+        # Get Arrow data
+        data_file = form.get("data")
+        if data_file is None:
+            raise HTTPException(status_code=400, detail="Missing 'data' field in multipart request")
+        arrow_bytes = await data_file.read()
+
+        # Parse Arrow to get schema and row count
+        try:
+            reader = ipc.open_stream(pa.BufferReader(arrow_bytes))
+            table = reader.read_all()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid Arrow IPC data: {e}")
+
+    else:
+        # JSON body (legacy format)
+        try:
+            body = await request.json()
+        except json_module.JSONDecodeError as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+        inputs = body.get("inputs", [])
+        transform_dict = body.get("transform", {})
+        artifact_name = body.get("name")
+        data = body.get("data")
+
+        if data is None:
+            raise HTTPException(status_code=400, detail="Missing 'data' field")
+
+        # Convert JSON data to Arrow
+        try:
+            if isinstance(data, dict) and all(isinstance(v, list) for v in data.values()):
+                # Columnar data - convert directly
+                table = pa.Table.from_pydict(data)
+            else:
+                # Non-columnar - store as single JSON column
+                json_str = json_module.dumps(data)
+                table = pa.Table.from_pydict({"data": [json_str]})
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to convert data to Arrow: {e}")
+
+        # Serialize to Arrow IPC
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        arrow_bytes = sink.getvalue().to_pybytes()
+
+    # Validate transform
+    executor = transform_dict.get("executor")
+    if not executor:
+        raise HTTPException(status_code=400, detail="Missing 'executor' in transform")
+    params = transform_dict.get("params", {})
+
     store = _get_artifact_store()
     tenant_id = get_tenant_id()
 
     # Resolve input versions for provenance
     input_versions: dict[str, str] = {}
-    for input_uri in request.inputs:
+    for input_uri in inputs:
         try:
             # Try to resolve artifact URIs
             if input_uri.startswith("strata://artifact/"):
@@ -3225,11 +3299,11 @@ async def put_artifact(request: PutArtifactRequest):
     from strata.artifact_store import TransformSpec as ArtifactTransformSpec
     from strata.artifact_store import compute_provenance_hash
 
-    # Convert API TransformSpec to internal TransformSpec
+    # Convert to internal TransformSpec
     artifact_transform = ArtifactTransformSpec(
-        executor=request.transform.executor,
-        params=request.transform.params,
-        inputs=request.inputs,
+        executor=executor,
+        params=params,
+        inputs=inputs,
     )
 
     input_hashes = [f"{uri}:{ver}" for uri, ver in sorted(input_versions.items())]
@@ -3242,10 +3316,10 @@ async def put_artifact(request: PutArtifactRequest):
         name_uri = None
 
         # Set name if requested
-        if request.name:
+        if artifact_name:
             try:
-                store.set_name(request.name, existing.id, existing.version, tenant=tenant_id)
-                name_uri = f"strata://name/{request.name}"
+                store.set_name(artifact_name, existing.id, existing.version, tenant=tenant_id)
+                name_uri = f"strata://name/{artifact_name}"
             except ValueError:
                 pass
 
@@ -3255,33 +3329,6 @@ async def put_artifact(request: PutArtifactRequest):
             byte_size=existing.byte_size or 0,
             name_uri=name_uri,
         )
-
-    # Convert JSON data to Arrow IPC
-    import pyarrow as pa
-    import pyarrow.ipc as ipc
-
-    # Convert dict to Arrow table
-    # Handle nested JSON by storing as a single JSON column if complex
-    try:
-        if isinstance(request.data, dict) and all(
-            isinstance(v, list) for v in request.data.values()
-        ):
-            # Columnar data - convert directly
-            table = pa.Table.from_pydict(request.data)
-        else:
-            # Non-columnar - store as single JSON column
-            import json
-
-            json_str = json.dumps(request.data)
-            table = pa.Table.from_pydict({"data": [json_str]})
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to convert data to Arrow: {e}")
-
-    # Serialize to Arrow IPC
-    sink = pa.BufferOutputStream()
-    with ipc.new_stream(sink, table.schema) as writer:
-        writer.write_table(table)
-    arrow_bytes = sink.getvalue().to_pybytes()
 
     # Create artifact
     artifact_id = str(uuid.uuid4())
@@ -3310,12 +3357,12 @@ async def put_artifact(request: PutArtifactRequest):
     name_uri = None
 
     # Set name if requested
-    if request.name:
+    if artifact_name:
         try:
-            store.set_name(request.name, artifact_id, version, tenant=tenant_id)
-            name_uri = f"strata://name/{request.name}"
+            store.set_name(artifact_name, artifact_id, version, tenant=tenant_id)
+            name_uri = f"strata://name/{artifact_name}"
         except Exception as e:
-            logger.warning(f"Failed to set name {request.name}: {e}")
+            logger.warning(f"Failed to set name {artifact_name}: {e}")
 
     return PutArtifactResponse(
         artifact_uri=artifact_uri,

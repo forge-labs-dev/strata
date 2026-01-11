@@ -355,3 +355,172 @@ class TestDeliberaIntegration:
 
         finally:
             client.close()
+
+
+class TestPutMultipleTypes:
+    """Tests for client.put() with different data types."""
+
+    def test_put_arrow_table(self, server_with_artifacts):
+        """Test put() with Arrow Table."""
+        import pyarrow as pa
+
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            # Create Arrow table
+            table = pa.table({
+                "id": [1, 2, 3],
+                "value": [10.0, 20.0, 30.0],
+                "name": ["a", "b", "c"],
+            })
+
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "compute@v1", "params": {}},
+                data=table,
+            )
+
+            assert artifact.uri.startswith("strata://artifact/")
+            assert artifact.cache_hit is False
+
+            # Retrieve and verify
+            retrieved = client.fetch(artifact.uri)
+            assert retrieved.num_rows == 3
+            assert retrieved.column_names == ["id", "value", "name"]
+        finally:
+            client.close()
+
+    def test_put_pandas_dataframe(self, server_with_artifacts):
+        """Test put() with Pandas DataFrame."""
+        import pandas as pd
+
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            # Create Pandas DataFrame
+            df = pd.DataFrame({
+                "x": [1, 2, 3, 4],
+                "y": [10, 20, 30, 40],
+                "label": ["cat", "dog", "bird", "fish"],
+            })
+
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "ml@v1", "params": {"model": "v1"}},
+                data=df,
+            )
+
+            assert artifact.uri.startswith("strata://artifact/")
+            assert artifact.cache_hit is False
+
+            # Retrieve and verify
+            retrieved = client.fetch(artifact.uri)
+            assert retrieved.num_rows == 4
+            # Pandas may add __index_level_0__ column
+            assert "x" in retrieved.column_names
+            assert "y" in retrieved.column_names
+        finally:
+            client.close()
+
+    def test_put_dict_columnar(self, server_with_artifacts):
+        """Test put() with dict that has columnar data."""
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            # Columnar dict (all values are lists of same length)
+            data = {
+                "id": [1, 2, 3],
+                "score": [0.9, 0.8, 0.7],
+            }
+
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "score@v1", "params": {}},
+                data=data,
+            )
+
+            # Retrieve - should be columnar
+            retrieved = client.fetch(artifact.uri)
+            assert retrieved.num_rows == 3
+            assert set(retrieved.column_names) == {"id", "score"}
+        finally:
+            client.close()
+
+    def test_put_dict_nested_json(self, server_with_artifacts):
+        """Test put() with nested dict (stored as JSON)."""
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            # Nested dict (not columnar)
+            data = {
+                "config": {"learning_rate": 0.01, "epochs": 100},
+                "results": {"accuracy": 0.95, "loss": 0.05},
+            }
+
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "train@v1", "params": {}},
+                data=data,
+            )
+
+            # Retrieve as JSON
+            retrieved = client.get_json(artifact.uri)
+            assert retrieved["config"]["learning_rate"] == 0.01
+            assert retrieved["results"]["accuracy"] == 0.95
+        finally:
+            client.close()
+
+    def test_put_cache_hit_with_arrow(self, server_with_artifacts):
+        """Test cache hit detection with Arrow Table."""
+        import pyarrow as pa
+
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            table = pa.table({"x": [1, 2], "y": [3, 4]})
+            transform = {"executor": "dedup_test@v1", "params": {"version": 1}}
+
+            # First call
+            artifact1 = client.put(inputs=[], transform=transform, data=table)
+            assert artifact1.cache_hit is False
+
+            # Second call with same data - should be cache hit
+            artifact2 = client.put(inputs=[], transform=transform, data=table)
+            assert artifact2.cache_hit is True
+            assert artifact2.uri == artifact1.uri
+        finally:
+            client.close()
+
+    def test_put_with_lineage(self, server_with_artifacts):
+        """Test put() with lineage tracking across data types."""
+        import pyarrow as pa
+
+        base_url = server_with_artifacts["base_url"]
+        client = StrataClient(base_url=base_url)
+
+        try:
+            # First artifact: JSON config
+            config = client.put(
+                inputs=[],
+                transform={"executor": "config@v1", "params": {}},
+                data={"setting": "value"},
+            )
+
+            # Second artifact: Arrow table that depends on config
+            table = pa.table({"result": [1, 2, 3]})
+            result = client.put(
+                inputs=[config.uri],  # Lineage!
+                transform={"executor": "process@v1", "params": {}},
+                data=table,
+            )
+
+            assert result.uri.startswith("strata://artifact/")
+            # Different artifacts
+            assert result.uri != config.uri
+        finally:
+            client.close()

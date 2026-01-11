@@ -659,61 +659,89 @@ class StrataClient:
     # Direct Artifact Upload (for local execution)
     # -------------------------------------------------------------------------
 
-    def put_json(
+    # Type alias for supported data types
+    # Using string annotations to avoid import issues
+    PutData = "dict[str, Any] | pa.Table | bytes"
+
+    def put(
         self,
         inputs: list[str],
         transform: dict[str, Any],
-        data: dict[str, Any],
+        data: "dict[str, Any] | pa.Table | bytes",
         name: str | None = None,
     ) -> Artifact:
-        """Directly upload and persist a JSON artifact with provenance tracking.
+        """Directly upload and persist an artifact with provenance tracking.
 
         This is for clients that execute transforms locally and want to persist
         the result with full provenance tracking and deduplication.
+
+        Supports multiple data types with automatic detection:
+        - dict: JSON data (nested dicts, lists, primitives)
+        - pa.Table: Arrow Table (efficient for columnar data)
+        - pd.DataFrame: Pandas DataFrame (converted to Arrow)
+        - pl.DataFrame: Polars DataFrame (converted to Arrow)
+        - bytes: Raw Arrow IPC bytes (for pre-serialized data)
 
         Args:
             inputs: List of input URIs (artifact URIs or table URIs) for lineage
             transform: Transform specification (executor + params) for provenance
                 The params are opaque to Strata and used only for deduplication.
-            data: JSON data to persist
+            data: Data to persist (dict, Arrow Table, DataFrame, or bytes)
             name: Optional name to assign to the artifact
 
         Returns:
             Artifact object with access to metadata and data
 
         Example:
-            # Persist a locally-computed result
-            artifact = client.put_json(
-                inputs=["strata://artifact/parent@v=1"],
-                transform={
-                    "executor": "delibera@v1",
-                    "params": {
-                        "operation": "WORK",
-                        "step_id": "PROPOSE",
-                        "role": "Proposer",
-                        "code_hash": "sha256:abc123",
-                    }
-                },
-                data={"proposal": "...", "claims": [...]},
-                name="proposal_node_42",
+            # Persist JSON data
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "my_step@v1", "params": {}},
+                data={"result": "value", "scores": [1, 2, 3]},
             )
-            print(f"Artifact: {artifact.uri}")
-            print(f"Cache hit: {artifact.cache_hit}")
+
+            # Persist an Arrow Table
+            import pyarrow as pa
+            table = pa.table({"id": [1, 2, 3], "value": [10, 20, 30]})
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "compute@v1", "params": {}},
+                data=table,
+            )
+
+            # Persist a Pandas DataFrame
+            import pandas as pd
+            df = pd.DataFrame({"x": [1, 2], "y": [3, 4]})
+            artifact = client.put(
+                inputs=[],
+                transform={"executor": "analyze@v1", "params": {}},
+                data=df,
+            )
         """
+        # Convert data to Arrow IPC bytes
+        arrow_bytes = self._convert_to_arrow_ipc(data)
+
         # Map 'ref' to 'executor' for server compatibility
         server_transform = dict(transform)
         if "ref" in server_transform:
             server_transform["executor"] = server_transform.pop("ref")
 
-        request_body = {
+        # Send as multipart form data
+        import json
+
+        metadata = {
             "inputs": inputs,
             "transform": server_transform,
-            "data": data,
         }
         if name:
-            request_body["name"] = name
+            metadata["name"] = name
 
-        response = self._client.put("/v1/artifacts", json=request_body)
+        files = {
+            "metadata": ("metadata.json", json.dumps(metadata), "application/json"),
+            "data": ("data.arrow", arrow_bytes, "application/vnd.apache.arrow.stream"),
+        }
+
+        response = self._client.put("/v1/artifacts", files=files)
         response.raise_for_status()
         result = response.json()
 
@@ -729,6 +757,109 @@ class StrataClient:
             execution="cache" if result.get("hit") else "local",
             name=name,
         )
+
+    def _convert_to_arrow_ipc(self, data: "dict[str, Any] | pa.Table | bytes") -> bytes:
+        """Convert various data types to Arrow IPC bytes.
+
+        Args:
+            data: Data to convert (dict, Arrow Table, DataFrame, or bytes)
+
+        Returns:
+            Arrow IPC stream bytes
+
+        Raises:
+            TypeError: If data type is not supported
+        """
+        # Already bytes - assume Arrow IPC
+        if isinstance(data, bytes):
+            return data
+
+        # Arrow Table
+        if isinstance(data, pa.Table):
+            return self._table_to_ipc(data)
+
+        # Dict/JSON
+        if isinstance(data, dict):
+            return self._dict_to_ipc(data)
+
+        # Try Pandas DataFrame
+        try:
+            import pandas as pd
+
+            if isinstance(data, pd.DataFrame):
+                table = pa.Table.from_pandas(data)
+                return self._table_to_ipc(table)
+        except ImportError:
+            pass
+
+        # Try Polars DataFrame
+        try:
+            import polars as pl
+
+            if isinstance(data, pl.DataFrame):
+                table = data.to_arrow()
+                return self._table_to_ipc(table)
+        except ImportError:
+            pass
+
+        raise TypeError(
+            f"Unsupported data type: {type(data).__name__}. "
+            "Expected dict, pa.Table, pd.DataFrame, pl.DataFrame, or bytes."
+        )
+
+    def _table_to_ipc(self, table: pa.Table) -> bytes:
+        """Convert Arrow Table to IPC stream bytes."""
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        return sink.getvalue().to_pybytes()
+
+    def _dict_to_ipc(self, data: dict[str, Any]) -> bytes:
+        """Convert dict to Arrow IPC stream bytes.
+
+        If all values are lists of the same length, treats as columnar data.
+        Otherwise, stores as a single JSON column.
+        """
+        import json
+
+        # Check if columnar (all values are lists of same length)
+        if data and all(isinstance(v, list) for v in data.values()):
+            lengths = [len(v) for v in data.values()]
+            if len(set(lengths)) == 1:
+                # Columnar data - convert directly
+                try:
+                    table = pa.Table.from_pydict(data)
+                    return self._table_to_ipc(table)
+                except Exception:
+                    pass  # Fall through to JSON storage
+
+        # Non-columnar or conversion failed - store as single JSON column
+        json_str = json.dumps(data)
+        table = pa.Table.from_pydict({"data": [json_str]})
+        return self._table_to_ipc(table)
+
+    def put_json(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        data: dict[str, Any],
+        name: str | None = None,
+    ) -> Artifact:
+        """Directly upload and persist a JSON artifact with provenance tracking.
+
+        This is a convenience wrapper around put() for JSON data.
+        See put() for full documentation.
+
+        Args:
+            inputs: List of input URIs for lineage
+            transform: Transform specification for provenance
+            data: JSON data to persist
+            name: Optional name to assign
+
+        Returns:
+            Artifact object
+        """
+        return self.put(inputs=inputs, transform=transform, data=data, name=name)
 
     def get_json(self, artifact_uri: str) -> dict[str, Any]:
         """Get JSON data from an artifact.
