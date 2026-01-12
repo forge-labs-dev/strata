@@ -1456,6 +1456,227 @@ class AsyncStrataClient:
             name=name,
         )
 
+    # -------------------------------------------------------------------------
+    # Direct Artifact Upload (for local execution)
+    # -------------------------------------------------------------------------
+
+    async def put(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        data: "dict[str, Any] | pa.Table | bytes",
+        name: str | None = None,
+    ) -> "AsyncArtifact":
+        """Directly upload and persist an artifact with provenance tracking.
+
+        This is for clients that execute transforms locally and want to persist
+        the result with full provenance tracking and deduplication.
+
+        Supports multiple data types with automatic detection:
+        - dict: JSON data (nested dicts, lists, primitives)
+        - pa.Table: Arrow Table (efficient for columnar data)
+        - pd.DataFrame: Pandas DataFrame (converted to Arrow)
+        - pl.DataFrame: Polars DataFrame (converted to Arrow)
+        - bytes: Raw Arrow IPC bytes (for pre-serialized data)
+
+        Args:
+            inputs: List of input URIs (artifact URIs or table URIs) for lineage
+            transform: Transform specification (executor + params) for provenance
+            data: Data to persist (dict, Arrow Table, DataFrame, or bytes)
+            name: Optional name to assign to the artifact
+
+        Returns:
+            AsyncArtifact object with access to metadata and data
+
+        Example:
+            # Persist JSON data
+            artifact = await client.put(
+                inputs=[],
+                transform={"executor": "my_step@v1", "params": {}},
+                data={"result": "value", "scores": [1, 2, 3]},
+            )
+
+            # Persist an Arrow Table
+            import pyarrow as pa
+            table = pa.table({"id": [1, 2, 3], "value": [10, 20, 30]})
+            artifact = await client.put(
+                inputs=[],
+                transform={"executor": "compute@v1", "params": {}},
+                data=table,
+            )
+        """
+        # Convert data to Arrow IPC bytes
+        arrow_bytes = self._convert_to_arrow_ipc(data)
+
+        # Map 'ref' to 'executor' for server compatibility
+        server_transform = dict(transform)
+        if "ref" in server_transform:
+            server_transform["executor"] = server_transform.pop("ref")
+
+        # Send as multipart form data
+        import json
+
+        metadata = {
+            "inputs": inputs,
+            "transform": server_transform,
+        }
+        if name:
+            metadata["name"] = name
+
+        files = {
+            "metadata": ("metadata.json", json.dumps(metadata), "application/json"),
+            "data": ("data.arrow", arrow_bytes, "application/vnd.apache.arrow.stream"),
+        }
+
+        response = await self._client.put("/v1/artifacts", files=files)
+        response.raise_for_status()
+        result = response.json()
+
+        # Parse artifact URI
+        artifact_uri = result["artifact_uri"]
+        artifact_id, version = self._parse_artifact_uri(artifact_uri)
+
+        return AsyncArtifact(
+            _client=self,
+            artifact_id=artifact_id,
+            version=version,
+            cache_hit=result.get("hit", False),
+            execution="cache" if result.get("hit") else "local",
+            name=name,
+        )
+
+    def _convert_to_arrow_ipc(self, data: "dict[str, Any] | pa.Table | bytes") -> bytes:
+        """Convert various data types to Arrow IPC bytes.
+
+        Args:
+            data: Data to convert (dict, Arrow Table, DataFrame, or bytes)
+
+        Returns:
+            Arrow IPC stream bytes
+
+        Raises:
+            TypeError: If data type is not supported
+        """
+        # Already bytes - assume Arrow IPC
+        if isinstance(data, bytes):
+            return data
+
+        # Arrow Table
+        if isinstance(data, pa.Table):
+            return self._table_to_ipc(data)
+
+        # Dict/JSON
+        if isinstance(data, dict):
+            return self._dict_to_ipc(data)
+
+        # Try Pandas DataFrame
+        try:
+            import pandas as pd
+
+            if isinstance(data, pd.DataFrame):
+                table = pa.Table.from_pandas(data)
+                return self._table_to_ipc(table)
+        except ImportError:
+            pass
+
+        # Try Polars DataFrame
+        try:
+            import polars as pl
+
+            if isinstance(data, pl.DataFrame):
+                table = data.to_arrow()
+                return self._table_to_ipc(table)
+        except ImportError:
+            pass
+
+        raise TypeError(
+            f"Unsupported data type: {type(data).__name__}. "
+            "Expected dict, pa.Table, pd.DataFrame, pl.DataFrame, or bytes."
+        )
+
+    def _table_to_ipc(self, table: pa.Table) -> bytes:
+        """Convert Arrow Table to IPC stream bytes."""
+        sink = pa.BufferOutputStream()
+        with ipc.new_stream(sink, table.schema) as writer:
+            writer.write_table(table)
+        return sink.getvalue().to_pybytes()
+
+    def _dict_to_ipc(self, data: dict[str, Any]) -> bytes:
+        """Convert dict to Arrow IPC stream bytes.
+
+        If all values are lists of the same length, treats as columnar data.
+        Otherwise, stores as a single JSON column.
+        """
+        import json
+
+        # Check if columnar (all values are lists of same length)
+        if data and all(isinstance(v, list) for v in data.values()):
+            lengths = [len(v) for v in data.values()]
+            if len(set(lengths)) == 1:
+                # Columnar data - convert directly
+                try:
+                    table = pa.Table.from_pydict(data)
+                    return self._table_to_ipc(table)
+                except Exception:
+                    pass  # Fall through to JSON storage
+
+        # Non-columnar or conversion failed - store as single JSON column
+        json_str = json.dumps(data)
+        table = pa.Table.from_pydict({"data": [json_str]})
+        return self._table_to_ipc(table)
+
+    async def put_json(
+        self,
+        inputs: list[str],
+        transform: dict[str, Any],
+        data: dict[str, Any],
+        name: str | None = None,
+    ) -> "AsyncArtifact":
+        """Directly upload and persist a JSON artifact with provenance tracking.
+
+        This is a convenience wrapper around put() for JSON data.
+        See put() for full documentation.
+
+        Args:
+            inputs: List of input URIs for lineage
+            transform: Transform specification for provenance
+            data: JSON data to persist
+            name: Optional name to assign
+
+        Returns:
+            AsyncArtifact object
+        """
+        return await self.put(inputs=inputs, transform=transform, data=data, name=name)
+
+    async def get_json(self, artifact_uri: str) -> dict[str, Any]:
+        """Get JSON data from an artifact.
+
+        Fetches the artifact data and returns it as a Python dict.
+        If the artifact was stored as columnar data, returns the columns.
+        If it was stored as a single JSON column, returns the parsed JSON.
+
+        Args:
+            artifact_uri: Artifact URI (e.g., "strata://artifact/{id}@v={version}")
+
+        Returns:
+            The artifact data as a Python dict
+
+        Example:
+            data = await client.get_json("strata://artifact/abc@v=1")
+            print(data["proposal"])
+        """
+        table = await self.fetch(artifact_uri)
+
+        # Check if this is a single-column JSON artifact
+        if table.num_columns == 1 and table.column_names[0] == "data":
+            import json
+
+            json_str = table.column("data")[0].as_py()
+            return json.loads(json_str)
+
+        # Otherwise return as columnar dict
+        return table.to_pydict()
+
 
 @dataclass
 class AsyncArtifact:

@@ -524,3 +524,148 @@ class TestPutMultipleTypes:
             assert result.uri != config.uri
         finally:
             client.close()
+
+
+class TestAsyncPut:
+    """Tests for AsyncStrataClient.put() and related methods."""
+
+    @pytest.fixture
+    async def async_client(self, server_with_artifacts):
+        """Create an async client for testing."""
+        from strata.client import AsyncStrataClient
+
+        base_url = server_with_artifacts["base_url"]
+        client = AsyncStrataClient(base_url=base_url)
+        yield client
+        await client.close()
+
+    @pytest.mark.asyncio
+    async def test_async_put_json(self, async_client):
+        """Test async client put_json() method."""
+        artifact = await async_client.put_json(
+            inputs=[],
+            transform={
+                "executor": "async_test@v1",
+                "params": {"step": "test"},
+            },
+            data={"result": "async value", "items": [1, 2, 3]},
+        )
+
+        assert artifact.uri.startswith("strata://artifact/")
+        assert artifact.cache_hit is False
+
+    @pytest.mark.asyncio
+    async def test_async_put_json_cache_hit(self, async_client):
+        """Test async client put_json() returns cache hit on duplicate."""
+        transform = {
+            "executor": "async_cache@v1",
+            "params": {"version": 1},
+        }
+        data = {"value": 42}
+
+        # First call
+        artifact1 = await async_client.put_json(inputs=[], transform=transform, data=data)
+        assert artifact1.cache_hit is False
+
+        # Second call - should be cache hit
+        artifact2 = await async_client.put_json(inputs=[], transform=transform, data=data)
+        assert artifact2.cache_hit is True
+        assert artifact2.uri == artifact1.uri
+
+    @pytest.mark.asyncio
+    async def test_async_get_json(self, async_client):
+        """Test async client get_json() retrieves data correctly."""
+        original_data = {
+            "nested": {"key": "value"},
+            "list": [1, 2, 3],
+        }
+
+        artifact = await async_client.put_json(
+            inputs=[],
+            transform={"executor": "async_json@v1", "params": {}},
+            data=original_data,
+        )
+
+        # Retrieve the data
+        retrieved = await async_client.get_json(artifact.uri)
+        assert retrieved == original_data
+
+    @pytest.mark.asyncio
+    async def test_async_put_arrow_table(self, async_client):
+        """Test async client put() with Arrow Table."""
+        import pyarrow as pa
+
+        table = pa.table({
+            "id": [1, 2, 3],
+            "value": [10.0, 20.0, 30.0],
+        })
+
+        artifact = await async_client.put(
+            inputs=[],
+            transform={"executor": "async_arrow@v1", "params": {}},
+            data=table,
+        )
+
+        assert artifact.uri.startswith("strata://artifact/")
+        assert artifact.cache_hit is False
+
+        # Retrieve and verify
+        retrieved = await async_client.fetch(artifact.uri)
+        assert retrieved.num_rows == 3
+        assert set(retrieved.column_names) == {"id", "value"}
+
+    @pytest.mark.asyncio
+    async def test_async_put_pandas_dataframe(self, async_client):
+        """Test async client put() with Pandas DataFrame."""
+        import pandas as pd
+
+        df = pd.DataFrame({
+            "x": [1, 2],
+            "y": [3, 4],
+        })
+
+        artifact = await async_client.put(
+            inputs=[],
+            transform={"executor": "async_pandas@v1", "params": {}},
+            data=df,
+        )
+
+        assert artifact.uri.startswith("strata://artifact/")
+
+        # Retrieve and verify
+        retrieved = await async_client.fetch(artifact.uri)
+        assert retrieved.num_rows == 2
+        assert "x" in retrieved.column_names
+
+    @pytest.mark.asyncio
+    async def test_async_put_with_name(self, async_client):
+        """Test async client put() with name assignment."""
+        artifact = await async_client.put(
+            inputs=[],
+            transform={"executor": "async_named@v1", "params": {}},
+            data={"named": True},
+            name="async_test_artifact",
+        )
+
+        assert artifact.name == "async_test_artifact"
+
+    @pytest.mark.asyncio
+    async def test_async_put_with_lineage(self, async_client):
+        """Test async client put() with lineage tracking."""
+        import pyarrow as pa
+
+        # Create parent artifact
+        parent = await async_client.put(
+            inputs=[],
+            transform={"executor": "async_parent@v1", "params": {}},
+            data={"parent": True},
+        )
+
+        # Create child with lineage
+        child = await async_client.put(
+            inputs=[parent.uri],
+            transform={"executor": "async_child@v1", "params": {}},
+            data=pa.table({"derived": [1, 2, 3]}),
+        )
+
+        assert child.uri != parent.uri
