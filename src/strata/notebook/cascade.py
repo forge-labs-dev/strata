@@ -8,10 +8,19 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from strata.notebook.session import NotebookSession
+
+
+class CascadeReason(StrEnum):
+    """Why a cell is included in a cascade plan."""
+
+    STALE = "stale"
+    MISSING = "missing"
+    TARGET = "target"
 
 
 @dataclass
@@ -28,7 +37,7 @@ class CascadeStep:
 
     cell_id: str
     cell_name: str
-    reason: str = "missing"  # 'stale', 'missing', or 'target'
+    reason: CascadeReason = CascadeReason.MISSING
     skip: bool = False
     estimated_ms: int = 0
 
@@ -169,11 +178,11 @@ class CascadePlanner:
 
             # Determine reason
             if step_cell_id == target_cell_id:
-                reason = "target"
+                reason = CascadeReason.TARGET
             elif cell.status == "stale":
-                reason = "stale"
+                reason = CascadeReason.STALE
             else:
-                reason = "missing"
+                reason = CascadeReason.MISSING
 
             # Check if can skip (already cached/ready)
             skip = cell.status == "ready"
