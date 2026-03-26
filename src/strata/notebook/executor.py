@@ -298,10 +298,23 @@ class CellExecutor:
                     None,
                 )
                 if cell:
-                    cell.artifact_uri = (
-                        f"strata://artifact/{cached_artifact.id}"
-                        f"@v={cached_artifact.version}"
-                    )
+                    # Populate per-variable URIs from canonical artifacts
+                    for var_name in consumed_vars:
+                        canonical_id = (
+                            f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+                        )
+                        canonical_art = (
+                            artifact_mgr.artifact_store.get_latest_version(
+                                canonical_id,
+                            )
+                        )
+                        if canonical_art:
+                            uri = (
+                                f"strata://artifact/{canonical_art.id}"
+                                f"@v={canonical_art.version}"
+                            )
+                            cell.artifact_uris[var_name] = uri
+                            cell.artifact_uri = uri  # backward compat
                 return CellExecutionResult(
                     cell_id=cell_id,
                     success=True,
@@ -471,7 +484,8 @@ class CellExecutor:
         """Read provenance hashes from upstream artifacts.
 
         Called *after* ``_materialize_upstreams`` so every upstream
-        ``artifact_uri`` is populated.
+        artifact is populated. Uses per-variable ``artifact_uris`` dict
+        when available, falling back to the legacy ``artifact_uri`` field.
         """
         cell = next(
             (c for c in self.session.notebook_state.cells if c.id == cell_id),
@@ -488,19 +502,26 @@ class CellExecutor:
                 (c for c in self.session.notebook_state.cells if c.id == upstream_id),
                 None,
             )
-            if upstream_cell is None or not upstream_cell.artifact_uri:
+            if upstream_cell is None:
                 continue
-            try:
-                parts = upstream_cell.artifact_uri.split("/")
-                artifact_id = parts[-1].split("@")[0]
-                version = int(parts[-1].split("@v=")[1])
-                artifact = artifact_mgr.artifact_store.get_artifact(
-                    artifact_id, version,
-                )
-                if artifact:
-                    hashes.append(artifact.provenance_hash)
-            except (IndexError, ValueError):
-                pass
+
+            # Collect URIs: prefer per-variable dict, fall back to single URI
+            uris = list(upstream_cell.artifact_uris.values())
+            if not uris and upstream_cell.artifact_uri:
+                uris = [upstream_cell.artifact_uri]
+
+            for uri in sorted(uris):  # sorted for deterministic ordering
+                try:
+                    parts = uri.split("/")
+                    artifact_id = parts[-1].split("@")[0]
+                    version = int(parts[-1].split("@v=")[1])
+                    artifact = artifact_mgr.artifact_store.get_artifact(
+                        artifact_id, version,
+                    )
+                    if artifact:
+                        hashes.append(artifact.provenance_hash)
+                except (IndexError, ValueError):
+                    pass
 
         return hashes
 
@@ -682,10 +703,12 @@ class CellExecutor:
                             source_hash=source_hash,
                             env_hash=env_hash,
                         )
-                        cell.artifact_uri = (
+                        uri = (
                             f"strata://artifact/{artifact_version.id}"
                             f"@v={artifact_version.version}"
                         )
+                        cell.artifact_uris[var_name] = uri
+                        cell.artifact_uri = uri  # backward compat
                         logger.info(
                             "Stored output %s for cell %s as %s@v=%d "
                             "(%d bytes, %s)",

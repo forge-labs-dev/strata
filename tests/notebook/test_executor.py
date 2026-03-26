@@ -41,10 +41,10 @@ class TestCellExecutor:
         executor = CellExecutor(sample_notebook)
 
         source = "x = 1 + 1"
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
-        assert result.cell_id == "test_cell"
+        assert result.cell_id == "cell1"
         assert result.error is None
         assert "x" in result.outputs
         assert result.outputs["x"]["content_type"] == "json/object"
@@ -56,7 +56,7 @@ class TestCellExecutor:
         executor = CellExecutor(sample_notebook)
 
         source = 'print("Hello, world!")\ny = 42'
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "Hello, world!" in result.stdout
@@ -68,7 +68,7 @@ class TestCellExecutor:
         executor = CellExecutor(sample_notebook)
 
         source = "z = 1 / 0"
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is False
         assert result.error is not None
@@ -81,7 +81,7 @@ class TestCellExecutor:
 
         # Use a dict instead of DataFrame since pandas may not be available in test venv
         source = 'df = {"a": [1, 2, 3], "b": [4.0, 5.0, 6.0]}'
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "df" in result.outputs
@@ -98,7 +98,7 @@ x = 10
 y = "hello"
 z = [1, 2, 3]
 """
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert set(result.outputs.keys()) == {"x", "y", "z"}
@@ -112,7 +112,7 @@ z = [1, 2, 3]
         executor = CellExecutor(sample_notebook)
 
         source = 'data = {"count": 42, "names": ["Alice", "Bob"]}'
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "data" in result.outputs
@@ -127,7 +127,7 @@ z = [1, 2, 3]
 public = 1
 _private = 2
 """
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "public" in result.outputs
@@ -139,7 +139,7 @@ _private = 2
         executor = CellExecutor(sample_notebook)
 
         source = "# Just a comment"
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert len(result.outputs) == 0
@@ -153,7 +153,7 @@ _private = 2
 import math
 result = math.pi
 """
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "result" in result.outputs
@@ -170,7 +170,7 @@ import sys
 print("error message", file=sys.stderr)
 x = 1
 """
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert "error message" in result.stderr
@@ -181,7 +181,7 @@ x = 1
         executor = CellExecutor(sample_notebook)
 
         source = "x = 42"
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         assert result.duration_ms > 0
@@ -197,7 +197,7 @@ def add(a, b):
 
 result = add(2, 3)
 """
-        result = await executor.execute_cell("test_cell", source)
+        result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
         # Function definition is not captured, but result is

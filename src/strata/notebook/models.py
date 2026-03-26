@@ -138,7 +138,11 @@ class CellState(BaseModel):
         default=None, description="Staleness status (M4)"
     )
     artifact_uri: str | None = Field(
-        default=None, description="URI of stored artifact (M4)"
+        default=None, description="URI of last stored artifact (M4, legacy single-var)"
+    )
+    artifact_uris: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-variable artifact URIs: {var_name: uri} (M4)",
     )
     cache_hit: bool = Field(
         default=False,

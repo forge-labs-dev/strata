@@ -380,16 +380,21 @@ def compute_causality_on_staleness(
         details: list[CausalityDetail] = []
         source_hash = compute_source_hash(cell.source)
 
-        # Compute current provenance
+        # Compute current provenance — use per-variable artifact_uris
         input_hashes: list[str] = []
         for upstream_id in cell.upstream_ids:
             upstream = next(
                 (c for c in session.notebook_state.cells if c.id == upstream_id),
                 None,
             )
-            if upstream and upstream.artifact_uri:
+            if upstream is None:
+                continue
+            uris = list(upstream.artifact_uris.values())
+            if not uris and upstream.artifact_uri:
+                uris = [upstream.artifact_uri]
+            for uri in sorted(uris):
                 try:
-                    parts = upstream.artifact_uri.split("/")
+                    parts = uri.split("/")
                     artifact_id = parts[-1].split("@")[0]
                     version = int(parts[-1].split("@v=")[1])
                     artifact = session.artifact_manager.artifact_store.get_artifact(
@@ -404,8 +409,22 @@ def compute_causality_on_staleness(
             input_hashes, source_hash, env_hash
         )
 
-        # Check if artifact exists with this provenance
-        cached = session.artifact_manager.find_cached(provenance_hash)
+        # Check if artifact exists with this provenance.
+        # Use per-variable provenance hash to match executor storage scheme.
+        consumed_vars = (
+            session.dag.consumed_variables.get(cell_id, set())
+            if session.dag
+            else set()
+        )
+        if consumed_vars:
+            import hashlib as _hashlib
+            first_var = sorted(consumed_vars)[0]
+            lookup_hash = _hashlib.sha256(
+                f"{provenance_hash}:{first_var}".encode()
+            ).hexdigest()
+        else:
+            lookup_hash = provenance_hash
+        cached = session.artifact_manager.find_cached(lookup_hash)
         if cached is not None:
             # Cell is ready — no causality needed
             continue

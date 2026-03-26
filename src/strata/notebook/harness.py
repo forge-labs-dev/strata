@@ -426,20 +426,27 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
         namespace_before = set(namespace.keys())
         input_names = list(namespace.keys())
 
+        # Snapshot input identities so we can detect reassignment
+        input_identities = {name: id(namespace[name]) for name in input_names}
+
         # M6: Take snapshots of input variables
         input_snapshots = snapshot_inputs(namespace, input_names)
 
         # Execute the cell
         exec(source, namespace)
 
-        # Find new variables (defined by the cell)
+        # Find new and reassigned variables
+        _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
         new_vars = {}
         for name, value in namespace.items():
-            # Skip private variables, builtins, and things that were there before
-            if not name.startswith("_") and name not in namespace_before:
-                # Skip builtins
-                if name not in {"__builtins__", "__name__", "__doc__", "__package__"}:
-                    new_vars[name] = value
+            if name.startswith("_") or name in _skip:
+                continue
+            if name not in namespace_before:
+                # Truly new variable
+                new_vars[name] = value
+            elif id(value) != input_identities.get(name):
+                # Input variable was reassigned (e.g. x = x + 1)
+                new_vars[name] = value
 
         # M6: Detect mutations on input variables
         mutation_warnings = detect_mutations(namespace, input_snapshots)

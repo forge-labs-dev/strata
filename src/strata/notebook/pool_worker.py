@@ -152,6 +152,10 @@ def execute_harness(manifest: dict) -> dict:
             except Exception:
                 pass
 
+    # Record namespace before execution for filtering outputs
+    namespace_before = set(namespace.keys())
+    input_identities = {name: id(namespace[name]) for name in namespace_before}
+
     # Capture stdout/stderr
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -159,6 +163,8 @@ def execute_harness(manifest: dict) -> dict:
     stderr_buffer = io.StringIO()
     sys.stdout = stdout_buffer
     sys.stderr = stderr_buffer
+
+    _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
 
     try:
         # Execute cell
@@ -168,10 +174,22 @@ def execute_harness(manifest: dict) -> dict:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
 
-        # Collect outputs
+        # Collect new and reassigned outputs (exclude unchanged inputs)
         outputs = {}
         for key, value in namespace.items():
-            if not key.startswith("_"):
+            if key.startswith("_") or key in _skip:
+                continue
+            if key not in namespace_before:
+                # Truly new variable
+                try:
+                    outputs[key] = _serialize_value(value, output_dir, key)
+                except Exception as e:
+                    outputs[key] = {
+                        "content_type": "error",
+                        "error": str(e),
+                    }
+            elif id(value) != input_identities.get(key):
+                # Input variable was reassigned
                 try:
                     outputs[key] = _serialize_value(value, output_dir, key)
                 except Exception as e:

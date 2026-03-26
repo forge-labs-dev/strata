@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time as _time
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -58,6 +59,9 @@ class NotebookSession:
 
         # M6: Initialize warm process pool (optional)
         self.warm_pool: WarmProcessPool | None = None
+
+        # Session TTL tracking
+        self.last_accessed: float = _time.time()
 
         # v1.1: Execution history for profiling (cell_id -> list of durations)
         self.execution_history: dict[str, list[float]] = {}
@@ -244,9 +248,19 @@ class NotebookSession:
             else:
                 # Artifact exists — mark as ready
                 staleness_map[cell_id] = CellStaleness(status="ready", reasons=[])
-                cell.artifact_uri = (
-                    f"strata://artifact/{cached.id}@v={cached.version}"
-                )
+                # Populate per-variable artifact URIs
+                notebook_id = self.notebook_state.id
+                for var_name in consumed_vars:
+                    canonical_id = (
+                        f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+                    )
+                    canonical = self.artifact_manager.artifact_store.get_latest_version(
+                        canonical_id,
+                    )
+                    if canonical:
+                        uri = f"strata://artifact/{canonical.id}@v={canonical.version}"
+                        cell.artifact_uris[var_name] = uri
+                        cell.artifact_uri = uri  # backward compat
 
         # Update cells with staleness info AND cell.status
         for cell_id, staleness in staleness_map.items():
@@ -404,7 +418,14 @@ class NotebookSession:
 
 
 class SessionManager:
-    """Manages multiple open notebooks by ID."""
+    """Manages multiple open notebooks by ID.
+
+    Sessions are evicted after ``SESSION_TTL_SECONDS`` of inactivity
+    or when ``MAX_SESSIONS`` is exceeded (oldest evicted first).
+    """
+
+    MAX_SESSIONS = 50
+    SESSION_TTL_SECONDS = 4 * 3600  # 4 hours
 
     def __init__(self):
         """Initialize session manager."""
@@ -430,7 +451,7 @@ class SessionManager:
             # it just won't be able to execute cells
             logger.warning("Failed to sync venv: %s", e)
 
-        # M6: Initialize warm process pool (async, non-blocking)
+        # M6: Initialize and start warm process pool
         try:
             from strata.notebook.pool import WarmProcessPool
             session.warm_pool = WarmProcessPool(
@@ -438,15 +459,20 @@ class SessionManager:
                 pool_size=2,
             )
             # Start pool in background (don't block on notebook open)
-            # This will be awaited elsewhere if needed
+            import asyncio
+            try:
+                asyncio.get_running_loop().create_task(session.warm_pool.start())
+            except RuntimeError:
+                pass  # No running loop; pool stays cold until first acquire
         except Exception as e:
             logger.warning("Failed to initialize warm pool: %s", e)
 
+        self._evict_stale()
         self._sessions[session.id] = session
         return session
 
     def get_session(self, session_id: str) -> NotebookSession | None:
-        """Get a session by ID.
+        """Get a session by ID, updating its last-accessed timestamp.
 
         Args:
             session_id: Session ID
@@ -454,7 +480,30 @@ class SessionManager:
         Returns:
             NotebookSession or None if not found
         """
-        return self._sessions.get(session_id)
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.last_accessed = _time.time()
+        return session
+
+    def _evict_stale(self) -> None:
+        """Remove sessions not accessed within TTL and enforce max count."""
+        now = _time.time()
+        stale = [
+            sid
+            for sid, s in self._sessions.items()
+            if now - s.last_accessed > self.SESSION_TTL_SECONDS
+        ]
+        for sid in stale:
+            logger.info("Evicting stale session %s", sid)
+            self.close_session(sid)
+
+        # Enforce max count — evict oldest if over limit
+        while len(self._sessions) >= self.MAX_SESSIONS:
+            oldest_id = min(
+                self._sessions, key=lambda sid: self._sessions[sid].last_accessed
+            )
+            logger.info("Evicting oldest session %s (max %d reached)", oldest_id, self.MAX_SESSIONS)
+            self.close_session(oldest_id)
 
     def close_session(self, session_id: str) -> None:
         """Close a session and release resources.
