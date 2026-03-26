@@ -107,7 +107,7 @@ class NotebookSession:
 
         except ValueError as e:
             # Cycle detected — log but don't crash
-            print(f"Warning: Cycle detected in DAG: {e}")
+            logger.warning("Cycle detected in DAG: %s", e)
             self.dag = None
 
     def re_analyze_cell(self, cell_id: str) -> None:
@@ -427,12 +427,22 @@ class SessionManager:
         return self._sessions.get(session_id)
 
     def close_session(self, session_id: str) -> None:
-        """Close a session.
+        """Close a session and release resources.
 
         Args:
             session_id: Session ID
         """
-        self._sessions.pop(session_id, None)
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return
+        # Drain warm pool if present
+        if session.warm_pool is not None:
+            import asyncio
+
+            try:
+                asyncio.get_running_loop().create_task(session.warm_pool.drain())
+            except RuntimeError:
+                pass  # No running loop; best-effort
 
     def list_sessions(self) -> list[str]:
         """List all open session IDs.

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import logging
+import re
 import uuid
 import zipfile
 from pathlib import Path
@@ -11,7 +13,9 @@ from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
+
+logger = logging.getLogger(__name__)
 
 from strata.notebook.dependencies import (
     add_dependency,
@@ -19,7 +23,6 @@ from strata.notebook.dependencies import (
     remove_dependency,
 )
 from strata.notebook.executor import CellExecutor
-from strata.notebook.parser import parse_notebook
 from strata.notebook.session import SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
@@ -44,6 +47,23 @@ def get_session_manager() -> SessionManager:
     return _session_manager
 
 
+def _validate_notebook_path(user_path: str, label: str = "path") -> Path:
+    """Validate that a user-supplied path is safe (no path traversal)."""
+    path = Path(user_path)
+    if ".." in path.parts:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid {label}: path traversal not allowed"
+        )
+    return path.resolve()
+
+
+def _safe_filename(name: str) -> str:
+    """Sanitize a string for use in Content-Disposition."""
+    safe = re.sub(r'[^\w\s.-]', '', name)
+    safe = re.sub(r'\s+', '_', safe).strip('_') or 'notebook'
+    return safe
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -65,7 +85,7 @@ class CreateNotebookRequest(BaseModel):
 class UpdateCellSourceRequest(BaseModel):
     """Request to update cell source."""
 
-    source: str
+    source: str = Field(..., max_length=1_000_000)  # 1MB limit
 
 
 class AddCellRequest(BaseModel):
@@ -89,7 +109,15 @@ class RenameNotebookRequest(BaseModel):
 class AddDependencyRequest(BaseModel):
     """Request to add a dependency."""
 
-    package: str  # e.g. "requests" or "pandas>=2.0"
+    package: str = Field(..., max_length=200)  # e.g. "requests" or "pandas>=2.0"
+
+    @field_validator("package")
+    @classmethod
+    def validate_package(cls, v: str) -> str:
+        """Reject shell metacharacters in package specifiers."""
+        if any(c in v for c in ';&|`$(){}!<>"\'\n\r\t'):
+            raise ValueError("Package specifier contains invalid characters")
+        return v.strip()
 
 
 class RemoveDependencyRequest(BaseModel):
@@ -113,26 +141,24 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
     Returns:
         Notebook state, session ID, and DAG as JSON
     """
-    notebook_path = Path(req.path)
+    notebook_path = _validate_notebook_path(req.path, "notebook path")
     if not notebook_path.exists():
         raise HTTPException(status_code=404, detail="Notebook directory not found")
 
     try:
-        # Parse notebook
-        notebook_state = parse_notebook(notebook_path)
-
-        # Create session (this triggers DAG analysis)
+        # Create session (parses notebook and triggers DAG analysis)
         session = _session_manager.open_notebook(notebook_path)
 
         # Return notebook state with session ID and DAG
-        data = notebook_state.model_dump()
+        data = session.notebook_state.model_dump()
         data["session_id"] = session.id
         data["dag"] = _format_dag(session)
         return data
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/create")
@@ -146,15 +172,16 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
         Notebook state as JSON
     """
     try:
-        notebook_dir = create_notebook(Path(req.parent_path), req.name)
-        notebook_state = parse_notebook(notebook_dir)
+        parent_path = _validate_notebook_path(req.parent_path, "parent path")
+        notebook_dir = create_notebook(parent_path, req.name)
         session = _session_manager.open_notebook(notebook_dir)
 
-        data = notebook_state.model_dump()
+        data = session.notebook_state.model_dump()
         data["session_id"] = session.id
         return data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/{notebook_id}/cells/reorder")
@@ -173,8 +200,9 @@ async def reorder_notebook_cells(
             "notebook_id": session.notebook_state.id,
             "cells": [c.model_dump() for c in session.notebook_state.cells],
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{notebook_id}/cells")
@@ -249,8 +277,9 @@ async def update_cell_source(
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{notebook_id}/cells")
@@ -284,8 +313,9 @@ async def add_cell(notebook_id: str, req: AddCellRequest) -> dict:
             raise HTTPException(status_code=500, detail="Failed to create cell")
 
         return cell.model_dump()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.delete("/{notebook_id}/cells/{cell_id}")
@@ -317,8 +347,9 @@ async def delete_cell(notebook_id: str, cell_id: str) -> dict:
         return {"message": "Cell deleted", "cell_id": cell_id}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/{notebook_id}/name")
@@ -348,8 +379,9 @@ async def rename_notebook_endpoint(
             "notebook_id": session.notebook_state.id,
             "name": session.notebook_state.name,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/{notebook_id}/dag")
@@ -516,9 +548,10 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
         result = await executor.execute_cell(cell_id, cell.source)
 
         return result.to_dict()
-    except Exception as e:
+    except Exception:
+        logger.exception("Cell execution failed")
         raise HTTPException(
-            status_code=500, detail=f"Execution failed: {str(e)}"
+            status_code=500, detail="Execution failed"
         )
 
 
@@ -586,7 +619,7 @@ async def export_notebook(notebook_id: str) -> StreamingResponse:
         zf.writestr("provenance.json", json.dumps(provenance, indent=2))
 
     buf.seek(0)
-    filename = f"{session.notebook_state.name or 'notebook'}.zip"
+    filename = f"{_safe_filename(session.notebook_state.name or 'notebook')}.zip"
     return StreamingResponse(
         buf,
         media_type="application/zip",

@@ -199,11 +199,29 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
     except WebSocketDisconnect:
         # Clean up connection
         if notebook_id in _notebook_connections:
-            _notebook_connections[notebook_id].remove(websocket)
+            try:
+                _notebook_connections[notebook_id].remove(websocket)
+            except ValueError:
+                pass
+            # Clean up state when all connections close
+            if not _notebook_connections[notebook_id]:
+                del _notebook_connections[notebook_id]
+                _notebook_execution_state.pop(notebook_id, None)
+                _notebook_inspect_managers.pop(notebook_id, None)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.exception("WebSocket error: %s", e)
+        # Remove dead connection
+        if notebook_id in _notebook_connections:
+            try:
+                _notebook_connections[notebook_id].remove(websocket)
+            except ValueError:
+                pass
+            if not _notebook_connections[notebook_id]:
+                del _notebook_connections[notebook_id]
+                _notebook_execution_state.pop(notebook_id, None)
+                _notebook_inspect_managers.pop(notebook_id, None)
         try:
-            await websocket.close(code=1011, reason=str(e))
+            await websocket.close(code=1011, reason="Internal error")
         except Exception:
             pass
 

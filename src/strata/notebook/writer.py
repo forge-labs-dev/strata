@@ -117,6 +117,10 @@ def create_notebook(parent_dir: Path, name: str) -> Path:
     parent_dir = Path(parent_dir)
     parent_dir.mkdir(parents=True, exist_ok=True)
 
+    # Validate notebook name
+    if "/" in name or "\\" in name or ".." in name or "\0" in name:
+        raise ValueError("Notebook name contains invalid characters")
+
     # Create notebook directory (slugify the name)
     notebook_dir = parent_dir / name.lower().replace(" ", "_")
     notebook_dir.mkdir(exist_ok=True)

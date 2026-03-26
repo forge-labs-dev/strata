@@ -7,7 +7,10 @@ Runtime-only filtering (excluding dev deps) is a future optimization.
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def compute_lockfile_hash(notebook_dir: Path) -> str:
@@ -38,5 +41,5 @@ def compute_lockfile_hash(notebook_dir: Path) -> str:
         return hashlib.sha256(lockfile_content).hexdigest()
     except Exception as e:
         # If we can't read the lockfile, log and return sentinel
-        print(f"Warning: Could not read uv.lock: {e}")
+        logger.warning("Could not read uv.lock: %s", e)
         return hashlib.sha256(b"").hexdigest()
