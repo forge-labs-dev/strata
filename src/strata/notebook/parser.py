@@ -2,20 +2,11 @@
 
 from __future__ import annotations
 
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-
-# Python 3.10 compatibility
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
 
 from strata.notebook.models import CellMeta, CellState, NotebookState, NotebookToml
-
-if TYPE_CHECKING:
-    pass
 
 
 def parse_notebook(directory: Path) -> NotebookState:
