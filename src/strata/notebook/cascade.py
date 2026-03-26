@@ -189,10 +189,10 @@ class CascadePlanner:
 
             step = CascadeStep(
                 cell_id=step_cell_id,
-                cell_name=cell.id,  # Use cell ID as name for now
+                cell_name=cell.defines[0] if cell.defines else cell.id,
                 reason=reason,
                 skip=skip,
-                estimated_ms=0,  # TODO: estimate from historical data
+                estimated_ms=self.session.get_estimated_duration(step_cell_id),
             )
             steps.append(step)
 
