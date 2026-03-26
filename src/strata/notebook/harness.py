@@ -336,7 +336,11 @@ def deserialize_inputs(manifest: dict) -> dict[str, Any]:
 
 
 def _deserialize_arrow(file_path) -> Any:
-    """Deserialize Arrow IPC file."""
+    """Deserialize Arrow IPC file.
+
+    Returns a pandas DataFrame if pandas is available, otherwise a
+    pyarrow Table. Users expect to work with DataFrames, not raw Arrow.
+    """
     from pathlib import Path
 
     import pyarrow as pa
@@ -345,7 +349,11 @@ def _deserialize_arrow(file_path) -> Any:
     with open(file_path, "rb") as f:
         reader = pa.ipc.open_stream(f)
         table = reader.read_all()
-    return table
+
+    try:
+        return table.to_pandas()
+    except Exception:
+        return table
 
 
 def _deserialize_json(file_path) -> Any:
