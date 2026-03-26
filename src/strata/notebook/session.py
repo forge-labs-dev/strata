@@ -222,6 +222,21 @@ class NotebookSession:
                 lookup_hash = provenance_hash
             cached = self.artifact_manager.find_cached(lookup_hash)
 
+            # Validate: find_by_provenance can return artifacts from old
+            # notebook sessions sharing the same SQLite DB.  Verify the
+            # canonical artifact for THIS notebook/cell has matching provenance.
+            if cached is not None and consumed_vars:
+                notebook_id = self.notebook_state.id
+                first_var = sorted(consumed_vars)[0]
+                canonical_id = (
+                    f"nb_{notebook_id}_cell_{cell_id}_var_{first_var}"
+                )
+                canonical = self.artifact_manager.artifact_store.get_latest_version(
+                    canonical_id,
+                )
+                if canonical is None or canonical.provenance_hash != lookup_hash:
+                    cached = None
+
             if cached is None:
                 # No cached artifact — cell is stale
                 staleness_map[cell_id] = CellStaleness(status="idle", reasons=[])

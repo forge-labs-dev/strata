@@ -242,33 +242,43 @@ class CellExecutor:
             else:
                 cached_artifact = artifact_mgr.find_cached(provenance_hash)
 
-            # Validate cache hit: every consumed variable must be
-            # resolvable by its canonical artifact ID.  The provenance-
-            # based lookup (find_by_provenance) can return an artifact
-            # stored under a *different* ID (provenance dedup).  If so,
-            # downstream cells will fail because they look up by the
-            # canonical ID ``nb_{notebook_id}_cell_{cell_id}_var_{name}``.
+            # Validate cache hit: every consumed variable must have a
+            # canonical artifact whose provenance matches.  The global
+            # find_by_provenance can return artifacts from old notebook
+            # sessions (same SQLite DB, different notebook_id).  We must
+            # verify the LOCAL canonical artifact exists AND has the
+            # expected provenance hash — not just that it exists.
             notebook_id = self.session.notebook_state.id
             if cached_artifact is not None and consumed_vars:
                 for var_name in consumed_vars:
                     canonical_id = (
                         f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
                     )
+                    var_prov = hashlib.sha256(
+                        f"{provenance_hash}:{var_name}".encode()
+                    ).hexdigest()
                     canonical_art = (
                         artifact_mgr.artifact_store.get_latest_version(
                             canonical_id,
                         )
                     )
-                    if canonical_art is None:
+                    if (
+                        canonical_art is None
+                        or canonical_art.provenance_hash != var_prov
+                    ):
                         logger.info(
                             "Cache hit for cell %s invalidated: "
-                            "canonical artifact %s not found "
-                            "(provenance hit was %s@v=%d). "
-                            "Falling through to execution.",
+                            "canonical artifact %s %s "
+                            "(provenance hit was %s@v=%d, "
+                            "expected provenance %s).",
                             cell_id,
                             canonical_id,
+                            "not found"
+                            if canonical_art is None
+                            else f"has stale provenance {canonical_art.provenance_hash[:12]}",
                             cached_artifact.id,
                             cached_artifact.version,
+                            var_prov[:12],
                         )
                         cached_artifact = None
                         break
