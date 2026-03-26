@@ -12,7 +12,7 @@ const emit = defineEmits<{
   addBelow: [cellId: string]
 }>()
 
-const { updateSource, openInspect, inspectCellId } = useNotebook()
+const { updateSource, openInspect, inspectCellId, addDependencyAction } = useNotebook()
 
 const isInspecting = computed(() => inspectCellId.value === props.cell.id)
 
@@ -172,6 +172,12 @@ function toggleCausality() {
       <div v-if="cell.output" class="cell-output">
         <div v-if="cell.output.error" class="output-error">
           {{ cell.output.error }}
+          <div v-if="cell.suggestInstall" class="suggest-install">
+            <span>Missing package <code>{{ cell.suggestInstall }}</code></span>
+            <button class="btn-install" @click="addDependencyAction(cell.suggestInstall!)">
+              Install {{ cell.suggestInstall }}
+            </button>
+          </div>
         </div>
         <div v-else-if="cell.output.rows?.length" class="output-table-wrap">
           <table class="output-table">
@@ -372,6 +378,33 @@ function toggleCausality() {
   font-family: monospace;
   white-space: pre-wrap;
 }
+.suggest-install {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #89b4fa15;
+  border: 1px solid #89b4fa33;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #cdd6f4;
+}
+.suggest-install code { color: #89b4fa; font-weight: 600; }
+.btn-install {
+  background: #89b4fa;
+  color: #1e1e2e;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-install:hover { background: #74c7ec; }
 .output-table-wrap { overflow-x: auto; }
 .output-table {
   width: 100%;

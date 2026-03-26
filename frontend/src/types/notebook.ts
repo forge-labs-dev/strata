@@ -100,6 +100,8 @@ export interface Cell {
   executorName?: string
   /** Causality chain explaining why this cell is stale */
   causality?: CausalityChain
+  /** Suggested package to install (when execution fails with ModuleNotFoundError) */
+  suggestInstall?: string
 }
 
 /** Causality chain — explains why a cell is stale */
@@ -179,6 +181,13 @@ export interface LineageNode {
   inputs: LineageNode[]
   /** Environment hash at time of production */
   envHash?: string
+}
+
+/** Package dependency info */
+export interface DependencyInfo {
+  name: string
+  version: string
+  specifier: string
 }
 
 export interface Notebook {
@@ -287,6 +296,8 @@ export type WsClientMessageType =
   | 'inspect_close'          // Close inspect REPL
   | 'impact_preview_request' // Request impact preview for a cell (v1.1)
   | 'profiling_request'      // Request profiling summary (v1.1)
+  | 'dependency_add'         // Add a package dependency
+  | 'dependency_remove'      // Remove a package dependency
 
 /** WebSocket message types: server → client */
 export type WsServerMessageType =
@@ -303,6 +314,7 @@ export type WsServerMessageType =
   | 'inspect_result'         // Result of an inspect REPL evaluation
   | 'notebook_status'        // Batch status update (e.g., after open or env change)
   | 'notebook_state'         // Full state sync (reconnection)
+  | 'dependency_changed'     // Dependency added/removed — updated list
   | 'error'                  // Protocol-level error (auth, not found, etc.)
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType

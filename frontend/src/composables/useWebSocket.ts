@@ -259,6 +259,20 @@ export function useWebSocket(notebookId: string) {
   }
 
   /**
+   * Add a package dependency.
+   */
+  function addDependency(pkg: string): void {
+    send('dependency_add', { package: pkg })
+  }
+
+  /**
+   * Remove a package dependency.
+   */
+  function removeDependency(pkg: string): void {
+    send('dependency_remove', { package: pkg })
+  }
+
+  /**
    * Debounced source update (for editor changes).
    */
   function debounceSourceUpdate(cellId: string, source: string, delayMs: number = 500): () => void {
@@ -328,5 +342,7 @@ export function useWebSocket(notebookId: string) {
     inspectOpen,
     inspectEval,
     inspectClose,
+    addDependency,
+    removeDependency,
   }
 }

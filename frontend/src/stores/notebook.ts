@@ -1,6 +1,6 @@
 import { reactive, computed, ref } from 'vue'
 import type {
-  Cell, CellId, CellOutput, CellStatus, DagEdge, Notebook, WsMessage,
+  Cell, CellId, CellOutput, CellStatus, DagEdge, DependencyInfo, Notebook, WsMessage,
   ImpactPreview, ProfilingSummary,
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
@@ -316,6 +316,7 @@ async function boot(): Promise<void> {
     await waitForWebSocket()
 
     connected.value = true
+    fetchDependencies()
   } catch (e: any) {
     console.error('Failed to boot notebook:', e)
     connectError.value = e.message || 'Failed to connect to server'
@@ -359,6 +360,9 @@ async function openNotebook(path: string): Promise<void> {
   initializeWebSocket()
   await waitForWebSocket()
   connected.value = true
+
+  // Load dependencies after connection is established
+  fetchDependencies()
 }
 
 // --- WebSocket integration -------------------------------------------------
@@ -366,6 +370,11 @@ async function openNotebook(path: string): Promise<void> {
 // v1.1: Impact preview and profiling state
 const currentImpactPreview = ref<ImpactPreview | null>(null)
 const profilingSummary = ref<ProfilingSummary | null>(null)
+
+// Environment / dependency state
+const dependencies = ref<DependencyInfo[]>([])
+const dependencyLoading = ref(false)
+const dependencyError = ref<string | null>(null)
 
 // Inspect REPL state
 interface InspectEntry {
@@ -479,6 +488,8 @@ function initializeWebSocket() {
         if (p.execution_method) {
           cell.executorName = p.execution_method
         }
+        // Capture suggest_install for "click to install" UX
+        cell.suggestInstall = p.suggest_install || undefined
       }
 
       setCellOutput(cellId, output)
@@ -629,6 +640,23 @@ function initializeWebSocket() {
       }
     })
 
+    wsInstance.onMessage('dependency_changed', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      if (p.dependencies && Array.isArray(p.dependencies)) {
+        dependencies.value = p.dependencies.map((d: any) => ({
+          name: d.name,
+          version: d.version || '',
+          specifier: d.specifier || '',
+        }))
+      }
+      if (!p.success && p.error) {
+        dependencyError.value = p.error
+      } else {
+        dependencyError.value = null
+      }
+      dependencyLoading.value = false
+    })
+
     wsInstance.connect()
   }
 }
@@ -680,6 +708,66 @@ function executeForceWebSocket(cellId: CellId) {
 function cancelCellWebSocket(cellId: CellId) {
   if (wsInstance && wsInstance.connected()) {
     wsInstance.cancelCell(cellId)
+  }
+}
+
+async function fetchDependencies() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  try {
+    const data = await strata.listDependencies(sid)
+    dependencies.value = (data.dependencies || []).map((d: any) => ({
+      name: d.name,
+      version: d.version || '',
+      specifier: d.specifier || '',
+    }))
+  } catch (err) {
+    console.error('Failed to fetch dependencies:', err)
+  }
+}
+
+async function addDependencyAction(pkg: string) {
+  const sid = sessionId()
+  if (!sid) return
+  dependencyLoading.value = true
+  dependencyError.value = null
+  const strata = useStrata()
+  try {
+    const data = await strata.addDependency(sid, pkg)
+    if (data.dependencies) {
+      dependencies.value = data.dependencies.map((d: any) => ({
+        name: d.name,
+        version: d.version || '',
+        specifier: d.specifier || '',
+      }))
+    }
+  } catch (err: any) {
+    dependencyError.value = err.message || 'Failed to add dependency'
+  } finally {
+    dependencyLoading.value = false
+  }
+}
+
+async function removeDependencyAction(pkg: string) {
+  const sid = sessionId()
+  if (!sid) return
+  dependencyLoading.value = true
+  dependencyError.value = null
+  const strata = useStrata()
+  try {
+    const data = await strata.removeDependency(sid, pkg)
+    if (data.dependencies) {
+      dependencies.value = data.dependencies.map((d: any) => ({
+        name: d.name,
+        version: d.version || '',
+        specifier: d.specifier || '',
+      }))
+    }
+  } catch (err: any) {
+    dependencyError.value = err.message || 'Failed to remove dependency'
+  } finally {
+    dependencyLoading.value = false
   }
 }
 
@@ -763,5 +851,12 @@ export function useNotebook() {
     openInspect,
     evalInspect,
     closeInspect,
+    // Environment / Dependencies
+    dependencies,
+    dependencyLoading,
+    dependencyError,
+    fetchDependencies,
+    addDependencyAction,
+    removeDependencyAction,
   }
 }

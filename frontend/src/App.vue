@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { useNotebook } from './stores/notebook'
 import CellEditor from './components/CellEditor.vue'
 import DagView from './components/DagView.vue'
+import EnvironmentPanel from './components/EnvironmentPanel.vue'
 import ProfilingPanel from './components/ProfilingPanel.vue'
 import ImpactPreview from './components/ImpactPreview.vue'
 
@@ -109,6 +110,7 @@ async function openNotebook() {
       <!-- DAG sidebar + profiling -->
       <aside class="sidebar">
         <DagView />
+        <EnvironmentPanel />
         <ProfilingPanel />
       </aside>
     </div>

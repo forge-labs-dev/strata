@@ -173,6 +173,40 @@ async function reorderCells(notebookId: string, cellIds: string[]): Promise<void
 }
 
 // ---------------------------------------------------------------------------
+// Dependency API
+// ---------------------------------------------------------------------------
+
+async function listDependencies(notebookId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies`)
+  if (!resp.ok) {
+    throw new Error(`Failed to list dependencies: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function addDependency(notebookId: string, pkg: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ package: pkg }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to add dependency: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function removeDependency(notebookId: string, pkg: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies/${encodeURIComponent(pkg)}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to remove dependency: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -188,5 +222,8 @@ export function useStrata() {
     addCell,
     removeCell,
     reorderCells,
+    listDependencies,
+    addDependency,
+    removeDependency,
   }
 }
