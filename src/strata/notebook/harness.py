@@ -63,6 +63,10 @@ def get_serializer_module() -> Any:
                 return Serializer._serialize_json(
                     value, output_dir, variable_name
                 )
+            elif content_type == "module/import":
+                return Serializer._serialize_module(
+                    value, output_dir, variable_name
+                )
             else:
                 return Serializer._serialize_pickle(
                     value, output_dir, variable_name
@@ -99,6 +103,11 @@ def get_serializer_module() -> Any:
                     return "json/object"
                 except (TypeError, ValueError):
                     pass
+
+            # Module objects can't be pickled — use special type
+            import types
+            if isinstance(value, types.ModuleType):
+                return "module/import"
 
             return "pickle/object"
 
@@ -180,6 +189,25 @@ def get_serializer_module() -> Any:
             }
 
         @staticmethod
+        def _serialize_module(value, output_dir, variable_name):
+            """Serialize a module reference as JSON with the module name."""
+            import json
+
+            filename = f"{variable_name}.module.json"
+            filepath = output_dir / filename
+
+            module_name = getattr(value, "__name__", variable_name)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump({"module_name": module_name}, f)
+
+            return {
+                "content_type": "module/import",
+                "file": filename,
+                "bytes": filepath.stat().st_size,
+                "preview": f"<module '{module_name}'>",
+            }
+
+        @staticmethod
         def _serialize_pickle(value, output_dir, variable_name):
             """Serialize to pickle."""
             import pickle
@@ -247,6 +275,8 @@ def deserialize_inputs(manifest: dict) -> dict[str, Any]:
                 inputs[var_name] = _deserialize_json(full_path)
             elif content_type == "pickle/object":
                 inputs[var_name] = _deserialize_pickle(full_path)
+            elif content_type == "module/import":
+                inputs[var_name] = _deserialize_module(full_path)
             else:
                 print(f"Warning: Unknown content type for {var_name}: {content_type}")
         except Exception as e:
@@ -287,6 +317,19 @@ def _deserialize_pickle(file_path) -> Any:
     file_path = Path(file_path)
     with open(file_path, "rb") as f:
         return pickle.load(f)
+
+
+def _deserialize_module(file_path) -> Any:
+    """Deserialize a module reference by re-importing it."""
+    import importlib
+    import json
+    from pathlib import Path
+
+    file_path = Path(file_path)
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    module_name = data["module_name"]
+    return importlib.import_module(module_name)
 
 
 def snapshot_inputs(namespace: dict, input_names: list[str]) -> list[dict]:

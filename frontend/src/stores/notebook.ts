@@ -523,6 +523,7 @@ function initializeWebSocket() {
       if (cell) {
         cell.status = 'error'
         cell.output = { contentType: 'json/object', error }
+        cell.suggestInstall = p.suggest_install || undefined
       }
     })
 

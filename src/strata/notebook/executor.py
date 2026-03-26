@@ -599,6 +599,7 @@ class CellExecutor:
                         "arrow/ipc": ".arrow",
                         "json/object": ".json",
                         "pickle/object": ".pickle",
+                        "module/import": ".module.json",
                     }
                     ext = ext_map.get(content_type, ".pickle")
                     input_file = output_dir / f"{var_name}{ext}"
@@ -674,7 +675,7 @@ class CellExecutor:
 
         for var_name in consumed_vars:
             found = False
-            for ext in [".arrow", ".json", ".pickle"]:
+            for ext in [".arrow", ".json", ".pickle", ".module.json"]:
                 output_file = output_dir / f"{var_name}{ext}"
                 if output_file.exists():
                     found = True
@@ -686,6 +687,7 @@ class CellExecutor:
                             ".arrow": "arrow/ipc",
                             ".json": "json/object",
                             ".pickle": "pickle/object",
+                            ".module.json": "module/import",
                         }
                         content_type = content_type_map.get(ext, "pickle/object")
 

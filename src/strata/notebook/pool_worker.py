@@ -278,6 +278,8 @@ def _serialize_value(value: Any, output_dir: Path, variable_name: str) -> dict:
         return _serialize_arrow(value, output_dir, variable_name)
     elif content_type == "json/object":
         return _serialize_json(value, output_dir, variable_name)
+    elif content_type == "module/import":
+        return _serialize_module(value, output_dir, variable_name)
     else:
         return _serialize_pickle(value, output_dir, variable_name)
 
@@ -309,6 +311,10 @@ def _detect_content_type(value: Any) -> str:
             return "json/object"
         except (TypeError, ValueError):
             pass
+
+    import types
+    if isinstance(value, types.ModuleType):
+        return "module/import"
 
     return "pickle/object"
 
@@ -383,6 +389,21 @@ def _serialize_json(value: Any, output_dir: Path, variable_name: str) -> dict:
         "file": filename,
         "bytes": size_bytes,
         "preview": value,
+    }
+
+
+def _serialize_module(value: Any, output_dir: Path, variable_name: str) -> dict:
+    """Serialize a module reference as JSON with the module name."""
+    filename = f"{variable_name}.module.json"
+    filepath = output_dir / filename
+    module_name = getattr(value, "__name__", variable_name)
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump({"module_name": module_name}, f)
+    return {
+        "content_type": "module/import",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "preview": f"<module '{module_name}'>",
     }
 
 
