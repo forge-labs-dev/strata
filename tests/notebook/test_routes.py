@@ -292,16 +292,15 @@ def test_execute_cell():
 
         # Verify response structure
         assert data["cell_id"] == cell_id
-        assert data["status"] in ["ready", "error"]
         assert "outputs" in data
         assert "stdout" in data
         assert "stderr" in data
         assert "duration_ms" in data
-
-        # Verify execution results (should succeed)
-        if data["status"] == "ready":
-            assert "x" in data["outputs"], f"Missing x in outputs: {data}"
-            assert "y" in data["outputs"], f"Missing y in outputs: {data}"
+        assert data["status"] == "ready", (
+            f"Expected 'ready' but got '{data['status']}': {data.get('error')}"
+        )
+        assert "x" in data["outputs"], f"Missing x in outputs: {data}"
+        assert "y" in data["outputs"], f"Missing y in outputs: {data}"
 
 
 def test_execute_cell_not_found():

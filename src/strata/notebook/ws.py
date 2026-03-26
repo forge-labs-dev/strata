@@ -467,6 +467,19 @@ async def _handle_cell_source_update(
         )
         return
 
+    if len(source) > 1_000_000:
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": "Cell source exceeds 1MB limit"},
+                }
+            )
+        )
+        return
+
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
@@ -1205,6 +1218,7 @@ async def _handle_dependency_add(
 ) -> None:
     """Handle dependency_add — add a package and broadcast the change."""
     from strata.notebook.dependencies import add_dependency
+    from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
     if not package:
@@ -1215,6 +1229,20 @@ async def _handle_dependency_add(
                 "seq": execution_state["sequence"],
                 "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                 "payload": {"error": "Missing 'package' in payload"},
+            })
+        )
+        return
+
+    try:
+        package = validate_package_name(package)
+    except ValueError as e:
+        execution_state["sequence"] += 1
+        await websocket.send_text(
+            _json_encode({
+                "type": "error",
+                "seq": execution_state["sequence"],
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": {"error": str(e)},
             })
         )
         return
@@ -1255,6 +1283,7 @@ async def _handle_dependency_remove(
 ) -> None:
     """Handle dependency_remove — remove a package and broadcast the change."""
     from strata.notebook.dependencies import remove_dependency
+    from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
     if not package:
@@ -1265,6 +1294,20 @@ async def _handle_dependency_remove(
                 "seq": execution_state["sequence"],
                 "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                 "payload": {"error": "Missing 'package' in payload"},
+            })
+        )
+        return
+
+    try:
+        package = validate_package_name(package)
+    except ValueError as e:
+        execution_state["sequence"] += 1
+        await websocket.send_text(
+            _json_encode({
+                "type": "error",
+                "seq": execution_state["sequence"],
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": {"error": str(e)},
             })
         )
         return

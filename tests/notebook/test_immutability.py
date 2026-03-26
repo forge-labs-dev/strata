@@ -102,12 +102,11 @@ class TestMutationDetection:
         # Delete the variable
         del namespace["df"]
 
-        # Should detect deletion
+        # detect_mutations flags deleted variables as mutations
         warnings = detect_mutations(namespace, snapshots)
-
-        # Detection should not find the variable (it's missing)
-        # So we just verify no crash
         assert isinstance(warnings, list)
+        assert len(warnings) == 1, "Expected one warning for deleted variable"
+        assert "df" in warnings[0].var_name
 
     def test_defensive_copy_arrow(self):
         """Test defensive copy for arrow content type."""

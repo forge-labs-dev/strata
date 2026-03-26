@@ -170,14 +170,14 @@ def test_cascade_plan_skip_ready_cells(temp_pipeline):
     plan = planner.plan(session.notebook_state.cells[-1].id)
 
     assert plan is not None, "Expected cascade plan for stale upstream"
-    # Find the ready cell in the plan
+    # Find the ready cell in the plan — it should be present and marked skip
     ready_cell_step = next(
         (s for s in plan.steps if s.cell_id == session.notebook_state.cells[0].id),
         None,
     )
-    if ready_cell_step:
-        # Should be marked to skip
-        assert ready_cell_step.skip
+    if ready_cell_step is not None:
+        assert ready_cell_step.skip, "Ready cell step should be marked to skip"
+    # If ready cell is excluded from plan entirely, that's also acceptable
 
 
 def test_cascade_planner_no_dag(temp_pipeline):

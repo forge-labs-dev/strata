@@ -47,6 +47,18 @@ def get_session_manager() -> SessionManager:
     return _session_manager
 
 
+def validate_package_name(package: str) -> str:
+    """Validate and sanitize a package specifier.
+
+    Rejects shell metacharacters. Used by both REST and WS handlers.
+    """
+    if len(package) > 200:
+        raise ValueError("Package specifier too long")
+    if any(c in package for c in ';&|`$(){}!<>"\'\n\r\t'):
+        raise ValueError("Package specifier contains invalid characters")
+    return package.strip()
+
+
 def _validate_notebook_path(user_path: str, label: str = "path") -> Path:
     """Validate that a user-supplied path is safe (no path traversal)."""
     path = Path(user_path)
@@ -113,17 +125,19 @@ class AddDependencyRequest(BaseModel):
 
     @field_validator("package")
     @classmethod
-    def validate_package(cls, v: str) -> str:
-        """Reject shell metacharacters in package specifiers."""
-        if any(c in v for c in ';&|`$(){}!<>"\'\n\r\t'):
-            raise ValueError("Package specifier contains invalid characters")
-        return v.strip()
+    def validate_package_field(cls, v: str) -> str:
+        return validate_package_name(v)
 
 
 class RemoveDependencyRequest(BaseModel):
     """Request to remove a dependency."""
 
-    package: str
+    package: str = Field(..., max_length=200)
+
+    @field_validator("package")
+    @classmethod
+    def validate_package_field(cls, v: str) -> str:
+        return validate_package_name(v)
 
 
 # ============================================================================

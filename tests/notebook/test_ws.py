@@ -165,11 +165,11 @@ def test_cell_source_update(client, temp_notebook, app):
         while True:
             try:
                 response = websocket.receive_json(timeout=0.1)
-                if response["type"] == "cell_status":
-                    # Cell status updates are expected
-                    assert "status" in response["payload"]
             except Exception:
                 break
+            if response["type"] == "cell_status":
+                # Cell status updates are expected
+                assert "status" in response["payload"]
 
 
 def test_cell_cancel(client, temp_notebook, app):
