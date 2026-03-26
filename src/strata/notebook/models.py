@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-if TYPE_CHECKING:
-    pass
+
+class CellStatus(StrEnum):
+    """Execution status of a cell."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    READY = "ready"
+    ERROR = "error"
+    STALE = "stale"
 
 
-class StalenessReason(str, Enum):
+class StalenessReason(StrEnum):
     """Reason a cell is stale (has invalidated cache)."""
 
     SELF = "self"  # Cell source code changed
@@ -22,10 +28,19 @@ class StalenessReason(str, Enum):
     FORCED = "forced"  # Forced re-run despite cache hit
 
 
+class ContentType(StrEnum):
+    """Serialization format for cell outputs."""
+
+    ARROW_IPC = "arrow/ipc"
+    JSON = "json/object"
+    PICKLE = "pickle/object"
+    ERROR = "error"
+
+
 class CellStaleness(BaseModel):
     """Staleness status for a cell."""
 
-    status: str = Field(
+    status: CellStatus = Field(
         ..., description="Status: ready, stale, idle, running, error"
     )
     reasons: list[StalenessReason] = Field(
@@ -64,18 +79,10 @@ class NotebookToml(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     cells: list[CellMeta] = Field(default_factory=list, description="Cell metadata")
-    artifacts: dict = Field(
-        default_factory=dict,
-        description="Artifact storage metadata (reserved for M4)"
-    )
-    environment: dict = Field(
-        default_factory=dict,
-        description="Environment info (venv path, Python version, etc.)"
-    )
-    cache: dict = Field(
-        default_factory=dict,
-        description="Cache metadata (reserved for M4)"
-    )
+    # Preserved in TOML round-trip but not used at runtime
+    artifacts: dict = Field(default_factory=dict)
+    environment: dict = Field(default_factory=dict)
+    cache: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -93,7 +100,7 @@ class CellOutput(BaseModel):
         default=None, description="Column names (for tables)"
     )
     bytes: int = Field(default=0, description="Size in bytes")
-    preview: Any = Field(
+    preview: int | float | str | bool | list | dict | None = Field(
         default=None,
         description="Preview data (first 20 rows for tables, value for scalars)",
     )
@@ -109,12 +116,9 @@ class CellState(BaseModel):
     source: str = Field(default="", description="Cell source code")
     language: str = Field(default="python", description="Programming language")
     order: float = Field(default=0, description="Display order in notebook")
-    status: str = Field(
-        default="idle",
-        description="Execution status (idle, running, ready, error)",
-    )
-    last_output: dict[str, CellOutput] | None = Field(
-        default=None, description="Last execution outputs"
+    status: CellStatus = Field(
+        default=CellStatus.IDLE,
+        description="Execution status",
     )
     defines: list[str] = Field(
         default_factory=list,
@@ -135,18 +139,18 @@ class CellState(BaseModel):
         description="Whether this is a leaf node (no downstream consumers)",
     )
     staleness: CellStaleness | None = Field(
-        default=None, description="Staleness status (M4)"
+        default=None, description="Staleness status"
     )
     artifact_uri: str | None = Field(
-        default=None, description="URI of last stored artifact (M4, legacy single-var)"
+        default=None, description="URI of last stored artifact (legacy single-var)"
     )
     artifact_uris: dict[str, str] = Field(
         default_factory=dict,
-        description="Per-variable artifact URIs: {var_name: uri} (M4)",
+        description="Per-variable artifact URIs: {var_name: uri}",
     )
     cache_hit: bool = Field(
         default=False,
-        description="Whether last execution was a cache hit (M4)",
+        description="Whether last execution was a cache hit",
     )
 
 
@@ -158,15 +162,10 @@ class NotebookState(BaseModel):
     cells: list[CellState] = Field(default_factory=list, description="Cells with source")
     path: Path | None = Field(
         default=None,
-        description="Path to notebook directory (not serialized in JSON)"
+        exclude=True,
+        description="Path to notebook directory (not serialized)",
     )
     created_at: datetime | None = Field(default=None)
     updated_at: datetime | None = Field(default=None)
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    def model_dump(self, **kwargs) -> dict:
-        """Override to exclude path from serialization."""
-        data = super().model_dump(**kwargs)
-        data.pop("path", None)
-        return data

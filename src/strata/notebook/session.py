@@ -12,7 +12,7 @@ from strata.notebook.analyzer import analyze_cell
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
 from strata.notebook.env import compute_lockfile_hash
-from strata.notebook.models import CellStaleness, NotebookState
+from strata.notebook.models import CellStaleness, CellStatus, NotebookState
 from strata.notebook.parser import parse_notebook
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 from strata.notebook.writer import _uv_sync, update_environment_metadata
@@ -157,7 +157,7 @@ class NotebookSession:
         if self.dag is None:
             # No DAG — all cells are idle
             for cell in self.notebook_state.cells:
-                staleness_map[cell.id] = CellStaleness(status="idle")
+                staleness_map[cell.id] = CellStaleness(status=CellStatus.IDLE)
             return staleness_map
 
         # Walk cells in topological order
@@ -176,7 +176,7 @@ class NotebookSession:
             )
 
             if has_stale_upstream:
-                staleness_map[cell_id] = CellStaleness(status="idle", reasons=[])
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
                 stale_cells.add(cell_id)
                 continue
 
@@ -243,11 +243,11 @@ class NotebookSession:
 
             if cached is None:
                 # No cached artifact — cell is stale
-                staleness_map[cell_id] = CellStaleness(status="idle", reasons=[])
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
                 stale_cells.add(cell_id)
             else:
                 # Artifact exists — mark as ready
-                staleness_map[cell_id] = CellStaleness(status="ready", reasons=[])
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 # Populate per-variable artifact URIs
                 notebook_id = self.notebook_state.id
                 for var_name in consumed_vars:
@@ -273,7 +273,7 @@ class NotebookSession:
                 # cell.status (not cell.staleness.status) to decide if
                 # upstream cells need re-execution.
                 if staleness.status != "ready":
-                    cell.status = "idle"
+                    cell.status = CellStatus.IDLE
 
         # v1.1: Compute causality chains for stale cells
         self.causality_map = compute_causality_on_staleness(self)

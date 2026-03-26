@@ -17,6 +17,7 @@ from strata.notebook.cascade import CascadePlanner
 from strata.notebook.executor import CellExecutor
 from strata.notebook.impact import ImpactAnalyzer
 from strata.notebook.inspect_repl import InspectManager
+from strata.notebook.models import CellStatus
 from strata.notebook.session import SessionManager
 from strata.notebook.writer import write_cell
 
@@ -662,7 +663,7 @@ async def _execute_cell_directly(
         (c for c in session.notebook_state.cells if c.id == cell_id), None
     )
     if run_cell:
-        run_cell.status = "running"
+        run_cell.status = CellStatus.RUNNING
     await _broadcast_message(
         notebook_id,
         {
@@ -757,7 +758,7 @@ async def _execute_cell_directly(
             )
 
         # Mark as ready — update backend state AND broadcast
-        status = "ready" if result.success else "error"
+        status = CellStatus.READY if result.success else CellStatus.ERROR
         cell = next(
             (c for c in session.notebook_state.cells if c.id == cell_id), None
         )
@@ -841,7 +842,7 @@ async def _execute_cascade(
                 None,
             )
             if cascade_cell:
-                cascade_cell.status = "idle"
+                cascade_cell.status = CellStatus.IDLE
             await _broadcast_message(
                 notebook_id,
                 {
@@ -879,7 +880,7 @@ async def _execute_cascade(
             None,
         )
         if cascade_run_cell:
-            cascade_run_cell.status = "running"
+            cascade_run_cell.status = CellStatus.RUNNING
         await _broadcast_message(
             notebook_id,
             {
@@ -958,7 +959,7 @@ async def _execute_cascade(
                 )
 
             # Mark as ready — update backend state AND broadcast
-            status = "ready" if result.success else "error"
+            status = CellStatus.READY if result.success else CellStatus.ERROR
             cascade_cell = next(
                 (c for c in session.notebook_state.cells if c.id == cell_id),
                 None,
