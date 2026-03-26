@@ -407,13 +407,16 @@ class CellExecutor:
     # ------------------------------------------------------------------
 
     async def _materialize_upstreams(self, cell_id: str) -> None:
-        """Ensure every upstream variable has a ready artifact.
+        """Ensure every upstream variable has a *current* artifact.
 
-        For each upstream cell, check whether the artifact for each
-        referenced variable exists in the store.  On a cache miss,
-        recursively call ``execute_cell`` on the upstream — which will
-        in turn materialise *its* upstreams, check its own cache, and
-        so on until the full dependency tree is resolved.
+        Always recursively calls ``execute_cell`` on each upstream.
+        This is correct because ``execute_cell`` has its own provenance-
+        based cache check — an unchanged upstream returns instantly as a
+        cache hit, while a stale upstream (e.g. source edited) re-executes.
+
+        The previous approach only checked artifact *existence*, which
+        missed the case where an upstream's source changed but its old
+        artifact still existed in the store.
         """
         cell = next(
             (c for c in self.session.notebook_state.cells if c.id == cell_id),
@@ -421,9 +424,6 @@ class CellExecutor:
         )
         if cell is None or not cell.upstream_ids:
             return
-
-        artifact_mgr = self.session.get_artifact_manager()
-        notebook_id = self.session.notebook_state.id
 
         # We only need to execute a given upstream once even if it
         # produces multiple variables we reference.
@@ -440,41 +440,18 @@ class CellExecutor:
             if upstream_cell is None:
                 continue
 
-            # Which variables from this upstream do we actually need?
-            needed_vars = [
-                v for v in cell.references if v in upstream_cell.defines
-            ]
-
-            # Check the artifact store for each one.
-            any_missing = False
-            for var_name in needed_vars:
-                artifact_id = (
-                    f"nb_{notebook_id}_cell_{upstream_id}_var_{var_name}"
+            # Always materialise the upstream. execute_cell() will
+            # return immediately on cache hit (provenance matches),
+            # or re-execute if the upstream is stale.
+            result = await self.execute_cell(
+                upstream_id, upstream_cell.source,
+            )
+            if not result.success:
+                raise RuntimeError(
+                    f"Failed to materialise upstream cell {upstream_id}: "
+                    f"{result.error}"
                 )
-                artifact = artifact_mgr.artifact_store.get_latest_version(
-                    artifact_id,
-                )
-                if artifact is None:
-                    logger.info(
-                        "Upstream artifact missing: %s (cell %s). "
-                        "Materialising upstream cell %s.",
-                        artifact_id,
-                        cell_id,
-                        upstream_id,
-                    )
-                    any_missing = True
-                    break  # one miss is enough to trigger execution
-
-            if any_missing:
-                result = await self.execute_cell(
-                    upstream_id, upstream_cell.source,
-                )
-                if not result.success:
-                    raise RuntimeError(
-                        f"Failed to materialise upstream cell {upstream_id}: "
-                        f"{result.error}"
-                    )
-                executed_upstreams.add(upstream_id)
+            executed_upstreams.add(upstream_id)
 
     # ------------------------------------------------------------------
     # ② Collect input hashes (upstream artifacts are guaranteed to exist)
