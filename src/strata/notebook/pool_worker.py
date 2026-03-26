@@ -275,7 +275,10 @@ def _serialize_value(value: Any, output_dir: Path, variable_name: str) -> dict:
     content_type = _detect_content_type(value)
 
     if content_type == "arrow/ipc":
-        return _serialize_arrow(value, output_dir, variable_name)
+        try:
+            return _serialize_arrow(value, output_dir, variable_name)
+        except (ImportError, ValueError):
+            return _serialize_dataframe_json(value, output_dir, variable_name)
     elif content_type == "json/object":
         return _serialize_json(value, output_dir, variable_name)
     elif content_type == "module/import":
@@ -287,12 +290,17 @@ def _serialize_value(value: Any, output_dir: Path, variable_name: str) -> dict:
 def _detect_content_type(value: Any) -> str:
     """Detect content type."""
     try:
-        import pandas as pd
         import pyarrow as pa
 
-        if isinstance(
-            value, (pa.Table, pa.RecordBatch, pd.DataFrame, pd.Series)
-        ):
+        if isinstance(value, (pa.Table, pa.RecordBatch)):
+            return "arrow/ipc"
+    except ImportError:
+        pass
+
+    try:
+        import pandas as pd
+
+        if isinstance(value, (pd.DataFrame, pd.Series)):
             return "arrow/ipc"
     except ImportError:
         pass
@@ -389,6 +397,35 @@ def _serialize_json(value: Any, output_dir: Path, variable_name: str) -> dict:
         "file": filename,
         "bytes": size_bytes,
         "preview": value,
+    }
+
+
+def _serialize_dataframe_json(value: Any, output_dir: Path, variable_name: str) -> dict:
+    """Fallback: serialize DataFrame as JSON when pyarrow is unavailable."""
+    try:
+        import pandas as pd
+        if isinstance(value, pd.Series):
+            value = value.to_frame()
+        columns = list(value.columns)
+        num_rows = len(value)
+        preview = value.head(20).values.tolist()
+    except Exception:
+        columns = []
+        num_rows = 0
+        preview = []
+
+    filename = f"{variable_name}.json"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(value.to_dict(orient="list"), f)
+
+    return {
+        "content_type": "arrow/ipc",
+        "file": filename,
+        "rows": num_rows,
+        "columns": columns,
+        "bytes": filepath.stat().st_size,
+        "preview": preview,
     }
 
 

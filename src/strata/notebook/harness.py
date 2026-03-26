@@ -56,9 +56,15 @@ def get_serializer_module() -> Any:
             content_type = Serializer._detect_content_type(value)
 
             if content_type == "arrow/ipc":
-                return Serializer._serialize_arrow(
-                    value, output_dir, variable_name
-                )
+                try:
+                    return Serializer._serialize_arrow(
+                        value, output_dir, variable_name
+                    )
+                except (ImportError, ValueError):
+                    # pyarrow not available — fall back to JSON for DataFrames
+                    return Serializer._serialize_dataframe_json(
+                        value, output_dir, variable_name
+                    )
             elif content_type == "json/object":
                 return Serializer._serialize_json(
                     value, output_dir, variable_name
@@ -76,12 +82,17 @@ def get_serializer_module() -> Any:
         def _detect_content_type(value):
             """Detect content type."""
             try:
-                import pandas as pd
                 import pyarrow as pa
 
-                if isinstance(
-                    value, (pa.Table, pa.RecordBatch, pd.DataFrame, pd.Series)
-                ):
+                if isinstance(value, (pa.Table, pa.RecordBatch)):
+                    return "arrow/ipc"
+            except Exception:
+                pass
+
+            try:
+                import pandas as pd
+
+                if isinstance(value, (pd.DataFrame, pd.Series)):
                     return "arrow/ipc"
             except Exception:
                 pass
@@ -186,6 +197,44 @@ def get_serializer_module() -> Any:
                 "file": filename,
                 "bytes": size_bytes,
                 "preview": value,
+            }
+
+        @staticmethod
+        def _serialize_dataframe_json(value, output_dir, variable_name):
+            """Fallback: serialize DataFrame as JSON when pyarrow is unavailable.
+
+            Produces the same metadata shape as _serialize_arrow (columns,
+            rows, preview) so the frontend can render it as a table.
+            """
+            import json
+
+            try:
+                import pandas as pd
+                if isinstance(value, pd.Series):
+                    value = value.to_frame()
+                columns = list(value.columns)
+                num_rows = len(value)
+                # Preview: first 20 rows as list of lists
+                preview = value.head(20).values.tolist()
+            except Exception:
+                columns = []
+                num_rows = 0
+                preview = []
+
+            filename = f"{variable_name}.json"
+            filepath = output_dir / filename
+
+            # Store as JSON records for the harness to read back
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(value.to_dict(orient="list"), f)
+
+            return {
+                "content_type": "arrow/ipc",  # frontend renders as table
+                "file": filename,
+                "rows": num_rows,
+                "columns": columns,
+                "bytes": filepath.stat().st_size,
+                "preview": preview,
             }
 
         @staticmethod
