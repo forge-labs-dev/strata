@@ -15,8 +15,6 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
-logger = logging.getLogger(__name__)
-
 from strata.notebook.dependencies import (
     add_dependency,
     list_dependencies,
@@ -35,6 +33,8 @@ from strata.notebook.writer import (
 
 if TYPE_CHECKING:
     pass
+
+logger = logging.getLogger(__name__)
 
 # Global session manager (shared with WebSocket handler)
 _session_manager = SessionManager()

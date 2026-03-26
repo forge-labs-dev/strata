@@ -128,7 +128,7 @@ async function updateCellSource(
   notebookId: string,
   cellId: string,
   source: string
-): Promise<{ cell: any; dag: any }> {
+): Promise<{ cell: any; dag: any; cells?: any[] }> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },

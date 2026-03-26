@@ -131,7 +131,7 @@ def _add_dependency_locked(
     old_lockfile_hash = _lockfile_hash(notebook_dir)
 
     try:
-        proc = subprocess.run(
+        subprocess.run(
             ["uv", "add", package],
             cwd=str(notebook_dir),
             timeout=timeout,
@@ -202,7 +202,7 @@ def _remove_dependency_locked(
     old_lockfile_hash = _lockfile_hash(notebook_dir)
 
     try:
-        proc = subprocess.run(
+        subprocess.run(
             ["uv", "remove", package],
             cwd=str(notebook_dir),
             timeout=timeout,
