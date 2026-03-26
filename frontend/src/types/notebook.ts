@@ -1,0 +1,318 @@
+/** Core notebook types — maps to Strata's artifact/transform model */
+
+export type CellId = string
+
+export type CellLanguage = 'python'
+
+export type CellStatus =
+  | 'idle'        // never executed
+  | 'queued'      // waiting for upstream deps in cascade
+  | 'running'     // executing
+  | 'ready'       // has cached artifact (provenance matches)
+  | 'stale'       // upstream changed, provenance mismatch (coarse — see StalenessReason)
+  | 'error'       // execution failed
+
+/** Fine-grained reason why a cell is stale. Multiple reasons can apply;
+ *  the server returns all of them, the UI shows the most actionable one. */
+export type StalenessReason =
+  | 'self'        // cell source was edited since last run
+  | 'upstream'    // cell source unchanged, but an upstream input is stale or re-ran
+  | 'env'         // environment (uv.lock runtime deps) changed since last run
+  | 'forced'      // ran with stale inputs ("Run this only") — result exists but suspect
+
+/** State of a single input variable for a cell */
+export type InputState = 'ready' | 'stale' | 'missing' | 'error'
+
+export interface CellInput {
+  /** Variable name */
+  variable: string
+  /** Which cell defines this variable */
+  sourceCellId: CellId
+  /** Current state of the artifact for this input */
+  state: InputState
+}
+
+/** Content type for artifact serialization (three-tier system) */
+export type ArtifactContentType =
+  | 'arrow/ipc'         // Tier 1: DataFrames, Tables, arrays (zero-copy fast path)
+  | 'json/object'       // Tier 2: Dicts, lists, JSON-safe scalars (safe, portable)
+  | 'msgpack/object'    // Tier 2: Dicts with bytes/datetime (safe, portable)
+  | 'pickle/object'     // Tier 3: Models, custom objects (unsafe — see security model)
+  | 'image/png'         // Display-only (plots, charts)
+
+export interface CellOutput {
+  /** Content type determines how to render */
+  contentType: ArtifactContentType
+  /** Arrow IPC bytes decoded to row/column data for display (when contentType = arrow/ipc) */
+  columns?: string[]
+  rows?: Record<string, unknown>[]
+  rowCount?: number
+  /** Scalar/dict output (when contentType = json/scalar) */
+  scalar?: unknown
+  /** Strata artifact reference */
+  artifactUri?: string
+  /** Whether this came from cache */
+  cacheHit?: boolean
+  /** Cache load time in ms (for displaying "⚡ cached · 5ms") */
+  cacheLoadMs?: number
+  /** Error message if failed */
+  error?: string
+}
+
+export interface Cell {
+  id: CellId
+  /** Source code */
+  source: string
+  language: CellLanguage
+  /** Display order in the notebook */
+  order: number
+  /** Execution state */
+  status: CellStatus
+  /** Why the cell is stale (only present when status === 'stale') */
+  stalenessReasons?: StalenessReason[]
+  /** Output data — may contain multiple outputs (one per consumed variable) */
+  output?: CellOutput
+  /** Structured input status — each input with its artifact state */
+  inputs: CellInput[]
+  /** Cells this cell depends on (reads variables from) */
+  upstreamIds: CellId[]
+  /** Cells that depend on this cell */
+  downstreamIds: CellId[]
+  /** Variable names this cell defines */
+  defines: string[]
+  /** Variable names this cell references (imports from DAG) */
+  references: string[]
+  /** Whether this is a leaf node (no downstream consumers of its outputs) */
+  isLeaf: boolean
+  /** Strata provenance hash — if same as stored, result is cached */
+  provenanceHash?: string
+  /** Last execution timestamp */
+  lastRunAt?: number
+  /** Execution duration in ms */
+  durationMs?: number
+  /** Whether this cell is frozen (skip invalidation, pinned artifact) */
+  frozen?: boolean
+  /** Assertion results from this cell's execution */
+  assertions?: AssertionResult[]
+  /** Artifact size in bytes */
+  artifactSizeBytes?: number
+  /** Which executor ran this cell (only present if remote) */
+  executorName?: string
+  /** Causality chain explaining why this cell is stale */
+  causality?: CausalityChain
+}
+
+/** Causality chain — explains why a cell is stale */
+export interface CausalityChain {
+  reason: StalenessReason
+  details: CausalityDetail[]
+}
+
+export interface CausalityDetail {
+  type: 'source_changed' | 'input_changed' | 'env_changed'
+  /** For source/input changes: which cell changed */
+  cellId?: CellId
+  /** Human-readable name of the changed cell */
+  cellName?: string
+  /** For input_changed: old and new artifact versions */
+  fromVersion?: string
+  toVersion?: string
+  /** For env_changed: which package changed */
+  package?: string
+  fromPackageVersion?: string
+  toPackageVersion?: string
+}
+
+/** Assertion result from a cell's assert statements */
+export interface AssertionResult {
+  /** The assertion message (from assert ..., "message") */
+  message: string
+  passed: boolean
+  /** Expression that was asserted (source text) */
+  expression?: string
+  /** Actual value on failure */
+  actualValue?: string
+}
+
+/** Run impact preview — what will happen if a cell is executed */
+export interface ImpactPreview {
+  targetCellId: CellId
+  /** Upstream cells that need to run first */
+  upstream: CascadeStep[]
+  /** Downstream cells that will become stale */
+  downstream: DownstreamImpact[]
+  estimatedMs: number
+}
+
+export interface DownstreamImpact {
+  cellId: CellId
+  cellName: string
+  currentStatus: CellStatus
+  /** Status after target cell runs */
+  newStatus: 'stale:upstream'
+}
+
+/** Published output — a cell's artifact exposed as a stable endpoint */
+export interface PublishedOutput {
+  name: string
+  cellId: CellId
+  mode: 'static' | 'api'
+  /** Schema derived from artifact metadata */
+  schema?: { columns: string[] }
+  /** Last updated timestamp */
+  lastUpdatedAt?: number
+  /** Artifact URI */
+  artifactUri?: string
+}
+
+/** Artifact lineage node — one level in the provenance chain */
+export interface LineageNode {
+  artifactUri: string
+  artifactVersion: number
+  /** Transform that produced this artifact */
+  transform?: {
+    executor: string
+    sourceHash?: string
+    cellId?: string
+  }
+  /** Input artifacts (recurse for full chain) */
+  inputs: LineageNode[]
+  /** Environment hash at time of production */
+  envHash?: string
+}
+
+export interface Notebook {
+  id: string
+  name: string
+  cells: Cell[]
+  /** Environment info */
+  environment: {
+    pythonVersion: string
+    lockfileHash: string
+    packageCount: number
+  }
+  /** Published outputs exposed as stable endpoints */
+  publishedOutputs?: PublishedOutput[]
+  /** Global metadata */
+  createdAt: number
+  updatedAt: number
+}
+
+/** Maps to Strata's POST /v1/materialize request */
+export interface MaterializeRequest {
+  inputs: string[]
+  transform: {
+    executor: string
+    params: Record<string, unknown>
+  }
+  env_hash: string
+  mode?: 'artifact' | 'stream'
+}
+
+/** Maps to Strata's materialize response */
+export interface MaterializeResponse {
+  artifact_id: string
+  version: number
+  uri: string
+  cache_hit: boolean
+  provenance_hash: string
+  state: string
+  content_type?: ArtifactContentType
+  schema?: { columns: string[] }
+  row_count?: number
+  stream_id?: string
+}
+
+/** DAG edge for visualization */
+export interface DagEdge {
+  /** Cell ID that defines the variable (snake_case matches backend) */
+  from_cell_id: CellId
+  /** Cell ID that references the variable */
+  to_cell_id: CellId
+  variable: string
+}
+
+/** Cascade plan — what needs to run before a target cell */
+export interface CascadePlan {
+  /** Target cell the user wants to run */
+  targetCellId: CellId
+  /** Cells that need to execute, in topological order */
+  steps: CascadeStep[]
+  /** Total estimated duration */
+  estimatedMs: number
+}
+
+export interface CascadeStep {
+  cellId: CellId
+  cellName: string
+  /** Whether this step can be skipped (already cached) */
+  skip: boolean
+  /** Why it needs to run */
+  reason: 'stale' | 'missing' | 'target'
+  /** Estimated duration */
+  estimatedMs: number
+}
+
+/** Profiling summary for the entire notebook (v1.1) */
+export interface ProfilingSummary {
+  totalExecutionMs: number
+  cacheHits: number
+  cacheMisses: number
+  cacheSavingsMs: number
+  totalArtifactBytes: number
+  cellProfiles: CellProfile[]
+}
+
+export interface CellProfile {
+  cellId: CellId
+  cellName: string
+  status: CellStatus
+  durationMs: number
+  cacheHit: boolean
+  artifactUri?: string
+  executionCount: number
+}
+
+/** WebSocket message types: client → server */
+export type WsClientMessageType =
+  | 'cell_execute'           // Run a cell (with cascade option)
+  | 'cell_execute_cascade'   // User confirmed cascade — execute the plan
+  | 'cell_execute_force'     // "Run this only" — execute with stale inputs
+  | 'cell_cancel'            // Cancel a running cell
+  | 'cell_source_update'     // Cell source changed (debounced)
+  | 'notebook_run_all'       // Run all cells (or just stale ones)
+  | 'notebook_sync'          // Reconnection — request full state
+  | 'inspect_open'           // Open inspect REPL for a cell
+  | 'inspect_eval'           // Evaluate expression in inspect REPL
+  | 'inspect_close'          // Close inspect REPL
+  | 'impact_preview_request' // Request impact preview for a cell (v1.1)
+  | 'profiling_request'      // Request profiling summary (v1.1)
+
+/** WebSocket message types: server → client */
+export type WsServerMessageType =
+  | 'cell_status'            // Cell status changed (includes causality chain)
+  | 'cell_output'            // Cell produced output (artifact data for display)
+  | 'cell_console'           // Incremental console output (stdout/stderr)
+  | 'cell_error'             // Cell execution failed
+  | 'cell_assertions'        // Assertion results from cell execution
+  | 'dag_update'             // Authoritative DAG from backend AST analysis
+  | 'cascade_prompt'         // "This cell needs N upstream cells to run first"
+  | 'cascade_progress'       // During cascade, reports which cell is running
+  | 'impact_preview'         // Run impact preview (upstream + downstream effects)
+  | 'profiling_summary'      // Notebook profiling summary (v1.1)
+  | 'inspect_result'         // Result of an inspect REPL evaluation
+  | 'notebook_status'        // Batch status update (e.g., after open or env change)
+  | 'notebook_state'         // Full state sync (reconnection)
+  | 'error'                  // Protocol-level error (auth, not found, etc.)
+
+export type WsMessageType = WsClientMessageType | WsServerMessageType
+
+export interface WsMessage {
+  type: WsMessageType
+  cellId?: CellId
+  /** Monotonic sequence number for ordering */
+  seq: number
+  /** Server timestamp (ISO 8601) */
+  ts: string
+  payload: unknown
+}

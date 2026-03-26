@@ -1,0 +1,192 @@
+/**
+ * Communication layer with the Strata server.
+ *
+ * Day-one approach: REST calls to /v1/materialize + a mock fallback
+ * so the UI works even without a running server.
+ */
+
+import { ref } from 'vue'
+import type { CellOutput, MaterializeRequest, MaterializeResponse } from '../types/notebook'
+
+const STRATA_BASE = import.meta.env.VITE_STRATA_URL ?? 'http://localhost:8765'
+
+const connected = ref(false)
+
+// ---------------------------------------------------------------------------
+// Mock execution — lets us demo the UI without a live server
+// ---------------------------------------------------------------------------
+
+function mockExecute(source: string): CellOutput {
+  // Simulate a Python cell that produces tabular data
+  const lines = source.trim().split('\n')
+
+  // If source looks like it assigns a list/dict, produce mock table
+  if (source.includes('range(') || source.includes('[')) {
+    const n = 10
+    const columns = ['id', 'value', 'name']
+    const rows = Array.from({ length: n }, (_, i) => ({
+      id: i + 1,
+      value: Math.round(Math.random() * 1000),
+      name: `item_${i + 1}`,
+    }))
+    return { contentType: 'json/object', columns, rows, rowCount: n, cacheHit: false }
+  }
+
+  // If it references an upstream variable, pretend we got cached data
+  if (source.includes('filter') || source.includes('query') || source.includes('select')) {
+    const columns = ['id', 'value']
+    const rows = Array.from({ length: 5 }, (_, i) => ({
+      id: i * 10,
+      value: Math.round(Math.random() * 500),
+    }))
+    return { contentType: 'json/object', columns, rows, rowCount: 5, cacheHit: true }
+  }
+
+  // Default: just show the code ran
+  return {
+    contentType: 'json/object',
+    columns: ['result'],
+    rows: [{ result: `Executed ${lines.length} line(s)` }],
+    rowCount: 1,
+    cacheHit: false,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Real Strata API calls
+// ---------------------------------------------------------------------------
+
+async function materialize(req: MaterializeRequest): Promise<MaterializeResponse> {
+  const resp = await fetch(`${STRATA_BASE}/v1/materialize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!resp.ok) {
+    throw new Error(`Strata error: ${resp.status} ${await resp.text()}`)
+  }
+  return resp.json()
+}
+
+async function fetchStream(streamId: string): Promise<ArrayBuffer> {
+  const resp = await fetch(`${STRATA_BASE}/v1/streams/${streamId}`)
+  if (!resp.ok) throw new Error(`Stream error: ${resp.status}`)
+  return resp.arrayBuffer()
+}
+
+// ---------------------------------------------------------------------------
+// Execute a cell — try real server, fall back to mock
+// ---------------------------------------------------------------------------
+
+async function executeCell(source: string, _language: string): Promise<CellOutput> {
+  // For day-one: always use mock. When server is running, swap to real.
+  try {
+    const health = await fetch(`${STRATA_BASE}/health`, { signal: AbortSignal.timeout(500) })
+    if (health.ok) {
+      connected.value = true
+      // TODO: Wire to real materialize call once notebook backend is ready
+      // For now, even with server up, use mock since we don't have notebook endpoints yet
+    }
+  } catch {
+    connected.value = false
+  }
+
+  // Simulate async work
+  await new Promise((r) => setTimeout(r, 300 + Math.random() * 700))
+  return mockExecute(source)
+}
+
+// ---------------------------------------------------------------------------
+// Notebook API functions
+// ---------------------------------------------------------------------------
+
+async function openNotebook(path: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/open`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to open notebook: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function createNotebook(parentPath: string, name: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ parent_path: parentPath, name }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to create notebook: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateCellSource(
+  notebookId: string,
+  cellId: string,
+  source: string
+): Promise<{ cell: any; dag: any }> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ source }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update cell: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function addCell(notebookId: string, afterCellId?: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ after_cell_id: afterCellId || null }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to add cell: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function removeCell(notebookId: string, cellId: string): Promise<void> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to remove cell: ${resp.status}`)
+  }
+}
+
+async function reorderCells(notebookId: string, cellIds: string[]): Promise<void> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/reorder`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cell_ids: cellIds }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to reorder cells: ${resp.status}`)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+export function useStrata() {
+  return {
+    connected,
+    executeCell,
+    materialize,
+    fetchStream,
+    openNotebook,
+    createNotebook,
+    updateCellSource,
+    addCell,
+    removeCell,
+    reorderCells,
+  }
+}
