@@ -149,6 +149,9 @@ name = "{name.lower().replace(" ", "-")}"
 version = "0.1.0"
 description = ""
 requires-python = ">=3.12"
+dependencies = [
+    "pyarrow>=18.0.0",
+]
 
 [tool.uv]
 '''
