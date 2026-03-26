@@ -203,8 +203,24 @@ class NotebookSession:
                 input_hashes, source_hash, env_hash
             )
 
-            # Check if cached artifact exists
-            cached = self.artifact_manager.find_cached(provenance_hash)
+            # Check if cached artifact exists.
+            # The executor stores per-variable provenance hashes:
+            #   sha256(f"{provenance_hash}:{var_name}")
+            # so we must check with the same scheme.
+            consumed_vars = (
+                self.dag.consumed_variables.get(cell_id, set())
+                if self.dag
+                else set()
+            )
+            if consumed_vars:
+                import hashlib
+                first_var = sorted(consumed_vars)[0]
+                lookup_hash = hashlib.sha256(
+                    f"{provenance_hash}:{first_var}".encode()
+                ).hexdigest()
+            else:
+                lookup_hash = provenance_hash
+            cached = self.artifact_manager.find_cached(lookup_hash)
 
             if cached is None:
                 # No cached artifact — cell is stale
