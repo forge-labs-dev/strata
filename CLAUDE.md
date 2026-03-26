@@ -76,6 +76,9 @@ uv run pytest tests/test_smoke.py::TestPlanner::test_basic_planning -v
 # Format and lint
 pre-commit run --all-files
 
+# Type check (ty — Astral's fast Python type checker)
+uv run ty check src/
+
 # Start the server (development)
 uv run python -m strata
 
@@ -376,3 +379,193 @@ Key test files:
 Benchmarks in `benchmarks/`:
 - `stress_test.py` - Multi-user load testing with QoS validation
 - `bench_restart.py` - Cold/warm start performance
+
+## Strata Notebook
+
+Strata Notebook is a content-addressed compute graph over Python with an interactive notebook UX. It uses Strata's artifact store as the sole persistence layer for inter-cell variable passing — every cell output is an artifact, every cell execution is a `materialize(inputs, transform) → artifact` operation.
+
+### How It Fits the Layering Model
+
+```
+┌─────────────────────────────────────────────┐
+│ Notebook UI (Vue.js + WebSocket)            │
+│ (cell editing, run buttons, DAG view)       │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Notebook Backend (FastAPI + WebSocket)       │
+│ (session mgmt, cascade planner, executor)   │
+└─────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────┐
+│ Strata Artifact Store                       │
+│ (SQLite metadata + blob storage, provenance │
+│  dedup, lineage)                            │
+└─────────────────────────────────────────────┘
+```
+
+The notebook is an **orchestration layer** over Strata. It decides what to run next (cascade planning, staleness tracking). The cell harness is an **executor**. Strata's artifact store decides whether results already exist and persists them.
+
+### Notebook File Format
+
+```
+notebook_dir/
+├── notebook.toml          # Metadata: notebook_id, name, cells list
+├── pyproject.toml         # uv config (requires-python, [tool.uv])
+├── uv.lock                # Locked dependencies
+├── cells/
+│   ├── {cell_id}.py       # Cell source code (8-char UUID prefix)
+│   └── ...
+└── .strata/
+    └── artifacts/
+        ├── artifacts.sqlite                           # Artifact metadata
+        └── blobs/
+            └── nb_{notebook_id}_cell_{cell_id}_var_{var}@v=N.arrow
+```
+
+`notebook.toml` example:
+```toml
+notebook_id = "f7bd9094-..."
+name = "my_analysis"
+cells = [
+    { id = "77da7050", file = "77da7050.py", language = "python", order = 0 },
+    { id = "1d019ae7", file = "1d019ae7.py", language = "python", order = 0.5 },
+]
+```
+
+### Cell Execution Flow
+
+1. **Provenance hash**: `sha256(sorted_input_hashes + source_hash + env_hash)`
+2. **Cache check**: `artifact_store.find_by_provenance(hash)` → return immediately on hit
+3. **Resolve inputs**: For each upstream variable, load artifact blob from store, write to temp dir
+4. **Execute**: Spawn subprocess running `harness.py` in notebook's venv
+5. **Harness**: Deserializes inputs → `exec(source, namespace)` → serializes new variables
+6. **Store outputs**: Each consumed variable becomes an artifact: `nb_{notebook_id}_cell_{cell_id}_var_{var_name}`
+7. **Broadcast**: WebSocket sends `cell_status`, `cell_output`, `cell_console` to connected clients
+
+Serialization formats (determined by value type):
+- `arrow/ipc` — PyArrow tables, pandas DataFrames, numpy arrays
+- `json/object` — dicts, lists, scalars (int, float, str, bool, None)
+- `pickle/object` — everything else
+
+Content type is stored in the artifact's `transform_spec.params.content_type` so the read side knows how to deserialize.
+
+### DAG & Variable Analysis
+
+Each cell is analyzed via AST to extract `defines` (top-level assignments) and `references` (free variables). The DAG builder connects references to producers:
+
+- **Variable producer**: Last cell that defines each variable (handles shadowing)
+- **`consumed_variables[cell_id]`**: Variables from this cell that downstream cells reference (drives what gets stored as artifacts)
+- **Topological order**: Valid execution sequence via Kahn's algorithm
+- **Cycle detection**: Self-references and cycles raise errors
+
+The DAG is rebuilt on every cell source change (`re_analyze_cell` → `_analyze_and_build_dag`).
+
+### Cascade Execution
+
+When a cell's upstream dependencies aren't "ready" (idle, stale, or error), the `CascadePlanner` generates a plan:
+
+1. BFS backwards from target cell to find all upstream cells needing execution
+2. Returns cells in topological order with reasons (stale/missing/target)
+3. WebSocket sends `cascade_prompt` → frontend auto-accepts → `cell_execute_cascade` → sequential execution
+
+Backend tracks cell status in `session.notebook_state.cells[i].status` (mutable field) to avoid false cascade triggers.
+
+### REST API (`/v1/notebooks`)
+
+- `POST /create` — Create notebook (parent_path, name) → returns notebook state + session_id
+- `POST /open` — Open existing notebook directory
+- `GET /{id}/cells` — List cells
+- `PUT /{id}/cells/{cell_id}` — Update source, re-analyze, return cell + DAG
+- `POST /{id}/cells` — Add cell (optional `after_cell_id`)
+- `DELETE /{id}/cells/{cell_id}` — Remove cell
+- `POST /{id}/cells/{cell_id}/execute` — Execute cell (REST endpoint)
+- `GET /{id}/dag` — Get DAG (edges, topological_order, leaves, roots, variable_producer)
+
+Note: `{id}` in routes is the **session ID** (from `session_id` field in create/open response), not the notebook_id from `notebook.toml`.
+
+### WebSocket Protocol (`/v1/notebooks/ws/{notebook_id}`)
+
+**Client → Server**:
+- `cell_execute` — Run cell (triggers cascade check)
+- `cell_execute_cascade` — Confirmed cascade execution
+- `cell_execute_force` — Run cell ignoring staleness
+- `cell_source_update` — Source changed
+- `notebook_sync` — Request full state
+- `impact_preview_request` — Get upstream/downstream effects
+- `inspect_open/eval/close` — REPL operations
+
+**Server → Client**:
+- `cell_status` — Status changed (with causality chain)
+- `cell_output` — Execution result (outputs, stdout, stderr, cache_hit)
+- `cell_console` — Incremental stdout/stderr during execution
+- `cascade_prompt` — Upstream cells need execution (plan_id, steps)
+- `cascade_progress` — Progress during cascade
+- `dag_update` — DAG changed after cell edit
+- `impact_preview` — Upstream + downstream effects of running a cell
+
+### Notebook Backend Modules
+
+- **models.py** — `NotebookToml`, `CellState`, `NotebookState`, `CellStaleness`, `ArtifactInfo`
+- **parser.py** — `parse_notebook()` reads notebook.toml + cell files
+- **writer.py** — `create_notebook()`, `write_cell()`, `add_cell_to_notebook()`, `remove_cell_from_notebook()`
+- **session.py** — `NotebookSession` (state, DAG, artifact manager, execution history), `SessionManager`
+- **analyzer.py** — `VariableAnalyzer` AST visitor extracts defines/references
+- **dag.py** — `NotebookDag`, `build_dag()` with topological sort and cycle detection
+- **cascade.py** — `CascadePlanner` determines upstream cells that need re-execution
+- **impact.py** — `ImpactAnalyzer` shows full consequences (upstream cascade + downstream staleness)
+- **executor.py** — `CellExecutor` orchestrates execution: provenance check → resolve inputs → spawn harness → store outputs
+- **harness.py** — Subprocess entry point: loads manifest, deserializes inputs, `exec(source)`, serializes outputs
+- **artifact_integration.py** — `NotebookArtifactManager` wraps ArtifactStore with notebook-specific ID scheme
+- **provenance.py** — `compute_provenance_hash()`, `compute_source_hash()`
+- **env.py** — `compute_lockfile_hash()` for environment-based cache invalidation
+- **causality.py** — `CausalityChain` explains why a cell is stale
+- **routes.py** — FastAPI REST router (`/v1/notebooks`)
+- **ws.py** — WebSocket handler with per-notebook connections and execution state
+- **inspect_repl.py** — Interactive REPL for exploring cell artifacts
+- **pool.py**, **pool_worker.py** — Warm process pool for faster subprocess reuse
+- **immutability.py** — Mutation detection on input variables (v1.1)
+
+### Frontend (`frontend/`)
+
+Vue 3 + TypeScript + Vite. Dev server connects to `http://localhost:8765` (via `VITE_STRATA_URL`).
+
+**Store** (`stores/notebook.ts`):
+- `boot()` — Creates scratch notebook + adds one cell + connects WebSocket
+- All cell mutations (add, remove, update source) go through the backend API
+- `cascade_prompt` handler auto-accepts (no user confirmation needed)
+- `executeCellWebSocket()` waits for WS connection before sending
+
+**Composables**:
+- `useWebSocket(notebookId)` — WebSocket lifecycle, reconnection with exponential backoff, message dispatch
+- `useStrata()` — REST client for notebook CRUD operations
+- `useCodemirror()` — CodeMirror editor integration with Shift+Enter to run
+
+**Components**:
+- `CellEditor.vue` — Cell with editor, status indicator, run/add/delete actions, cache badges, causality tooltips
+- `DagView.vue` — Visual DAG rendering
+- `ImpactPreview.vue` — Cascade plan + downstream impact display
+- `ProfilingPanel.vue` — Execution metrics and per-cell profiling
+- `InspectPanel.vue` — REPL for exploring cell outputs
+
+### Running the Notebook
+
+```bash
+# Start backend (serves both API and built frontend)
+uv run uvicorn strata.server:app --host 0.0.0.0 --port 8765
+
+# Start frontend dev server (with hot reload, proxies to backend)
+cd frontend && npm run dev
+```
+
+### Key Invariants
+
+1. **Artifact store is the sole source of truth** for inter-cell variable passing. There is no in-memory cache layer — all cell outputs are persisted as artifacts and read back from the store.
+
+2. **Cell IDs are backend-generated** (8-char UUID prefix). The frontend never generates cell IDs.
+
+3. **DAG is authoritative on the backend**. The frontend does local DAG computation for instant feedback but syncs from the backend after every cell edit.
+
+4. **Cell status is tracked on the session object**. After execution, `session.notebook_state.cells[i].status` is updated to "ready" or "error". This is critical — the cascade planner checks these statuses to decide if upstream cells need re-execution.
