@@ -63,7 +63,9 @@ def _detect_missing_module(error: str, stderr: str) -> str | None:
     import re
 
     combined = f"{error}\n{stderr}"
-    m = re.search(r"ModuleNotFoundError: No module named ['\"]([^'\"]+)['\"]", combined)
+    # Match full form: ModuleNotFoundError: No module named 'pkg'
+    # or short form from harness: No module named 'pkg'
+    m = re.search(r"No module named ['\"]([^'\"]+)['\"]", combined)
     if not m:
         return None
     module = m.group(1).split(".")[0]  # top-level module

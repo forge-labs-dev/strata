@@ -85,6 +85,26 @@ const causalityTooltip = computed(() => {
 function toggleCausality() {
   showCausality.value = !showCausality.value
 }
+
+/** Check if scalar is only console output (no display value) */
+function isConsoleOnly(scalar: unknown): boolean {
+  if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
+    return Object.keys(scalar as Record<string, unknown>).length === 1
+  }
+  return false
+}
+
+/** Format scalar output for display */
+function formatScalar(scalar: unknown): string {
+  if (scalar === null || scalar === undefined) return 'None'
+  if (typeof scalar === 'object') {
+    // Skip console-only objects
+    const obj = scalar as Record<string, unknown>
+    if ('console' in obj && Object.keys(obj).length === 1) return ''
+    return JSON.stringify(scalar, null, 2)
+  }
+  return String(scalar)
+}
 </script>
 
 <template>
@@ -195,6 +215,9 @@ function toggleCausality() {
           <div v-if="(cell.output.rowCount ?? 0) > 50" class="row-count">
             showing 50 of {{ cell.output.rowCount?.toLocaleString() }} rows
           </div>
+        </div>
+        <div v-else-if="cell.output.scalar !== undefined && !isConsoleOnly(cell.output.scalar)" class="output-scalar">
+          <pre>{{ formatScalar(cell.output.scalar) }}</pre>
         </div>
       </div>
 
@@ -429,4 +452,13 @@ function toggleCausality() {
 }
 .output-table tr:hover td { background: #313244; }
 .row-count { color: #6c7086; font-size: 11px; margin-top: 4px; }
+
+.output-scalar pre {
+  margin: 0;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 13px;
+  color: #a6e3a1;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
 </style>

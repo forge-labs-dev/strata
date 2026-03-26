@@ -447,12 +447,17 @@ function initializeWebSocket() {
           const contentType = firstVar?.content_type || 'json/object'
           output.contentType = contentType as CellOutput['contentType']
 
-          if (contentType === 'arrow/ipc' && firstVar?.data) {
-            output.columns = firstVar.data.columns || firstVar.columns
-            output.rows = firstVar.data.rows || firstVar.rows
-            output.rowCount = firstVar.data.row_count || firstVar.row_count
-          } else if (firstVar?.data !== undefined) {
-            output.scalar = firstVar.data
+          if (contentType === 'arrow/ipc') {
+            const src = firstVar?.data || firstVar
+            output.columns = src?.columns
+            output.rows = src?.rows
+            output.rowCount = src?.row_count || src?.rowCount
+          } else {
+            // JSON/scalar outputs: prefer .data, fall back to .preview
+            const val = firstVar?.data ?? firstVar?.preview
+            if (val !== undefined) {
+              output.scalar = val
+            }
           }
         }
       }
