@@ -7,7 +7,6 @@ import pyarrow as pa
 import pytest
 
 from strata.executors import _run_local as run_local
-from strata.transforms import DuckDBSQLTransform
 from strata.transforms.base import _run_transform as run_transform
 
 
@@ -219,7 +218,10 @@ class TestRunLocalWithBuildSpec:
         build_spec = {
             "executor": "duckdb_sql@v1",
             "params": {
-                "sql": "SELECT (SELECT val FROM input0) as first, (SELECT val FROM input1) as second"
+                "sql": (
+                    "SELECT (SELECT val FROM input0) as first, "
+                    "(SELECT val FROM input1) as second"
+                )
             },
             "input_uris": ["uri://first", "uri://second"],
         }

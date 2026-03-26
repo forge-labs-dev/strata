@@ -132,9 +132,18 @@ class TestAsyncConcurrency:
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             # Materialize with different projections
             artifacts = await asyncio.gather(
-                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["id"])),
-                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["value"])),
-                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["name"])),
+                client.materialize(
+                    inputs=[table_uri],
+                    transform=build_scan_transform(columns=["id"]),
+                ),
+                client.materialize(
+                    inputs=[table_uri],
+                    transform=build_scan_transform(columns=["value"]),
+                ),
+                client.materialize(
+                    inputs=[table_uri],
+                    transform=build_scan_transform(columns=["name"]),
+                ),
             )
 
             # Fetch all artifacts concurrently
@@ -158,8 +167,14 @@ class TestAsyncConcurrency:
 
         async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
             artifact1, artifact2 = await asyncio.gather(
-                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["id", "value"])),
-                client.materialize(inputs=[table_uri], transform=build_scan_transform(columns=["name"])),
+                client.materialize(
+                    inputs=[table_uri],
+                    transform=build_scan_transform(columns=["id", "value"]),
+                ),
+                client.materialize(
+                    inputs=[table_uri],
+                    transform=build_scan_transform(columns=["name"]),
+                ),
             )
             table1, table2 = await asyncio.gather(
                 client.fetch(artifact1.uri),

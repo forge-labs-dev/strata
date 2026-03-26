@@ -141,7 +141,16 @@ class TenantRegistry:
                 quotas.interactive_limiter = ResizableLimiter(interactive_slots)
                 quotas.bulk_limiter = ResizableLimiter(bulk_slots)
 
-            return quotas.interactive_limiter, quotas.bulk_limiter
+            # Cast and return (both should now be ResizableLimiter instances)
+            interactive = quotas.interactive_limiter
+            bulk = quotas.bulk_limiter
+            if not isinstance(interactive, ResizableLimiter):
+                msg = f"interactive_limiter not a ResizableLimiter for tenant {tenant_id}"
+                raise RuntimeError(msg)
+            if not isinstance(bulk, ResizableLimiter):
+                msg = f"bulk_limiter not a ResizableLimiter for tenant {tenant_id}"
+                raise RuntimeError(msg)
+            return interactive, bulk
 
     def is_tenant_enabled(self, tenant_id: str) -> bool:
         """Check if tenant is enabled (exists and not disabled).

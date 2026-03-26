@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from pathlib import Path
+
+# Python 3.10 compatibility
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore
 from typing import Annotated, Any, Literal
 
 from pydantic import (

@@ -16,23 +16,18 @@ from strata.transforms.base import (
     run_transform,  # Deprecated, use _run_transform internally
 )
 
-# Built-in transforms (auto-register on import)
-from strata.transforms.duckdb_sql import (
-    DuckDBSQLParams,
-    DuckDBSQLTransform,
-    build_duckdb_sql_transform,
-)
-from strata.transforms.scan import (
-    ScanParams,
-    ScanTransform,
-    build_scan_transform,
-)
-
 # Server-mode infrastructure
 from strata.transforms.build_store import (
     BuildState,
     BuildStore,
     get_build_store,
+)
+
+# Built-in transforms (auto-register on import)
+from strata.transforms.duckdb_sql import (
+    DuckDBSQLParams,
+    DuckDBSQLTransform,
+    build_duckdb_sql_transform,
 )
 from strata.transforms.registry import (
     TransformDefinition,
@@ -44,6 +39,11 @@ from strata.transforms.runner import (
     RunnerConfig,
     get_build_runner,
     set_build_runner,
+)
+from strata.transforms.scan import (
+    ScanParams,
+    ScanTransform,
+    build_scan_transform,
 )
 
 __all__ = [

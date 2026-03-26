@@ -461,6 +461,8 @@ class ParquetMetadataCache:
         """Load metadata from persistent store without reading the file."""
         from strata.metadata_store import deserialize_arrow_schema
 
+        if self._store is None:
+            return None
         persisted = self._store.get_parquet_meta(file_path)
         if persisted is None:
             return None
@@ -508,6 +510,8 @@ class ParquetMetadataCache:
         """Save metadata to persistent store."""
         from strata.metadata_store import extract_parquet_meta
 
+        if self._store is None:
+            return
         try:
             persisted = extract_parquet_meta(file_path, s3_filesystem=self._s3_filesystem)
             self._store.put_parquet_meta(file_path, persisted)

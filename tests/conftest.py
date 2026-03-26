@@ -14,7 +14,13 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
+
+# Python 3.10 compatibility: UTC is in timezone module
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = UTC
 
 import httpx
 import pyarrow as pa

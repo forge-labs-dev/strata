@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 P = TypeVar("P", bound=BaseModel)
 
 
-class Transform(ABC, Generic[P]):
+class Transform(ABC, Generic[P]):  # noqa: UP046
     """Abstract base class for all transforms.
 
     Each transform must define:

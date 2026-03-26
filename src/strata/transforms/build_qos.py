@@ -56,6 +56,14 @@ class BuildQoSError(Exception):
         self.retry_after = retry_after
         super().__init__(message)
 
+    def to_dict(self) -> dict:
+        """Convert error to dictionary representation."""
+        return {
+            "error": "build_qos_error",
+            "message": self.message,
+            "retry_after_seconds": self.retry_after,
+        }
+
 
 class TenantAtCapacityError(BuildQoSError):
     """Raised when a tenant has reached their concurrent build limit."""

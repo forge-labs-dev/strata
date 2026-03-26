@@ -351,8 +351,12 @@ class CacheWarmer:
                 )
 
                 for result in results:
+                    # Handle exceptions that may be raised during gather
+                    if isinstance(result, BaseException) and not isinstance(result, Exception):
+                        continue
                     if isinstance(result, Exception):
                         continue
+                    # At this point, result is the tuple (bool, int)
                     was_cached, written = result
                     job.row_groups_completed += 1
                     if was_cached:

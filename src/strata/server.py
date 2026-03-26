@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 if TYPE_CHECKING:
     from strata.adaptive_concurrency import AdaptiveConcurrencyController
@@ -17,8 +17,11 @@ if TYPE_CHECKING:
 import pyarrow as pa
 import pyarrow.ipc as ipc
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
+from strata.adaptive_concurrency import ResizableLimiter
 from strata.auth import (
     AuthError,
     get_principal,
@@ -402,12 +405,14 @@ def _get_qos_metrics(state: ServerState) -> dict:
     per_tenant_qos = {}
     with tenant_registry._lock:
         for tenant_id, quotas in tenant_registry._quotas.items():
-            if quotas.interactive_limiter is not None:
+            interactive = quotas.interactive_limiter
+            bulk = quotas.bulk_limiter
+            if isinstance(interactive, ResizableLimiter) and isinstance(bulk, ResizableLimiter):
                 per_tenant_qos[tenant_id] = {
-                    "interactive_capacity": quotas.interactive_limiter.capacity,
-                    "interactive_in_use": quotas.interactive_limiter.in_use,
-                    "bulk_capacity": quotas.bulk_limiter.capacity,
-                    "bulk_in_use": quotas.bulk_limiter.in_use,
+                    "interactive_capacity": interactive.capacity,
+                    "interactive_in_use": interactive.in_use,
+                    "bulk_capacity": bulk.capacity,
+                    "bulk_in_use": bulk.in_use,
                 }
 
     return {
@@ -835,6 +840,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Allow cross-origin requests (needed for dev and when frontend served separately)
+app.add_middleware(
+    cast(type, CORSMiddleware),
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Add request context middleware (sets request_id, adds to response headers)
 app.middleware("http")(request_context_middleware)
 
@@ -1048,6 +1061,13 @@ async def auth_middleware(request: Request, call_next):
 
 # Instrument FastAPI with OpenTelemetry (no-op if OTel not installed)
 instrument_fastapi(app)
+
+# Register notebook routes
+from strata.notebook import router as notebook_router  # noqa: E402
+from strata.notebook.ws import router as notebook_ws_router  # noqa: E402
+
+app.include_router(notebook_router)
+app.include_router(notebook_ws_router)
 
 
 @app.get("/health")
@@ -1965,8 +1985,13 @@ async def get_cache_stats_v1():
     Returns information about what's in the cache and why.
     Operators can use this to understand cache behavior and debug issues.
     """
+    from strata.cache import DiskCache
+
     state = get_state()
-    stats = state.fetcher.cache.get_stats()
+    cache = state.fetcher.cache
+    if not isinstance(cache, DiskCache):
+        raise HTTPException(status_code=501, detail="Operation requires DiskCache")
+    stats = cache.get_stats()
     return stats.to_dict()
 
 
@@ -2275,8 +2300,13 @@ async def list_cache_entries_v1():
 
     Returns detailed information about each cached entry.
     """
+    from strata.cache import DiskCache
+
     state = get_state()
-    entries = state.fetcher.cache.list_entries()
+    cache = state.fetcher.cache
+    if not isinstance(cache, DiskCache):
+        raise HTTPException(status_code=501, detail="Operation requires DiskCache")
+    entries = cache.list_entries()
     return {"entries": [e.to_dict() for e in entries]}
 
 
@@ -2312,10 +2342,12 @@ async def inspect_cache_v1(
     """
     import json as json_module
 
-    from strata.cache import CACHE_FILE_EXTENSION, CACHE_META_EXTENSION, CACHE_VERSION
+    from strata.cache import CACHE_FILE_EXTENSION, CACHE_META_EXTENSION, CACHE_VERSION, DiskCache
 
     state = get_state()
     cache = state.fetcher.cache
+    if not isinstance(cache, DiskCache):
+        raise HTTPException(status_code=501, detail="Operation requires DiskCache")
 
     results = []
     versioned_dir = cache.cache_dir / f"v{CACHE_VERSION}"
@@ -2545,7 +2577,7 @@ async def warm_cache_v1(request: WarmRequest):
             )
 
             for result in results:
-                if isinstance(result, Exception):
+                if isinstance(result, BaseException):
                     continue
                 was_cached, written = result
                 if was_cached:
@@ -2992,6 +3024,8 @@ async def materialize_artifact(request: MaterializeRequest):
         build_id = str(uuid.uuid4())
 
         # Get build store (uses same directory as artifact store)
+        if state.config.artifact_dir is None:
+            raise HTTPException(status_code=500, detail="Artifact directory not configured")
         build_store = get_build_store(state.config.artifact_dir / "artifacts.sqlite")
         if build_store is None:
             raise HTTPException(
@@ -3204,7 +3238,15 @@ async def put_artifact(request: Request):
         # Get metadata
         metadata_file = form.get("metadata")
         if metadata_file is None:
-            raise HTTPException(status_code=400, detail="Missing 'metadata' field in multipart request")
+            raise HTTPException(
+                status_code=400,
+                detail="Missing 'metadata' field in multipart request",
+            )
+        if isinstance(metadata_file, str):
+            raise HTTPException(
+                status_code=400,
+                detail="'metadata' field must be a file, not form data",
+            )
         metadata_content = await metadata_file.read()
         try:
             metadata = json_module.loads(metadata_content)
@@ -3219,6 +3261,11 @@ async def put_artifact(request: Request):
         data_file = form.get("data")
         if data_file is None:
             raise HTTPException(status_code=400, detail="Missing 'data' field in multipart request")
+        if isinstance(data_file, str):
+            raise HTTPException(
+                status_code=400,
+                detail="'data' field must be a file, not form data",
+            )
         arrow_bytes = await data_file.read()
 
         # Parse Arrow to get schema and row count
@@ -4001,14 +4048,15 @@ async def get_build_manifest(build_id: str, request: Request):
 
     # Resolve input artifacts to (artifact_id, version) tuples
     input_artifacts: list[tuple[str, int]] = []
-    for input_uri in build.input_uris:
-        result = _resolve_to_artifact_version(input_uri, store)
-        if result is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Cannot resolve input artifact: {input_uri}",
-            )
-        input_artifacts.append(result)
+    if build.input_uris is not None:
+        for input_uri in build.input_uris:
+            result = _resolve_to_artifact_version(input_uri, store)
+            if result is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Cannot resolve input artifact: {input_uri}",
+                )
+            input_artifacts.append(result)
 
     # Build base URL from request
     base_url = str(request.base_url).rstrip("/")
@@ -4843,7 +4891,10 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     if len(plan.tasks) > max_tasks:
         raise HTTPException(
             status_code=400,
-            detail=f"Query would read {len(plan.tasks)} row groups, exceeding limit of {max_tasks}.",
+            detail=(
+                f"Query would read {len(plan.tasks)} row groups, "
+                f"exceeding limit of {max_tasks}."
+            ),
         )
 
     # Pre-flight size check
@@ -5065,9 +5116,7 @@ async def get_stream(stream_id: str, request: Request):
             )
 
     # Queue with deadline
-    queue_start = time.time()
     acquired = await limiter.acquire(timeout=queue_timeout)
-    queue_wait_ms = (time.time() - queue_start) * 1000
 
     if not acquired:
         if client_semaphore_acquired and client_semaphore is not None:
@@ -5255,6 +5304,46 @@ async def _finalize_stream_artifact(stream_state: StreamState, data: bytes, row_
             store.fail_artifact(stream_state.artifact_id, stream_state.artifact_version)
         except Exception:
             pass
+
+
+def _mount_frontend(application: FastAPI) -> None:
+    """Mount the frontend SPA if the dist directory exists."""
+
+    # Look for frontend dist relative to the project root
+    # Try several locations
+    candidates = [
+        Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",
+        Path.cwd() / "frontend" / "dist",
+    ]
+    dist_dir = None
+    for c in candidates:
+        if (c / "index.html").exists():
+            dist_dir = c
+            break
+
+    if dist_dir is None:
+        return
+
+    # Serve static assets (JS, CSS, etc.)
+    application.mount(
+        "/assets",
+        StaticFiles(directory=str(dist_dir / "assets")),
+        name="frontend-assets",
+    )
+
+    # SPA fallback: any non-API GET returns index.html
+    @application.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        # Don't intercept API or health routes
+        if full_path.startswith(("v1/", "health", "docs", "openapi")):
+            raise HTTPException(status_code=404)
+        file_path = dist_dir / full_path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(dist_dir / "index.html"))
+
+
+_mount_frontend(app)
 
 
 def main():

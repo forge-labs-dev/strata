@@ -358,7 +358,7 @@ class StrataClient:
 
         if last_response is not None:
             last_response.raise_for_status()
-        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
+        raise RuntimeError("Max retries exceeded")
 
     def clear_cache(self) -> dict:
         """Clear the server's disk cache."""
@@ -729,7 +729,7 @@ class StrataClient:
         # Send as multipart form data
         import json
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "inputs": inputs,
             "transform": server_transform,
         }
@@ -912,7 +912,7 @@ class StrataClient:
         Returns:
             Dict with 'artifacts' list and pagination info
         """
-        params = {"limit": limit, "offset": offset}
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if state is not None:
             params["state"] = state
         if name_prefix is not None:
@@ -1254,7 +1254,7 @@ class AsyncStrataClient:
 
         if last_response is not None:
             last_response.raise_for_status()
-        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
+        raise RuntimeError("Max retries exceeded")
 
     async def materialize(
         self,
@@ -1419,7 +1419,7 @@ class AsyncStrataClient:
 
         if last_response is not None:
             last_response.raise_for_status()
-        raise httpx.HTTPStatusError("Max retries exceeded", request=None, response=last_response)
+        raise RuntimeError("Max retries exceeded")
 
     async def clear_cache(self) -> dict:
         """Clear the server's disk cache."""
@@ -1516,7 +1516,7 @@ class AsyncStrataClient:
         # Send as multipart form data
         import json
 
-        metadata = {
+        metadata: dict[str, Any] = {
             "inputs": inputs,
             "transform": server_transform,
         }

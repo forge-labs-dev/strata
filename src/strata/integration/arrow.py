@@ -30,7 +30,6 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 import pyarrow as pa
-import pyarrow.ipc as ipc
 
 from strata.client import StrataClient
 from strata.config import StrataConfig
@@ -104,8 +103,7 @@ class StrataScanner:
             transform=_build_scan_transform(self._columns, self._filters),
         )
         table = artifact.to_table()
-        for batch in table.to_batches():
-            yield batch
+        yield from table.to_batches()
 
     def to_table(self) -> pa.Table:
         """Read all data as an Arrow Table.

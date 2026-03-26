@@ -571,7 +571,7 @@ class BuildRunner:
                 raise ValueError(f"Artifact blob not found: {input_uri}")
 
             # Write to temp file
-            temp_file = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+            temp_file = Path(tempfile.mkstemp(suffix=".arrow", dir=self.artifact_dir)[1])
             temp_file.write_bytes(blob)
             temp_files.append(temp_file)
             return temp_file
@@ -589,7 +589,7 @@ class BuildRunner:
                 raise ValueError(f"Artifact blob not found for name: {name}")
 
             # Write to temp file
-            temp_file = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+            temp_file = Path(tempfile.mkstemp(suffix=".arrow", dir=self.artifact_dir)[1])
             temp_file.write_bytes(blob)
             temp_files.append(temp_file)
             return temp_file
@@ -616,7 +616,7 @@ class BuildRunner:
         # Import here to avoid circular imports
 
         # Create a temp file for output
-        temp_file = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+        temp_file = Path(tempfile.mkstemp(suffix=".arrow", dir=self.artifact_dir)[1])
         temp_files.append(temp_file)
 
         # Run in thread pool to avoid blocking event loop
@@ -753,7 +753,6 @@ class BuildRunner:
         """
         import io
 
-        import pyarrow as pa
         import pyarrow.ipc as ipc
 
         from strata.transforms.base import _run_transform
@@ -792,7 +791,7 @@ class BuildRunner:
             )
 
         # Write to temp file
-        output_path = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+        output_path = Path(tempfile.mkstemp(suffix=".arrow", dir=self.artifact_dir)[1])
         temp_files.append(output_path)
         output_path.write_bytes(output_bytes)
 
@@ -846,7 +845,7 @@ class BuildRunner:
             )
 
         # Create output temp file
-        output_path = Path(tempfile.mktemp(suffix=".arrow", dir=self.artifact_dir))
+        output_path = Path(tempfile.mkstemp(suffix=".arrow", dir=self.artifact_dir)[1])
         temp_files.append(output_path)
 
         # Protocol version header for executor compatibility

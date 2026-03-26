@@ -8,8 +8,8 @@ These tests verify:
 5. Local execution via _run_local()
 """
 
-import pytest
 import pyarrow as pa
+import pytest
 from pydantic import ValidationError
 
 from strata.executors import _run_local as run_local
@@ -25,7 +25,8 @@ from strata.transforms import (
     list_transforms,
     register_transform,
 )
-from strata.transforms.base import _run_transform as run_transform, _transforms
+from strata.transforms.base import _run_transform as run_transform
+from strata.transforms.base import _transforms
 
 
 class TestTransformBase:
@@ -58,7 +59,7 @@ class TestTransformBase:
 
         assert t1 is not None
         assert t2 is not None
-        assert type(t1) == type(t2)
+        assert type(t1) is type(t2)
 
     def test_get_transform_unknown(self):
         """Test that get_transform returns None for unknown transforms."""
@@ -176,7 +177,10 @@ class TestDuckDBSQLTransform:
         table = pa.table({"category": ["a", "a", "b"], "value": [10, 20, 30]})
 
         result = transform.execute(
-            [table], DuckDBSQLParams(sql="SELECT category, SUM(value) as total FROM input0 GROUP BY 1")
+            [table],
+            DuckDBSQLParams(
+                sql="SELECT category, SUM(value) as total FROM input0 GROUP BY 1"
+            ),
         )
 
         assert result.num_rows == 2
@@ -193,7 +197,9 @@ class TestDuckDBSQLTransform:
 
         result = transform.execute(
             [events, users],
-            DuckDBSQLParams(sql="SELECT e.id, u.name FROM input0 e JOIN input1 u ON e.user_id = u.id"),
+            DuckDBSQLParams(
+                sql="SELECT e.id, u.name FROM input0 e JOIN input1 u ON e.user_id = u.id"
+            ),
         )
 
         assert result.num_rows == 3
@@ -287,7 +293,12 @@ class TestRunLocal:
 
         build_spec = {
             "executor": "duckdb_sql@v1",
-            "params": {"sql": "SELECT e.event_id, u.name FROM input0 e JOIN input1 u ON e.user_id = u.user_id"},
+            "params": {
+                "sql": (
+                    "SELECT e.event_id, u.name FROM input0 e "
+                    "JOIN input1 u ON e.user_id = u.user_id"
+                )
+            },
             "input_uris": [uri1, uri2],
         }
         input_tables = {uri1: events, uri2: users}
@@ -332,7 +343,12 @@ class TestRunLocal:
         # Intentionally use different order in dict vs input_uris
         build_spec = {
             "executor": "duckdb_sql@v1",
-            "params": {"sql": "SELECT (SELECT val FROM input0) as first, (SELECT val FROM input1) as second"},
+            "params": {
+                "sql": (
+                    "SELECT (SELECT val FROM input0) as first, "
+                    "(SELECT val FROM input1) as second"
+                )
+            },
             "input_uris": ["uri://first", "uri://second"],
         }
         # Dict order doesn't matter - input_uris order does
