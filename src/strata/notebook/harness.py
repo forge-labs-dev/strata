@@ -399,6 +399,47 @@ def detect_mutations(namespace: dict, snapshots: list[dict]) -> list[dict]:
     return warnings
 
 
+def _exec_with_display(source: str, namespace: dict) -> Any | None:
+    """Execute source and return the last expression's value (if any).
+
+    If the last statement is a bare expression (``ast.Expr``), it is
+    compiled separately with ``eval`` so we can capture its value —
+    mimicking Jupyter / IPython's ``Out[n]`` behavior.  ``None`` results
+    are suppressed (matching IPython).
+
+    All other statements are executed via ``exec`` as usual.
+    """
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        # Fall back to plain exec on parse failure
+        exec(source, namespace)  # noqa: S102
+        return None
+
+    if not tree.body:
+        return None
+
+    last = tree.body[-1]
+
+    if isinstance(last, _ast.Expr):
+        # Split: exec everything except the last, then eval the last
+        if len(tree.body) > 1:
+            mod = _ast.Module(body=tree.body[:-1], type_ignores=[])
+            _ast.fix_missing_locations(mod)
+            exec(compile(mod, "<cell>", "exec"), namespace)  # noqa: S102
+
+        expr = _ast.Expression(body=last.value)
+        _ast.fix_missing_locations(expr)
+        result = eval(compile(expr, "<cell>", "eval"), namespace)  # noqa: S307
+        return result if result is not None else None
+    else:
+        # Last statement is not an expression — plain exec
+        exec(source, namespace)  # noqa: S102
+        return None
+
+
 def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]:
     """Execute a cell and capture outputs.
 
@@ -432,8 +473,10 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
         # M6: Take snapshots of input variables
         input_snapshots = snapshot_inputs(namespace, input_names)
 
-        # Execute the cell
-        exec(source, namespace)
+        # Execute the cell.  If the last statement is a bare expression
+        # (e.g. ``x``, ``df.head()``, ``1 + 2``), eval it separately and
+        # capture the result as ``_`` — like Jupyter / IPython.
+        _display_value = _exec_with_display(source, namespace)
 
         # Find new and reassigned variables
         _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
@@ -447,6 +490,10 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
             elif id(value) != input_identities.get(name):
                 # Input variable was reassigned (e.g. x = x + 1)
                 new_vars[name] = value
+
+        # Include last-expression display value (like Jupyter's Out[n])
+        if _display_value is not None:
+            new_vars["_"] = _display_value
 
         # M6: Detect mutations on input variables
         mutation_warnings = detect_mutations(namespace, input_snapshots)

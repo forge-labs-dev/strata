@@ -92,6 +92,38 @@ def load_manifest(manifest_path: str) -> dict:
         return json.load(f)
 
 
+def _exec_with_display(source: str, namespace: dict) -> Any | None:
+    """Execute source and return the last expression's value (if any).
+
+    Mimics Jupyter/IPython: if the last statement is a bare expression,
+    eval it separately to capture the result for display.
+    """
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(source)
+    except SyntaxError:
+        exec(source, namespace)
+        return None
+
+    if not tree.body:
+        return None
+
+    last = tree.body[-1]
+    if isinstance(last, _ast.Expr):
+        if len(tree.body) > 1:
+            mod = _ast.Module(body=tree.body[:-1], type_ignores=[])
+            _ast.fix_missing_locations(mod)
+            exec(compile(mod, "<cell>", "exec"), namespace)
+        expr = _ast.Expression(body=last.value)
+        _ast.fix_missing_locations(expr)
+        result = eval(compile(expr, "<cell>", "eval"), namespace)
+        return result if result is not None else None
+    else:
+        exec(source, namespace)
+        return None
+
+
 def execute_harness(manifest: dict) -> dict:
     """Execute cell using harness logic.
 
@@ -167,8 +199,8 @@ def execute_harness(manifest: dict) -> dict:
     _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
 
     try:
-        # Execute cell
-        exec(source, namespace)
+        # Execute cell with last-expression display (like Jupyter)
+        _display_value = _exec_with_display(source, namespace)
 
         # Restore stdout/stderr
         sys.stdout = old_stdout
@@ -197,6 +229,13 @@ def execute_harness(manifest: dict) -> dict:
                         "content_type": "error",
                         "error": str(e),
                     }
+
+        # Include last-expression display value
+        if _display_value is not None:
+            try:
+                outputs["_"] = _serialize_value(_display_value, output_dir, "_")
+            except Exception:
+                pass
 
         return {
             "success": True,
