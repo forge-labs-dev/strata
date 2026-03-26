@@ -441,17 +441,31 @@ function initializeWebSocket() {
       }
 
       if (outputs && typeof outputs === 'object') {
-        const varNames = Object.keys(outputs)
-        if (varNames.length > 0) {
-          const firstVar = outputs[varNames[0]]
+        // Only display the '_' variable (last-expression result, like
+        // Jupyter's Out[n]).  Other outputs are pass-through artifacts
+        // for downstream cells and should not be rendered.
+        const firstVar = outputs['_'] || null
+        if (firstVar) {
           const contentType = firstVar?.content_type || 'json/object'
           output.contentType = contentType as CellOutput['contentType']
 
           if (contentType === 'arrow/ipc') {
             const src = firstVar?.data || firstVar
             output.columns = src?.columns
-            output.rows = src?.rows
-            output.rowCount = src?.row_count || src?.rowCount
+            output.rowCount = src?.rows ?? src?.row_count ?? src?.rowCount
+
+            // preview is a 2D array [[row0col0, row0col1], ...] — convert
+            // to array of objects [{col0: val, col1: val}, ...] for the table
+            const preview = src?.preview
+            if (Array.isArray(preview) && output.columns) {
+              output.rows = preview.map((row: unknown[]) => {
+                const obj: Record<string, unknown> = {}
+                output.columns!.forEach((col, i) => { obj[col] = row[i] })
+                return obj
+              })
+            }
+          } else if (contentType === 'module/import') {
+            // Module outputs are pass-through artifacts, not display values
           } else {
             // JSON/scalar outputs: prefer .data, fall back to .preview
             const val = firstVar?.data ?? firstVar?.preview
