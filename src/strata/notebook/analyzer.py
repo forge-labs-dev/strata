@@ -256,14 +256,25 @@ class VariableAnalyzer(ast.NodeVisitor):
             for elt in target.elts:
                 self._add_assign_target(elt)
         elif isinstance(target, ast.Subscript):
-            # Subscript assignment: df["col"] = ... → defines df
-            self._add_assign_target(target.value)
+            # Subscript mutation: df["col"] = ... → references df, does not define it
+            self._add_reference_target(target.value)
         elif isinstance(target, ast.Attribute):
-            # Attribute assignment: obj.attr = ... → defines obj
-            self._add_assign_target(target.value)
+            # Attribute mutation: obj.attr = ... → references obj, does not define it
+            self._add_reference_target(target.value)
         elif isinstance(target, ast.Starred):
             # Starred assignment: *rest = ...
             self._add_assign_target(target.value)
+
+    def _add_reference_target(self, node: ast.expr) -> None:
+        """Extract root name from expression and add to references.
+
+        Used for attribute/subscript mutations (e.g. obj.attr = ..., df["col"] = ...)
+        which reference the root object but don't define it.
+        """
+        if isinstance(node, ast.Name):
+            self.references.add(node.id)
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            self._add_reference_target(node.value)
 
 
 def analyze_cell(source: str) -> CellAnalysis:

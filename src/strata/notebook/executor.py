@@ -153,6 +153,9 @@ class CellExecutor:
         self.harness_path = Path(__file__).parent / "harness.py"
         self.pool = pool
         # Guard against DAG cycles during recursive materialisation.
+        # Per-instance is correct: cycles are only meaningful within a single
+        # execute_cell() recursive tree. Each top-level call creates a fresh
+        # CellExecutor, so the guard resets between independent executions.
         self._materializing: set[str] = set()
 
     # ------------------------------------------------------------------

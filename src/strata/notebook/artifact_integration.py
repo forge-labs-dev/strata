@@ -8,6 +8,7 @@ Artifact ID scheme: nb_{notebook_id}_cell_{cell_id}_var_{variable_name}
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -214,11 +215,19 @@ class NotebookArtifactManager:
         if artifact is None:
             raise ValueError(f"Artifact {artifact_id}@v={version} not found")
 
-        # For now, just return metadata (no preview bytes fetched)
+        # Extract content_type from transform_spec params
+        content_type = "unknown"
+        if artifact.transform_spec:
+            try:
+                spec = json.loads(artifact.transform_spec)
+                content_type = spec.get("params", {}).get("content_type", "unknown")
+            except (ValueError, KeyError):
+                pass
+
         return {
             "id": artifact.id,
             "version": artifact.version,
-            "content_type": artifact.transform_spec,  # Store content_type in params
+            "content_type": content_type,
             "rows": artifact.row_count,
             "bytes": artifact.byte_size,
             "created_at": artifact.created_at,
@@ -234,17 +243,13 @@ class NotebookArtifactManager:
 
         Returns:
             List of (variable_name, ArtifactVersion) tuples
+
+        Raises:
+            NotImplementedError: ArtifactStore does not yet support prefix queries.
         """
-        # Query artifact store for artifacts matching this cell_id
-        # For now, we'll do a simple search by artifact_id prefix
-        # In a real implementation, this would query the database
-
-        results = []
-        # This is a limitation of the current artifact store API —
-        # we don't have a query by prefix method. For now, return empty.
-        # Future: add query_by_prefix to ArtifactStore if needed.
-
-        return results
+        raise NotImplementedError(
+            "list_cell_artifacts requires ArtifactStore prefix query support"
+        )
 
     def get_artifact_info(
         self, artifact_id: str, version: int

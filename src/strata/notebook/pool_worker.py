@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Pool worker script that runs in the notebook subprocess.
 
+TODO(tech-debt): Serialization logic is duplicated across pool_worker.py,
+harness.py, serializer.py, and inspect_repl.py. The harness/pool_worker
+run in the notebook's venv and cannot import strata, so the code is inlined.
+Consider bundling serializer.py into the subprocess environment.
+
 This script:
 1. Parses pyproject.toml to find common deps
 2. Imports them to warm up the process
@@ -103,15 +108,14 @@ def execute_harness(manifest: dict) -> dict:
     import traceback
 
     source = manifest.get("source", "")
-    inputs = manifest.get("inputs", [])
+    inputs = manifest.get("inputs", {})
     output_dir = Path(manifest.get("output_dir", ""))
 
     # Create namespace
     namespace: dict[str, Any] = {}
 
-    # Inject inputs
-    for input_spec in inputs:
-        var_name = input_spec.get("name")
+    # Inject inputs (inputs is a dict: {var_name: {content_type, file}})
+    for var_name, input_spec in inputs.items():
         if input_spec.get("content_type") == "arrow/ipc":
             try:
                 import pyarrow as pa

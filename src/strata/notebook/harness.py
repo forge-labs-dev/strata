@@ -5,6 +5,10 @@ captures stdout/stderr, and serializes outputs.
 
 It runs in the notebook's venv, so it only has access to the notebook's dependencies.
 It cannot import from strata — instead, it includes its own serialization logic.
+
+TODO(tech-debt): Serialization logic is duplicated across harness.py,
+pool_worker.py, serializer.py, and inspect_repl.py. Consider bundling
+serializer.py into the subprocess environment to deduplicate.
 """
 
 from __future__ import annotations
@@ -459,6 +463,7 @@ def main():
         sys.exit(1)
 
     manifest_path = sys.argv[1]
+    manifest: dict = {}
 
     try:
         # Load manifest
