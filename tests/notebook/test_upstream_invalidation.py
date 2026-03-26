@@ -11,12 +11,23 @@ Reproduces the scenario:
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+
 import pytest
+from fastapi.testclient import TestClient
 
 from strata.notebook.executor import CellExecutor
 from strata.notebook.parser import parse_notebook
 from strata.notebook.session import NotebookSession
 from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+from tests.notebook.e2e_fixtures import (
+    NotebookBuilder,
+    create_test_app,
+    execute_cell_and_wait,
+    open_notebook_session,
+    ws_connect,
+)
 
 
 @pytest.fixture
@@ -116,3 +127,97 @@ class TestUpstreamInvalidation:
         assert r2_new.outputs.get("y", {}).get("preview") == 101, (
             f"Expected y=101 but got {r2_new.outputs.get('y', {}).get('preview')}"
         )
+
+
+class TestUpstreamInvalidationE2E:
+    """Same tests but through REST+WS path, matching the UI flow."""
+
+    @pytest.fixture
+    def setup(self):
+        app = create_test_app()
+        client = TestClient(app)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            yield client, Path(tmpdir)
+
+    def test_edit_c1_via_rest_then_run_c2_via_ws(self, setup):
+        """Reproduce: edit cell 1 via REST PUT, run cell 2 via WS.
+
+        This is exactly what the UI does:
+        - CodeMirror onChange → PUT /cells/{id} (REST)
+        - Shift+Enter → cell_execute (WS)
+        """
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "x = 1")
+            .add_cell("c2", "y = x + 1", after="c1")
+            .add_cell("c3", "print(y)", after="c2")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                # Step 1: Run all 3 cells
+                r1 = execute_cell_and_wait(ws, "c1")
+                assert r1["payload"].get("cache_hit") is not True
+
+                r2 = execute_cell_and_wait(ws, "c2")
+                assert r2["payload"].get("cache_hit") is not True
+
+                r3 = execute_cell_and_wait(ws, "c3")
+
+                # Step 2: Edit c1 via REST (like the UI does)
+                resp = client.put(
+                    f"/v1/notebooks/{sid}/cells/c1",
+                    json={"source": "x = 2"},
+                )
+                assert resp.status_code == 200
+                # The REST response includes updated statuses
+                data = resp.json()
+                # Cell 1 should now be idle/stale
+                c1_status = None
+                for c in data.get("cells", []):
+                    if c["id"] == "c1":
+                        c1_status = c["status"]
+                assert c1_status == "idle", (
+                    f"After editing c1, expected status='idle' but got '{c1_status}'"
+                )
+
+                ws.clear()
+
+                # Step 3: Run c2 via WS (like clicking Run in the UI)
+                r2_after = execute_cell_and_wait(ws, "c2")
+                assert r2_after["type"] == "cell_output"
+                assert r2_after["payload"].get("cache_hit") is not True, (
+                    "c2 should NOT cache hit after c1 was edited from x=1 to x=2"
+                )
+
+    def test_edit_c1_via_rest_then_run_c2_produces_correct_value(self, setup):
+        """After editing c1 from x=1 to x=100 via REST, c2 should produce y=101."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "x = 1")
+            .add_cell("c2", "y = x + 1", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                # Run both cells
+                execute_cell_and_wait(ws, "c1")
+                r2 = execute_cell_and_wait(ws, "c2")
+                assert r2["payload"]["outputs"]["y"]["preview"] == 2
+
+                # Edit c1 via REST
+                resp = client.put(
+                    f"/v1/notebooks/{sid}/cells/c1",
+                    json={"source": "x = 100"},
+                )
+                assert resp.status_code == 200
+                ws.clear()
+
+                # Run c2 via WS — should produce y=101
+                r2_new = execute_cell_and_wait(ws, "c2")
+                assert r2_new["type"] == "cell_output"
+                assert r2_new["payload"].get("cache_hit") is not True
+                y_value = r2_new["payload"]["outputs"]["y"]["preview"]
+                assert y_value == 101, f"Expected y=101 but got {y_value}"
