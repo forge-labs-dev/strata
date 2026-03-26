@@ -127,7 +127,4 @@ class TestInspectSession:
 
         # Process should be None or killed
         if inspect_session.process:
-            assert (
-                inspect_session.process.returncode is not None
-                or inspect_session.process.returncode == -9
-            )
+            assert inspect_session.process.returncode is not None

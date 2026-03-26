@@ -1,7 +1,11 @@
-"""E2E tests: concurrent execution scenarios.
+"""E2E tests: sequential execution and connection scenarios.
 
 Tests cell cancel, rapid sequential executions, and
 multiple WebSocket connections to the same notebook.
+
+NOTE: These tests are sequential, not truly concurrent.
+True concurrent execution tests (e.g., two cells executing
+simultaneously via asyncio.gather) are not yet implemented.
 """
 
 from __future__ import annotations

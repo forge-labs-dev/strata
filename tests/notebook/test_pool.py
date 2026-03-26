@@ -66,7 +66,7 @@ class TestWarmProcessPool:
             await pool.release_and_replace(warm_proc)
 
             # The old process should be dead
-            assert warm_proc.process.returncode is not None or warm_proc.process.returncode == -9
+            assert warm_proc.process.returncode is not None
 
         # Clean up
         await pool.drain()

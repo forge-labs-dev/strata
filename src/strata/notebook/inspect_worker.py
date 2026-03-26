@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Inspect worker script that runs interactive REPL for artifact exploration.
 
+NOTE: This module is not used in production. The WebSocket handler uses
+inspect_repl.py instead. Kept for potential future use.
+
 This script:
 1. Receives input artifact information via stdin
 2. Loads artifacts into the namespace

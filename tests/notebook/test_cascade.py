@@ -70,9 +70,9 @@ def test_cascade_planner_cascade_needed(temp_pipeline):
     # Planning cascade for a downstream cell should return a plan
     plan = planner.plan(session.notebook_state.cells[2].id)  # middle2
 
-    if plan:
-        assert plan.target_cell_id == session.notebook_state.cells[2].id
-        assert len(plan.steps) > 0
+    assert plan is not None, "Expected cascade plan for stale upstream"
+    assert plan.target_cell_id == session.notebook_state.cells[2].id
+    assert len(plan.steps) > 0
 
 
 def test_cascade_plan_structure(temp_pipeline):
@@ -86,19 +86,19 @@ def test_cascade_plan_structure(temp_pipeline):
 
     plan = planner.plan(session.notebook_state.cells[2].id)
 
-    if plan:
-        # Check plan structure
-        assert plan.plan_id
-        assert plan.target_cell_id
-        assert isinstance(plan.steps, list)
-        assert plan.estimated_duration_ms >= 0
+    assert plan is not None, "Expected cascade plan for stale upstream"
+    # Check plan structure
+    assert plan.plan_id
+    assert plan.target_cell_id
+    assert isinstance(plan.steps, list)
+    assert plan.estimated_duration_ms >= 0
 
-        # Each step should be a CascadeStep
-        for step in plan.steps:
-            assert step.cell_id
-            assert step.cell_name
-            assert step.reason in ["stale", "missing", "target"]
-            assert isinstance(step.skip, bool)
+    # Each step should be a CascadeStep
+    for step in plan.steps:
+        assert step.cell_id
+        assert step.cell_name
+        assert step.reason in ["stale", "missing", "target"]
+        assert isinstance(step.skip, bool)
 
 
 def test_cascade_plan_topological_order(temp_pipeline):
@@ -111,7 +111,8 @@ def test_cascade_plan_topological_order(temp_pipeline):
     planner = CascadePlanner(session)
     plan = planner.plan(session.notebook_state.cells[-1].id)  # leaf
 
-    if plan and len(plan.steps) > 1:
+    assert plan is not None, "Expected cascade plan for stale upstream"
+    if len(plan.steps) > 1:
         # Steps should be in topological order
         # i.e., dependencies should come before dependents
         step_indices = {step.cell_id: i for i, step in enumerate(plan.steps)}
@@ -142,16 +143,16 @@ def test_cascade_plan_includes_target(temp_pipeline):
     target_cell_id = session.notebook_state.cells[-1].id
     plan = planner.plan(target_cell_id)
 
-    if plan:
-        cell_ids = [step.cell_id for step in plan.steps]
-        assert (
-            target_cell_id in cell_ids
-        ), "Target cell should be included in cascade plan"
+    assert plan is not None, "Expected cascade plan for stale upstream"
+    cell_ids = [step.cell_id for step in plan.steps]
+    assert (
+        target_cell_id in cell_ids
+    ), "Target cell should be included in cascade plan"
 
-        # Target should have reason='target'
-        target_step = next((s for s in plan.steps if s.cell_id == target_cell_id), None)
-        assert target_step is not None
-        assert target_step.reason == "target"
+    # Target should have reason='target'
+    target_step = next((s for s in plan.steps if s.cell_id == target_cell_id), None)
+    assert target_step is not None
+    assert target_step.reason == "target"
 
 
 def test_cascade_plan_skip_ready_cells(temp_pipeline):
@@ -168,15 +169,15 @@ def test_cascade_plan_skip_ready_cells(temp_pipeline):
 
     plan = planner.plan(session.notebook_state.cells[-1].id)
 
-    if plan:
-        # Find the ready cell in the plan
-        ready_cell_step = next(
-            (s for s in plan.steps if s.cell_id == session.notebook_state.cells[0].id),
-            None,
-        )
-        if ready_cell_step:
-            # Should be marked to skip
-            assert ready_cell_step.skip
+    assert plan is not None, "Expected cascade plan for stale upstream"
+    # Find the ready cell in the plan
+    ready_cell_step = next(
+        (s for s in plan.steps if s.cell_id == session.notebook_state.cells[0].id),
+        None,
+    )
+    if ready_cell_step:
+        # Should be marked to skip
+        assert ready_cell_step.skip
 
 
 def test_cascade_planner_no_dag(temp_pipeline):

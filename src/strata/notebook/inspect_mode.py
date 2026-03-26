@@ -2,6 +2,9 @@
 
 Provides on-demand REPL for exploring a cell's input artifacts without
 running the full cell.
+
+NOTE: This module is not used in production. The WebSocket handler uses
+inspect_repl.py instead. Kept for potential future use.
 """
 
 from __future__ import annotations

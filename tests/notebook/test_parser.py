@@ -22,7 +22,7 @@ def test_parse_empty_notebook():
         # Parse it
         notebook_state = parse_notebook(notebook_dir)
 
-        assert notebook_state.id == notebook_state.id
+        assert isinstance(notebook_state.id, str) and len(notebook_state.id) > 0
         assert notebook_state.name == "Test Notebook"
         assert notebook_state.cells == []
         assert notebook_state.path == notebook_dir
