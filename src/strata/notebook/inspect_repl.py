@@ -273,10 +273,12 @@ class InspectSession:
         with open(harness_path, "w") as f:
             f.write(_INSPECT_HARNESS)
 
-        # Spawn subprocess
+        # Spawn subprocess with the notebook interpreter used for normal runs.
+        python_executable = session.venv_python or Path("python")
         cmd = [
-            "uv", "run", "--directory", str(session.path),
-            "python", str(harness_path), str(manifest_path),
+            str(python_executable),
+            str(harness_path),
+            str(manifest_path),
         ]
 
         self.process = await asyncio.create_subprocess_exec(

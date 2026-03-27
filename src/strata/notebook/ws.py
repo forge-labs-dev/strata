@@ -18,7 +18,7 @@ from strata.notebook.cascade import CascadePlanner
 from strata.notebook.executor import CellExecutor
 from strata.notebook.impact import ImpactAnalyzer
 from strata.notebook.inspect_repl import InspectManager
-from strata.notebook.models import CellStatus
+from strata.notebook.models import CellStaleness, CellStatus
 from strata.notebook.session import SessionManager
 from strata.notebook.writer import write_cell
 
@@ -123,6 +123,38 @@ async def _set_cell_idle(
             "payload": {"cell_id": cell_id, "status": "idle"},
         },
     )
+
+
+async def _broadcast_staleness_updates(
+    session: NotebookSession,
+    notebook_id: str,
+    seq: int,
+    staleness_map: dict[str, CellStaleness],
+) -> None:
+    """Broadcast backend staleness state to all notebook clients."""
+    for cell_id, staleness in staleness_map.items():
+        payload: dict[str, Any] = {
+            "cell_id": cell_id,
+            "status": staleness.status,
+            "staleness_reasons": (
+                [reason.value for reason in staleness.reasons]
+                if staleness.reasons
+                else []
+            ),
+        }
+        causality = session.causality_map.get(cell_id)
+        if causality:
+            payload["causality"] = causality.to_dict()
+
+        await _broadcast_message(
+            notebook_id,
+            {
+                "type": "cell_status",
+                "seq": seq,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": payload,
+            },
+        )
 
 
 async def _run_execution_task(
@@ -717,33 +749,9 @@ async def _handle_cell_source_update(
             },
         )
 
-        # Send cell status updates for affected cells (with v1.1 causality)
-        for cell_id_to_update, staleness in staleness_map.items():
-            payload: dict[str, Any] = {
-                "cell_id": cell_id_to_update,
-                "status": staleness.status,
-                "staleness_reasons": (
-                    [r.value for r in staleness.reasons]
-                    if staleness.reasons
-                    else []
-                ),
-            }
-            # v1.1: Attach causality chain if cell is stale
-            causality = session.causality_map.get(cell_id_to_update)
-            if causality:
-                payload["causality"] = causality.to_dict()
-
-            await _broadcast_message(
-                notebook_id,
-                {
-                    "type": "cell_status",
-                    "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
-                    "payload": payload,
-                },
-            )
+        await _broadcast_staleness_updates(
+            session, notebook_id, seq, staleness_map
+        )
 
     except Exception as e:
         await websocket.send_text(
@@ -1037,7 +1045,23 @@ async def _execute_cascade(
                     "Cascade %s: skipping cell %s (earlier step failed)",
                     plan.plan_id, cell_id,
                 )
-                await _set_cell_idle(session, notebook_id, seq, cell_id)
+                # Use "stale" (not "idle") so the client can distinguish a
+                # cascade-abort from a normal staleness notification.
+                cell_to_skip = next(
+                    (c for c in session.notebook_state.cells if c.id == cell_id),
+                    None,
+                )
+                if cell_to_skip:
+                    cell_to_skip.status = CellStatus.STALE
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_status",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "status": "stale"},
+                    },
+                )
                 continue
 
             execution_state["running_cell"] = cell_id
@@ -1412,7 +1436,6 @@ async def _handle_dependency_add(
     notebook_id: str,
 ) -> None:
     """Handle dependency_add — add a package and broadcast the change."""
-    from strata.notebook.dependencies import add_dependency
     from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
@@ -1442,10 +1465,8 @@ async def _handle_dependency_add(
         )
         return
 
-    result = add_dependency(session.path, package)
-
-    if result.lockfile_changed:
-        await session.on_dependencies_changed()
+    outcome = await session.mutate_dependency(package, action="add")
+    result = outcome.result
 
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
@@ -1460,6 +1481,7 @@ async def _handle_dependency_add(
             "success": result.success,
             "error": result.error,
             "lockfile_changed": result.lockfile_changed,
+            "cells": [c.model_dump() for c in session.notebook_state.cells],
             "dependencies": [
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
@@ -1467,6 +1489,10 @@ async def _handle_dependency_add(
         },
     }
     await _broadcast_message(notebook_id, msg)
+    if outcome.staleness_map:
+        await _broadcast_staleness_updates(
+            session, notebook_id, seq, outcome.staleness_map
+        )
 
 
 async def _handle_dependency_remove(
@@ -1477,7 +1503,6 @@ async def _handle_dependency_remove(
     notebook_id: str,
 ) -> None:
     """Handle dependency_remove — remove a package and broadcast the change."""
-    from strata.notebook.dependencies import remove_dependency
     from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
@@ -1507,10 +1532,8 @@ async def _handle_dependency_remove(
         )
         return
 
-    result = remove_dependency(session.path, package)
-
-    if result.lockfile_changed:
-        await session.on_dependencies_changed()
+    outcome = await session.mutate_dependency(package, action="remove")
+    result = outcome.result
 
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
@@ -1525,6 +1548,7 @@ async def _handle_dependency_remove(
             "success": result.success,
             "error": result.error,
             "lockfile_changed": result.lockfile_changed,
+            "cells": [c.model_dump() for c in session.notebook_state.cells],
             "dependencies": [
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
@@ -1532,6 +1556,10 @@ async def _handle_dependency_remove(
         },
     }
     await _broadcast_message(notebook_id, msg)
+    if outcome.staleness_map:
+        await _broadcast_staleness_updates(
+            session, notebook_id, seq, outcome.staleness_map
+        )
 
 
 async def _broadcast_message(

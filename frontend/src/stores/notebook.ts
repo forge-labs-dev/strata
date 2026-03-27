@@ -139,12 +139,7 @@ async function updateSource(id: CellId, source: string) {
       // on the server after every edit, so the backend is the
       // authoritative source for which cells are stale.
       if (response.cells && Array.isArray(response.cells)) {
-        for (const serverCell of response.cells) {
-          const localCell = cellMap.value.get(serverCell.id)
-          if (localCell) {
-            localCell.status = serverCell.status || 'idle'
-          }
-        }
+        syncCellsFromBackend(response.cells)
       }
     } catch (err) {
       console.warn('Backend analysis failed, using regex fallback:', err)
@@ -171,6 +166,19 @@ function setCellOutput(id: CellId, output: CellOutput) {
     cell.output = output
     cell.status = output.error ? 'error' : 'ready'
     cell.lastRunAt = Date.now()
+  }
+}
+
+function syncCellsFromBackend(serverCells: any[]) {
+  for (const serverCell of serverCells) {
+    const localCell = cellMap.value.get(serverCell.id)
+    if (!localCell) continue
+    localCell.defines = serverCell.defines || []
+    localCell.references = serverCell.references || []
+    localCell.upstreamIds = serverCell.upstream_ids || []
+    localCell.downstreamIds = serverCell.downstream_ids || []
+    localCell.isLeaf = serverCell.is_leaf || false
+    localCell.status = serverCell.status || 'idle'
   }
 }
 
@@ -574,17 +582,7 @@ function initializeWebSocket() {
     wsInstance.onMessage('notebook_state', (msg: WsMessage) => {
       const state = msg.payload as Record<string, any>
       if (state.cells && Array.isArray(state.cells)) {
-        for (const serverCell of state.cells) {
-          const localCell = cellMap.value.get(serverCell.id)
-          if (localCell) {
-            localCell.defines = serverCell.defines || []
-            localCell.references = serverCell.references || []
-            localCell.upstreamIds = serverCell.upstream_ids || []
-            localCell.downstreamIds = serverCell.downstream_ids || []
-            localCell.isLeaf = serverCell.is_leaf || false
-            localCell.status = serverCell.status || 'idle'
-          }
-        }
+        syncCellsFromBackend(state.cells)
       }
       if (state.dag) {
         applyBackendDag(state.dag)
@@ -668,6 +666,9 @@ function initializeWebSocket() {
           version: d.version || '',
           specifier: d.specifier || '',
         }))
+      }
+      if (p.cells && Array.isArray(p.cells)) {
+        syncCellsFromBackend(p.cells)
       }
       if (!p.success && p.error) {
         dependencyError.value = p.error
@@ -762,6 +763,9 @@ async function addDependencyAction(pkg: string) {
         specifier: d.specifier || '',
       }))
     }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to add dependency'
   } finally {
@@ -783,6 +787,9 @@ async function removeDependencyAction(pkg: string) {
         version: d.version || '',
         specifier: d.specifier || '',
       }))
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
     }
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to remove dependency'

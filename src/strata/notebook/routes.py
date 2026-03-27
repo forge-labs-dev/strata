@@ -16,9 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from strata.notebook.dependencies import (
-    add_dependency,
     list_dependencies,
-    remove_dependency,
 )
 from strata.notebook.executor import CellExecutor
 from strata.notebook.session import SessionManager
@@ -448,14 +446,11 @@ async def add_notebook_dependency(
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    result = add_dependency(session.path, req.package)
+    outcome = await session.mutate_dependency(req.package, action="add")
+    result = outcome.result
 
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error or "Failed to add dependency")
-
-    # Re-sync session venv + invalidate pool if lockfile changed
-    if result.lockfile_changed:
-        await session.on_dependencies_changed()
 
     return {
         "success": True,
@@ -465,6 +460,7 @@ async def add_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
+        "cells": [c.model_dump() for c in session.notebook_state.cells],
     }
 
 
@@ -480,14 +476,16 @@ async def remove_notebook_dependency(
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    result = remove_dependency(session.path, package_name)
+    try:
+        package_name = validate_package_name(package_name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    outcome = await session.mutate_dependency(package_name, action="remove")
+    result = outcome.result
 
     if not result.success:
         raise HTTPException(status_code=400, detail=result.error or "Failed to remove dependency")
-
-    # Re-sync session venv + invalidate pool if lockfile changed
-    if result.lockfile_changed:
-        await session.on_dependencies_changed()
 
     return {
         "success": True,
@@ -497,6 +495,7 @@ async def remove_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
+        "cells": [c.model_dump() for c in session.notebook_state.cells],
     }
 
 

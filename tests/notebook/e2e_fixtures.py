@@ -237,9 +237,9 @@ def execute_cell_and_wait(
 
         if msg["type"] == "cell_status":
             p = msg["payload"]
-            # "idle" means this cell was skipped/aborted (e.g. cascade stopped
-            # because an upstream cell errored). Treat it as terminal.
-            if p.get("cell_id") == cell_id and p.get("status") in ("ready", "error", "idle"):
+            # "stale" means this cell was skipped because an upstream cell
+            # errored mid-cascade. Treat it as a terminal state.
+            if p.get("cell_id") == cell_id and p.get("status") in ("ready", "error", "stale"):
                 break
 
     # Find the output/error message for this cell

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time as _time
 import uuid
@@ -31,6 +32,14 @@ class ExecutionSample:
 
     duration_ms: float
     cache_hit: bool
+
+
+@dataclass
+class DependencyMutationOutcome:
+    """Result of a notebook dependency mutation."""
+
+    result: object
+    staleness_map: dict[str, CellStaleness]
 
 
 class NotebookSession:
@@ -167,6 +176,8 @@ class NotebookSession:
             # No DAG — all cells are idle
             for cell in self.notebook_state.cells:
                 staleness_map[cell.id] = CellStaleness(status=CellStatus.IDLE)
+            self._apply_staleness_map(staleness_map)
+            self.causality_map = {}
             return staleness_map
 
         # Walk cells in topological order
@@ -271,23 +282,25 @@ class NotebookSession:
                         cell.artifact_uris[var_name] = uri
                         cell.artifact_uri = uri  # backward compat
 
-        # Update cells with staleness info AND cell.status
-        for cell_id, staleness in staleness_map.items():
-            cell = next(
-                (c for c in self.notebook_state.cells if c.id == cell_id), None
-            )
-            if cell:
-                cell.staleness = staleness
-                # Keep cell.status in sync — the cascade planner checks
-                # cell.status (not cell.staleness.status) to decide if
-                # upstream cells need re-execution.
-                if staleness.status != "ready":
-                    cell.status = CellStatus.IDLE
+        self._apply_staleness_map(staleness_map)
 
         # v1.1: Compute causality chains for stale cells
         self.causality_map = compute_causality_on_staleness(self)
 
         return staleness_map
+
+    def _apply_staleness_map(
+        self, staleness_map: dict[str, CellStaleness]
+    ) -> None:
+        """Persist computed staleness back onto in-memory cell state."""
+        for cell in self.notebook_state.cells:
+            staleness = staleness_map.get(cell.id)
+            if staleness is None:
+                continue
+            cell.staleness = staleness
+            cell.status = staleness.status
+            if staleness.status != CellStatus.READY:
+                cell.cache_hit = False
 
     def record_execution(
         self, cell_id: str, duration_ms: float, cache_hit: bool
@@ -404,7 +417,7 @@ class NotebookSession:
         for provenance.  Called after ``uv add`` / ``uv remove``.
         """
         # 1. Re-sync venv so venv_python is up-to-date
-        self.ensure_venv_synced()
+        await asyncio.to_thread(self.ensure_venv_synced)
 
         # 2. Invalidate warm process pool (workers have stale env)
         if self.warm_pool is not None:
@@ -425,9 +438,34 @@ class NotebookSession:
 
         # 4. Persist environment metadata in notebook.toml
         try:
-            update_environment_metadata(self.path)
+            await asyncio.to_thread(update_environment_metadata, self.path)
         except Exception:
             logger.exception("Failed to update environment metadata")
+
+    async def mutate_dependency(
+        self, package: str, *, action: str
+    ) -> DependencyMutationOutcome:
+        """Apply a dependency mutation without blocking the event loop."""
+        from strata.notebook.dependencies import add_dependency, remove_dependency
+
+        if action == "add":
+            op = add_dependency
+        elif action == "remove":
+            op = remove_dependency
+        else:
+            raise ValueError(f"Unknown dependency action: {action}")
+
+        result = await asyncio.to_thread(op, self.path, package)
+
+        staleness_map: dict[str, CellStaleness] = {}
+        if getattr(result, "success", False) and getattr(result, "lockfile_changed", False):
+            await self.on_dependencies_changed()
+            staleness_map = self.compute_staleness()
+
+        return DependencyMutationOutcome(
+            result=result,
+            staleness_map=staleness_map,
+        )
 
 
 class SessionManager:
