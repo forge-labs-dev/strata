@@ -172,6 +172,41 @@ class CellExecutor:
         This is the single entry-point that implements
         ``materialize(inputs, transform) → artifact``.
         """
+        return await self._execute_cell(
+            cell_id,
+            source,
+            timeout_seconds,
+            materialize_upstreams=True,
+            use_cache=True,
+        )
+
+    async def execute_cell_force(
+        self, cell_id: str, source: str, timeout_seconds: float = 30
+    ) -> CellExecutionResult:
+        """Execute a cell using the currently available upstream artifacts only.
+
+        This bypasses recursive upstream materialization and skips the target
+        cell cache lookup so "Run this only" performs a real execution against
+        whatever inputs are currently present.
+        """
+        return await self._execute_cell(
+            cell_id,
+            source,
+            timeout_seconds,
+            materialize_upstreams=False,
+            use_cache=False,
+        )
+
+    async def _execute_cell(
+        self,
+        cell_id: str,
+        source: str,
+        timeout_seconds: float,
+        *,
+        materialize_upstreams: bool,
+        use_cache: bool,
+    ) -> CellExecutionResult:
+        """Shared execution entrypoint with explicit cache/materialization policy."""
         start_time = time.time()
 
         # --- cycle guard --------------------------------------------------
@@ -187,7 +222,14 @@ class CellExecutor:
         self._materializing.add(cell_id)
 
         try:
-            return await self._materialize(cell_id, source, timeout_seconds, start_time)
+            return await self._materialize(
+                cell_id,
+                source,
+                timeout_seconds,
+                start_time,
+                materialize_upstreams=materialize_upstreams,
+                use_cache=use_cache,
+            )
         finally:
             self._materializing.discard(cell_id)
 
@@ -201,12 +243,23 @@ class CellExecutor:
         source: str,
         timeout_seconds: float,
         start_time: float,
+        *,
+        materialize_upstreams: bool,
+        use_cache: bool,
     ) -> CellExecutionResult:
         try:
+            cell = next(
+                (c for c in self.session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            if cell is not None:
+                cell.cache_hit = False
+
             # ① Materialise every upstream cell whose artifact is missing.
             #   This is the recursive ``materialize`` call — each upstream
             #   that is a cache miss will itself execute its own upstreams.
-            await self._materialize_upstreams(cell_id)
+            if materialize_upstreams:
+                await self._materialize_upstreams(cell_id)
 
             # ② Compute provenance (all upstream artifact_uris are now set).
             source_hash = compute_source_hash(source)
@@ -235,14 +288,15 @@ class CellExecutor:
             )
 
             cached_artifact = None
-            if consumed_vars:
-                first_var = sorted(consumed_vars)[0]
-                var_prov = hashlib.sha256(
-                    f"{provenance_hash}:{first_var}".encode()
-                ).hexdigest()
-                cached_artifact = artifact_mgr.find_cached(var_prov)
-            else:
-                cached_artifact = artifact_mgr.find_cached(provenance_hash)
+            if use_cache:
+                if consumed_vars:
+                    first_var = sorted(consumed_vars)[0]
+                    var_prov = hashlib.sha256(
+                        f"{provenance_hash}:{first_var}".encode()
+                    ).hexdigest()
+                    cached_artifact = artifact_mgr.find_cached(var_prov)
+                else:
+                    cached_artifact = artifact_mgr.find_cached(provenance_hash)
 
             # Validate cache hit: every consumed variable must have a
             # canonical artifact whose provenance matches.  The global
@@ -251,7 +305,7 @@ class CellExecutor:
             # verify the LOCAL canonical artifact exists AND has the
             # expected provenance hash — not just that it exists.
             notebook_id = self.session.notebook_state.id
-            if cached_artifact is not None and consumed_vars:
+            if use_cache and cached_artifact is not None and consumed_vars:
                 for var_name in consumed_vars:
                     canonical_id = (
                         f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
@@ -286,20 +340,18 @@ class CellExecutor:
                         break
 
             logger.info(
-                "execute_cell %s: consumed_vars=%s cache_hit=%s",
+                "execute_cell %s: consumed_vars=%s use_cache=%s cache_hit=%s",
                 cell_id,
                 consumed_vars,
+                use_cache,
                 cached_artifact is not None,
             )
 
             if cached_artifact is not None:
                 # Cache hit — update cell state and return.
                 duration_ms = (time.time() - start_time) * 1000
-                cell = next(
-                    (c for c in self.session.notebook_state.cells if c.id == cell_id),
-                    None,
-                )
                 if cell:
+                    cell.cache_hit = True
                     # Populate per-variable URIs from canonical artifacts
                     for var_name in consumed_vars:
                         canonical_id = (
@@ -335,7 +387,8 @@ class CellExecutor:
                 output_dir = Path(tmpdir)
 
                 # Load upstream blobs into output_dir for the harness.
-                # All artifacts are guaranteed to exist after step ①.
+                # Force execution may intentionally skip upstream materialization,
+                # so missing inputs are allowed to surface at execution time.
                 input_specs = self._load_input_blobs(cell_id, output_dir)
 
                 # Write the manifest the harness expects.
@@ -774,6 +827,20 @@ class CellExecutor:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_seconds,
             )
+        except asyncio.CancelledError:
+            logger.info(
+                "Cell execution cancelled; killing harness subprocess pid=%s",
+                proc.pid,
+            )
+            proc.kill()
+            try:
+                await asyncio.shield(proc.wait())
+            except Exception:
+                logger.exception(
+                    "Failed to wait for cancelled harness subprocess pid=%s",
+                    proc.pid,
+                )
+            raise
         except TimeoutError:
             proc.kill()
             await proc.wait()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time as _time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -22,6 +23,14 @@ if TYPE_CHECKING:
     from strata.notebook.pool import WarmProcessPool
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ExecutionSample:
+    """One execution timing sample for profiling and estimates."""
+
+    duration_ms: float
+    cache_hit: bool
 
 
 class NotebookSession:
@@ -63,8 +72,8 @@ class NotebookSession:
         # Session TTL tracking
         self.last_accessed: float = _time.time()
 
-        # v1.1: Execution history for profiling (cell_id -> list of durations)
-        self.execution_history: dict[str, list[float]] = {}
+        # v1.1: Execution history for profiling and duration estimates.
+        self.execution_history: dict[str, list[ExecutionSample]] = {}
 
         # v1.1: Causality chains for stale cells
         self.causality_map: dict[str, CausalityChain] = {}
@@ -292,7 +301,9 @@ class NotebookSession:
         """
         if cell_id not in self.execution_history:
             self.execution_history[cell_id] = []
-        self.execution_history[cell_id].append(duration_ms)
+        self.execution_history[cell_id].append(
+            ExecutionSample(duration_ms=duration_ms, cache_hit=cache_hit)
+        )
 
     def get_estimated_duration(self, cell_id: str) -> int:
         """Get estimated execution duration based on history.
@@ -304,10 +315,10 @@ class NotebookSession:
             Estimated duration in ms, or 0 if no history
         """
         history = self.execution_history.get(cell_id, [])
-        if not history:
-            return 0
-        # Use the most recent non-cached execution time
-        return int(history[-1])
+        for sample in reversed(history):
+            if not sample.cache_hit:
+                return int(sample.duration_ms)
+        return 0
 
     def get_profiling_summary(self) -> dict:
         """Get notebook-level profiling summary (v1.1).
@@ -324,7 +335,7 @@ class NotebookSession:
         cell_profiles = []
         for cell in self.notebook_state.cells:
             history = self.execution_history.get(cell.id, [])
-            last_duration = history[-1] if history else 0
+            last_duration = history[-1].duration_ms if history else 0
             is_cached = cell.cache_hit
 
             if is_cached:
@@ -350,11 +361,10 @@ class NotebookSession:
         for cell in self.notebook_state.cells:
             if cell.cache_hit:
                 history = self.execution_history.get(cell.id, [])
-                if len(history) >= 2:
-                    # Use previous non-cached execution time
-                    cache_savings_ms += int(history[-2])
-                elif history:
-                    cache_savings_ms += int(history[-1])
+                for sample in reversed(history):
+                    if not sample.cache_hit:
+                        cache_savings_ms += int(sample.duration_ms)
+                        break
 
         return {
             "total_execution_ms": int(total_execution_ms),
@@ -399,6 +409,9 @@ class NotebookSession:
         # 2. Invalidate warm process pool (workers have stale env)
         if self.warm_pool is not None:
             try:
+                self.warm_pool.python_executable = str(
+                    self.venv_python or Path("python")
+                )
                 await self.warm_pool.invalidate()
                 logger.info("Warm pool invalidated after dependency change")
             except Exception:
@@ -457,6 +470,7 @@ class SessionManager:
             session.warm_pool = WarmProcessPool(
                 notebook_dir=Path(directory),
                 pool_size=2,
+                python_executable=session.venv_python or Path("python"),
             )
             # Start pool in background (don't block on notebook open)
             import asyncio

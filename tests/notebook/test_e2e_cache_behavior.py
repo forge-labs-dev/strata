@@ -78,6 +78,70 @@ class TestCacheHit:
                 if r2["payload"].get("cache_hit"):
                     assert r2["payload"].get("execution_method") == "cached"
 
+    def test_profiling_summary_reports_cache_hits(self, setup):
+        """Profiling summary should reflect the last cache-hit execution state."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "x = 1")
+            .add_cell("c2", "y = x + 1", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c2")
+                ws.clear()
+
+                r2 = execute_cell_and_wait(ws, "c1")
+                assert r2["type"] == "cell_output"
+                assert r2["payload"].get("cache_hit") is True
+
+                ws.send("profiling_request", {})
+                summary = ws.receive_until("profiling_summary")
+                payload = summary["payload"]
+
+                assert payload["cache_hits"] >= 1
+                c1_profile = next(cp for cp in payload["cell_profiles"] if cp["cell_id"] == "c1")
+                assert c1_profile["cache_hit"] is True
+
+    def test_force_execution_bypasses_target_cache(self, setup):
+        """Force-running a cell should execute, not return a cached artifact."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "x = 1")
+            .add_cell("c2", "y = x + 1", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c2")
+                ws.clear()
+
+                ws.execute_force("c2")
+
+                result = None
+                while True:
+                    msg = ws.receive()
+                    if (
+                        msg["type"] in ("cell_output", "cell_error")
+                        and msg["payload"].get("cell_id") == "c2"
+                    ):
+                        result = msg
+                    if (
+                        msg["type"] == "cell_status"
+                        and msg["payload"].get("cell_id") == "c2"
+                        and msg["payload"].get("status") in ("ready", "error")
+                    ):
+                        break
+
+                assert result is not None
+                if result["type"] == "cell_output":
+                    assert result["payload"].get("cache_hit") is not True
+                    assert result["payload"].get("execution_method") != "cached"
+
 
 class TestCacheMiss:
     """Changing cell source should invalidate the cache."""

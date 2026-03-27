@@ -41,15 +41,22 @@ class WarmProcessPool:
         pool_size: Number of warm processes to maintain
     """
 
-    def __init__(self, notebook_dir: Path, pool_size: int = 2):
+    def __init__(
+        self,
+        notebook_dir: Path,
+        pool_size: int = 2,
+        python_executable: str | Path = "python",
+    ):
         """Initialize the warm process pool.
 
         Args:
             notebook_dir: Path to the notebook directory
             pool_size: Number of warm processes to maintain
+            python_executable: Python interpreter used for warm workers
         """
         self.notebook_dir = Path(notebook_dir)
         self.pool_size = pool_size
+        self.python_executable = str(python_executable)
         self._available: asyncio.Queue[WarmProcess] = asyncio.Queue()
         self._warming: int = 0  # Processes currently starting up
         self._started: bool = False
@@ -89,7 +96,7 @@ class WarmProcessPool:
 
             # Spawn the pool worker process
             process = await asyncio.create_subprocess_exec(
-                "python",
+                self.python_executable,
                 str(worker_script),
                 str(self.notebook_dir),
                 stdout=asyncio.subprocess.PIPE,
@@ -267,6 +274,21 @@ class PooledCellExecutor:
                 logger.warning("Warm process returned empty result")
                 return None
 
+        except asyncio.CancelledError:
+            logger.info(
+                "Warm process execution cancelled; killing worker pid=%s",
+                warm_proc.process.pid,
+            )
+            if warm_proc.process.returncode is None:
+                warm_proc.process.kill()
+                try:
+                    await asyncio.shield(warm_proc.process.wait())
+                except Exception:
+                    logger.exception(
+                        "Failed waiting for cancelled warm worker pid=%s",
+                        warm_proc.process.pid,
+                    )
+            raise
         except TimeoutError:
             logger.warning("Warm process execution timed out")
             return None
@@ -275,4 +297,4 @@ class PooledCellExecutor:
             return None
         finally:
             # Kill used process and spawn replacement
-            await pool.release_and_replace(warm_proc)
+            await asyncio.shield(pool.release_and_replace(warm_proc))

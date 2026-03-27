@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from strata.notebook.executor import CellExecutor
 from strata.notebook.parser import parse_notebook
+from strata.notebook.pool import WarmProcessPool
 from strata.notebook.session import NotebookSession
 
 
@@ -204,3 +207,61 @@ result = add(2, 3)
         assert "add" in result.outputs
         assert "result" in result.outputs
         assert result.outputs["result"]["preview"] == 5
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_warm_pool_when_available(self, sample_notebook):
+        """Test executor uses a live warm worker when one is available."""
+        sample_notebook.ensure_venv_synced()
+        pool = WarmProcessPool(
+            sample_notebook.path,
+            pool_size=1,
+            python_executable=sample_notebook.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            executor = CellExecutor(sample_notebook, pool)
+            result = await executor.execute_cell("cell1", "x = 1 + 1")
+
+            assert result.success is True
+            assert result.execution_method == "warm"
+            assert result.outputs["x"]["preview"] == 2
+        finally:
+            await pool.drain()
+
+    @pytest.mark.asyncio
+    async def test_warm_execution_reports_same_mutation_warnings_as_cold(
+        self, sample_notebook
+    ):
+        """Warm workers should preserve mutation warnings emitted by cold execution."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = "x = 1"
+        cell2.source = "del x\ny = 2"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        cold_result = await CellExecutor(sample_notebook).execute_cell(
+            "cell2", cell2.source
+        )
+        assert cold_result.success is True
+        assert cold_result.mutation_warnings
+        assert cold_result.mutation_warnings[0]["var_name"] == "x"
+
+        sample_notebook.ensure_venv_synced()
+        pool = WarmProcessPool(
+            sample_notebook.path,
+            pool_size=1,
+            python_executable=sample_notebook.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            warm_result = await CellExecutor(sample_notebook, pool).execute_cell(
+                "cell2", cell2.source
+            )
+            assert warm_result.success is True
+            assert warm_result.execution_method == "warm"
+            assert warm_result.mutation_warnings == cold_result.mutation_warnings
+        finally:
+            await pool.drain()

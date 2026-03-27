@@ -18,20 +18,19 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-# ---------------------------------------------------------------------------
-# Load the shared serializer from the same directory as this script.
-# This works even when running inside the notebook's venv because we use
-# an absolute file path rather than a package import.
-# ---------------------------------------------------------------------------
 
-def _load_serializer():
-    _p = Path(__file__).parent / "serializer.py"
-    _spec = importlib.util.spec_from_file_location("_nb_serializer", _p)
-    _m = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_m)
-    return _m
+def _load_local_module(filename: str, module_name: str):
+    """Load a sibling module by absolute file path."""
+    module_path = Path(__file__).parent / filename
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
-_ser = _load_serializer()
+
+_ser = _load_local_module("serializer.py", "_nb_serializer")
+_immut = _load_local_module("immutability.py", "_nb_immutability")
 
 
 # ---------------------------------------------------------------------------
@@ -74,79 +73,15 @@ def deserialize_inputs(manifest: dict) -> dict[str, Any]:
     return inputs
 
 
-# ---------------------------------------------------------------------------
-# Mutation detection helpers (M6)
-# ---------------------------------------------------------------------------
-
-
-def snapshot_inputs(namespace: dict, input_names: list[str]) -> list[dict]:
-    snapshots = []
-    for var_name in input_names:
-        if var_name not in namespace:
-            continue
-        value = namespace[var_name]
-        content_hash = None
-        try:
-            import pandas as pd
-            if isinstance(value, (pd.DataFrame, pd.Series)):
-                content_hash = _hash_dataframe_sample(value)
-        except ImportError:
-            pass
-        snapshots.append({
-            "var_name": var_name,
-            "identity": id(value),
-            "content_hash": content_hash,
-        })
-    return snapshots
-
-
-def _hash_dataframe_sample(df) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    try:
-        h.update(str(df.shape).encode())
-        try:
-            h.update(str(df.dtypes.to_dict()).encode())
-        except AttributeError:
-            h.update(str(df.dtype).encode())
-        h.update(df.head(5).to_json().encode())
-        if len(df) > 5:
-            h.update(df.tail(5).to_json().encode())
-        return h.hexdigest()
-    except Exception:
-        return ""
-
-
-def detect_mutations(namespace: dict, snapshots: list[dict]) -> list[dict]:
-    warnings = []
-    for snapshot in snapshots:
-        var_name = snapshot["var_name"]
-        if var_name not in namespace:
-            continue
-        current = namespace[var_name]
-        if id(current) != snapshot["identity"]:
-            continue  # reassigned, not mutated
-        try:
-            import pandas as pd
-            if isinstance(current, (pd.DataFrame, pd.Series)):
-                if snapshot.get("content_hash"):
-                    if _hash_dataframe_sample(current) != snapshot["content_hash"]:
-                        warnings.append({
-                            "var_name": var_name,
-                            "message": f"'{var_name}' was mutated without reassignment",
-                            "suggestion": (
-                                "Consider using df = df.copy() or "
-                                "df = df.drop(...) instead of inplace=True"
-                            ),
-                        })
-        except ImportError:
-            pass
-    return warnings
-
-
-# ---------------------------------------------------------------------------
-# Cell execution
-# ---------------------------------------------------------------------------
+def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
+    """Convert mutation warnings to JSON-safe dicts."""
+    if isinstance(warning, dict):
+        return warning
+    return {
+        "var_name": getattr(warning, "var_name", ""),
+        "message": getattr(warning, "message", ""),
+        "suggestion": getattr(warning, "suggestion", None),
+    }
 
 
 def _exec_with_display(source: str, namespace: dict) -> Any | None:
@@ -191,7 +126,7 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
 
         namespace_before = set(namespace.keys())
         input_identities = {name: id(namespace[name]) for name in namespace_before}
-        input_snapshots = snapshot_inputs(namespace, list(namespace_before))
+        input_snapshots = _immut.snapshot_inputs(namespace, list(namespace_before))
 
         _display_value = _exec_with_display(source, namespace)
 
@@ -206,7 +141,10 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
         if _display_value is not None:
             new_vars["_"] = _display_value
 
-        mutation_warnings = detect_mutations(namespace, input_snapshots)
+        mutation_warnings = [
+            _serialize_mutation_warning(warning)
+            for warning in _immut.detect_mutations(namespace, input_snapshots)
+        ]
         return new_vars, stdout_capture.getvalue(), stderr_capture.getvalue(), mutation_warnings
 
     finally:

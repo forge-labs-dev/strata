@@ -248,7 +248,7 @@ class InspectSession:
         self._manifest_dir = Path(tempfile.mkdtemp(prefix="strata_inspect_"))
 
         # Materialise upstreams then load input blobs for this cell
-        executor = CellExecutor(session)
+        executor = CellExecutor(session, session.warm_pool)
         await executor._materialize_upstreams(self.cell_id)
         input_specs = executor._load_input_blobs(
             self.cell_id, self._manifest_dir

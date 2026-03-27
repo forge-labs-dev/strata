@@ -558,7 +558,7 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
 
     try:
         # Execute the cell
-        executor = CellExecutor(session)
+        executor = CellExecutor(session, session.warm_pool)
         result = await executor.execute_cell(cell_id, cell.source)
 
         return result.to_dict()

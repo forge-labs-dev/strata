@@ -24,15 +24,28 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 
-def _load_serializer():
-    _p = Path(__file__).parent / "serializer.py"
-    _spec = importlib.util.spec_from_file_location("_nb_serializer", _p)
-    _m = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_m)
-    return _m
+def _load_local_module(filename: str, module_name: str):
+    module_path = Path(__file__).parent / filename
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-_ser = _load_serializer()
+_ser = _load_local_module("serializer.py", "_nb_serializer")
+_immut = _load_local_module("immutability.py", "_nb_immutability")
+
+
+def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
+    """Convert mutation warnings to JSON-safe dicts."""
+    if isinstance(warning, dict):
+        return warning
+    return {
+        "var_name": getattr(warning, "var_name", ""),
+        "message": getattr(warning, "message", ""),
+        "suggestion": getattr(warning, "suggestion", None),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +146,7 @@ def execute_harness(manifest: dict) -> dict:
 
     namespace_before = set(namespace.keys())
     input_identities = {name: id(namespace[name]) for name in namespace_before}
+    input_snapshots = _immut.snapshot_inputs(namespace, list(namespace_before))
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
     stdout_buf = io.StringIO()
@@ -164,12 +178,18 @@ def execute_harness(manifest: dict) -> dict:
             except Exception:
                 pass
 
+        mutation_warnings = [
+            _serialize_mutation_warning(warning)
+            for warning in _immut.detect_mutations(namespace, input_snapshots)
+        ]
+
         return {
             "success": True,
             "variables": variables,
             "stdout": stdout_buf.getvalue(),
             "stderr": stderr_buf.getvalue(),
             "error": None,
+            "mutation_warnings": mutation_warnings,
         }
 
     except Exception as e:
@@ -182,6 +202,7 @@ def execute_harness(manifest: dict) -> dict:
             "stdout": stdout_buf.getvalue(),
             "stderr": stderr_buf.getvalue(),
             "error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}",
+            "mutation_warnings": [],
         }
 
 
@@ -216,6 +237,7 @@ def main() -> None:
                     "stdout": "",
                     "stderr": "",
                     "error": f"Pool worker error: {e}",
+                    "mutation_warnings": [],
                 }), flush=True)
 
     except Exception as e:

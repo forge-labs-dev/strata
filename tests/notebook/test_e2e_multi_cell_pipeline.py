@@ -155,7 +155,7 @@ class TestForceExecution:
     """Test cell_execute_force (run with stale inputs)."""
 
     def test_force_skips_cascade(self, setup):
-        """Force-executing a downstream cell does not trigger cascade."""
+        """Force-executing a downstream cell does not trigger or run upstreams."""
         client, tmp = setup
         nb = (
             NotebookBuilder(tmp)
@@ -179,3 +179,14 @@ class TestForceExecution:
                 # No cascade_prompt should have been sent
                 cascade_prompts = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_prompts) == 0
+
+                # Upstream cell should not have been materialized as a side effect.
+                c1_outputs = [
+                    m for m in ws.messages_of_type("cell_output")
+                    if m["payload"].get("cell_id") == "c1"
+                ]
+                assert c1_outputs == []
+
+                state = ws.sync()
+                c1 = next(c for c in state["payload"]["cells"] if c["id"] == "c1")
+                assert c1["status"] != "ready"

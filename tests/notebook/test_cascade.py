@@ -180,6 +180,22 @@ def test_cascade_plan_skip_ready_cells(temp_pipeline):
     # If ready cell is excluded from plan entirely, that's also acceptable
 
 
+def test_cascade_uses_last_non_cached_duration(temp_pipeline):
+    """Cached reruns should not collapse future cascade duration estimates."""
+    session, _ = temp_pipeline
+
+    session.record_execution("root", 250, cache_hit=False)
+    session.record_execution("root", 5, cache_hit=True)
+    session.notebook_state.cells[0].status = "stale"
+
+    planner = CascadePlanner(session)
+    plan = planner.plan(session.notebook_state.cells[1].id)
+
+    assert plan is not None
+    root_step = next(s for s in plan.steps if s.cell_id == "root")
+    assert root_step.estimated_ms == 250
+
+
 def test_cascade_planner_no_dag(temp_pipeline):
     """Test cascade planner behavior when DAG is None."""
     session, _ = temp_pipeline

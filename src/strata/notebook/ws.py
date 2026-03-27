@@ -6,6 +6,7 @@ and streams server updates (cell status, console output, execution results).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import UTC, datetime
@@ -71,6 +72,171 @@ def _json_decode(text: str) -> Any:
     return json.loads(text)
 
 
+def _get_active_execution_task(
+    execution_state: dict[str, Any],
+) -> asyncio.Task[None] | None:
+    """Return the live execution task for a notebook, if any."""
+    task = execution_state.get("execution_task")
+    if task is not None and task.done():
+        execution_state["execution_task"] = None
+        execution_state["requested_cell"] = None
+        execution_state["running_cell"] = None
+        task = None
+    return task
+
+
+async def _send_error_message(
+    websocket: WebSocket,
+    seq: int,
+    error: str,
+) -> None:
+    """Send a protocol error to one WebSocket client."""
+    await websocket.send_text(
+        _json_encode(
+            {
+                "type": "error",
+                "seq": seq,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": {"error": error},
+            }
+        )
+    )
+
+
+async def _set_cell_idle(
+    session: NotebookSession,
+    notebook_id: str,
+    seq: int,
+    cell_id: str,
+) -> None:
+    """Mark a cell idle in backend state and broadcast the update."""
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
+    if cell is not None:
+        cell.status = CellStatus.IDLE
+
+    await _broadcast_message(
+        notebook_id,
+        {
+            "type": "cell_status",
+            "seq": seq,
+            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+            "payload": {"cell_id": cell_id, "status": "idle"},
+        },
+    )
+
+
+async def _run_execution_task(
+    execution_state: dict[str, Any],
+    requested_cell: str,
+    notebook_id: str,
+    operation: Any,
+) -> None:
+    """Run one notebook execution in the background and clean up state."""
+    try:
+        await operation
+    except asyncio.CancelledError:
+        logger.info(
+            "Notebook execution cancelled for notebook %s requested_cell=%s",
+            notebook_id,
+            requested_cell,
+        )
+        raise
+    except Exception:
+        logger.exception(
+            "Unhandled notebook execution error for notebook %s requested_cell=%s",
+            notebook_id,
+            requested_cell,
+        )
+    finally:
+        current_task = asyncio.current_task()
+        if execution_state.get("execution_task") is current_task:
+            execution_state["execution_task"] = None
+            execution_state["requested_cell"] = None
+            execution_state["running_cell"] = None
+            execution_state["cascade_plan"] = None
+
+
+async def _schedule_execution(
+    websocket: WebSocket,
+    execution_state: dict[str, Any],
+    notebook_id: str,
+    requested_cell: str,
+    seq: int,
+    operation_factory: Any,
+) -> bool:
+    """Schedule notebook execution so the WebSocket can keep receiving messages."""
+    busy_cell: str | None = None
+
+    async with execution_state["control_lock"]:
+        if _get_active_execution_task(execution_state) is not None:
+            busy_cell = (
+                execution_state.get("running_cell")
+                or execution_state.get("requested_cell")
+            )
+        else:
+            execution_state["requested_cell"] = requested_cell
+            execution_state["execution_task"] = asyncio.create_task(
+                _run_execution_task(
+                    execution_state,
+                    requested_cell,
+                    notebook_id,
+                    operation_factory(),
+                ),
+                name=f"notebook-exec-{notebook_id}-{requested_cell}",
+            )
+
+    if busy_cell is not None:
+        await _send_error_message(
+            websocket,
+            seq,
+            (
+                f"Notebook is already executing cell {busy_cell}"
+                if busy_cell
+                else "Notebook is already executing another cell"
+            ),
+        )
+        return False
+
+    return True
+
+
+async def _cleanup_notebook_websocket(
+    notebook_id: str,
+    websocket: WebSocket,
+) -> None:
+    """Remove a WebSocket and clean notebook-scoped runtime state if needed."""
+    connections = _notebook_connections.get(notebook_id)
+    if connections is None:
+        return
+
+    try:
+        connections.remove(websocket)
+    except ValueError:
+        pass
+
+    if connections:
+        return
+
+    del _notebook_connections[notebook_id]
+    execution_state = _notebook_execution_state.get(notebook_id)
+    if execution_state is not None:
+        task = _get_active_execution_task(execution_state)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        _notebook_execution_state.pop(notebook_id, None)
+
+    inspect_manager = _notebook_inspect_managers.pop(notebook_id, None)
+    if inspect_manager is not None:
+        try:
+            await inspect_manager.close_all()
+        except Exception:
+            logger.exception(
+                "Failed to close inspect sessions during cleanup for notebook %s",
+                notebook_id,
+            )
+
+
 # ============================================================================
 # WebSocket Handler
 # ============================================================================
@@ -117,8 +283,11 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
     if notebook_id not in _notebook_execution_state:
         _notebook_execution_state[notebook_id] = {
             "running_cell": None,
+            "requested_cell": None,
             "sequence": 0,  # For sequencing incoming messages
             "cascade_plan": None,
+            "execution_task": None,
+            "control_lock": asyncio.Lock(),
         }
 
     execution_state = _notebook_execution_state[notebook_id]
@@ -198,29 +367,10 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                 )
 
     except WebSocketDisconnect:
-        # Clean up connection
-        if notebook_id in _notebook_connections:
-            try:
-                _notebook_connections[notebook_id].remove(websocket)
-            except ValueError:
-                pass
-            # Clean up state when all connections close
-            if not _notebook_connections[notebook_id]:
-                del _notebook_connections[notebook_id]
-                _notebook_execution_state.pop(notebook_id, None)
-                _notebook_inspect_managers.pop(notebook_id, None)
+        await _cleanup_notebook_websocket(notebook_id, websocket)
     except Exception as e:
         logger.exception("WebSocket error: %s", e)
-        # Remove dead connection
-        if notebook_id in _notebook_connections:
-            try:
-                _notebook_connections[notebook_id].remove(websocket)
-            except ValueError:
-                pass
-            if not _notebook_connections[notebook_id]:
-                del _notebook_connections[notebook_id]
-                _notebook_execution_state.pop(notebook_id, None)
-                _notebook_inspect_managers.pop(notebook_id, None)
+        await _cleanup_notebook_websocket(notebook_id, websocket)
         try:
             await websocket.close(code=1011, reason="Internal error")
         except Exception:
@@ -260,6 +410,22 @@ async def _handle_cell_execute(
 
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
+
+    if _get_active_execution_task(execution_state) is not None:
+        busy_cell = (
+            execution_state.get("running_cell")
+            or execution_state.get("requested_cell")
+        )
+        await _send_error_message(
+            websocket,
+            seq,
+            (
+                f"Notebook is already executing cell {busy_cell}"
+                if busy_cell
+                else "Notebook is already executing another cell"
+            ),
+        )
+        return
 
     # Find cell
     cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
@@ -312,8 +478,15 @@ async def _handle_cell_execute(
         )
     else:
         # No cascade needed — execute directly.
-        await _execute_cell_directly(
-            websocket, session, cell_id, execution_state, notebook_id
+        await _schedule_execution(
+            websocket,
+            execution_state,
+            notebook_id,
+            cell_id,
+            seq,
+            lambda: _execute_cell_directly(
+                websocket, session, cell_id, execution_state, notebook_id
+            ),
         )
 
 
@@ -362,9 +535,16 @@ async def _handle_cell_execute_cascade(
         )
         return
 
-    # Execute cascade
-    await _execute_cascade(
-        websocket, session, plan, execution_state, notebook_id
+    # Execute cascade in the background so this socket can still receive cancel.
+    await _schedule_execution(
+        websocket,
+        execution_state,
+        notebook_id,
+        cell_id,
+        seq,
+        lambda: _execute_cascade(
+            websocket, session, plan, execution_state, notebook_id
+        ),
     )
 
 
@@ -395,10 +575,16 @@ async def _handle_cell_execute_force(
 
     execution_state["sequence"] += 1
 
-    # Execute cell directly, ignoring staleness
-    # The result will be marked as stale:forced
-    await _execute_cell_directly(
-        websocket, session, cell_id, execution_state, notebook_id, force=True
+    # Execute cell directly, ignoring staleness.
+    await _schedule_execution(
+        websocket,
+        execution_state,
+        notebook_id,
+        cell_id,
+        execution_state["sequence"],
+        lambda: _execute_cell_directly(
+            websocket, session, cell_id, execution_state, notebook_id, force=True
+        ),
     )
 
 
@@ -411,8 +597,9 @@ async def _handle_cell_cancel(
 ) -> None:
     """Handle cell_cancel message.
 
-    Cancel a running cell (best-effort).
+    Cancel a running cell without clobbering completed cell state.
     """
+    del websocket
     cell_id = payload.get("cell_id")
     if not cell_id:
         return
@@ -420,25 +607,24 @@ async def _handle_cell_cancel(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    # TODO: Implement cancellation by killing subprocess
-    # For now, clear running state and send idle status
-    running_cell = execution_state.get("running_cell")
-    if running_cell == cell_id:
-        execution_state["running_cell"] = None
+    async with execution_state["control_lock"]:
+        running_cell = execution_state.get("running_cell")
+        requested_cell = execution_state.get("requested_cell")
+        task = _get_active_execution_task(execution_state)
 
-    # Always send idle status to acknowledge the cancel
-    await _broadcast_message(
-        notebook_id,
-        {
-            "type": "cell_status",
-            "seq": seq,
-            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-            "payload": {
-                "cell_id": cell_id,
-                "status": "idle",
-            },
-        },
-    )
+        should_cancel = task is not None and cell_id in {running_cell, requested_cell}
+        if should_cancel and task is not None:
+            task.cancel()
+
+    if should_cancel and task is not None:
+        await asyncio.gather(task, return_exceptions=True)
+        if requested_cell and requested_cell != running_cell and requested_cell == cell_id:
+            await _set_cell_idle(session, notebook_id, seq, requested_cell)
+        return
+
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
+    if cell is not None and cell.status in {CellStatus.IDLE, CellStatus.RUNNING}:
+        await _set_cell_idle(session, notebook_id, seq, cell_id)
 
 
 async def _handle_cell_source_update(
@@ -649,6 +835,7 @@ async def _execute_cell_directly(
     force: bool = False,
 ) -> None:
     """Execute a cell directly (not part of cascade)."""
+    del websocket
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
@@ -675,9 +862,12 @@ async def _execute_cell_directly(
     )
 
     # Execute
-    executor = CellExecutor(session)
+    executor = CellExecutor(session, session.warm_pool)
     try:
-        result = await executor.execute_cell(cell_id, cell.source)
+        if force:
+            result = await executor.execute_cell_force(cell_id, cell.source)
+        else:
+            result = await executor.execute_cell(cell_id, cell.source)
 
         # Send console output
         if result.stdout:
@@ -774,7 +964,15 @@ async def _execute_cell_directly(
             },
         )
 
+    except asyncio.CancelledError:
+        await _set_cell_idle(session, notebook_id, seq, cell_id)
+        raise
     except Exception as e:
+        cell = next(
+            (c for c in session.notebook_state.cells if c.id == cell_id), None
+        )
+        if cell:
+            cell.status = CellStatus.ERROR
         await _broadcast_message(
             notebook_id,
             {
@@ -805,10 +1003,11 @@ async def _execute_cascade(
     notebook_id: str,
 ) -> None:
     """Execute all cells in a cascade plan."""
+    del websocket
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    executor = CellExecutor(session)
+    executor = CellExecutor(session, session.warm_pool)
 
     logger.info(
         "Cascade %s: executing %d steps: %s",
@@ -819,200 +1018,195 @@ async def _execute_cascade(
 
     cascade_failed = False
 
-    for i, step in enumerate(plan.steps):
-        if step.skip:
-            # Skip cached cells
-            continue
+    try:
+        for i, step in enumerate(plan.steps):
+            if step.skip:
+                # Skip cached cells
+                continue
 
-        cell_id = step.cell_id
-        cell = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id), None
-        )
-        if not cell:
-            continue
-
-        # If an earlier cascade step failed, abort remaining steps
-        if cascade_failed:
-            logger.warning(
-                "Cascade %s: skipping cell %s (earlier step failed)",
-                plan.plan_id, cell_id,
+            cell_id = step.cell_id
+            cell = next(
+                (c for c in session.notebook_state.cells if c.id == cell_id), None
             )
-            cascade_cell = next(
+            if not cell:
+                continue
+
+            # If an earlier cascade step failed, abort remaining steps
+            if cascade_failed:
+                logger.warning(
+                    "Cascade %s: skipping cell %s (earlier step failed)",
+                    plan.plan_id, cell_id,
+                )
+                await _set_cell_idle(session, notebook_id, seq, cell_id)
+                continue
+
+            execution_state["running_cell"] = cell_id
+
+            # Send cascade progress
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "cascade_progress",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "plan_id": plan.plan_id,
+                        "current_cell_id": cell_id,
+                        "completed": i,
+                        "total": len([s for s in plan.steps if not s.skip]),
+                    },
+                },
+            )
+
+            # Execute cell — update backend state AND broadcast
+            cascade_run_cell = next(
                 (c for c in session.notebook_state.cells if c.id == cell_id),
                 None,
             )
-            if cascade_cell:
-                cascade_cell.status = CellStatus.IDLE
+            if cascade_run_cell:
+                cascade_run_cell.status = CellStatus.RUNNING
             await _broadcast_message(
                 notebook_id,
                 {
                     "type": "cell_status",
                     "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
-                    "payload": {"cell_id": cell_id, "status": "idle"},
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"cell_id": cell_id, "status": "running"},
                 },
             )
-            continue
 
-        execution_state["running_cell"] = cell_id
+            try:
+                result = await executor.execute_cell(cell_id, cell.source)
 
-        # Send cascade progress
-        await _broadcast_message(
-            notebook_id,
-            {
-                "type": "cascade_progress",
-                "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {
-                    "plan_id": plan.plan_id,
-                    "current_cell_id": cell_id,
-                    "completed": i,
-                    "total": len([s for s in plan.steps if not s.skip]),
-                },
-            },
-        )
+                # v1.1: Record execution for profiling
+                session.record_execution(
+                    cell_id, result.duration_ms, result.cache_hit
+                )
 
-        # Execute cell — update backend state AND broadcast
-        cascade_run_cell = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id),
-            None,
-        )
-        if cascade_run_cell:
-            cascade_run_cell.status = CellStatus.RUNNING
-        await _broadcast_message(
-            notebook_id,
-            {
-                "type": "cell_status",
-                "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"cell_id": cell_id, "status": "running"},
-            },
-        )
+                # Send console output for cascade cells
+                if result.stdout:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_console",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace(
+                                "+00:00", "Z"
+                            ),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "stream": "stdout",
+                                "text": result.stdout,
+                            },
+                        },
+                    )
 
-        try:
-            result = await executor.execute_cell(cell_id, cell.source)
+                # Send output with v1.1 profiling data
+                if result.success:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_output",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace(
+                                "+00:00", "Z"
+                            ),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "outputs": result.outputs,
+                                "cache_hit": result.cache_hit,
+                                "duration_ms": int(result.duration_ms),
+                                "artifact_uri": result.artifact_uri,
+                                "stdout": result.stdout,
+                                "stderr": result.stderr,
+                                "execution_method": result.execution_method,
+                                "mutation_warnings": result.mutation_warnings,
+                            },
+                        },
+                    )
+                else:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_error",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace(
+                                "+00:00", "Z"
+                            ),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "error": result.error,
+                                **({"suggest_install": result.suggest_install}
+                                   if result.suggest_install else {}),
+                            },
+                        },
+                    )
 
-            # v1.1: Record execution for profiling
-            session.record_execution(
-                cell_id, result.duration_ms, result.cache_hit
-            )
-
-            # Send console output for cascade cells
-            if result.stdout:
+                # Mark as ready — update backend state AND broadcast
+                status = CellStatus.READY if result.success else CellStatus.ERROR
+                cascade_cell = next(
+                    (c for c in session.notebook_state.cells if c.id == cell_id),
+                    None,
+                )
+                if cascade_cell:
+                    cascade_cell.status = status
                 await _broadcast_message(
                     notebook_id,
                     {
-                        "type": "cell_console",
+                        "type": "cell_status",
                         "seq": seq,
                         "ts": datetime.now(tz=UTC).isoformat().replace(
                             "+00:00", "Z"
                         ),
-                        "payload": {
-                            "cell_id": cell_id,
-                            "stream": "stdout",
-                            "text": result.stdout,
-                        },
+                        "payload": {"cell_id": cell_id, "status": status},
                     },
                 )
 
-            # Send output with v1.1 profiling data
-            if result.success:
-                await _broadcast_message(
-                    notebook_id,
-                    {
-                        "type": "cell_output",
-                        "seq": seq,
-                        "ts": datetime.now(tz=UTC).isoformat().replace(
-                            "+00:00", "Z"
-                        ),
-                        "payload": {
-                            "cell_id": cell_id,
-                            "outputs": result.outputs,
-                            "cache_hit": result.cache_hit,
-                            "duration_ms": int(result.duration_ms),
-                            "artifact_uri": result.artifact_uri,
-                            "stdout": result.stdout,
-                            "stderr": result.stderr,
-                            "execution_method": result.execution_method,
-                            "mutation_warnings": result.mutation_warnings,
-                        },
-                    },
+                logger.info(
+                    "Cascade %s: cell %s finished status=%s "
+                    "artifact_uri=%s cache_hit=%s",
+                    plan.plan_id, cell_id, status,
+                    getattr(cascade_cell, "artifact_uri", None)
+                    if cascade_cell else None,
+                    result.cache_hit,
                 )
-            else:
+
+                # If a step fails, abort the rest of the cascade
+                if not result.success:
+                    cascade_failed = True
+
+            except asyncio.CancelledError:
+                await _set_cell_idle(session, notebook_id, seq, cell_id)
+                raise
+            except Exception as e:
+                cascade_cell = next(
+                    (c for c in session.notebook_state.cells if c.id == cell_id),
+                    None,
+                )
+                if cascade_cell:
+                    cascade_cell.status = CellStatus.ERROR
                 await _broadcast_message(
                     notebook_id,
                     {
                         "type": "cell_error",
                         "seq": seq,
-                        "ts": datetime.now(tz=UTC).isoformat().replace(
-                            "+00:00", "Z"
-                        ),
-                        "payload": {
-                            "cell_id": cell_id,
-                            "error": result.error,
-                            **({"suggest_install": result.suggest_install}
-                               if result.suggest_install else {}),
-                        },
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "error": str(e)},
                     },
                 )
-
-            # Mark as ready — update backend state AND broadcast
-            status = CellStatus.READY if result.success else CellStatus.ERROR
-            cascade_cell = next(
-                (c for c in session.notebook_state.cells if c.id == cell_id),
-                None,
-            )
-            if cascade_cell:
-                cascade_cell.status = status
-            await _broadcast_message(
-                notebook_id,
-                {
-                    "type": "cell_status",
-                    "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
-                    "payload": {"cell_id": cell_id, "status": status},
-                },
-            )
-
-            logger.info(
-                "Cascade %s: cell %s finished status=%s "
-                "artifact_uri=%s cache_hit=%s",
-                plan.plan_id, cell_id, status,
-                getattr(cascade_cell, "artifact_uri", None)
-                if cascade_cell else None,
-                result.cache_hit,
-            )
-
-            # If a step fails, abort the rest of the cascade
-            if not result.success:
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_status",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "status": "error"},
+                    },
+                )
                 cascade_failed = True
+    finally:
+        execution_state["running_cell"] = None
 
-        except Exception as e:
-            await _broadcast_message(
-                notebook_id,
-                {
-                    "type": "cell_error",
-                    "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                    "payload": {"cell_id": cell_id, "error": str(e)},
-                },
-            )
-            await _broadcast_message(
-                notebook_id,
-                {
-                    "type": "cell_status",
-                    "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                    "payload": {"cell_id": cell_id, "status": "error"},
-                },
-            )
-            cascade_failed = True
-
-    execution_state["running_cell"] = None
 
 
 def _get_inspect_manager(notebook_id: str) -> InspectManager:
