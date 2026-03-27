@@ -41,10 +41,11 @@ class TestListDependencies:
     """list_dependencies() parses pyproject.toml."""
 
     def test_empty_notebook(self, tmp_path: Path):
-        """Newly created notebook has no dependencies."""
+        """Newly created notebook includes pyarrow as the default dependency."""
         nb_dir = create_notebook(tmp_path, "empty")
         deps = list_dependencies(nb_dir)
-        assert deps == []
+        names = [d.name for d in deps]
+        assert names == ["pyarrow"]
 
     def test_after_add(self, tmp_path: Path):
         """After adding a dep, it appears in the list."""
