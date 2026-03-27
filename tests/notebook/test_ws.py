@@ -227,6 +227,66 @@ def test_cell_execute_uses_warm_pool_when_available(
         assert warm_calls == 1
 
 
+def test_cascade_prompt_is_sent_only_to_requesting_websocket(
+    client, temp_notebook, app
+):
+    """A cascade prompt should not fan out to other clients on the notebook."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as ws1:
+        with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as ws2:
+            ws1.send_json(
+                {
+                    "type": "cell_execute",
+                    "seq": 1,
+                    "ts": "2026-03-23T00:00:00Z",
+                    "payload": {"cell_id": "middle"},
+                }
+            )
+
+            response = ws1.receive_json()
+            assert response["type"] == "cascade_prompt"
+            assert response["payload"]["cell_id"] == "middle"
+
+            with pytest.raises(Exception):
+                ws2.receive_json(timeout=0.1)
+
+
+def test_impact_preview_is_sent_only_to_requesting_websocket(
+    client, temp_notebook, app
+):
+    """Impact preview responses should stay scoped to the requesting client."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as ws1:
+        with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as ws2:
+            ws1.send_json(
+                {
+                    "type": "impact_preview_request",
+                    "seq": 1,
+                    "ts": "2026-03-23T00:00:00Z",
+                    "payload": {"cell_id": "middle"},
+                }
+            )
+
+            response = ws1.receive_json()
+            assert response["type"] == "impact_preview"
+            assert response["payload"]["target_cell_id"] == "middle"
+
+            with pytest.raises(Exception):
+                ws2.receive_json(timeout=0.1)
+
+
 def test_inspect_repl_round_trip(client, temp_notebook, app):
     """Test the live inspect REPL path over WebSocket."""
     notebook_dir, _ = temp_notebook
@@ -283,6 +343,34 @@ def test_inspect_repl_round_trip(client, temp_notebook, app):
         assert response["type"] == "inspect_result"
         assert response["payload"]["action"] == "close"
         assert response["payload"]["ok"] is True
+
+
+def test_active_websocket_session_is_not_evicted(client, temp_notebook, app):
+    """TTL eviction should skip sessions that still have connected sockets."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.last_accessed = (
+        time.time() - session_manager.SESSION_TTL_SECONDS - 60
+    )
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        session_manager._evict_stale()
+        assert session.id in session_manager.list_sessions()
+
+        websocket.send_json(
+            {
+                "type": "notebook_sync",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {},
+            }
+        )
+        websocket.receive_json()
+        assert session.last_accessed > time.time() - 5
 
 
 def test_inspect_sessions_closed_when_last_websocket_disconnects(

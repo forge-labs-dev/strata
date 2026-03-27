@@ -90,6 +90,10 @@ class NotebookSession:
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
 
+    def touch(self) -> None:
+        """Record recent activity for TTL accounting."""
+        self.last_accessed = _time.time()
+
     def reload(self) -> None:
         """Reload notebook state from disk."""
         self.notebook_state = parse_notebook(self.path)
@@ -203,25 +207,10 @@ class NotebookSession:
             # Compute current provenance hash
             source_hash = compute_source_hash(cell.source)
 
-            # Get input hashes from upstream artifacts
-            input_hashes = []
-            for upstream_id in cell.upstream_ids:
-                upstream_cell = next(
-                    (c for c in self.notebook_state.cells if c.id == upstream_id),
-                    None,
-                )
-                if upstream_cell and upstream_cell.artifact_uri:
-                    try:
-                        parts = upstream_cell.artifact_uri.split("/")
-                        artifact_id = parts[-1].split("@")[0]
-                        version = int(parts[-1].split("@v=")[1])
-                        artifact = self.artifact_manager.artifact_store.get_artifact(
-                            artifact_id, version
-                        )
-                        if artifact:
-                            input_hashes.append(artifact.provenance_hash)
-                    except (IndexError, ValueError):
-                        pass
+            # Get input hashes from upstream artifacts. Use the same
+            # per-variable artifact selection as execution, not the legacy
+            # single artifact_uri field.
+            input_hashes = self._collect_input_hashes(cell_id)
 
             provenance_hash = compute_provenance_hash(
                 input_hashes, source_hash, env_hash
@@ -301,6 +290,43 @@ class NotebookSession:
             cell.status = staleness.status
             if staleness.status != CellStatus.READY:
                 cell.cache_hit = False
+
+    def _collect_input_hashes(self, cell_id: str) -> list[str]:
+        """Read provenance hashes from upstream artifacts for staleness checks."""
+        cell = next(
+            (c for c in self.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        if cell is None or not cell.upstream_ids:
+            return []
+
+        hashes: list[str] = []
+        for upstream_id in cell.upstream_ids:
+            upstream_cell = next(
+                (c for c in self.notebook_state.cells if c.id == upstream_id),
+                None,
+            )
+            if upstream_cell is None:
+                continue
+
+            uris = list(upstream_cell.artifact_uris.values())
+            if not uris and upstream_cell.artifact_uri:
+                uris = [upstream_cell.artifact_uri]
+
+            for uri in sorted(uris):
+                try:
+                    parts = uri.split("/")
+                    artifact_id = parts[-1].split("@")[0]
+                    version = int(parts[-1].split("@v=")[1])
+                    artifact = self.artifact_manager.artifact_store.get_artifact(
+                        artifact_id, version
+                    )
+                    if artifact:
+                        hashes.append(artifact.provenance_hash)
+                except (IndexError, ValueError):
+                    pass
+
+        return hashes
 
     def record_execution(
         self, cell_id: str, duration_ms: float, cache_hit: bool
@@ -534,8 +560,16 @@ class SessionManager:
         """
         session = self._sessions.get(session_id)
         if session is not None:
-            session.last_accessed = _time.time()
+            session.touch()
         return session
+
+    def _has_active_websocket(self, session_id: str) -> bool:
+        """Return whether a notebook session currently has connected sockets."""
+        try:
+            from strata.notebook.ws import _notebook_connections
+        except Exception:
+            return False
+        return bool(_notebook_connections.get(session_id))
 
     def _evict_stale(self) -> None:
         """Remove sessions not accessed within TTL and enforce max count."""
@@ -543,7 +577,10 @@ class SessionManager:
         stale = [
             sid
             for sid, s in self._sessions.items()
-            if now - s.last_accessed > self.SESSION_TTL_SECONDS
+            if (
+                not self._has_active_websocket(sid)
+                and now - s.last_accessed > self.SESSION_TTL_SECONDS
+            )
         ]
         for sid in stale:
             logger.info("Evicting stale session %s", sid)
@@ -551,8 +588,18 @@ class SessionManager:
 
         # Enforce max count — evict oldest if over limit
         while len(self._sessions) >= self.MAX_SESSIONS:
+            evictable = [
+                sid for sid in self._sessions
+                if not self._has_active_websocket(sid)
+            ]
+            if not evictable:
+                logger.warning(
+                    "Session limit exceeded (%d) but all sessions have active websockets",
+                    len(self._sessions),
+                )
+                break
             oldest_id = min(
-                self._sessions, key=lambda sid: self._sessions[sid].last_accessed
+                evictable, key=lambda sid: self._sessions[sid].last_accessed
             )
             logger.info("Evicting oldest session %s (max %d reached)", oldest_id, self.MAX_SESSIONS)
             self.close_session(oldest_id)

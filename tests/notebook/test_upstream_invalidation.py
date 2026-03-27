@@ -53,6 +53,36 @@ class TestUpstreamInvalidation:
     """Editing an upstream cell must invalidate downstream caches."""
 
     @pytest.mark.asyncio
+    async def test_multi_output_upstream_stays_ready_when_unchanged(self, tmp_path):
+        """Staleness should use all upstream artifact_uris, not just artifact_uri."""
+        notebook_dir = create_notebook(tmp_path, "multi_output")
+
+        add_cell_to_notebook(notebook_dir, "c1", None)
+        write_cell(notebook_dir, "c1", "x = 1\ny = 2")
+
+        add_cell_to_notebook(notebook_dir, "c2", "c1")
+        write_cell(notebook_dir, "c2", "z = x + y")
+
+        add_cell_to_notebook(notebook_dir, "c3", "c2")
+        write_cell(notebook_dir, "c3", "print(z)")
+
+        notebook_state = parse_notebook(notebook_dir)
+        session = NotebookSession(notebook_state, notebook_dir)
+
+        executor = CellExecutor(session)
+        r1 = await executor.execute_cell("c1", "x = 1\ny = 2")
+        r2 = await executor.execute_cell("c2", "z = x + y")
+
+        assert r1.success
+        assert r2.success
+        assert len(session.notebook_state.cells[0].artifact_uris) == 2
+
+        staleness = session.compute_staleness()
+
+        assert staleness["c1"].status == "ready"
+        assert staleness["c2"].status == "ready"
+
+    @pytest.mark.asyncio
     async def test_edit_upstream_invalidates_downstream(self, pipeline_notebook):
         """After editing c1 from x=1 to x=2, c2 must not cache hit."""
         session = pipeline_notebook
@@ -163,7 +193,7 @@ class TestUpstreamInvalidationE2E:
                 r2 = execute_cell_and_wait(ws, "c2")
                 assert r2["payload"].get("cache_hit") is not True
 
-                r3 = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 # Step 2: Edit c1 via REST (like the UI does)
                 resp = client.put(

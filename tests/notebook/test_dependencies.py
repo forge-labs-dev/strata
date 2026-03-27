@@ -9,7 +9,7 @@ Validates:
 
 from __future__ import annotations
 
-import subprocess
+import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +23,9 @@ from strata.notebook.dependencies import (
     list_dependencies,
     remove_dependency,
 )
+from strata.notebook.executor import CellExecutor
+from strata.notebook.models import CellStaleness, CellStatus
+from strata.notebook.session import DependencyMutationOutcome
 from strata.notebook.writer import create_notebook
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
@@ -30,7 +33,6 @@ from tests.notebook.e2e_fixtures import (
     open_notebook_session,
     ws_connect,
 )
-
 
 # ============================================================================
 # Core dependency operations
@@ -183,6 +185,42 @@ class TestDependencyRESTEndpoints:
             names = [d["name"] for d in deps]
             assert "six" in names
 
+    def test_add_dependency_rest_returns_updated_cells(self, setup):
+        """Dependency changes return refreshed cell statuses after env invalidation."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+        nb.add_cell("c1", "x = 1")
+        nb.add_cell("c2", "y = x + 1", after="c1")
+        nb.add_cell("c3", "print(y)", after="c2")
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            async def _prime_cells():
+                executor = CellExecutor(session)
+                result1 = await executor.execute_cell("c1", "x = 1")
+                result2 = await executor.execute_cell("c2", "y = x + 1")
+                assert result1.success
+                assert result2.success
+
+            asyncio.run(_prime_cells())
+            session.compute_staleness()
+            statuses_before = {
+                cell.id: cell.status for cell in session.notebook_state.cells
+            }
+            assert statuses_before["c1"] == CellStatus.READY
+            assert statuses_before["c2"] == CellStatus.READY
+
+            resp = client.post(
+                f"/v1/notebooks/{sid}/dependencies",
+                json={"package": "six"},
+            )
+
+            assert resp.status_code == 200
+            data = resp.json()
+            assert "cells" in data
+            statuses = {cell["id"]: cell["status"] for cell in data["cells"]}
+            assert statuses["c1"] == "idle"
+            assert statuses["c2"] == "idle"
+
     def test_remove_dependency_rest(self, setup):
         """DELETE /dependencies/{package} removes a package."""
         client, tmp = setup
@@ -301,3 +339,45 @@ class TestDependencyWebSocket:
                 assert isinstance(deps, list)
                 names = [d["name"] for d in deps]
                 assert "six" in names
+
+    def test_dependency_add_via_ws_broadcasts_cell_status_updates(
+        self, setup, monkeypatch
+    ):
+        """Lockfile-changing dependency updates broadcast refreshed cell status."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+        nb.add_cell("c1", "x = 1")
+        nb.add_cell("c2", "y = x + 1", after="c1")
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            async def fake_mutate_dependency(self, package, *, action):
+                assert action == "add"
+                result = DependencyChangeResult(
+                    success=True,
+                    package=package,
+                    action=action,
+                    lockfile_changed=True,
+                    dependencies=[],
+                )
+                staleness_map = {
+                    "c1": CellStaleness(status=CellStatus.IDLE),
+                    "c2": CellStaleness(status=CellStatus.IDLE),
+                }
+                return DependencyMutationOutcome(
+                    result=result,
+                    staleness_map=staleness_map,
+                )
+
+            monkeypatch.setattr(type(session), "mutate_dependency", fake_mutate_dependency)
+
+            with ws_connect(client, sid) as ws:
+                ws.send("dependency_add", {"package": "six"})
+                changed = ws.receive_until("dependency_changed")
+                assert changed["payload"]["lockfile_changed"] is True
+                assert changed["payload"]["package"] == "six"
+                assert "cells" in changed["payload"]
+
+                status1 = ws.receive_until("cell_status", cell_id="c1")
+                status2 = ws.receive_until("cell_status", cell_id="c2")
+                assert status1["payload"]["status"] == "idle"
+                assert status2["payload"]["status"] == "idle"

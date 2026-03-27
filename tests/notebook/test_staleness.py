@@ -92,3 +92,49 @@ def test_staleness_computation_multiple_calls(three_cell_notebook):
     for cell_id in s1:
         assert s1[cell_id].status == s2[cell_id].status
         assert s1[cell_id].reasons == s2[cell_id].reasons
+
+
+def test_staleness_updates_cells_when_dag_is_invalid(tmp_path):
+    """Cycle/no-DAG notebooks should still have authoritative in-memory status."""
+    notebook_dir = tmp_path / "cycle_notebook"
+    notebook_dir.mkdir()
+    (notebook_dir / "cells").mkdir()
+    (notebook_dir / "pyproject.toml").write_text("[project]\nname = 'cycle'\n")
+
+    notebook_state = NotebookState(
+        id="cycle_nb",
+        name="Cycle",
+        cells=[
+            CellState(
+                id="a",
+                source="x = y + 1",
+                language="python",
+                order=0,
+            ),
+            CellState(
+                id="b",
+                source="y = x + 1",
+                language="python",
+                order=1,
+            ),
+        ],
+    )
+
+    session = NotebookSession(notebook_state, notebook_dir)
+    assert session.dag is None
+
+    for cell in session.notebook_state.cells:
+        cell.status = "ready"
+        cell.cache_hit = True
+    session.causality_map = {"a": object()}  # prove compute_staleness clears stale data
+
+    staleness = session.compute_staleness()
+
+    assert staleness["a"].status == "idle"
+    assert staleness["b"].status == "idle"
+    assert session.causality_map == {}
+    for cell in session.notebook_state.cells:
+        assert cell.status == "idle"
+        assert cell.cache_hit is False
+        assert cell.staleness is not None
+        assert cell.staleness.status == "idle"

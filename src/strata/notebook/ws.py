@@ -72,6 +72,11 @@ def _json_decode(text: str) -> Any:
     return json.loads(text)
 
 
+async def _send_message(websocket: WebSocket, message: dict[str, Any]) -> None:
+    """Send one protocol message to a single WebSocket client."""
+    await websocket.send_text(_json_encode(message))
+
+
 def _get_active_execution_task(
     execution_state: dict[str, Any],
 ) -> asyncio.Task[None] | None:
@@ -329,6 +334,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
             # Receive message
             data = await websocket.receive_text()
             msg = _json_decode(data)
+            session.touch()
 
             # Extract message type and payload
             msg_type = msg.get("type")
@@ -494,8 +500,8 @@ async def _handle_cell_execute(
             },
         )
         execution_state["cascade_plan"] = plan
-        await _broadcast_message(
-            notebook_id,
+        await _send_message(
+            websocket,
             {
                 "type": "cascade_prompt",
                 "seq": seq,
@@ -1393,8 +1399,8 @@ async def _handle_impact_preview_request(
     analyzer = ImpactAnalyzer(session)
     impact = analyzer.preview(cell_id)
 
-    await _broadcast_message(
-        notebook_id,
+    await _send_message(
+        websocket,
         {
             "type": "impact_preview",
             "seq": seq,
