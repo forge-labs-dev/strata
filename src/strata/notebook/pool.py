@@ -54,6 +54,8 @@ class WarmProcessPool:
         self._warming: int = 0  # Processes currently starting up
         self._started: bool = False
         self._lock = asyncio.Lock()
+        # Track background spawn tasks so drain() can cancel them
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Spawn initial pool of warm processes.
@@ -168,16 +170,27 @@ class WarmProcessPool:
             except TimeoutError:
                 logger.warning("Warm process kill timeout")
 
-        # Spawn a replacement in background (don't await)
-        asyncio.create_task(self._spawn_warm_process())
+        # Spawn a replacement in background (tracked so drain() can cancel it)
+        task = asyncio.create_task(self._spawn_warm_process())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def drain(self) -> None:
         """Kill all processes in the pool (on env change or shutdown).
 
-        Drains the queue and kills all processes.
+        Cancels pending background spawn tasks, then drains and kills
+        all queued processes.
         """
         async with self._lock:
             self._started = False
+
+        # Cancel any in-flight background spawn tasks first so they don't
+        # put new processes into the queue after we've drained it.
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
 
         # Drain all processes from queue
         while True:

@@ -3,6 +3,7 @@
 import tempfile
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,17 @@ from strata.notebook.writer import (
     create_notebook,
     write_cell,
 )
+
+
+@pytest.fixture(autouse=True)
+def no_uv_sync(monkeypatch):
+    """Skip real venv/pool creation — route tests only test HTTP routing."""
+    monkeypatch.setattr("strata.notebook.session._uv_sync", lambda path, **kw: True)
+
+    async def _noop_start(self):
+        pass
+
+    monkeypatch.setattr("strata.notebook.pool.WarmProcessPool.start", _noop_start)
 
 
 # Create a test app with just the notebook router
