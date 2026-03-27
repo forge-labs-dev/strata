@@ -209,6 +209,8 @@ result = add(2, 3)
         assert result.outputs["result"]["preview"] == 5
 
     @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
     async def test_execute_uses_warm_pool_when_available(self, sample_notebook):
         """Test executor uses a live warm worker when one is available."""
         sample_notebook.ensure_venv_synced()
@@ -230,6 +232,8 @@ result = add(2, 3)
             await pool.drain()
 
     @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
     async def test_warm_execution_reports_same_mutation_warnings_as_cold(
         self, sample_notebook
     ):

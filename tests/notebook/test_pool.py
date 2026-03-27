@@ -9,6 +9,8 @@ import pytest
 from strata.notebook.pool import WarmProcessPool
 from strata.notebook.writer import create_notebook
 
+pytestmark = [pytest.mark.integration, pytest.mark.warm_pool]
+
 
 @pytest.fixture
 def notebook_dir(tmp_path):

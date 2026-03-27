@@ -9,31 +9,28 @@ Validates:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
-import tempfile
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from strata.notebook.causality import (
-    CausalityChain,
-    CausalityDetail,
     CausalityInspector,
     compute_causality_on_staleness,
 )
-from strata.notebook.dependencies import add_dependency, remove_dependency
+from strata.notebook.dependencies import add_dependency
 from strata.notebook.env import compute_lockfile_hash
-from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
-from strata.notebook.session import NotebookSession, SessionManager
+from strata.notebook.provenance import compute_source_hash
+from strata.notebook.session import SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
     update_environment_metadata,
     write_cell,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _create_notebook_with_cell(tmp_path: Path, cell_source: str = "x = 1") -> tuple[Path, str]:

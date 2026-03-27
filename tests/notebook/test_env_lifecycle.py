@@ -10,7 +10,6 @@ Validates that:
 from __future__ import annotations
 
 import subprocess
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +18,8 @@ import pytest
 from strata.notebook.env import compute_lockfile_hash
 from strata.notebook.session import NotebookSession
 from strata.notebook.writer import _uv_sync, create_notebook
+
+pytestmark = pytest.mark.integration
 
 
 class TestCreateNotebookVenv:

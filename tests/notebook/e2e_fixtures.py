@@ -16,14 +16,16 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from strata.notebook.routes import get_session_manager, router as notebook_router
+from strata.notebook.routes import get_session_manager
+from strata.notebook.routes import router as notebook_router
 from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
 from strata.notebook.ws import (
     _notebook_connections,
     _notebook_execution_state,
+)
+from strata.notebook.ws import (
     router as notebook_ws_router,
 )
-
 
 # ============================================================================
 # WebSocket Test Helper
@@ -144,7 +146,7 @@ class NotebookBuilder:
         self.notebook_dir = create_notebook(parent_path, name)
         self.cell_ids: list[str] = []
 
-    def add_cell(self, cell_id: str, source: str, after: str | None = None) -> "NotebookBuilder":
+    def add_cell(self, cell_id: str, source: str, after: str | None = None) -> NotebookBuilder:
         """Add a cell with given source."""
         add_cell_to_notebook(self.notebook_dir, cell_id, after)
         write_cell(self.notebook_dir, cell_id, source)

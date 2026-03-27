@@ -34,6 +34,8 @@ from tests.notebook.e2e_fixtures import (
     ws_connect,
 )
 
+pytestmark = pytest.mark.integration
+
 # ============================================================================
 # Core dependency operations
 # ============================================================================
