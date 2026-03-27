@@ -27,12 +27,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Harness script injected into the inspect subprocess
+# Harness script injected into the inspect subprocess.
+# serializer.py is copied into the same temp dir so Path(__file__).parent works.
 _INSPECT_HARNESS = textwrap.dedent(r'''
+import importlib.util
 import io
 import json
 import sys
 import traceback
+from pathlib import Path
+
+def _load_serializer():
+    _p = Path(__file__).parent / "serializer.py"
+    _spec = importlib.util.spec_from_file_location("_nb_serializer", _p)
+    _m = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_m)
+    return _m
+
+_ser = _load_serializer()
 
 
 def _repr_value(value, max_len=4000):
@@ -93,30 +105,14 @@ def main():
 
     for var_name, spec in inputs.items():
         content_type = spec.get("content_type", "")
-        file_path = spec.get("file", "")
-        if not file_path:
+        file_name = spec.get("file", "")
+        if not file_name:
             continue
-        from pathlib import Path as P
-        full_path = P(output_dir) / file_path
+        full_path = Path(output_dir) / file_name
         if not full_path.exists():
             continue
         try:
-            if content_type == "arrow/ipc":
-                import pyarrow as pa
-                with open(full_path, "rb") as fp:
-                    reader = pa.ipc.open_stream(fp)
-                    table = reader.read_all()
-                try:
-                    namespace[var_name] = table.to_pandas()
-                except Exception:
-                    namespace[var_name] = table
-            elif content_type == "json/object":
-                with open(full_path) as fp:
-                    namespace[var_name] = json.load(fp)
-            elif content_type == "pickle/object":
-                import pickle
-                with open(full_path, "rb") as fp:
-                    namespace[var_name] = pickle.load(fp)
+            namespace[var_name] = _ser.deserialize_value(content_type, full_path)
         except Exception as e:
             namespace[var_name] = f"<load error: {e}>"
 
@@ -266,6 +262,11 @@ class InspectSession:
         manifest_path = self._manifest_dir / "inspect_manifest.json"
         with open(manifest_path, "w") as f:
             json.dump(manifest, f)
+
+        # Copy serializer.py alongside the harness so the harness can load it
+        import shutil
+        _serializer_src = Path(__file__).parent / "serializer.py"
+        shutil.copy2(_serializer_src, self._manifest_dir / "serializer.py")
 
         # Write the inspect harness to a temp file
         harness_path = self._manifest_dir / "_inspect_harness.py"

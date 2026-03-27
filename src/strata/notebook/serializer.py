@@ -1,10 +1,28 @@
-"""Three-tier serialization for notebook cell outputs.
+"""Shared serialization/deserialization for notebook cell values.
 
-Tier 1: Arrow IPC (for DataFrames, Tables, RecordBatches, numpy arrays)
-Tier 2: JSON (for dicts, lists, scalars, strings, numbers, bools, None)
-Tier 3: Pickle (fallback for everything else — models, custom objects)
+Supports four content types:
+  arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
+  json/object  — dicts, lists, scalars (int/float/str/bool/None)
+  module/import — Python module objects (re-imported by name on read)
+  pickle/object — everything else
 
-This module can be used both in the harness subprocess and in the server.
+This module is loaded dynamically by harness.py, pool_worker.py, and
+inspect_repl.py via ``importlib.util``, since those scripts run inside
+the notebook's own venv and cannot ``import strata``.
+
+Loading pattern (used in each subprocess script):
+
+    import importlib.util as _ilu
+    from pathlib import Path as _Path
+
+    def _load_serializer():
+        _p = _Path(__file__).parent / "serializer.py"
+        _spec = _ilu.spec_from_file_location("_nb_serializer", _p)
+        _m = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_m)
+        return _m
+
+    _ser = _load_serializer()
 """
 
 from __future__ import annotations
@@ -14,74 +32,69 @@ import pickle
 from pathlib import Path
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Content-type detection
+# ---------------------------------------------------------------------------
+
 
 def detect_content_type(value: Any) -> str:
-    """Detect the appropriate content type for a value.
+    """Return the content type string for *value*.
 
-    Args:
-        value: The value to serialize
-
-    Returns:
-        Content type string: "arrow/ipc", "json/object", or "pickle/object"
+    Probes pyarrow, pandas, and numpy with separate try/except blocks so
+    that the absence of one package does not mask another.
     """
-    # Try to import pandas and pyarrow, but don't fail if unavailable
-    try:
-        import pandas as pd
-        import pyarrow as pa
+    import types
 
-        if isinstance(
-            value, (pa.Table, pa.RecordBatch, pd.DataFrame, pd.Series)
-        ):
+    try:
+        import pyarrow as pa
+        if isinstance(value, (pa.Table, pa.RecordBatch)):
             return "arrow/ipc"
     except ImportError:
         pass
 
-    # Try numpy arrays
+    try:
+        import pandas as pd
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            return "arrow/ipc"
+    except ImportError:
+        pass
+
     try:
         import numpy as np
-
         if isinstance(value, np.ndarray):
             return "arrow/ipc"
     except ImportError:
         pass
 
-    # JSON-safe types
     if isinstance(value, (dict, list, int, float, str, bool, type(None))):
-        if is_json_safe(value):
+        try:
+            json.dumps(value)
             return "json/object"
+        except (TypeError, ValueError):
+            pass
 
-    # Fall back to pickle
+    if isinstance(value, types.ModuleType):
+        return "module/import"
+
     return "pickle/object"
 
 
-def is_json_safe(value: Any) -> bool:
-    """Check if a value is JSON-serializable.
-
-    Args:
-        value: The value to check
-
-    Returns:
-        True if the value can be JSON serialized, False otherwise
-    """
-    try:
-        json.dumps(value)
-        return True
-    except (TypeError, ValueError):
-        return False
+# ---------------------------------------------------------------------------
+# Serialization
+# ---------------------------------------------------------------------------
 
 
 def serialize_value(
-    value: Any, output_dir: Path, variable_name: str
+    value: Any, output_dir: Path | str, variable_name: str
 ) -> dict[str, Any]:
-    """Serialize a value to a file and return metadata.
+    """Serialize *value* to *output_dir* and return a metadata dict.
 
-    Args:
-        value: The value to serialize
-        output_dir: Directory to write serialized data to
-        variable_name: Name of the variable (used for filename)
-
-    Returns:
-        Dictionary with: content_type, file, rows (for tables), columns, bytes
+    The metadata dict always contains:
+      content_type  — one of the four content types above
+      file          — filename written (relative to output_dir)
+      bytes         — file size in bytes
+      preview       — a JSON-safe preview of the value
+    Arrow results additionally include ``rows`` and ``columns``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -89,86 +102,97 @@ def serialize_value(
     content_type = detect_content_type(value)
 
     if content_type == "arrow/ipc":
-        return _serialize_arrow(value, output_dir, variable_name)
+        try:
+            return _serialize_arrow(value, output_dir, variable_name)
+        except (ImportError, ValueError):
+            # pyarrow unavailable — fall back to JSON with table metadata
+            return _serialize_dataframe_json(value, output_dir, variable_name)
     elif content_type == "json/object":
         return _serialize_json(value, output_dir, variable_name)
-    else:  # pickle/object
+    elif content_type == "module/import":
+        return _serialize_module(value, output_dir, variable_name)
+    else:
         return _serialize_pickle(value, output_dir, variable_name)
 
 
 def _serialize_arrow(
     value: Any, output_dir: Path, variable_name: str
 ) -> dict[str, Any]:
-    """Serialize to Arrow IPC format.
-
-    Args:
-        value: DataFrame, Table, RecordBatch, or numpy array
-        output_dir: Output directory
-        variable_name: Variable name for filename
-
-    Returns:
-        Metadata dict with Arrow-specific fields
-    """
     import pyarrow as pa
 
-    # Convert to Arrow table if needed
     if isinstance(value, pa.RecordBatch):
-        table = pa.table(value)
+        table = pa.Table.from_batches([value])
     elif isinstance(value, pa.Table):
         table = value
     else:
-        # Try pandas DataFrame
         try:
             import pandas as pd
-
             if isinstance(value, (pd.DataFrame, pd.Series)):
                 table = pa.Table.from_pandas(value)
             else:
-                # numpy array
                 import numpy as np
-
                 if isinstance(value, np.ndarray):
                     table = pa.table({"array": value})
                 else:
-                    raise ValueError(f"Cannot convert {type(value)} to Arrow table")
+                    raise ValueError(f"Cannot convert {type(value)} to Arrow")
         except ImportError:
             raise ValueError("pandas/numpy not available for Arrow conversion")
 
-    # Write Arrow IPC
     filename = f"{variable_name}.arrow"
     filepath = output_dir / filename
 
-    sink = pa.BufferOutputStream()
-    writer = pa.ipc.RecordBatchStreamWriter(sink, table.schema)
-    for i in range(table.num_rows // 8192 + 1):
-        start = i * 8192
-        end = min(start + 8192, table.num_rows)
-        if start < table.num_rows:
-            batch = table.slice(start, end - start).to_batches()[0]
-            writer.write_batch(batch)
-    writer.close()
-
-    # Write to file
     with open(filepath, "wb") as f:
-        f.write(sink.getvalue().to_pybytes())
+        writer = pa.ipc.new_stream(f, table.schema)
+        writer.write_table(table)
+        writer.close()
 
-    # Get metadata
-    size_bytes = filepath.stat().st_size
-    num_rows = table.num_rows
-    column_names = table.column_names
-
-    # Generate preview (first 20 rows as list of lists)
     preview = []
-    for i in range(min(20, num_rows)):
-        row = [col[i].as_py() for col in table.columns]
-        preview.append(row)
+    for i in range(min(20, table.num_rows)):
+        preview.append([col[i].as_py() for col in table.columns])
+
+    return {
+        "content_type": "arrow/ipc",
+        "file": filename,
+        "rows": table.num_rows,
+        "columns": table.column_names,
+        "bytes": filepath.stat().st_size,
+        "preview": preview,
+    }
+
+
+def _serialize_dataframe_json(
+    value: Any, output_dir: Path, variable_name: str
+) -> dict[str, Any]:
+    """JSON fallback for DataFrames when pyarrow is unavailable.
+
+    Produces the same metadata shape as ``_serialize_arrow`` so the
+    frontend renders it as a table.
+    """
+    try:
+        import pandas as pd
+        if isinstance(value, pd.Series):
+            value = value.to_frame()
+        columns = list(value.columns)
+        num_rows = len(value)
+        preview = value.head(20).values.tolist()
+        payload = value.to_dict(orient="list")
+    except Exception:
+        columns = []
+        num_rows = 0
+        preview = []
+        payload = {}
+
+    filename = f"{variable_name}.json"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(payload, f)
 
     return {
         "content_type": "arrow/ipc",
         "file": filename,
         "rows": num_rows,
-        "columns": column_names,
-        "bytes": size_bytes,
+        "columns": columns,
+        "bytes": filepath.stat().st_size,
         "preview": preview,
     }
 
@@ -176,50 +200,40 @@ def _serialize_arrow(
 def _serialize_json(
     value: Any, output_dir: Path, variable_name: str
 ) -> dict[str, Any]:
-    """Serialize to JSON format.
-
-    Args:
-        value: JSON-serializable value
-        output_dir: Output directory
-        variable_name: Variable name for filename
-
-    Returns:
-        Metadata dict with JSON-specific fields
-    """
     filename = f"{variable_name}.json"
     filepath = output_dir / filename
-
-    json_str = json.dumps(value, indent=2)
     with open(filepath, "w", encoding="utf-8") as f:
-        f.write(json_str)
-
-    size_bytes = filepath.stat().st_size
-
+        json.dump(value, f, indent=2)
     return {
         "content_type": "json/object",
         "file": filename,
-        "bytes": size_bytes,
+        "bytes": filepath.stat().st_size,
         "preview": value,
+    }
+
+
+def _serialize_module(
+    value: Any, output_dir: Path, variable_name: str
+) -> dict[str, Any]:
+    module_name = getattr(value, "__name__", variable_name)
+    filename = f"{variable_name}.module.json"
+    filepath = output_dir / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump({"module_name": module_name}, f)
+    return {
+        "content_type": "module/import",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "preview": f"<module '{module_name}'>",
     }
 
 
 def _serialize_pickle(
     value: Any, output_dir: Path, variable_name: str
 ) -> dict[str, Any]:
-    """Serialize to pickle format.
-
-    Args:
-        value: Any Python object
-        output_dir: Output directory
-        variable_name: Variable name for filename
-
-    Returns:
-        Metadata dict with pickle-specific fields
-    """
     filename = f"{variable_name}.pickle"
     filepath = output_dir / filename
     type_name = type(value).__name__
-
     try:
         with open(filepath, "wb") as f:
             pickle.dump(value, f, protocol=5)
@@ -232,76 +246,80 @@ def _serialize_pickle(
             "preview": f"<{type_name} object>",
             "error": f"Failed to pickle: {e}",
         }
-
-    size_bytes = filepath.stat().st_size
-
     return {
         "content_type": "pickle/object",
         "file": filename,
-        "bytes": size_bytes,
+        "bytes": filepath.stat().st_size,
         "type": type_name,
         "preview": f"<{type_name} object>",
     }
 
 
-def deserialize_value(content_type: str, file_path: Path) -> Any:
-    """Deserialize a value from a file.
+# ---------------------------------------------------------------------------
+# Deserialization
+# ---------------------------------------------------------------------------
 
-    Args:
-        content_type: The content type of the serialized data
-        file_path: Path to the serialized data file
+# Extension → content-type mapping (also used by executor._store_outputs)
+EXT_TO_CONTENT_TYPE: dict[str, str] = {
+    ".arrow": "arrow/ipc",
+    ".json": "json/object",
+    ".pickle": "pickle/object",
+    ".module.json": "module/import",
+}
 
-    Returns:
-        The deserialized value
+
+def deserialize_value(
+    content_type: str, file_path: Path | str, output_dir: Path | str | None = None
+) -> Any:
+    """Deserialize a value from *file_path*.
+
+    *output_dir* is accepted for API compatibility but not required —
+    *file_path* is always treated as an absolute (or relative-to-cwd) path.
     """
+    file_path = Path(file_path)
     if content_type == "arrow/ipc":
         return _deserialize_arrow(file_path)
     elif content_type == "json/object":
         return _deserialize_json(file_path)
     elif content_type == "pickle/object":
         return _deserialize_pickle(file_path)
+    elif content_type == "module/import":
+        return _deserialize_module(file_path)
     else:
-        raise ValueError(f"Unknown content type: {content_type}")
+        raise ValueError(f"Unknown content type: {content_type!r}")
 
 
 def _deserialize_arrow(file_path: Path) -> Any:
-    """Deserialize Arrow IPC data.
+    """Read an Arrow IPC stream.
 
-    Args:
-        file_path: Path to .arrow file
-
-    Returns:
-        PyArrow Table
+    Returns a pandas DataFrame when pandas is available; falls back to
+    a pyarrow Table.  Users expect DataFrames, not raw Arrow.
     """
     import pyarrow as pa
 
     with open(file_path, "rb") as f:
         reader = pa.ipc.open_stream(f)
         table = reader.read_all()
-    return table
+
+    try:
+        return table.to_pandas()
+    except Exception:
+        return table
 
 
 def _deserialize_json(file_path: Path) -> Any:
-    """Deserialize JSON data.
-
-    Args:
-        file_path: Path to .json file
-
-    Returns:
-        Deserialized Python object (dict, list, scalar, etc.)
-    """
     with open(file_path, encoding="utf-8") as f:
         return json.load(f)
 
 
 def _deserialize_pickle(file_path: Path) -> Any:
-    """Deserialize pickle data.
-
-    Args:
-        file_path: Path to .pickle file
-
-    Returns:
-        Deserialized Python object
-    """
     with open(file_path, "rb") as f:
         return pickle.load(f)
+
+
+def _deserialize_module(file_path: Path) -> Any:
+    import importlib
+
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return importlib.import_module(data["module_name"])
