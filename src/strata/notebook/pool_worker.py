@@ -239,7 +239,7 @@ def execute_harness(manifest: dict) -> dict:
 
         return {
             "success": True,
-            "outputs": outputs,
+            "variables": outputs,
             "stdout": stdout_buffer.getvalue(),
             "stderr": stderr_buffer.getvalue(),
             "error": None,

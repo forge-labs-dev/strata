@@ -84,7 +84,7 @@ const nodes = computed<NodeLayout[]>(() => {
         id: c.id,
         x: startX + i * (nodeSize.w + siblingGapX),
         y: padding + d * layerGapY + nodeSize.h / 2,
-        label: c.defines.length ? c.defines[0] : `cell ${cellIdx + 1}`,
+        label: `[${cellIdx + 1}]`,
         status: c.status,
         depth: d,
       })
