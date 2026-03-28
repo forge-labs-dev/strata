@@ -19,6 +19,7 @@ from strata.notebook.dependencies import (
     list_dependencies,
 )
 from strata.notebook.executor import CellExecutor
+from strata.notebook.models import CellStatus
 from strata.notebook.session import SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
@@ -557,11 +558,15 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
 
     try:
         # Execute the cell
+        cell.status = CellStatus.RUNNING
         executor = CellExecutor(session, session.warm_pool)
         result = await executor.execute_cell(cell_id, cell.source)
+        session.record_execution(cell_id, result.duration_ms, result.cache_hit)
+        cell.status = CellStatus.READY if result.success else CellStatus.ERROR
 
         return result.to_dict()
     except Exception:
+        cell.status = CellStatus.ERROR
         logger.exception("Cell execution failed")
         raise HTTPException(
             status_code=500, detail="Execution failed"

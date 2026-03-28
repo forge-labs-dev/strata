@@ -130,6 +130,39 @@ class TestUpstreamInvalidation:
         )
 
     @pytest.mark.asyncio
+    async def test_missing_one_multi_output_artifact_marks_downstream_idle(self, tmp_path):
+        """Staleness must validate every consumed output, not just the first one."""
+        notebook_dir = create_notebook(tmp_path, "missing_output")
+
+        add_cell_to_notebook(notebook_dir, "c1", None)
+        write_cell(notebook_dir, "c1", "x = 1\ny = 2")
+
+        add_cell_to_notebook(notebook_dir, "c2", "c1")
+        write_cell(notebook_dir, "c2", "z = x + y")
+
+        notebook_state = parse_notebook(notebook_dir)
+        session = NotebookSession(notebook_state, notebook_dir)
+
+        executor = CellExecutor(session)
+        r1 = await executor.execute_cell("c1", "x = 1\ny = 2")
+        r2 = await executor.execute_cell("c2", "z = x + y")
+
+        assert r1.success
+        assert r2.success
+
+        artifact_id = f"nb_{session.notebook_state.id}_cell_c1_var_y"
+        artifact = session.artifact_manager.artifact_store.get_latest_version(artifact_id)
+        assert artifact is not None
+        assert session.artifact_manager.artifact_store.delete_artifact(
+            artifact_id, artifact.version
+        )
+
+        staleness = session.compute_staleness()
+
+        assert staleness["c1"].status == "idle"
+        assert staleness["c2"].status == "idle"
+
+    @pytest.mark.asyncio
     async def test_edit_upstream_produces_correct_value(self, pipeline_notebook):
         """After editing c1, c2's output should reflect the new value."""
         session = pipeline_notebook

@@ -78,6 +78,11 @@ class WarmProcessPool:
         tasks = [self._spawn_warm_process() for _ in range(self.pool_size)]
         await asyncio.gather(*tasks, return_exceptions=True)
 
+    def track_background_task(self, task: asyncio.Task) -> None:
+        """Track a task so shutdown paths can cancel it."""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def _spawn_warm_process(self) -> None:
         """Spawn a process that imports common deps and waits for work.
 
@@ -179,8 +184,7 @@ class WarmProcessPool:
 
         # Spawn a replacement in background (tracked so drain() can cancel it)
         task = asyncio.create_task(self._spawn_warm_process())
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        self.track_background_task(task)
 
     async def drain(self) -> None:
         """Kill all processes in the pool (on env change or shutdown).
@@ -222,6 +226,24 @@ class WarmProcessPool:
         logger.info("Invalidating warm process pool due to env change")
         await self.drain()
         await self.start()
+
+    def shutdown_nowait(self) -> None:
+        """Best-effort synchronous shutdown for non-async callers."""
+        self._started = False
+        for task in list(self._background_tasks):
+            task.cancel()
+        self._background_tasks.clear()
+
+        while True:
+            try:
+                proc = self._available.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if proc.process and proc.process.returncode is None:
+                try:
+                    proc.process.kill()
+                except ProcessLookupError:
+                    pass
 
 
 class PooledCellExecutor:

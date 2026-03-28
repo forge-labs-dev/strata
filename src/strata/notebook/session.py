@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time as _time
 import uuid
@@ -220,37 +221,9 @@ class NotebookSession:
             # The executor stores per-variable provenance hashes:
             #   sha256(f"{provenance_hash}:{var_name}")
             # so we must check with the same scheme.
-            consumed_vars = (
-                self.dag.consumed_variables.get(cell_id, set())
-                if self.dag
-                else set()
-            )
-            if consumed_vars:
-                import hashlib
-                first_var = sorted(consumed_vars)[0]
-                lookup_hash = hashlib.sha256(
-                    f"{provenance_hash}:{first_var}".encode()
-                ).hexdigest()
-            else:
-                lookup_hash = provenance_hash
-            cached = self.artifact_manager.find_cached(lookup_hash)
+            cached_outputs = self._resolve_cached_outputs(cell_id, provenance_hash)
 
-            # Validate: find_by_provenance can return artifacts from old
-            # notebook sessions sharing the same SQLite DB.  Verify the
-            # canonical artifact for THIS notebook/cell has matching provenance.
-            if cached is not None and consumed_vars:
-                notebook_id = self.notebook_state.id
-                first_var = sorted(consumed_vars)[0]
-                canonical_id = (
-                    f"nb_{notebook_id}_cell_{cell_id}_var_{first_var}"
-                )
-                canonical = self.artifact_manager.artifact_store.get_latest_version(
-                    canonical_id,
-                )
-                if canonical is None or canonical.provenance_hash != lookup_hash:
-                    cached = None
-
-            if cached is None:
+            if cached_outputs is None:
                 # No cached artifact — cell is stale
                 staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
                 stale_cells.add(cell_id)
@@ -258,18 +231,10 @@ class NotebookSession:
                 # Artifact exists — mark as ready
                 staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 # Populate per-variable artifact URIs
-                notebook_id = self.notebook_state.id
-                for var_name in consumed_vars:
-                    canonical_id = (
-                        f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
-                    )
-                    canonical = self.artifact_manager.artifact_store.get_latest_version(
-                        canonical_id,
-                    )
-                    if canonical:
-                        uri = f"strata://artifact/{canonical.id}@v={canonical.version}"
-                        cell.artifact_uris[var_name] = uri
-                        cell.artifact_uri = uri  # backward compat
+                for var_name, (artifact_id, version) in cached_outputs.items():
+                    uri = f"strata://artifact/{artifact_id}@v={version}"
+                    cell.artifact_uris[var_name] = uri
+                    cell.artifact_uri = uri  # backward compat
 
         self._apply_staleness_map(staleness_map)
 
@@ -290,6 +255,53 @@ class NotebookSession:
             cell.status = staleness.status
             if staleness.status != CellStatus.READY:
                 cell.cache_hit = False
+
+    def _resolve_cached_outputs(
+        self, cell_id: str, provenance_hash: str
+    ) -> dict[str, tuple[str, int]] | None:
+        """Return canonical output artifacts matching current provenance.
+
+        The cache lookup is valid only if every consumed variable for this cell
+        has a canonical artifact in this notebook whose provenance matches the
+        per-variable hash used by the executor.
+        """
+        consumed_vars = (
+            self.dag.consumed_variables.get(cell_id, set())
+            if self.dag
+            else set()
+        )
+        if consumed_vars:
+            first_var = sorted(consumed_vars)[0]
+            lookup_hash = hashlib.sha256(
+                f"{provenance_hash}:{first_var}".encode()
+            ).hexdigest()
+        else:
+            lookup_hash = provenance_hash
+
+        cached = self.artifact_manager.find_cached(lookup_hash)
+        if cached is None:
+            return None
+
+        if not consumed_vars:
+            return {}
+
+        notebook_id = self.notebook_state.id
+        cached_outputs: dict[str, tuple[str, int]] = {}
+        for var_name in sorted(consumed_vars):
+            canonical_id = (
+                f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+            )
+            expected_hash = hashlib.sha256(
+                f"{provenance_hash}:{var_name}".encode()
+            ).hexdigest()
+            canonical = self.artifact_manager.artifact_store.get_latest_version(
+                canonical_id,
+            )
+            if canonical is None or canonical.provenance_hash != expected_hash:
+                return None
+            cached_outputs[var_name] = (canonical.id, canonical.version)
+
+        return cached_outputs
 
     def _collect_input_hashes(self, cell_id: str) -> list[str]:
         """Read provenance hashes from upstream artifacts for staleness checks."""
@@ -539,7 +551,8 @@ class SessionManager:
             # Start pool in background (don't block on notebook open)
             import asyncio
             try:
-                asyncio.get_running_loop().create_task(session.warm_pool.start())
+                task = asyncio.get_running_loop().create_task(session.warm_pool.start())
+                session.warm_pool.track_background_task(task)
             except RuntimeError:
                 pass  # No running loop; pool stays cold until first acquire
         except Exception as e:
@@ -620,7 +633,7 @@ class SessionManager:
             try:
                 asyncio.get_running_loop().create_task(session.warm_pool.drain())
             except RuntimeError:
-                pass  # No running loop; best-effort
+                session.warm_pool.shutdown_nowait()
 
     def list_sessions(self) -> list[str]:
         """List all open session IDs.

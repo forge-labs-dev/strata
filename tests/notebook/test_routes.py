@@ -315,6 +315,42 @@ def test_execute_cell():
         assert "y" in data["outputs"], f"Missing y in outputs: {data}"
 
 
+def test_execute_cell_updates_session_state_and_history():
+    """REST execution should update backend cell state and profiling history."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        notebook_dir = create_notebook(tmpdir_path, "Execute Session State")
+        cell_id = "test-cell"
+        add_cell_to_notebook(notebook_dir, cell_id)
+        write_cell(notebook_dir, cell_id, "x = 41 + 1")
+        add_cell_to_notebook(notebook_dir, "consumer", after_cell_id=cell_id)
+        write_cell(notebook_dir, "consumer", "y = x + 1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)}
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.post(
+            f"/v1/notebooks/{session_id}/cells/{cell_id}/execute"
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "ready"
+
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        cell = next(c for c in session.notebook_state.cells if c.id == cell_id)
+        assert cell.status == "ready"
+        assert cell.cache_hit is False
+        assert cell.artifact_uri is not None
+        assert len(session.execution_history[cell_id]) == 1
+
+
 def test_execute_cell_not_found():
     """Test executing a non-existent cell."""
     client = TestClient(create_test_app())

@@ -409,23 +409,7 @@ def compute_causality_on_staleness(
             input_hashes, source_hash, env_hash
         )
 
-        # Check if artifact exists with this provenance.
-        # Use per-variable provenance hash to match executor storage scheme.
-        consumed_vars = (
-            session.dag.consumed_variables.get(cell_id, set())
-            if session.dag
-            else set()
-        )
-        if consumed_vars:
-            import hashlib as _hashlib
-            first_var = sorted(consumed_vars)[0]
-            lookup_hash = _hashlib.sha256(
-                f"{provenance_hash}:{first_var}".encode()
-            ).hexdigest()
-        else:
-            lookup_hash = provenance_hash
-        cached = session.artifact_manager.find_cached(lookup_hash)
-        if cached is not None:
+        if session._resolve_cached_outputs(cell_id, provenance_hash) is not None:
             # Cell is ready — no causality needed
             continue
 
