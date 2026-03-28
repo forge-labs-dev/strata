@@ -105,86 +105,14 @@ class CausalityInspector:
         self.session = session
 
     def inspect(self, cell_id: str) -> CausalityChain | None:
-        """Explain why a cell is stale.
-
-        Computes the causality chain by comparing current provenance
-        components against the last cached artifact's provenance.
-
-        Args:
-            cell_id: ID of the cell to inspect
-
-        Returns:
-            CausalityChain if cell is stale, None if cell is ready/idle
-        """
-        cell = next(
-            (c for c in self.session.notebook_state.cells if c.id == cell_id),
-            None,
-        )
-        if cell is None:
-            return None
-
-        # Only stale cells have causality explanations
-        if cell.status not in ("stale", "idle"):
-            return None
-
-        details: list[CausalityDetail] = []
-        env_hash = compute_lockfile_hash(self.session.path)
-        source_hash = compute_source_hash(cell.source)
-
-        # Check 1: Source changed
-        # Compare current source hash with the hash stored when artifact was created
-        stored_source_hash = self._get_stored_source_hash(cell_id)
-        if stored_source_hash is not None and stored_source_hash != source_hash:
-            cell_name = self._cell_display_name(cell_id)
-            details.append(
-                CausalityDetail(
-                    type="source_changed",
-                    cell_id=cell_id,
-                    cell_name=cell_name,
-                )
-            )
-
-        # Check 2: Upstream inputs changed
-        upstream_details = self._check_upstream_changes(cell_id)
-        details.extend(upstream_details)
-
-        # Check 3: Environment changed
-        stored_env_hash = self._get_stored_env_hash(cell_id)
-        if stored_env_hash is not None and stored_env_hash != env_hash:
-            details.append(
-                CausalityDetail(
-                    type="env_changed",
-                    package="uv.lock",
-                )
-            )
-
-        if not details:
-            # No cached artifact exists at all (first run)
-            return None
-
-        # Determine primary reason
-        reason = "self"
-        if any(d.type == "source_changed" for d in details):
-            reason = "self"
-        elif any(d.type == "input_changed" for d in details):
-            reason = "upstream"
-        elif any(d.type == "env_changed" for d in details):
-            reason = "env"
-
-        return CausalityChain(reason=reason, details=details)
+        """Explain why a cell is stale using the canonical staleness path."""
+        self.session.compute_staleness()
+        return self.session.causality_map.get(cell_id)
 
     def inspect_all(self) -> dict[str, CausalityChain]:
-        """Inspect all cells and return causality chains for stale ones.
-
-        Returns:
-            Dict mapping cell_id -> CausalityChain for stale cells
-        """
-        result: dict[str, CausalityChain] = {}
-        for cell in self.session.notebook_state.cells:
-            chain = self.inspect(cell.id)
-            if chain is not None:
-                result[cell.id] = chain
-        return result
+        """Inspect all cells using the canonical staleness path."""
+        self.session.compute_staleness()
+        return dict(self.session.causality_map)
 
     def _check_upstream_changes(self, cell_id: str) -> list[CausalityDetail]:
         """Check if upstream cells have changed artifacts.

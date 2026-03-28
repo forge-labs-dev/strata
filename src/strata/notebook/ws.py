@@ -162,6 +162,59 @@ async def _broadcast_staleness_updates(
         )
 
 
+def _capture_cell_state_snapshot(
+    session: NotebookSession,
+) -> dict[str, tuple[str, tuple[str, ...], dict[str, Any] | None]]:
+    """Capture cell status/reasons/causality for diffing after recompute."""
+    snapshot: dict[str, tuple[str, tuple[str, ...], dict[str, Any] | None]] = {}
+    for cell in session.notebook_state.cells:
+        causality = session.causality_map.get(cell.id)
+        status = (
+            cell.status.value
+            if isinstance(cell.status, CellStatus)
+            else str(cell.status)
+        )
+        reasons = tuple(
+            reason.value for reason in (cell.staleness.reasons if cell.staleness else [])
+        )
+        snapshot[cell.id] = (
+            status,
+            reasons,
+            causality.to_dict() if causality else None,
+        )
+    return snapshot
+
+
+async def _refresh_and_broadcast_changed_staleness(
+    session: NotebookSession,
+    notebook_id: str,
+    seq: int,
+    previous_snapshot: dict[str, tuple[str, tuple[str, ...], dict[str, Any] | None]],
+) -> dict[str, CellStaleness]:
+    """Recompute notebook staleness and broadcast only changed cells."""
+    staleness_map = session.compute_staleness()
+    changed: dict[str, CellStaleness] = {}
+
+    for cell in session.notebook_state.cells:
+        staleness = staleness_map.get(cell.id)
+        if staleness is None:
+            continue
+
+        causality = session.causality_map.get(cell.id)
+        current = (
+            staleness.status.value,
+            tuple(reason.value for reason in staleness.reasons),
+            causality.to_dict() if causality else None,
+        )
+        if previous_snapshot.get(cell.id) != current:
+            changed[cell.id] = staleness
+
+    if changed:
+        await _broadcast_staleness_updates(session, notebook_id, seq, changed)
+
+    return staleness_map
+
+
 async def _run_execution_task(
     execution_state: dict[str, Any],
     requested_cell: str,
@@ -961,22 +1014,26 @@ async def _execute_cell_directly(
                 },
             )
 
-        # Mark as ready — update backend state AND broadcast
-        status = CellStatus.READY if result.success else CellStatus.ERROR
-        cell = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id), None
-        )
-        if cell:
-            cell.status = status
-        await _broadcast_message(
-            notebook_id,
-            {
-                "type": "cell_status",
-                "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"cell_id": cell_id, "status": status},
-            },
-        )
+        if result.success:
+            previous_snapshot = _capture_cell_state_snapshot(session)
+            await _refresh_and_broadcast_changed_staleness(
+                session, notebook_id, seq, previous_snapshot
+            )
+        else:
+            cell = next(
+                (c for c in session.notebook_state.cells if c.id == cell_id), None
+            )
+            if cell:
+                cell.status = CellStatus.ERROR
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "cell_status",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"cell_id": cell_id, "status": CellStatus.ERROR},
+                },
+            )
 
     except asyncio.CancelledError:
         await _set_cell_idle(session, notebook_id, seq, cell_id)
@@ -1234,6 +1291,11 @@ async def _execute_cascade(
                     },
                 )
                 cascade_failed = True
+        if not cascade_failed:
+            previous_snapshot = _capture_cell_state_snapshot(session)
+            await _refresh_and_broadcast_changed_staleness(
+                session, notebook_id, seq, previous_snapshot
+            )
     finally:
         execution_state["running_cell"] = None
 

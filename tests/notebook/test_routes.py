@@ -345,7 +345,9 @@ def test_execute_cell_updates_session_state_and_history():
         session = get_session_manager().get_session(session_id)
         assert session is not None
         cell = next(c for c in session.notebook_state.cells if c.id == cell_id)
+        consumer = next(c for c in session.notebook_state.cells if c.id == "consumer")
         assert cell.status == "ready"
+        assert consumer.status == "idle"
         assert cell.cache_hit is False
         assert cell.artifact_uri is not None
         assert len(session.execution_history[cell_id]) == 1

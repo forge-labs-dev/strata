@@ -183,6 +183,38 @@ class TestCausalityInspectorWithHashes:
         assert stored_env == compute_lockfile_hash(nb_dir)
         assert stored_src == compute_source_hash("x = 1")
 
+    @pytest.mark.asyncio
+    async def test_inspector_matches_canonical_multi_output_causality(self, tmp_path):
+        """Inspector should use the same causality result as session staleness."""
+        nb_dir = create_notebook(tmp_path, "multi_output")
+        add_cell_to_notebook(nb_dir, "c1")
+        write_cell(nb_dir, "c1", "x = 1\ny = 2")
+        add_cell_to_notebook(nb_dir, "c2", after_cell_id="c1")
+        write_cell(nb_dir, "c2", "z = x + y")
+
+        mgr = SessionManager()
+        session = mgr.open_notebook(nb_dir)
+
+        from strata.notebook.executor import CellExecutor
+
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", "x = 1\ny = 2")).success
+        assert (await executor.execute_cell("c2", "z = x + y")).success
+
+        artifact_id = f"nb_{session.notebook_state.id}_cell_c1_var_y"
+        artifact = session.artifact_manager.artifact_store.get_latest_version(artifact_id)
+        assert artifact is not None
+        assert session.artifact_manager.artifact_store.delete_artifact(
+            artifact_id, artifact.version
+        )
+
+        inspector = CausalityInspector(session)
+        chain = inspector.inspect("c2")
+
+        assert chain is not None
+        assert session.causality_map["c2"].to_dict() == chain.to_dict()
+        assert any(detail.type == "input_changed" for detail in chain.details)
+
 
 class TestEnvironmentMetadata:
     """Environment section in notebook.toml."""

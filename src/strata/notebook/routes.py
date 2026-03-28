@@ -562,7 +562,10 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
         executor = CellExecutor(session, session.warm_pool)
         result = await executor.execute_cell(cell_id, cell.source)
         session.record_execution(cell_id, result.duration_ms, result.cache_hit)
-        cell.status = CellStatus.READY if result.success else CellStatus.ERROR
+        if result.success:
+            session.compute_staleness()
+        else:
+            cell.status = CellStatus.ERROR
 
         return result.to_dict()
     except Exception:

@@ -140,6 +140,61 @@ def test_cell_execute_no_cascade(client, temp_notebook, app):
         assert response["payload"]["status"] in ["ready", "error"]
 
 
+def test_cell_execute_refreshes_downstream_staleness(client, temp_notebook, app):
+    """Successful execution should immediately invalidate downstream cell state."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("root", "x = 1")).success
+        assert (await executor.execute_cell("middle", "y = x + 1")).success
+        assert (await executor.execute_cell("leaf", "z = y + 1")).success
+        session.compute_staleness()
+
+    asyncio.run(_prime())
+
+    root = next(c for c in session.notebook_state.cells if c.id == "root")
+    root.source = "x = 2"
+    write_cell(notebook_dir, "root", "x = 2")
+    session.re_analyze_cell("root")
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": "root"},
+            }
+        )
+
+        messages = [websocket.receive_json() for _ in range(5)]
+        status_updates = [
+            msg["payload"]
+            for msg in messages
+            if msg["type"] == "cell_status"
+        ]
+
+        assert any(
+            p["cell_id"] == "root" and p["status"] == "ready"
+            for p in status_updates
+        )
+        assert any(
+            p["cell_id"] == "middle" and p["status"] == "idle"
+            for p in status_updates
+        )
+        assert any(
+            p["cell_id"] == "leaf" and p["status"] == "idle"
+            for p in status_updates
+        )
+
+
 def test_cell_execute_uses_warm_pool_when_available(
     client, temp_notebook, app, monkeypatch
 ):
