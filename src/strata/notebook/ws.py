@@ -840,24 +840,6 @@ async def _handle_notebook_sync(
 
     Return full notebook state (for reconnection).
     """
-    # Build full notebook state
-    cells_data = []
-    for cell in session.notebook_state.cells:
-        cells_data.append(
-            {
-                "id": cell.id,
-                "source": cell.source,
-                "language": cell.language,
-                "order": cell.order,
-                "status": cell.status,
-                "defines": cell.defines,
-                "references": cell.references,
-                "upstream_ids": cell.upstream_ids,
-                "downstream_ids": cell.downstream_ids,
-                "is_leaf": cell.is_leaf,
-            }
-        )
-
     # Build DAG
     dag_edges = []
     if session.dag:
@@ -870,19 +852,15 @@ async def _handle_notebook_sync(
                 }
             )
 
-    state = {
-        "id": session.notebook_state.id,
-        "name": session.notebook_state.name,
-        "cells": cells_data,
-        "dag": {
+    state = session.serialize_notebook_state()
+    state["dag"] = {
             "edges": dag_edges,
             "roots": list(session.dag.roots) if session.dag else [],
             "leaves": list(session.dag.leaves) if session.dag else [],
             "topological_order": (
                 session.dag.topological_order if session.dag else []
             ),
-        },
-    }
+        }
 
     await websocket.send_text(
         _json_encode(

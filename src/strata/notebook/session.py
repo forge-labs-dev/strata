@@ -9,7 +9,7 @@ import time as _time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from strata.notebook.analyzer import analyze_cell
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
@@ -97,9 +97,12 @@ class NotebookSession:
 
     def reload(self) -> None:
         """Reload notebook state from disk."""
+        previous_cells = {cell.id: cell.model_copy(deep=True) for cell in self.notebook_state.cells}
         self.notebook_state = parse_notebook(self.path)
         # Re-analyze all cells and rebuild DAG
         self._analyze_and_build_dag()
+        self.compute_staleness()
+        self._restore_ready_runtime_state(previous_cells)
 
     def _analyze_and_build_dag(self) -> None:
         """Analyze all cells and build the DAG.
@@ -135,6 +138,29 @@ class NotebookSession:
             # Cycle detected — log but don't crash
             logger.warning("Cycle detected in DAG: %s", e)
             self.dag = None
+
+    def _restore_ready_runtime_state(self, previous_cells: dict[str, Any]) -> None:
+        """Preserve ready leaf-like runtime state across metadata-only reloads."""
+        for cell in self.notebook_state.cells:
+            previous = previous_cells.get(cell.id)
+            can_restore_ready_state = (
+                previous is not None
+                and previous.source == cell.source
+                and previous.status == CellStatus.READY
+                and cell.status == CellStatus.IDLE
+                and previous.upstream_ids == cell.upstream_ids
+                and previous.downstream_ids == cell.downstream_ids
+                and previous.is_leaf == cell.is_leaf
+            )
+            if not can_restore_ready_state:
+                continue
+
+            cell.status = CellStatus.READY
+            cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
+            cell.artifact_uri = previous.artifact_uri
+            cell.artifact_uris = dict(previous.artifact_uris)
+            cell.cache_hit = previous.cache_hit
+            self.causality_map.pop(cell.id, None)
 
     def re_analyze_cell(self, cell_id: str) -> None:
         """Re-analyze a single cell and rebuild the DAG.
@@ -271,6 +297,29 @@ class NotebookSession:
         cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
         cell.status = CellStatus.READY
         self.causality_map.pop(cell_id, None)
+
+    def serialize_cell(self, cell: Any) -> dict[str, Any]:
+        """Serialize a cell with causality and flattened staleness reasons."""
+        data = cell.model_dump()
+        data["staleness_reasons"] = (
+            [reason.value for reason in cell.staleness.reasons]
+            if cell.staleness and cell.staleness.reasons
+            else []
+        )
+        causality = self.causality_map.get(cell.id)
+        if causality is not None:
+            data["causality"] = causality.to_dict()
+        return data
+
+    def serialize_cells(self) -> list[dict[str, Any]]:
+        """Serialize all cells with runtime-derived metadata."""
+        return [self.serialize_cell(cell) for cell in self.notebook_state.cells]
+
+    def serialize_notebook_state(self) -> dict[str, Any]:
+        """Serialize notebook state with enriched cell metadata."""
+        data = self.notebook_state.model_dump()
+        data["cells"] = self.serialize_cells()
+        return data
 
     def _resolve_cached_outputs(
         self, cell_id: str, provenance_hash: str
@@ -573,6 +622,8 @@ class SessionManager:
                 pass  # No running loop; pool stays cold until first acquire
         except Exception as e:
             logger.warning("Failed to initialize warm pool: %s", e)
+
+        session.compute_staleness()
 
         self._evict_stale()
         self._sessions[session.id] = session

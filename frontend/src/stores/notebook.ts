@@ -169,16 +169,42 @@ function setCellOutput(id: CellId, output: CellOutput) {
   }
 }
 
+function parseBackendCausality(raw: any): Cell['causality'] | undefined {
+  if (!raw) return undefined
+  return {
+    reason: raw.reason,
+    details: (raw.details || []).map((d: Record<string, any>) => ({
+      type: d.type,
+      cellId: d.cell_id,
+      cellName: d.cell_name,
+      fromVersion: d.from_version,
+      toVersion: d.to_version,
+      package: d.package,
+      fromPackageVersion: d.from_package_version,
+      toPackageVersion: d.to_package_version,
+    })),
+  }
+}
+
+function applyBackendCellState(localCell: Cell, serverCell: any) {
+  localCell.defines = serverCell.defines || []
+  localCell.references = serverCell.references || []
+  localCell.upstreamIds = serverCell.upstream_ids || []
+  localCell.downstreamIds = serverCell.downstream_ids || []
+  localCell.isLeaf = serverCell.is_leaf || false
+  localCell.status = serverCell.status || 'idle'
+  localCell.stalenessReasons =
+    serverCell.staleness_reasons ||
+    serverCell.staleness?.reasons ||
+    []
+  localCell.causality = parseBackendCausality(serverCell.causality)
+}
+
 function syncCellsFromBackend(serverCells: any[]) {
   for (const serverCell of serverCells) {
     const localCell = cellMap.value.get(serverCell.id)
     if (!localCell) continue
-    localCell.defines = serverCell.defines || []
-    localCell.references = serverCell.references || []
-    localCell.upstreamIds = serverCell.upstream_ids || []
-    localCell.downstreamIds = serverCell.downstream_ids || []
-    localCell.isLeaf = serverCell.is_leaf || false
-    localCell.status = serverCell.status || 'idle'
+    applyBackendCellState(localCell, serverCell)
   }
 }
 
@@ -352,13 +378,15 @@ async function openNotebook(path: string): Promise<void> {
     source: c.source || '',
     language: c.language || 'python',
     order: c.order ?? 0,
-    status: 'idle' as CellStatus,
+    status: (c.status || 'idle') as CellStatus,
     upstreamIds: c.upstream_ids || [],
     downstreamIds: c.downstream_ids || [],
     defines: c.defines || [],
     references: c.references || [],
     inputs: [],
     isLeaf: c.is_leaf || false,
+    stalenessReasons: c.staleness_reasons || c.staleness?.reasons || [],
+    causality: parseBackendCausality(c.causality),
   }))
   notebook.cells.sort((a, b) => a.order - b.order)
   if (data.dag) {

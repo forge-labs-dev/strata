@@ -97,6 +97,47 @@ def test_notebook_sync(client, temp_notebook, app):
         assert "dag" in state
 
 
+def test_notebook_sync_includes_causality_and_staleness(client, temp_notebook, app):
+    """notebook_sync should return enriched cell state, not just bare DAG fields."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("root", "x = 1")).success
+        root = next(c for c in session.notebook_state.cells if c.id == "root")
+        root.source = "x = 2"
+        write_cell(notebook_dir, "root", "x = 2")
+        session.re_analyze_cell("root")
+        session.compute_staleness()
+
+    asyncio.run(_prime())
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "notebook_sync",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {},
+            }
+        )
+
+        response = websocket.receive_json()
+        assert response["type"] == "notebook_state"
+        state = response["payload"]
+        root = next(cell for cell in state["cells"] if cell["id"] == "root")
+
+        assert root["status"] == "idle"
+        assert "staleness_reasons" in root
+        assert root["causality"]["reason"] == "self"
+
+
 def test_cell_execute_no_cascade(client, temp_notebook, app):
     """Test cell_execute on a root cell (no cascade needed)."""
     notebook_dir, notebook_state = temp_notebook

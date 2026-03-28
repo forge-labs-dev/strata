@@ -163,7 +163,7 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
         session = _session_manager.open_notebook(notebook_path)
 
         # Return notebook state with session ID and DAG
-        data = session.notebook_state.model_dump()
+        data = session.serialize_notebook_state()
         data["session_id"] = session.id
         data["dag"] = _format_dag(session)
         return data
@@ -189,7 +189,7 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
         notebook_dir = create_notebook(parent_path, req.name)
         session = _session_manager.open_notebook(notebook_dir)
 
-        data = session.notebook_state.model_dump()
+        data = session.serialize_notebook_state()
         data["session_id"] = session.id
         return data
     except Exception:
@@ -211,7 +211,7 @@ async def reorder_notebook_cells(
         session.reload()
         return {
             "notebook_id": session.notebook_state.id,
-            "cells": [c.model_dump() for c in session.notebook_state.cells],
+            "cells": session.serialize_cells(),
         }
     except Exception:
         logger.exception("Internal server error")
@@ -234,7 +234,7 @@ async def list_cells(notebook_id: str) -> dict:
 
     return {
         "notebook_id": session.notebook_state.id,
-        "cells": [c.model_dump() for c in session.notebook_state.cells],
+        "cells": session.serialize_cells(),
     }
 
 
@@ -284,9 +284,9 @@ async def update_cell_source(
         # Return cell and updated DAG — include all cells so the
         # frontend can sync staleness/status changes.
         return {
-            "cell": cell.model_dump(),
+            "cell": session.serialize_cell(cell),
             "dag": _format_dag(session),
-            "cells": [c.model_dump() for c in session.notebook_state.cells],
+            "cells": session.serialize_cells(),
         }
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -325,7 +325,7 @@ async def add_cell(notebook_id: str, req: AddCellRequest) -> dict:
         if not cell:
             raise HTTPException(status_code=500, detail="Failed to create cell")
 
-        return cell.model_dump()
+        return session.serialize_cell(cell)
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -461,7 +461,7 @@ async def add_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
-        "cells": [c.model_dump() for c in session.notebook_state.cells],
+        "cells": session.serialize_cells(),
     }
 
 
@@ -496,7 +496,7 @@ async def remove_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
-        "cells": [c.model_dump() for c in session.notebook_state.cells],
+        "cells": session.serialize_cells(),
     }
 
 

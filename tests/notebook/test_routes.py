@@ -1,5 +1,6 @@
 """Tests for notebook REST routes."""
 
+import asyncio
 import tempfile
 from pathlib import Path
 
@@ -55,6 +56,40 @@ def test_open_notebook():
         assert data["name"] == "Test Notebook"
         assert "session_id" in data
         assert "id" in data
+
+
+def test_open_notebook_rehydrates_cached_status():
+    """Opening an existing notebook should restore cached cell statuses."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        notebook_dir = create_notebook(tmpdir_path, "Rehydrate Test")
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(notebook_dir, "c1", "x = 1")
+        add_cell_to_notebook(notebook_dir, "c2", after_cell_id="c1")
+        write_cell(notebook_dir, "c2", "y = x + 1")
+
+        from strata.notebook.executor import CellExecutor
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().open_notebook(notebook_dir)
+
+        async def _prime() -> None:
+            executor = CellExecutor(session)
+            assert (await executor.execute_cell("c1", "x = 1")).success
+
+        asyncio.run(_prime())
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)}
+        )
+
+        assert response.status_code == 200
+        cells = {cell["id"]: cell for cell in response.json()["cells"]}
+        assert cells["c1"]["status"] == "ready"
+        assert cells["c2"]["status"] == "idle"
 
 
 def test_open_notebook_not_found():
