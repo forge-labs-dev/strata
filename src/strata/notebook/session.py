@@ -256,6 +256,22 @@ class NotebookSession:
             if staleness.status != CellStatus.READY:
                 cell.cache_hit = False
 
+    def mark_executed_ready(self, cell_id: str) -> None:
+        """Preserve a just-executed cell as ready in backend state.
+
+        Some cells, especially leaves, are intentionally not cacheable via the
+        canonical artifact path. They should still appear as successfully run
+        immediately after execution, even though a later staleness recompute
+        may otherwise classify them as idle.
+        """
+        cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
+        if cell is None:
+            return
+
+        cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
+        cell.status = CellStatus.READY
+        self.causality_map.pop(cell_id, None)
+
     def _resolve_cached_outputs(
         self, cell_id: str, provenance_hash: str
     ) -> dict[str, tuple[str, int]] | None:

@@ -564,6 +564,7 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
         session.record_execution(cell_id, result.duration_ms, result.cache_hit)
         if result.success:
             session.compute_staleness()
+            session.mark_executed_ready(cell_id)
         else:
             cell.status = CellStatus.ERROR
 

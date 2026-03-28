@@ -190,9 +190,17 @@ async def _refresh_and_broadcast_changed_staleness(
     notebook_id: str,
     seq: int,
     previous_snapshot: dict[str, tuple[str, tuple[str, ...], dict[str, Any] | None]],
+    *,
+    preserve_ready_cell_id: str | None = None,
 ) -> dict[str, CellStaleness]:
     """Recompute notebook staleness and broadcast only changed cells."""
     staleness_map = session.compute_staleness()
+    if preserve_ready_cell_id is not None:
+        session.mark_executed_ready(preserve_ready_cell_id)
+        staleness_map[preserve_ready_cell_id] = CellStaleness(
+            status=CellStatus.READY,
+            reasons=[],
+        )
     changed: dict[str, CellStaleness] = {}
 
     for cell in session.notebook_state.cells:
@@ -1017,7 +1025,11 @@ async def _execute_cell_directly(
         if result.success:
             previous_snapshot = _capture_cell_state_snapshot(session)
             await _refresh_and_broadcast_changed_staleness(
-                session, notebook_id, seq, previous_snapshot
+                session,
+                notebook_id,
+                seq,
+                previous_snapshot,
+                preserve_ready_cell_id=cell_id,
             )
         else:
             cell = next(
@@ -1294,7 +1306,11 @@ async def _execute_cascade(
         if not cascade_failed:
             previous_snapshot = _capture_cell_state_snapshot(session)
             await _refresh_and_broadcast_changed_staleness(
-                session, notebook_id, seq, previous_snapshot
+                session,
+                notebook_id,
+                seq,
+                previous_snapshot,
+                preserve_ready_cell_id=plan.target_cell_id,
             )
     finally:
         execution_state["running_cell"] = None
