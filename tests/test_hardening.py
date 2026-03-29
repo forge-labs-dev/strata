@@ -1318,27 +1318,34 @@ class TestAsyncIONonBlocking:
 
             return time.perf_counter() - start
 
-        # Run single scan to get baseline (and warm cache)
-        single_time = do_scan()
+        # Warm cache first so both sequential and concurrent measurements are
+        # operating on the same steady-state cached path.
+        do_scan()
 
         # Run multiple concurrent scans
         num_concurrent = 5
+        wall_start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
             futures = [executor.submit(do_scan) for _ in range(num_concurrent)]
             concurrent_times = [f.result() for f in as_completed(futures)]
+        total_concurrent_time = time.perf_counter() - wall_start
 
-        # Total wall time for concurrent scans should be much less than
-        # num_concurrent * single_time if they truly run concurrently.
-        # With cache hits, concurrent scans should complete in ~1x single time,
-        # not num_concurrent * single_time.
-        max_concurrent_time = max(concurrent_times)
+        # Measure the same workload sequentially as a control. Using a same-run
+        # control is more stable than comparing to a single cached request,
+        # which can fluctuate a lot under suite load.
+        sequential_start = time.perf_counter()
+        sequential_times = [do_scan() for _ in range(num_concurrent)]
+        total_sequential_time = time.perf_counter() - sequential_start
 
-        # Allow 3x overhead for concurrent execution (generous for timing tests)
-        # If blocking, this would be ~num_concurrent times slower
-        assert max_concurrent_time < single_time * 3, (
-            f"Concurrent scans too slow: max={max_concurrent_time:.3f}s, "
-            f"single={single_time:.3f}s. May indicate event loop blocking."
+        # Concurrent execution should be materially faster than doing the same
+        # cached workload sequentially. A 10% margin leaves room for CI noise
+        # while still catching effectively serialized behavior.
+        assert total_concurrent_time < total_sequential_time * 0.9, (
+            f"Concurrent scans too slow: total={total_concurrent_time:.3f}s, "
+            f"sequential={total_sequential_time:.3f}s. May indicate event loop blocking."
         )
+        assert max(concurrent_times) < total_sequential_time
+        assert all(elapsed > 0 for elapsed in sequential_times)
 
 
 class TestNonBlockingLogging:

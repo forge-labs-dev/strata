@@ -151,6 +151,7 @@ def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str
         RuntimeError: If server fails to start within 5 seconds
     """
     import strata.server as server_module
+    from strata.artifact_store import reset_artifact_store
     from strata.server import ServerState, app
 
     # Reset global caches if requested (for test isolation)
@@ -158,6 +159,9 @@ def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str
         from strata.metadata_cache import reset_caches as do_reset_caches
 
         do_reset_caches()
+
+    # Reset artifact store singleton for test isolation across server runs.
+    reset_artifact_store()
 
     # Initialize server state
     server_module._state = ServerState(config)
@@ -194,6 +198,7 @@ def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str
     finally:
         # Server thread is daemon, will be killed on exit
         server_module._state = None
+        reset_artifact_store()
 
 
 @contextmanager
@@ -233,6 +238,7 @@ def run_server_with_context(
         deployment_mode=deployment_mode,
         artifact_dir=artifact_dir,
     )
+    reset_artifact_store()
     server._state = ServerState(config)
 
     server_config = uvicorn.Config(

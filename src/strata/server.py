@@ -4595,7 +4595,7 @@ async def download_artifact_signed(
             detail=f"Artifact is not ready (state={artifact.state})",
         )
 
-    blob = store.read_blob(artifact_id, version_int)
+    blob = await asyncio.to_thread(store.read_blob, artifact_id, version_int)
     if blob is None:
         raise HTTPException(status_code=404, detail="Artifact blob not found")
 
@@ -5101,7 +5101,7 @@ async def get_artifact_data(artifact_id: str, version: int):
         )
 
     # Read blob
-    blob = store.read_blob(artifact_id, version)
+    blob = await asyncio.to_thread(store.read_blob, artifact_id, version)
     if blob is None:
         raise HTTPException(status_code=404, detail="Artifact data not found")
 
