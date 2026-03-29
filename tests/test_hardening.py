@@ -39,6 +39,20 @@ def build_materialize_request(table_uri: str, columns: list[str] | None = None) 
     }
 
 
+def append_rows(table, start: int, count: int) -> None:
+    """Append a small batch so scans span multiple files/row groups."""
+    stop = start + count
+    table.append(
+        pa.table(
+            {
+                "id": pa.array(range(start, stop), type=pa.int64()),
+                "value": pa.array([float(i * 1.5) for i in range(start, stop)], type=pa.float64()),
+                "name": pa.array([f"item_{i}" for i in range(start, stop)], type=pa.string()),
+            }
+        )
+    )
+
+
 @pytest.fixture
 def temp_warehouse(tmp_path):
     """Create a temporary warehouse with a sample Iceberg table."""
@@ -574,13 +588,37 @@ class TestStreamingIntegration:
             total_rows = sum(b.num_rows for b in batches)
             assert total_rows == expected_rows, f"Expected {expected_rows} rows, got {total_rows}"
 
-            # Verify data integrity
-            all_ids = []
-            for batch in batches:
-                all_ids.extend(batch.column("id").to_pylist())
+    def test_streamed_artifact_records_real_row_count(self, server_with_client):
+        """Stream-finalized artifacts store actual rows, not task count."""
+        import httpx
 
-            # IDs should be 0..999 (or whatever the fixture generates)
-            assert sorted(all_ids) == list(range(expected_rows))
+        config = server_with_client["config"]
+        warehouse = server_with_client["warehouse"]
+        table_uri = warehouse["table_uri"]
+        table = warehouse["table"]
+
+        append_rows(table, 1000, 25)
+        expected_rows = warehouse["num_rows"] + 25
+
+        with httpx.Client(timeout=30.0) as http_client:
+            response = http_client.post(
+                f"http://127.0.0.1:{config.port}/v1/materialize",
+                json=build_materialize_request(table_uri),
+            )
+            assert response.status_code == 200
+            data = response.json()
+            artifact_uri = data["artifact_uri"]
+            stream_url = data["stream_url"]
+
+            response = http_client.get(f"http://127.0.0.1:{config.port}{stream_url}")
+            assert response.status_code == 200
+
+            artifact_id, version = artifact_uri.removeprefix("strata://artifact/").split("@v=")
+            info_response = http_client.get(
+                f"http://127.0.0.1:{config.port}/v1/artifacts/{artifact_id}/v/{version}"
+            )
+            assert info_response.status_code == 200
+            assert info_response.json()["row_count"] == expected_rows
 
     def test_empty_scan_returns_empty_response(self, server_with_client, tmp_path):
         """Empty scan (all row groups pruned) returns empty response."""
@@ -668,8 +706,22 @@ class TestStreamingIntegration:
         """
         import httpx
 
+        import strata.server as server_module
+
         config = server_with_client["config"]
-        table_uri = server_with_client["warehouse"]["table_uri"]
+        warehouse = server_with_client["warehouse"]
+        table_uri = warehouse["table_uri"]
+        append_rows(warehouse["table"], 1000, 25)
+        state = server_module._state
+        assert state is not None
+
+        original_fetch = state.fetcher.fetch_as_stream_bytes
+
+        def slow_fetch(task):
+            time.sleep(0.05)
+            return original_fetch(task)
+
+        state.fetcher.fetch_as_stream_bytes = slow_fetch
 
         # Create a materialize request
         with httpx.Client(timeout=30.0) as http_client:
@@ -678,7 +730,9 @@ class TestStreamingIntegration:
                 json=build_materialize_request(table_uri),
             )
             assert response.status_code == 200
+            artifact_uri = response.json()["artifact_uri"]
             stream_url = response.json()["stream_url"]
+            artifact_id, version = artifact_uri.removeprefix("strata://artifact/").split("@v=")
 
             # Start streaming but close connection after first chunk
             # This simulates a client disconnect
@@ -697,6 +751,13 @@ class TestStreamingIntegration:
 
         # Give server time to detect disconnect and cleanup
         time.sleep(0.5)
+
+        with httpx.Client(timeout=30.0) as http_client:
+            artifact_info = http_client.get(
+                f"http://127.0.0.1:{config.port}/v1/artifacts/{artifact_id}/v/{version}"
+            )
+            assert artifact_info.status_code == 200
+            assert artifact_info.json()["state"] == "failed"
 
         # Now verify we can still do scans (resources were released)
         # If semaphore wasn't released, this would hang or timeout
@@ -734,6 +795,8 @@ class TestStreamingIntegration:
 
         import httpx
 
+        import strata.server as server_module
+
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -750,10 +813,10 @@ class TestStreamingIntegration:
             deployment_mode="personal",
         )
 
-        import strata.server as server_module
         from strata.server import ServerState, app
 
-        server_module._state = ServerState(config)
+        state = ServerState(config)
+        server_module._state = state
 
         server_thread = threading.Thread(
             target=uvicorn.run,
@@ -768,7 +831,16 @@ class TestStreamingIntegration:
         server_thread.start()
         time.sleep(1)
 
+        append_rows(temp_warehouse["table"], 1000, 25)
         table_uri = temp_warehouse["table_uri"]
+
+        original_fetch = state.fetcher.fetch_as_stream_bytes
+
+        def slow_fetch(task):
+            time.sleep(0.05)
+            return original_fetch(task)
+
+        state.fetcher.fetch_as_stream_bytes = slow_fetch
 
         with httpx.Client(timeout=30.0) as http_client:
             # Create materialize request
@@ -777,7 +849,9 @@ class TestStreamingIntegration:
                 json=build_materialize_request(table_uri),
             )
             assert response.status_code == 200
+            artifact_uri = response.json()["artifact_uri"]
             stream_url = response.json()["stream_url"]
+            artifact_id, version = artifact_uri.removeprefix("strata://artifact/").split("@v=")
 
             # Fetch stream - should fail due to timeout
             # The server aborts the connection, so we may get various errors
@@ -801,6 +875,13 @@ class TestStreamingIntegration:
             except httpx.ReadError:
                 # Expected - server aborted connection
                 pass
+
+            time.sleep(0.2)
+            artifact_info = http_client.get(
+                f"http://127.0.0.1:{port}/v1/artifacts/{artifact_id}/v/{version}"
+            )
+            assert artifact_info.status_code == 200
+            assert artifact_info.json()["state"] == "failed"
 
 
 class TestStreamAbortMetrics:
@@ -856,9 +937,18 @@ class TestStreamAbortMetrics:
 
         state = server_with_metrics["state"]
         config = server_with_metrics["config"]
-        table_uri = server_with_metrics["warehouse"]["table_uri"]
+        warehouse = server_with_metrics["warehouse"]
+        table_uri = warehouse["table_uri"]
+        append_rows(warehouse["table"], 1000, 25)
 
         initial_disconnects = state.metrics.client_disconnects
+        original_fetch = state.fetcher.fetch_as_stream_bytes
+
+        def slow_fetch(task):
+            time.sleep(0.05)
+            return original_fetch(task)
+
+        state.fetcher.fetch_as_stream_bytes = slow_fetch
 
         with httpx.Client(timeout=30.0) as http_client:
             # Create and start streaming a materialize request
@@ -886,10 +976,8 @@ class TestStreamAbortMetrics:
         # Give server time to detect disconnect
         time.sleep(0.5)
 
-        # Counter should have incremented (or stayed same if scan completed before disconnect)
-        # This is a best-effort test - fast scans may complete before disconnect is detected
         final_disconnects = state.metrics.client_disconnects
-        assert final_disconnects >= initial_disconnects
+        assert final_disconnects > initial_disconnects
 
     def test_timeout_increments_counter(self, temp_warehouse, tmp_path):
         """Scan timeout increments stream_aborts_timeout counter."""
@@ -930,8 +1018,17 @@ class TestStreamAbortMetrics:
         server_thread.start()
         time.sleep(1)
 
+        append_rows(temp_warehouse["table"], 1000, 25)
         table_uri = temp_warehouse["table_uri"]
         initial_timeouts = state.metrics.stream_aborts_timeout
+
+        original_fetch = state.fetcher.fetch_as_stream_bytes
+
+        def slow_fetch(task):
+            time.sleep(0.05)
+            return original_fetch(task)
+
+        state.fetcher.fetch_as_stream_bytes = slow_fetch
 
         with httpx.Client(timeout=30.0) as http_client:
             # Create materialize request
@@ -954,9 +1051,58 @@ class TestStreamAbortMetrics:
         # Give server time to record metrics
         time.sleep(0.5)
 
-        # Timeout counter should have incremented (or scan completed fast)
         final_timeouts = state.metrics.stream_aborts_timeout
-        assert final_timeouts >= initial_timeouts
+        assert final_timeouts > initial_timeouts
+
+    def test_size_limit_increments_counter(self, temp_warehouse, tmp_path):
+        """Pre-flight size rejection increments stream_aborts_size."""
+        import socket
+
+        import httpx
+
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+
+        cache_dir = tmp_path / "size_metrics_cache"
+        config = StrataConfig(
+            host="127.0.0.1",
+            port=port,
+            cache_dir=cache_dir,
+            max_response_bytes=1,
+            deployment_mode="personal",
+        )
+
+        import strata.server as server_module
+        from strata.server import ServerState, app
+
+        state = ServerState(config)
+        server_module._state = state
+
+        server_thread = threading.Thread(
+            target=uvicorn.run,
+            kwargs={
+                "app": app,
+                "host": config.host,
+                "port": config.port,
+                "log_level": "error",
+            },
+            daemon=True,
+        )
+        server_thread.start()
+        time.sleep(1)
+
+        initial_size_aborts = state.metrics.stream_aborts_size
+
+        with httpx.Client(timeout=30.0) as http_client:
+            response = http_client.post(
+                f"http://127.0.0.1:{port}/v1/materialize",
+                json=build_materialize_request(temp_warehouse["table_uri"]),
+            )
+            assert response.status_code == 413
+
+        assert state.metrics.stream_aborts_size > initial_size_aborts
 
     def test_metrics_endpoint_includes_abort_counters(self, server_with_metrics):
         """GET /metrics includes stream abort counters."""

@@ -179,7 +179,7 @@ class ServerState:
 
     def __init__(self, config: StrataConfig) -> None:
         import os
-        from concurrent.futures import Future, ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor
 
         self.config = config
 
@@ -264,13 +264,14 @@ class ServerState:
         # when clients spam POST /scan without consuming the streams.
         # Max 4 concurrent prefetches (independent of streaming concurrency).
         self._prefetch_semaphore = asyncio.Semaphore(4)
-        # Track prefetch futures by scan_id for cancellation on scan deletion
-        self._prefetch_futures: dict[str, Future] = {}
+        # Track prefetch tasks by scan_id for cancellation on stream cleanup.
+        self._prefetch_futures: dict[str, asyncio.Task[None]] = {}
         # Prefetch metrics for observability
         self._prefetch_started = 0  # Total prefetches started
         self._prefetch_used = 0  # Prefetches consumed by streaming
         self._prefetch_wasted = 0  # Prefetches discarded (scan deleted/abandoned)
         self._prefetch_skipped = 0  # Prefetches skipped (server busy)
+        self._prefetch_in_flight = 0  # Prefetches actively fetching
 
         # Readiness tracking for capacity-based health checks
         # Track when each tier became saturated (no slots available)
@@ -367,6 +368,8 @@ def _schedule_stream_cleanup(
             if state._stream_cleanup_tasks.get(stream_id) is asyncio.current_task():
                 state._stream_cleanup_tasks.pop(stream_id, None)
 
+        if scan_id is not None:
+            _discard_prefetch(state, scan_id, count_wasted=True)
         state._streams.pop(stream_id, None)
         if scan_id is not None:
             state.scans.pop(scan_id, None)
@@ -387,6 +390,73 @@ def _mark_stream_artifact_failed(stream_state: StreamState) -> None:
         store.fail_artifact(stream_state.artifact_id, stream_state.artifact_version)
     except Exception:
         pass
+
+
+def _discard_prefetch(state: ServerState, scan_id: str, *, count_wasted: bool) -> None:
+    """Cancel or discard any prefetched first chunk for a scan."""
+    plan = state.scans.get(scan_id)
+    prefetched_ready = plan is not None and plan.prefetched_first is not None
+    task = state._prefetch_futures.pop(scan_id, None)
+
+    if task is not None and not task.done():
+        task.cancel()
+        if count_wasted:
+            state._prefetch_wasted += 1
+    elif prefetched_ready and count_wasted:
+        state._prefetch_wasted += 1
+
+    if plan is not None:
+        plan.prefetched_first = None
+
+
+def _start_prefetch(state: ServerState, plan: ReadPlan) -> None:
+    """Best-effort prefetch of the first row group for stream-mode reads."""
+    if (
+        not plan.tasks
+        or plan.scan_id in state._prefetch_futures
+        or plan.prefetched_first is not None
+    ):
+        return
+
+    async def _prefetch() -> None:
+        if state._draining:
+            return
+
+        # Prefetch is opportunistic; skip instead of queueing behind existing work.
+        if getattr(state._prefetch_semaphore, "_value", 0) <= 0:
+            state._prefetch_skipped += 1
+            return
+
+        await state._prefetch_semaphore.acquire()
+        state._prefetch_started += 1
+        state._prefetch_in_flight += 1
+        try:
+            loop = asyncio.get_running_loop()
+            plan.prefetched_first = await loop.run_in_executor(
+                state._fetch_executor,
+                state.fetcher.fetch_as_stream_bytes,
+                plan.tasks[0],
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "prefetch_failed",
+                scan_id=plan.scan_id,
+                error=str(e),
+            )
+        finally:
+            state._prefetch_in_flight -= 1
+            state._prefetch_semaphore.release()
+
+    task = asyncio.create_task(_prefetch())
+    state._prefetch_futures[plan.scan_id] = task
+
+    def _cleanup_prefetch(done_task: asyncio.Task[None]) -> None:
+        if state._prefetch_futures.get(plan.scan_id) is done_task:
+            state._prefetch_futures.pop(plan.scan_id, None)
+
+    task.add_done_callback(_cleanup_prefetch)
 
 
 def _normalized_build_qos_tenant_id(tenant_id: str | None) -> str:
@@ -481,6 +551,7 @@ async def _build_identity_artifact(stream_state: StreamState) -> None:
         loop = asyncio.get_running_loop()
         all_chunks: list[bytes] = []
         bytes_out = 0
+        row_count = 0
 
         for task in plan.tasks:
             if state._draining:
@@ -493,8 +564,9 @@ async def _build_identity_artifact(stream_state: StreamState) -> None:
             )
             all_chunks.append(chunk)
             bytes_out += len(chunk)
+            row_count += task.num_rows
 
-        await _finalize_stream_artifact(stream_state, b"".join(all_chunks), len(plan.tasks))
+        await _finalize_stream_artifact(stream_state, b"".join(all_chunks), row_count)
         stream_state.bytes_streamed = bytes_out
         stream_state.completed = True
     except asyncio.CancelledError:
@@ -1447,7 +1519,7 @@ async def metrics():
         "used": state._prefetch_used,
         "wasted": state._prefetch_wasted,
         "skipped": state._prefetch_skipped,
-        "in_flight": len(state._prefetch_futures),
+        "in_flight": state._prefetch_in_flight,
     }
     # Add QoS tier metrics
     stats["qos"] = _get_qos_metrics(state)
@@ -1677,7 +1749,7 @@ async def metrics_prometheus():
         "",
         "# HELP strata_prefetch_in_flight Current prefetches in flight",
         "# TYPE strata_prefetch_in_flight gauge",
-        f"strata_prefetch_in_flight {len(state._prefetch_futures)}",
+        f"strata_prefetch_in_flight {state._prefetch_in_flight}",
     ]
 
     # Add GC stats for diagnosing periodic stalls
@@ -5162,6 +5234,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     # Pre-flight size check
     max_response = state.config.max_response_bytes
     if plan.estimated_bytes > max_response:
+        state.metrics.record_stream_abort_size()
         raise HTTPException(
             status_code=413,
             detail=f"Estimated response size ({plan.estimated_bytes:,} bytes) exceeds limit.",
@@ -5276,6 +5349,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
         state._streams[stream_id] = stream_state
         # Register for QoS/accounting only when a client will actually stream.
         state.scans[plan.scan_id] = plan
+        _start_prefetch(state, plan)
         _schedule_stream_cleanup(state, stream_id, plan.scan_id)
 
         return MaterializeResponse(
@@ -5474,38 +5548,66 @@ async def get_stream(stream_id: str, request: Request):
     # Create streaming generator that also persists to artifact store
     async def stream_and_persist():
         """Stream data to client while persisting to artifact store."""
-        all_chunks = []
+        all_chunks: list[bytes] = []
         bytes_out = 0
-        tasks_completed = 0
+        row_count = 0
         start_time = time.perf_counter()
 
         try:
             state._active_scans += 1
 
-            for task in plan.tasks:
+            for index, task in enumerate(plan.tasks):
                 # Check for client disconnect
                 if await request.is_disconnected():
-                    break
+                    stream_state.error_message = "Client disconnected during streaming"
+                    state.metrics.record_client_disconnect()
+                    _mark_stream_artifact_failed(stream_state)
+                    return
 
                 # Check timeout
                 elapsed = time.perf_counter() - start_time
                 if elapsed > state.config.scan_timeout_seconds:
-                    break
-
-                # Fetch row group
-                try:
-                    chunk = await asyncio.get_event_loop().run_in_executor(
-                        state._fetch_executor,
-                        state.fetcher.fetch_as_stream_bytes,
-                        task,
+                    stream_state.error_message = (
+                        f"Scan timed out after {state.config.scan_timeout_seconds}s"
                     )
-                except Exception as e:
-                    logger.error("stream_fetch_error", error=str(e), task=task.file_path)
-                    break
+                    state.metrics.record_stream_abort_timeout()
+                    _mark_stream_artifact_failed(stream_state)
+                    raise RuntimeError(stream_state.error_message)
+
+                chunk: bytes | None = None
+                if index == 0:
+                    prefetch_task = state._prefetch_futures.get(scan_id)
+                    if prefetch_task is not None and plan.prefetched_first is None:
+                        try:
+                            await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=0.05)
+                        except TimeoutError:
+                            pass
+                        except asyncio.CancelledError:
+                            raise
+
+                    if plan.prefetched_first is not None:
+                        chunk = plan.prefetched_first
+                        plan.prefetched_first = None
+                        state._prefetch_used += 1
+                    else:
+                        _discard_prefetch(state, scan_id, count_wasted=True)
+
+                if chunk is None:
+                    try:
+                        chunk = await asyncio.get_running_loop().run_in_executor(
+                            state._fetch_executor,
+                            state.fetcher.fetch_as_stream_bytes,
+                            task,
+                        )
+                    except Exception as e:
+                        stream_state.error_message = str(e)
+                        logger.error("stream_fetch_error", error=str(e), task=task.file_path)
+                        _mark_stream_artifact_failed(stream_state)
+                        raise
 
                 all_chunks.append(chunk)
                 bytes_out += len(chunk)
-                tasks_completed += 1
+                row_count += task.num_rows
 
                 yield chunk
 
@@ -5516,8 +5618,14 @@ async def get_stream(stream_id: str, request: Request):
             # Persist artifact (combine all chunks)
             if all_chunks:
                 combined = b"".join(all_chunks)
-                await _finalize_stream_artifact(stream_state, combined, tasks_completed)
+                await _finalize_stream_artifact(stream_state, combined, row_count)
 
+        except asyncio.CancelledError:
+            if not stream_state.completed and stream_state.error_message is None:
+                stream_state.error_message = "Client disconnected during streaming"
+                state.metrics.record_client_disconnect()
+                _mark_stream_artifact_failed(stream_state)
+            raise
         finally:
             state._active_scans -= 1
 

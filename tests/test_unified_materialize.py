@@ -325,6 +325,28 @@ class TestUnifiedMaterialize:
         """scan@v1 artifact mode builds in the background and sets names on miss."""
         base_url = server_with_personal_mode["base_url"]
         table_uri = server_with_personal_mode["warehouse"]["table_uri"]
+        table = server_with_personal_mode["warehouse"]["table"]
+
+        extra_rows = 30
+        table.append(
+            pa.table(
+                {
+                    "id": pa.array(range(100, 100 + extra_rows), type=pa.int64()),
+                    "value": pa.array(
+                        [float(i * 1.5) for i in range(100, 100 + extra_rows)],
+                        type=pa.float64(),
+                    ),
+                    "name": pa.array(
+                        [f"item_{i}" for i in range(100, 100 + extra_rows)],
+                        type=pa.string(),
+                    ),
+                    "timestamp": pa.array(
+                        [i * 1_000_000 for i in range(100, 100 + extra_rows)],
+                        type=pa.int64(),
+                    ),
+                }
+            )
+        )
 
         response = requests.post(
             f"{base_url}/v1/materialize",
@@ -368,8 +390,11 @@ class TestUnifiedMaterialize:
         assert data_resp.status_code == 200
 
         table = ipc.open_stream(data_resp.content).read_all()
-        assert table.num_rows == 100
         assert set(table.column_names) == {"id", "name"}
+
+        info_resp = requests.get(f"{base_url}/v1/artifacts/{artifact_id}/v/{version}")
+        assert info_resp.status_code == 200
+        assert info_resp.json()["row_count"] == 100 + extra_rows
 
     def test_identity_artifact_mode_respects_build_qos_quota(self, server_with_personal_mode):
         """Identity artifact-mode should be admitted through build QoS."""

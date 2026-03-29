@@ -142,13 +142,14 @@ class TestPrefetchBasics:
                 metrics = resp.json()
                 prefetch = metrics["prefetch"]
 
-                # At least one prefetch should have been used
-                # (may be 0 if prefetch didn't complete before streaming started)
-                assert prefetch["used"] >= 0
+                assert prefetch["started"] >= 1
+                assert prefetch["used"] >= 1
                 assert prefetch["in_flight"] == 0
 
     def test_prefetch_wasted_on_scan_delete(self, prefetch_warehouse, tmp_path):
         """Test that prefetch is marked as wasted when artifact is created but not streamed."""
+        import strata.server as server_module
+
         port = find_free_port()
         config = StrataConfig(
             host="127.0.0.1",
@@ -159,6 +160,8 @@ class TestPrefetchBasics:
 
         with run_server(config) as base_url:
             table_uri = prefetch_warehouse["table_uri"]
+            assert server_module._state is not None
+            server_module._state._stream_ttl_seconds = 0.1
 
             with httpx.Client(timeout=10.0) as client:
                 # Create materialize request but don't stream it
@@ -168,18 +171,16 @@ class TestPrefetchBasics:
                 )
                 assert resp.status_code == 200
 
-                # Wait for prefetch to complete
-                time.sleep(0.3)
-
-                # With unified API, the stream is consumed during materialize
-                # so prefetch metrics may differ from old behavior
+                # Wait for prefetch and TTL cleanup to run.
+                time.sleep(0.4)
 
                 # Check metrics
                 resp = client.get(f"{base_url}/metrics")
                 metrics = resp.json()
                 prefetch = metrics["prefetch"]
 
-                # Prefetch should be tracked
+                assert prefetch["started"] >= 1
+                assert prefetch["wasted"] >= 1
                 assert prefetch["in_flight"] == 0
 
 
