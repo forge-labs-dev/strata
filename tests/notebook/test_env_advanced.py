@@ -19,9 +19,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from strata.notebook.dependencies import _get_notebook_lock, add_dependency
+from strata.notebook.dependencies import _get_notebook_lock
 from strata.notebook.executor import _detect_missing_module
-from strata.notebook.writer import create_notebook
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
     create_test_app,

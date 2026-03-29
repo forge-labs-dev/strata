@@ -24,6 +24,8 @@ if TYPE_CHECKING:
     from strata.notebook.artifact_integration import NotebookArtifactManager
     from strata.notebook.pool import WarmProcessPool
 
+from strata.notebook.dependencies import DependencyChangeResult
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ class ExecutionSample:
 class DependencyMutationOutcome:
     """Result of a notebook dependency mutation."""
 
-    result: object
+    result: DependencyChangeResult
     staleness_map: dict[str, CellStaleness]
 
 
@@ -155,6 +157,7 @@ class NotebookSession:
             if not can_restore_ready_state:
                 continue
 
+            assert previous is not None
             cell.status = CellStatus.READY
             cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
             cell.artifact_uri = previous.artifact_uri

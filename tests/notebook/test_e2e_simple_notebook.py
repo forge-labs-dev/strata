@@ -10,16 +10,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
-    WebSocketTestHelper,
     create_test_app,
     execute_cell_and_wait,
     open_notebook_session,
     ws_connect,
 )
-from fastapi.testclient import TestClient
 
 
 @pytest.fixture

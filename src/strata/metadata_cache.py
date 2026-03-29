@@ -249,7 +249,7 @@ class ManifestResolution:
 def _json_safe_stat_value(value: object) -> object:
     """Convert a statistics value to a JSON-serializable representation."""
     if hasattr(value, "as_py"):
-        value = value.as_py()
+        value = value.as_py()  # type: ignore[union-attr]
     try:
         json.dumps(value)
         return value
@@ -266,7 +266,8 @@ def _persisted_parquet_meta_from_loaded(metadata: ParquetMetadata) -> "Persisted
     )
 
     column_names = [
-        metadata.parquet_schema.column(i).name for i in range(len(metadata.parquet_schema))
+        metadata.parquet_schema.column(i).name  # type: ignore[union-attr]
+        for i in range(len(metadata.parquet_schema))  # type: ignore[arg-type]
     ]
     row_groups = []
     for row_group in metadata.row_group_metadata:

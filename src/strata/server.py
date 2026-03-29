@@ -5130,7 +5130,9 @@ async def unified_materialize(request: MaterializeRequest):
     return await _handle_transform_materialize(request)
 
 
-async def _handle_identity_materialize(request: MaterializeRequest) -> MaterializeResponse:
+async def _handle_identity_materialize(
+    request: MaterializeRequest,
+) -> MaterializeResponse | JSONResponse:
     """Handle scan@v1 transform (internal execution).
 
     This is the fast path for table scans. The identity transform reads

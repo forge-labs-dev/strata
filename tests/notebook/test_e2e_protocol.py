@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
-    WebSocketTestHelper,
     create_test_app,
     execute_cell_and_wait,
     open_notebook_session,
@@ -135,7 +134,10 @@ class TestProtocolErrors:
                 ws.send("cell_execute", {})  # No cell_id
                 msg = ws.receive()
                 assert msg["type"] == "error"
-                assert "cell_id" in msg["payload"]["error"].lower() or "missing" in msg["payload"]["error"].lower()
+                assert (
+                    "cell_id" in msg["payload"]["error"].lower()
+                    or "missing" in msg["payload"]["error"].lower()
+                )
 
     def test_unknown_message_type(self, setup):
         """Unknown message type returns error."""

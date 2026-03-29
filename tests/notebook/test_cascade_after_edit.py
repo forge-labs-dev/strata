@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
-    WebSocketTestHelper,
     create_test_app,
     execute_cell_and_wait,
     open_notebook_session,
@@ -50,9 +49,9 @@ class TestCascadeAfterEdit:
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
                 # 1. Run all cells in order so they become "ready"
-                result1 = execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c1")
                 ws.clear()
-                result2 = execute_cell_and_wait(ws, "c2")
+                execute_cell_and_wait(ws, "c2")
                 ws.clear()
                 result3 = execute_cell_and_wait(ws, "c3")
 
@@ -76,7 +75,7 @@ class TestCascadeAfterEdit:
                 ws.clear()
 
                 # 3. Now run c3 — should trigger cascade (c1 → c2 → c3)
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 # 4. Verify cascade happened — look for cascade_prompt
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
@@ -121,7 +120,7 @@ class TestCascadeAfterEdit:
                 ws.clear()
 
                 # Step 2: Run c3 — first run of c3, should resolve y
-                result3 = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
                 c3_out = [
                     m for m in ws.messages
                     if m["type"] == "cell_output"
@@ -139,7 +138,7 @@ class TestCascadeAfterEdit:
                 ws.clear()
 
                 # Step 4: Run c3 — should cascade c1→c2→c3 and print 3
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_msgs) > 0, (
@@ -183,7 +182,7 @@ class TestCascadeAfterEdit:
                 ws.clear()
 
                 # Run c3 — should cascade c1→c2→c3
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_msgs) > 0, (
@@ -289,7 +288,7 @@ class TestCascadeAfterEdit:
                 ws.clear()
 
                 # 3. Run c3 — triggers cascade c1→c2→c3
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 # 4. Verify no errors
                 errors = [m for m in ws.messages if m["type"] == "cell_error"]
@@ -430,12 +429,13 @@ class TestCascadeAfterEdit:
                 # layout or a copied notebook.
 
                 # First, compute what c1's provenance will be.
+                import hashlib
+
+                from strata.notebook.env import compute_lockfile_hash
                 from strata.notebook.provenance import (
                     compute_provenance_hash,
                     compute_source_hash,
                 )
-                from strata.notebook.env import compute_lockfile_hash
-                import hashlib
 
                 source_hash = compute_source_hash("x = 1")
                 env_hash = compute_lockfile_hash(session.path)
@@ -474,7 +474,7 @@ class TestCascadeAfterEdit:
                 )
 
                 # --- Now run c3 — should cascade c1→c2→c3 ---
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_msgs) > 0, (
@@ -561,7 +561,7 @@ class TestCascadeAfterEdit:
                 )
 
                 # 3. Run c3 via WebSocket — should trigger cascade
-                result = execute_cell_and_wait(ws, "c3")
+                execute_cell_and_wait(ws, "c3")
 
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_msgs) > 0, (

@@ -82,11 +82,14 @@ class TestRuntimeErrors:
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
-                result = execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c1")
 
                 errors = ws.messages_of_type("cell_error")
                 assert len(errors) >= 1
-                assert "ZeroDivisionError" in errors[0]["payload"]["error"] or "division" in errors[0]["payload"]["error"]
+                assert (
+                    "ZeroDivisionError" in errors[0]["payload"]["error"]
+                    or "division" in errors[0]["payload"]["error"]
+                )
 
     def test_name_error(self, setup):
         """Referencing undefined variable → NameError."""
@@ -95,7 +98,7 @@ class TestRuntimeErrors:
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
-                result = execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c1")
 
                 errors = ws.messages_of_type("cell_error")
                 assert len(errors) >= 1
@@ -109,7 +112,7 @@ class TestRuntimeErrors:
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
-                result = execute_cell_and_wait(ws, "c1")
+                execute_cell_and_wait(ws, "c1")
                 errors = ws.messages_of_type("cell_error")
                 assert len(errors) >= 1
 
