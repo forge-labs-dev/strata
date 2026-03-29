@@ -1062,6 +1062,9 @@ async def lifespan(app: FastAPI):
                 build_store=build_store,
                 transform_registry=get_transform_registry(),
                 artifact_dir=artifact_dir,
+                runtime_config=config,
+                scan_planner=_state.planner,
+                scan_fetcher=_state.fetcher,
             )
             set_build_runner(build_runner)
             await build_runner.start()
@@ -3064,7 +3067,49 @@ def _get_artifact_store(allow_server_mode: bool = False):
     return store
 
 
-def _validate_transform_allowed(executor_ref: str):
+def _get_artifact_request_tenant() -> str | None:
+    """Return the tenant filter for direct artifact endpoints.
+
+    When trusted-proxy auth is enabled, direct artifact reads/writes should be
+    scoped to the caller's tenant unless the caller is an admin. Tenantless
+    artifacts remain visible for backwards compatibility with legacy data.
+    """
+    state = get_state()
+    if state.config.auth_mode != "trusted_proxy":
+        return None
+
+    principal = get_principal()
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if principal.has_scope("admin:*"):
+        return None
+    if principal.tenant is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Tenant header required for artifact operations",
+        )
+
+    return principal.tenant
+
+
+def _ensure_artifact_access(
+    artifact,
+    tenant_filter: str | None,
+    resource_type: str = "artifact",
+):
+    """Authorize access to a concrete artifact record for direct endpoints."""
+    if artifact is None:
+        raise HTTPException(status_code=404, detail=f"{resource_type.capitalize()} not found")
+
+    if tenant_filter is None or artifact.tenant is None or artifact.tenant == tenant_filter:
+        return artifact
+
+    if get_state().config.hide_forbidden_as_not_found:
+        raise HTTPException(status_code=404, detail=f"{resource_type.capitalize()} not found")
+    raise HTTPException(status_code=403, detail=f"Access denied to {resource_type}")
+
+
+def _validate_transform_allowed(executor_ref: str, principal=None):
     """Validate transform is allowed in server mode and return its definition.
 
     In personal mode, all transforms are allowed (returns None).
@@ -3103,6 +3148,26 @@ def _validate_transform_allowed(executor_ref: str):
                 },
             )
 
+        if (
+            defn.requires_scope
+            and state.config.auth_mode == "trusted_proxy"
+            and not (principal and principal.has_scope(defn.requires_scope))
+        ):
+            if principal is None:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "insufficient_scope",
+                    "message": (
+                        f"Transform '{executor_ref}' requires scope "
+                        f"'{defn.requires_scope}'."
+                    ),
+                    "required_scope": defn.requires_scope,
+                    "executor": executor_ref,
+                },
+            )
+
         return defn
 
     # Shouldn't reach here if called correctly
@@ -3115,7 +3180,11 @@ def _validate_transform_allowed(executor_ref: str):
     )
 
 
-def _resolve_to_artifact_version(input_uri: str, store) -> tuple[str, int] | None:
+def _resolve_to_artifact_version(
+    input_uri: str,
+    store,
+    tenant: str | None = None,
+) -> tuple[str, int] | None:
     """Resolve an input URI to an (artifact_id, version) tuple.
 
     Args:
@@ -3139,7 +3208,7 @@ def _resolve_to_artifact_version(input_uri: str, store) -> tuple[str, int] | Non
     # Name URI: strata://name/{name}
     if input_uri.startswith("strata://name/"):
         name = input_uri.replace("strata://name/", "")
-        artifact = store.resolve_name(name)
+        artifact = store.resolve_name(name, tenant=tenant)
         if artifact is None:
             return None
         return (artifact.id, artifact.version)
@@ -3147,7 +3216,7 @@ def _resolve_to_artifact_version(input_uri: str, store) -> tuple[str, int] | Non
     return None
 
 
-def _resolve_input_version(input_uri: str) -> str:
+def _resolve_input_version(input_uri: str, tenant: str | None = None) -> str:
     """Resolve an input URI to its current version string.
 
     For table URIs (file:// or s3://): returns the current snapshot ID
@@ -3165,7 +3234,7 @@ def _resolve_input_version(input_uri: str) -> str:
     """
     import re
 
-    store = _get_artifact_store()
+    store = _get_artifact_store(allow_server_mode=True)
     state = get_state()
 
     # Artifact URI: strata://artifact/{id}@v={version}
@@ -3180,7 +3249,7 @@ def _resolve_input_version(input_uri: str) -> str:
     # Name URI: strata://name/{name}
     if input_uri.startswith("strata://name/"):
         name = input_uri.replace("strata://name/", "")
-        artifact = store.resolve_name(name)
+        artifact = store.resolve_name(name, tenant=tenant)
         if artifact is None:
             raise HTTPException(status_code=404, detail=f"Name not found: {name}")
         return f"{artifact.id}@v={artifact.version}"
@@ -3242,7 +3311,7 @@ async def materialize_artifact(request: MaterializeRequest):
     # Validate transform is allowed (raises 403 if not)
     # In personal mode this returns None (no validation needed)
     # In server mode this returns the TransformDefinition
-    transform_defn = _validate_transform_allowed(executor_ref)
+    transform_defn = _validate_transform_allowed(executor_ref, principal=principal)
 
     # Get artifact store (allows server mode when transforms are enabled)
     store = _get_artifact_store(allow_server_mode=True)
@@ -3258,7 +3327,7 @@ async def materialize_artifact(request: MaterializeRequest):
     input_versions: dict[str, str] = {}
     for input_uri in request.inputs:
         try:
-            input_versions[input_uri] = _resolve_input_version(input_uri)
+            input_versions[input_uri] = _resolve_input_version(input_uri, tenant=tenant_id)
         except HTTPException:
             # Can't resolve - use URI as version (for tests with fake URIs)
             input_versions[input_uri] = input_uri
@@ -3730,10 +3799,12 @@ async def get_artifact_info(artifact_id: str, version: int):
         ArtifactInfoResponse with artifact metadata
     """
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
 
-    artifact = store.get_artifact(artifact_id, version)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _ensure_artifact_access(
+        store.get_artifact(artifact_id, version),
+        tenant_filter,
+    )
 
     return ArtifactInfoResponse(
         artifact_id=artifact.id,
@@ -3894,7 +3965,7 @@ async def get_name_status(name: str):
     changed_inputs: list[InputChangeInfo] = []
     for input_uri, old_version in status.input_versions.items():
         try:
-            current_version = _resolve_input_version(input_uri)
+            current_version = _resolve_input_version(input_uri, tenant=tenant_id)
             if current_version != old_version:
                 changed_inputs.append(
                     InputChangeInfo(
@@ -3971,11 +4042,13 @@ async def get_artifact_lineage(
     from strata.artifact_store import TransformSpec
 
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
 
     # Get the root artifact
-    artifact = store.get_artifact(artifact_id, version)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _ensure_artifact_access(
+        store.get_artifact(artifact_id, version),
+        tenant_filter,
+    )
 
     if artifact.state != "ready":
         raise HTTPException(
@@ -4060,7 +4133,15 @@ async def get_artifact_lineage(
 
         # Get the artifact
         input_artifact = store.get_artifact(art_id, art_ver)
-        if input_artifact is None or input_artifact.state != "ready":
+        if (
+            input_artifact is None
+            or input_artifact.state != "ready"
+            or (
+                tenant_filter is not None
+                and input_artifact.tenant is not None
+                and input_artifact.tenant != tenant_filter
+            )
+        ):
             # Add as unknown node
             nodes[node_uri] = LineageNode(
                 uri=node_uri,
@@ -4161,11 +4242,13 @@ async def get_artifact_dependents(
     from strata.artifact_store import TransformSpec
 
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
 
     # Verify the artifact exists
-    artifact = store.get_artifact(artifact_id, version)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _ensure_artifact_access(
+        store.get_artifact(artifact_id, version),
+        tenant_filter,
+    )
 
     if artifact.state != "ready":
         raise HTTPException(
@@ -4174,13 +4257,17 @@ async def get_artifact_dependents(
         )
 
     # Find dependents
-    dependent_results = store.find_dependents(artifact_id, version)
+    dependent_results = store.find_dependents(artifact_id, version, tenant=tenant_filter)
 
     # Build response
     dependents: list[DependentInfo] = []
     for dep_artifact, input_version in dependent_results[:limit]:
         # Get name for this artifact if it exists
-        name = store.get_name_for_artifact(dep_artifact.id, dep_artifact.version)
+        name = store.get_name_for_artifact(
+            dep_artifact.id,
+            dep_artifact.version,
+            tenant=tenant_filter,
+        )
 
         # Parse transform ref
         transform_ref = None
@@ -4374,7 +4461,7 @@ async def get_build_manifest(build_id: str, request: Request):
     input_artifacts: list[tuple[str, int]] = []
     if build.input_uris is not None:
         for input_uri in build.input_uris:
-            result = _resolve_to_artifact_version(input_uri, store)
+            result = _resolve_to_artifact_version(input_uri, store, tenant=build.tenant_id)
             if result is None:
                 raise HTTPException(
                     status_code=400,
@@ -4723,7 +4810,7 @@ async def explain_materialize(request: ExplainMaterializeRequest):
     resolved_versions: dict[str, str] = {}
     for input_uri in request.inputs:
         try:
-            resolved_versions[input_uri] = _resolve_input_version(input_uri)
+            resolved_versions[input_uri] = _resolve_input_version(input_uri, tenant=tenant_id)
         except HTTPException as e:
             resolved_versions[input_uri] = f"<error: {e.detail}>"
 
@@ -4827,6 +4914,7 @@ async def list_artifacts(
         List of artifact versions with their metadata
     """
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
 
     if state is not None and state not in ("ready", "building", "failed"):
         raise HTTPException(
@@ -4839,6 +4927,7 @@ async def list_artifacts(
         offset=offset,
         state=state,
         name_prefix=name_prefix,
+        tenant=tenant_filter,
     )
 
     return {
@@ -4874,6 +4963,12 @@ async def delete_artifact(artifact_id: str, version: int):
         Success status
     """
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
+
+    _ensure_artifact_access(
+        store.get_artifact(artifact_id, version),
+        tenant_filter,
+    )
 
     deleted = store.delete_artifact(artifact_id, version)
     if not deleted:
@@ -4924,11 +5019,13 @@ async def get_artifact_data(artifact_id: str, version: int):
         StreamingResponse with Arrow IPC data
     """
     store = _get_artifact_store()
+    tenant_filter = _get_artifact_request_tenant()
 
     # Verify artifact exists and is ready
-    artifact = store.get_artifact(artifact_id, version)
-    if artifact is None:
-        raise HTTPException(status_code=404, detail="Artifact not found")
+    artifact = _ensure_artifact_access(
+        store.get_artifact(artifact_id, version),
+        tenant_filter,
+    )
     if artifact.state != "ready":
         raise HTTPException(
             status_code=400,
@@ -5028,7 +5125,7 @@ def _resolve_artifact_uri(uri: str) -> tuple[str, int] | None:
     # Try name URI
     name = _parse_name_uri(uri)
     if name is not None:
-        artifact = store.resolve_name(name)
+        artifact = store.resolve_name(name, tenant=_get_artifact_request_tenant())
         if artifact is not None:
             return (artifact.id, artifact.version)
         return None

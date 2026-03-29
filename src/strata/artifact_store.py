@@ -1402,6 +1402,7 @@ class ArtifactStore:
         offset: int = 0,
         state: str | None = None,
         name_prefix: str | None = None,
+        tenant: str | None = None,
     ) -> list[ArtifactVersion]:
         """List artifacts with optional filtering.
 
@@ -1410,6 +1411,8 @@ class ArtifactStore:
             offset: Number of artifacts to skip
             state: Filter by state ("ready", "building", "failed")
             name_prefix: Filter by artifacts that have a name starting with prefix
+            tenant: Optional tenant filter. When provided, includes legacy
+                tenantless artifacts for backwards compatibility.
 
         Returns:
             List of ArtifactVersion entries
@@ -1421,13 +1424,19 @@ class ArtifactStore:
                 query = """
                     SELECT DISTINCT av.id, av.version, av.state, av.provenance_hash,
                            av.schema_json, av.row_count, av.byte_size, av.created_at,
-                           av.transform_spec, av.input_versions
+                           av.transform_spec, av.input_versions, av.tenant, av.principal
                     FROM artifact_versions av
                     INNER JOIN artifact_names an
                         ON av.id = an.artifact_id AND av.version = an.version
                     WHERE an.name LIKE ?
                 """
                 params: list = [name_prefix + "%"]
+
+                if tenant is not None:
+                    query += " AND (av.tenant = ? OR av.tenant IS NULL)"
+                    params.append(tenant)
+                    query += " AND (an.tenant = ? OR an.tenant = '')"
+                    params.append(tenant)
 
                 if state is not None:
                     query += " AND av.state = ?"
@@ -1438,14 +1447,22 @@ class ArtifactStore:
             else:
                 query = """
                     SELECT id, version, state, provenance_hash, schema_json,
-                           row_count, byte_size, created_at, transform_spec, input_versions
+                           row_count, byte_size, created_at, transform_spec,
+                           input_versions, tenant, principal
                     FROM artifact_versions
                 """
                 params = []
 
+                conditions: list[str] = []
+                if tenant is not None:
+                    conditions.append("(tenant = ? OR tenant IS NULL)")
+                    params.append(tenant)
                 if state is not None:
-                    query += " WHERE state = ?"
+                    conditions.append("state = ?")
                     params.append(state)
+
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
 
                 query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
@@ -1463,6 +1480,8 @@ class ArtifactStore:
                     created_at=row["created_at"],
                     transform_spec=row["transform_spec"],
                     input_versions=row["input_versions"],
+                    tenant=row["tenant"],
+                    principal=row["principal"],
                 )
                 for row in cursor.fetchall()
             ]

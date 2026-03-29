@@ -128,12 +128,15 @@ def parse_principal(headers: dict[str, str], config: StrataConfig) -> Principal:
     """
     from strata.types import Principal
 
-    principal_id = headers.get(config.principal_header)
+    def _header(name: str) -> str | None:
+        return headers.get(name) or headers.get(name.lower())
+
+    principal_id = _header(config.principal_header)
     if not principal_id:
         raise AuthError("Missing principal header", 401)
 
-    tenant = headers.get(config.tenant_header)
-    scopes_str = headers.get(config.scopes_header, "")
+    tenant = _header(config.tenant_header)
+    scopes_str = _header(config.scopes_header) or ""
     scopes = frozenset(scopes_str.split()) if scopes_str else frozenset()
 
     return Principal(id=principal_id, tenant=tenant, scopes=scopes)

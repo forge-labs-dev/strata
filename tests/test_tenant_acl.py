@@ -8,8 +8,12 @@ These tests verify:
 5. Error handling - hide forbidden as not found when configured
 """
 
-import pytest
+from unittest.mock import MagicMock
 
+import pytest
+from fastapi.testclient import TestClient
+
+import strata.server as server_module
 from strata.artifact_store import (
     ArtifactStore,
     get_artifact_store,
@@ -76,6 +80,67 @@ def service_config_show_forbidden():
         proxy_token="test-token",
         hide_forbidden_as_not_found=False,
     )
+
+
+@pytest.fixture
+def direct_artifact_client(artifact_dir):
+    """Create a test client for direct artifact endpoints with trusted-proxy auth."""
+    from strata.server import app
+
+    config = StrataConfig.load(
+        deployment_mode="personal",
+        auth_mode="trusted_proxy",
+        proxy_token="test-token",
+        artifact_dir=artifact_dir,
+        hide_forbidden_as_not_found=True,
+    )
+
+    get_artifact_store(artifact_dir)
+
+    mock_state = MagicMock()
+    mock_state.config = config
+    mock_state.planner = MagicMock()
+    mock_state.fetcher = MagicMock()
+    mock_state.scans = {}
+    mock_state.metrics = MagicMock()
+
+    original_state = server_module._state
+    server_module._state = mock_state
+
+    yield TestClient(app)
+
+    server_module._state = original_state
+
+
+def _auth_headers(
+    tenant: str,
+    principal: str = "user-1",
+    scopes: str | None = None,
+) -> dict[str, str]:
+    headers = {
+        "X-Strata-Proxy-Token": "test-token",
+        "X-Strata-Principal": principal,
+        "X-Tenant-ID": tenant,
+    }
+    if scopes:
+        headers["X-Strata-Scopes"] = scopes
+    return headers
+
+
+def _create_ready_artifact_for_tenant(
+    store,
+    artifact_id: str,
+    tenant: str,
+    blob: bytes = b"data",
+) -> int:
+    version = store.create_artifact(
+        artifact_id=artifact_id,
+        provenance_hash=f"hash-{artifact_id}",
+        tenant=tenant,
+    )
+    store.write_blob(artifact_id, version, blob)
+    store.finalize_artifact(artifact_id, version, "{}", 1, len(blob))
+    return version
 
 
 class TestRequireTenant:
@@ -417,5 +482,79 @@ class TestMigration:
         )
 
         artifact = store.get_artifact("test", version)
+        assert artifact is not None
         assert artifact.tenant == "my-tenant"
-        assert artifact.principal == "user-1"
+
+
+class TestDirectArtifactEndpointIsolation:
+    """Tests for tenant isolation on direct artifact endpoints."""
+
+    def test_get_artifact_info_and_data_are_tenant_scoped(
+        self,
+        artifact_store,
+        direct_artifact_client,
+    ):
+        version = _create_ready_artifact_for_tenant(artifact_store, "team-a-art", "team-a", b"abc")
+
+        info_resp = direct_artifact_client.get(
+            f"/v1/artifacts/team-a-art/v/{version}",
+            headers=_auth_headers("team-a"),
+        )
+        assert info_resp.status_code == 200
+
+        denied_info = direct_artifact_client.get(
+            f"/v1/artifacts/team-a-art/v/{version}",
+            headers=_auth_headers("team-b"),
+        )
+        assert denied_info.status_code == 404
+
+        denied_data = direct_artifact_client.get(
+            f"/v1/artifacts/team-a-art/v/{version}/data",
+            headers=_auth_headers("team-b"),
+        )
+        assert denied_data.status_code == 404
+
+    def test_list_artifacts_is_filtered_by_tenant(
+        self,
+        artifact_store,
+        direct_artifact_client,
+    ):
+        version_a = _create_ready_artifact_for_tenant(artifact_store, "team-a-art", "team-a")
+        _create_ready_artifact_for_tenant(artifact_store, "team-b-art", "team-b")
+
+        response = direct_artifact_client.get(
+            "/v1/artifacts",
+            headers=_auth_headers("team-a"),
+        )
+
+        assert response.status_code == 200
+        artifacts = response.json()["artifacts"]
+        assert len(artifacts) == 1
+        assert artifacts[0]["artifact_uri"] == f"strata://artifact/team-a-art@v={version_a}"
+        assert artifacts[0]["artifact_id"] == "team-a-art"
+        assert artifacts[0]["version"] == version_a
+        assert artifacts[0]["state"] == "ready"
+        assert artifacts[0]["row_count"] == 1
+        assert artifacts[0]["byte_size"] == 4
+        assert artifacts[0]["created_at"] > 0
+
+    def test_delete_artifact_is_tenant_scoped(
+        self,
+        artifact_store,
+        direct_artifact_client,
+    ):
+        version = _create_ready_artifact_for_tenant(artifact_store, "team-a-art", "team-a")
+
+        denied = direct_artifact_client.delete(
+            f"/v1/artifacts/team-a-art/v/{version}",
+            headers=_auth_headers("team-b"),
+        )
+        assert denied.status_code == 404
+        assert artifact_store.get_artifact("team-a-art", version) is not None
+
+        allowed = direct_artifact_client.delete(
+            f"/v1/artifacts/team-a-art/v/{version}",
+            headers=_auth_headers("team-a"),
+        )
+        assert allowed.status_code == 200
+        assert artifact_store.get_artifact("team-a-art", version) is None

@@ -1,5 +1,7 @@
 """Tests for server-mode transforms (async materialize + build polling)."""
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -55,6 +57,38 @@ def personal_mode_config(tmp_path):
         deployment_mode="personal",
         cache_dir=tmp_path / "cache",
         artifact_dir=artifact_dir,
+    )
+
+
+@pytest.fixture
+def server_mode_auth_config(tmp_path):
+    """Create config for server mode with trusted-proxy auth enabled."""
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+
+    return StrataConfig(
+        host="127.0.0.1",
+        port=8765,
+        deployment_mode="service",
+        auth_mode="trusted_proxy",
+        proxy_token="test-token",
+        cache_dir=tmp_path / "cache",
+        artifact_dir=artifact_dir,
+        transforms_config={
+            "enabled": True,
+            "registry": [
+                {
+                    "ref": "duckdb_sql@v1",
+                    "executor_url": "http://executor:8080/execute",
+                    "timeout_seconds": 300,
+                },
+                {
+                    "ref": "restricted_transform@v1",
+                    "executor_url": "http://restricted:8080/execute",
+                    "requires_scope": "transform:restricted",
+                },
+            ],
+        },
     )
 
 
@@ -140,6 +174,56 @@ def personal_mode_app(personal_mode_config):
     reset_build_store()
 
 
+@pytest.fixture
+def server_mode_auth_app(server_mode_auth_config):
+    """Create test app with server mode config and trusted-proxy auth."""
+    import strata.server as server_module
+    from strata.server import app
+
+    reset_artifact_store()
+    reset_transform_registry()
+    reset_build_store()
+
+    transform_registry = TransformRegistry.from_config(server_mode_auth_config.transforms_config)
+    set_transform_registry(transform_registry)
+    get_artifact_store(server_mode_auth_config.artifact_dir)
+    get_build_store(server_mode_auth_config.artifact_dir / "artifacts.sqlite")
+
+    from unittest.mock import MagicMock
+
+    mock_state = MagicMock()
+    mock_state.config = server_mode_auth_config
+    mock_state.planner = MagicMock()
+    mock_state.fetcher = MagicMock()
+    mock_state.scans = {}
+    mock_state.metrics = MagicMock()
+
+    original_state = server_module._state
+    server_module._state = mock_state
+
+    yield TestClient(app)
+
+    server_module._state = original_state
+    reset_artifact_store()
+    reset_transform_registry()
+    reset_build_store()
+
+
+def _auth_headers(
+    tenant: str = "team-a",
+    principal: str = "user-1",
+    scopes: str | None = None,
+) -> dict[str, str]:
+    headers = {
+        "X-Strata-Proxy-Token": "test-token",
+        "X-Strata-Principal": principal,
+        "X-Tenant-ID": tenant,
+    }
+    if scopes:
+        headers["X-Strata-Scopes"] = scopes
+    return headers
+
+
 class TestTransformValidation:
     """Tests for transform allowlist validation in server mode."""
 
@@ -217,6 +301,42 @@ class TestTransformValidation:
         # In personal mode, build_spec is returned (client executes)
         assert data["build_spec"] is not None
         assert data["build_id"] is None
+
+    def test_transform_requires_scope_without_scope_is_rejected(self, server_mode_auth_app):
+        """Registered transforms can still require an explicit principal scope."""
+        response = server_mode_auth_app.post(
+            "/v1/artifacts/materialize",
+            json={
+                "inputs": ["file:///fake/table"],
+                "transform": {
+                    "executor": "local://restricted_transform@v1",
+                    "params": {},
+                },
+            },
+            headers=_auth_headers(),
+        )
+
+        assert response.status_code == 403
+        data = response.json()
+        assert data["detail"]["error"] == "insufficient_scope"
+        assert data["detail"]["required_scope"] == "transform:restricted"
+
+    def test_transform_requires_scope_with_scope_succeeds(self, server_mode_auth_app):
+        """Transforms guarded by requires_scope should run for authorized callers."""
+        response = server_mode_auth_app.post(
+            "/v1/artifacts/materialize",
+            json={
+                "inputs": ["file:///fake/table"],
+                "transform": {
+                    "executor": "local://restricted_transform@v1",
+                    "params": {},
+                },
+            },
+            headers=_auth_headers(scopes="transform:restricted"),
+        )
+
+        assert response.status_code == 200
+        assert response.json()["build_id"] is not None
 
     @pytest.mark.asyncio
     async def test_server_mode_materialize_respects_quota_estimate(
@@ -393,11 +513,13 @@ class TestProvenanceDeduplication:
         from strata.artifact_store import get_artifact_store
 
         store = get_artifact_store()
+        assert store is not None
 
         # Parse artifact_id and version from URI
         import re
 
         match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", artifact_uri)
+        assert match is not None
         artifact_id = match.group(1)
         version = int(match.group(2))
 
@@ -422,6 +544,75 @@ class TestProvenanceDeduplication:
         assert data2["hit"] is True
         assert data2["artifact_uri"] == artifact_uri
         assert data2["state"] == "ready"
+
+    def test_named_inputs_resolve_with_tenant_context(self, server_mode_auth_app):
+        """Tenant-scoped name inputs should drive provenance and rebuilds correctly."""
+        store = get_artifact_store()
+        assert store is not None
+
+        version_a1 = store.create_artifact(
+            artifact_id="team-a-input-v1",
+            provenance_hash="team-a-input-v1",
+            tenant="team-a",
+        )
+        store.write_blob("team-a-input-v1", version_a1, b"a1")
+        store.finalize_artifact("team-a-input-v1", version_a1, "{}", 1, 2)
+        store.set_name("shared-input", "team-a-input-v1", version_a1, tenant="team-a")
+
+        response1 = server_mode_auth_app.post(
+            "/v1/artifacts/materialize",
+            json={
+                "inputs": ["strata://name/shared-input"],
+                "transform": {
+                    "executor": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0"},
+                },
+            },
+            headers=_auth_headers("team-a"),
+        )
+        assert response1.status_code == 200
+        first_uri = response1.json()["artifact_uri"]
+        first_artifact_id, first_version = first_uri.removeprefix("strata://artifact/").split("@v=")
+        first_artifact = store.get_artifact(first_artifact_id, int(first_version))
+        assert first_artifact is not None
+        assert first_artifact.input_versions is not None
+        assert json.loads(first_artifact.input_versions)["strata://name/shared-input"] == (
+            f"team-a-input-v1@v={version_a1}"
+        )
+        materialized_bytes = b"materialized-a1"
+        store.write_blob(first_artifact_id, int(first_version), materialized_bytes)
+        store.finalize_artifact(
+            first_artifact_id,
+            int(first_version),
+            "{}",
+            1,
+            len(materialized_bytes),
+        )
+
+        version_a2 = store.create_artifact(
+            artifact_id="team-a-input-v2",
+            provenance_hash="team-a-input-v2",
+            tenant="team-a",
+        )
+        store.write_blob("team-a-input-v2", version_a2, b"a2")
+        store.finalize_artifact("team-a-input-v2", version_a2, "{}", 1, 2)
+        store.set_name("shared-input", "team-a-input-v2", version_a2, tenant="team-a")
+
+        response2 = server_mode_auth_app.post(
+            "/v1/artifacts/materialize",
+            json={
+                "inputs": ["strata://name/shared-input"],
+                "transform": {
+                    "executor": "duckdb_sql@v1",
+                    "params": {"sql": "SELECT * FROM input0"},
+                },
+            },
+            headers=_auth_headers("team-a"),
+        )
+
+        assert response2.status_code == 200
+        assert response2.json()["hit"] is False
+        assert response2.json()["artifact_uri"] != first_uri
 
 
 class TestServerModeConfig:

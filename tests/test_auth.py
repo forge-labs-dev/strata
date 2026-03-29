@@ -84,6 +84,21 @@ class TestPrincipalParsing:
         assert principal.tenant == "test-tenant"
         assert principal.scopes == frozenset({"scan:create", "scan:read", "admin:cache"})
 
+    def test_principal_parsed_from_lowercase_headers(self):
+        """Header parsing should remain case-insensitive through ASGI request dicts."""
+        config = StrataConfig.load(auth_mode="trusted_proxy")
+        headers = {
+            config.principal_header.lower(): "test-user",
+            config.tenant_header.lower(): "test-tenant",
+            config.scopes_header.lower(): "scan:create",
+        }
+
+        principal = parse_principal(headers, config)
+
+        assert principal.id == "test-user"
+        assert principal.tenant == "test-tenant"
+        assert principal.scopes == frozenset({"scan:create"})
+
     def test_empty_scopes_ok(self):
         """Principal with no scopes is valid."""
         config = StrataConfig.load(auth_mode="trusted_proxy")

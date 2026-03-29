@@ -55,6 +55,9 @@ import httpx
 
 if TYPE_CHECKING:
     from strata.artifact_store import ArtifactStore
+    from strata.cache import CachedFetcher
+    from strata.config import StrataConfig
+    from strata.planner import ReadPlanner
     from strata.transforms.build_store import BuildState, BuildStore
     from strata.transforms.registry import TransformRegistry
 
@@ -113,6 +116,9 @@ class BuildRunner:
     build_store: BuildStore
     transform_registry: TransformRegistry
     artifact_dir: Path
+    runtime_config: StrataConfig | None = None
+    scan_planner: ReadPlanner | None = None
+    scan_fetcher: CachedFetcher | None = None
 
     # Internal state
     _running: bool = field(default=False, init=False)
@@ -351,9 +357,10 @@ class BuildRunner:
                         return
 
                 # Get fresh build state
-                build = self.build_store.get_build(build_id)
-                if build is None or build.state not in ("pending", "building"):
+                fresh_build = self.build_store.get_build(build_id)
+                if fresh_build is None or fresh_build.state not in ("pending", "building"):
                     return
+                build = fresh_build
 
                 # Verify we still own the lease (in case of race)
                 if build.lease_owner and build.lease_owner != self._runner_id:
@@ -399,7 +406,11 @@ class BuildRunner:
                 input_files: list[tuple[str, Path]] = []
                 for i, input_uri in enumerate(input_uris):
                     input_name = f"input{i}"
-                    input_path = await self._acquire_input(input_uri, temp_files)
+                    input_path = await self._acquire_input(
+                        input_uri,
+                        temp_files,
+                        tenant_id=build.tenant_id,
+                    )
                     input_files.append((input_name, input_path))
 
                 # Get executor URL and timeout
@@ -560,6 +571,7 @@ class BuildRunner:
         self,
         input_uri: str,
         temp_files: list[Path],
+        tenant_id: str | None = None,
     ) -> Path:
         """Acquire an input and write it to a temp file.
 
@@ -597,7 +609,7 @@ class BuildRunner:
         # Handle name URIs
         if input_uri.startswith("strata://name/"):
             name = input_uri.split("/", 3)[-1]
-            artifact = self.artifact_store.resolve_name(name)
+            artifact = self.artifact_store.resolve_name(name, tenant=tenant_id)
             if artifact is None:
                 raise ValueError(f"Name not found: {name}")
 
@@ -650,24 +662,18 @@ class BuildRunner:
 
     def _scan_to_file_sync(self, table_uri: str, output_path: Path) -> None:
         """Synchronous helper to scan a table and write to file."""
-        # This is a simplified implementation
-        # In production, you'd want to reuse the existing scan infrastructure
+        from strata.cache import CachedFetcher
         from strata.config import StrataConfig
         from strata.planner import ReadPlanner
 
-        # Get config from somewhere - for now use a simple approach
-        # In practice, you'd pass the config through
-        config = StrataConfig.load()
+        planner = self.scan_planner
+        fetcher = self.scan_fetcher
 
-        planner = ReadPlanner(
-            warehouse_paths=[],  # Will be extracted from URI
-            catalog_properties=config.catalog_properties,
-            cache_dir=config.cache_dir,
-            batch_size=config.batch_size,
-            metadata_db=config.metadata_db,
-        )
+        if planner is None or fetcher is None:
+            runtime_config = self.runtime_config or StrataConfig.load()
+            planner = planner or ReadPlanner(runtime_config)
+            fetcher = fetcher or CachedFetcher(runtime_config)
 
-        # Plan the scan
         plan = planner.plan(
             table_uri=table_uri,
             snapshot_id=None,  # Current snapshot
@@ -675,33 +681,23 @@ class BuildRunner:
             filters=None,
         )
 
-        # Read all tasks and write to file
         import pyarrow as pa
 
-        # Collect all batches
-        batches = []
-        schema = None
-
-        for task in plan.tasks:
-            # Read cached data for this task
-            # This is simplified - real implementation would use CachedFetcher
-            cache_path = config.cache_dir / f"{task.cache_key}.arrow"
-            if cache_path.exists():
-                with pa.ipc.open_stream(cache_path) as reader:
-                    if schema is None:
-                        schema = reader.schema
-                    for batch in reader:
-                        batches.append(batch)
-
-        # Write to output file
-        if batches:
-            table = pa.Table.from_batches(batches, schema=schema)
-            with pa.ipc.new_stream(str(output_path), schema) as writer:
-                for batch in table.to_batches():
+        with pa.OSFile(str(output_path), "wb") as sink:
+            writer = None
+            try:
+                for task in plan.tasks:
+                    batch = fetcher.fetch(task)
+                    if writer is None:
+                        writer = pa.ipc.new_stream(sink, batch.schema)
                     writer.write_batch(batch)
-        else:
-            # Write empty table with schema from plan
-            raise ValueError(f"No data found for table: {table_uri}")
+
+                if writer is None:
+                    schema = plan.schema or pa.schema([])
+                    writer = pa.ipc.new_stream(sink, schema)
+            finally:
+                if writer is not None:
+                    writer.close()
 
     async def _call_executor(
         self,
@@ -851,7 +847,7 @@ class BuildRunner:
         from strata.types import EXECUTOR_PROTOCOL_HEADER, EXECUTOR_PROTOCOL_VERSION
 
         # Prepare multipart files
-        files = {
+        files: dict[str, tuple[str, str | bytes, str]] = {
             "metadata": ("metadata.json", json.dumps(metadata), "application/json"),
         }
 

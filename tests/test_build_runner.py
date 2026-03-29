@@ -41,6 +41,7 @@ from strata.transforms.runner import (
     reset_build_runner,
     set_build_runner,
 )
+from strata.types import CacheKey, ReadPlan, TableIdentity, Task
 
 
 @pytest.fixture
@@ -694,6 +695,78 @@ class TestInputAcquisition:
         temp_files = []
         with pytest.raises(ValueError, match="Unsupported input URI"):
             await build_runner._acquire_input("invalid://uri", temp_files)
+
+    @pytest.mark.asyncio
+    async def test_acquire_named_input_uses_build_tenant(self, build_runner, artifact_store):
+        """Name URIs should resolve within the owning build tenant."""
+        bytes_a = create_arrow_ipc_bytes({"tenant": ["a"]})
+        bytes_b = create_arrow_ipc_bytes({"tenant": ["b"]})
+
+        version_a = artifact_store.create_artifact(
+            artifact_id="tenant-a-input",
+            provenance_hash="tenant-a-input",
+            tenant="team-a",
+        )
+        artifact_store.write_blob("tenant-a-input", version_a, bytes_a)
+        artifact_store.finalize_artifact("tenant-a-input", version_a, "{}", 1, len(bytes_a))
+        artifact_store.set_name("shared-input", "tenant-a-input", version_a, tenant="team-a")
+
+        version_b = artifact_store.create_artifact(
+            artifact_id="tenant-b-input",
+            provenance_hash="tenant-b-input",
+            tenant="team-b",
+        )
+        artifact_store.write_blob("tenant-b-input", version_b, bytes_b)
+        artifact_store.finalize_artifact("tenant-b-input", version_b, "{}", 1, len(bytes_b))
+        artifact_store.set_name("shared-input", "tenant-b-input", version_b, tenant="team-b")
+
+        temp_files = []
+        result_path = await build_runner._acquire_input(
+            "strata://name/shared-input",
+            temp_files,
+            tenant_id="team-a",
+        )
+
+        assert result_path.read_bytes() == bytes_a
+
+    def test_scan_to_file_sync_uses_fetch_pipeline_on_cold_cache(self, build_runner, artifact_dir):
+        """Table inputs should fetch through the planner/fetcher path, not raw cache files."""
+        batch = pa.record_batch([pa.array([1, 2, 3])], names=["id"])
+        task = Task(
+            file_path="file:///warehouse/data.parquet",
+            row_group_id=0,
+            cache_key=CacheKey(
+                tenant_id="team-a",
+                table_identity=TableIdentity(catalog="strata", namespace="ns", table="tbl"),
+                snapshot_id=1,
+                file_path="file:///warehouse/data.parquet",
+                row_group_id=0,
+                projection_fingerprint="*",
+            ),
+            num_rows=3,
+        )
+        plan = ReadPlan(
+            table_uri="file:///warehouse#ns.tbl",
+            table_identity=TableIdentity(catalog="strata", namespace="ns", table="tbl"),
+            snapshot_id=1,
+            tasks=[task],
+            schema=batch.schema,
+        )
+
+        build_runner.scan_planner = MagicMock()
+        build_runner.scan_planner.plan.return_value = plan
+        build_runner.scan_fetcher = MagicMock()
+        build_runner.scan_fetcher.fetch.return_value = batch
+
+        output_path = artifact_dir / "scan-output.arrow"
+        build_runner._scan_to_file_sync("file:///warehouse#ns.tbl", output_path)
+
+        build_runner.scan_planner.plan.assert_called_once()
+        build_runner.scan_fetcher.fetch.assert_called_once_with(task)
+
+        with pa.ipc.open_stream(output_path) as reader:
+            table = reader.read_all()
+        assert table.column("id").to_pylist() == [1, 2, 3]
 
 
 class TestBuildPolling:

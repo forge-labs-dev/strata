@@ -198,6 +198,35 @@ class TestBuildManifestEndpoint:
         assert response.status_code == 200
         assert response.json()["build_id"] == "build-building-001"
 
+    def test_get_manifest_resolves_name_inputs_with_build_tenant(
+        self,
+        client,
+        build_store,
+        artifact_store,
+    ):
+        """Tenant-scoped name inputs should resolve within the owning build tenant."""
+        version_a = create_test_artifact(artifact_store, "tenant-a-input", finalize=True)
+        version_b = create_test_artifact(artifact_store, "tenant-b-input", finalize=True)
+        artifact_store.set_name("shared-input", "tenant-a-input", version_a, tenant="team-a")
+        artifact_store.set_name("shared-input", "tenant-b-input", version_b, tenant="team-b")
+
+        output_version = create_test_artifact(artifact_store, "output-name", finalize=False)
+        build_store.create_build(
+            build_id="build-name-tenant",
+            artifact_id="output-name",
+            version=output_version,
+            executor_ref="duckdb_sql@v1",
+            tenant_id="team-a",
+            input_uris=["strata://name/shared-input"],
+            params={"sql": "SELECT * FROM input"},
+        )
+
+        response = client.get("/v1/builds/build-name-tenant/manifest")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["inputs"][0]["artifact_id"] == "tenant-a-input"
+        assert data["inputs"][0]["version"] == version_a
+
     def test_get_manifest_not_found(self, client):
         """Returns 404 for non-existent build."""
         response = client.get("/v1/builds/nonexistent/manifest")
