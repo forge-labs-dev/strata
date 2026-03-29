@@ -158,6 +158,38 @@ class TestArtifactLineage:
         assert len(data["direct_inputs"]) == 1
         assert base_artifact["artifact_uri"] in data["direct_inputs"][0]
 
+    def test_lineage_with_named_artifact_input(self, lineage_server):
+        """Named artifact inputs should traverse to the resolved artifact lineage."""
+        base_url = lineage_server["base_url"]
+
+        base_artifact = create_artifact(base_url, inputs=["file:///warehouse#db.base"])
+        set_name_resp = httpx.post(
+            f"{base_url}/v1/names",
+            json={
+                "name": "shared-base",
+                "artifact_id": base_artifact["artifact_id"],
+                "version": base_artifact["version"],
+            },
+        )
+        assert set_name_resp.status_code == 200
+
+        dependent_artifact = create_artifact(
+            base_url,
+            inputs=["strata://name/shared-base"],
+            executor="dependent_transform",
+        )
+
+        resp = httpx.get(
+            f"{base_url}/v1/artifacts/{dependent_artifact['artifact_id']}/v/{dependent_artifact['version']}/lineage"
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+
+        node_uris = {node["uri"] for node in data["nodes"]}
+        assert base_artifact["artifact_uri"] in node_uris
+        assert "file:///warehouse#db.base" in node_uris
+        assert data["direct_inputs"] == ["strata://name/shared-base"]
+
     def test_lineage_max_depth(self, lineage_server):
         """Lineage respects max_depth parameter."""
         base_url = lineage_server["base_url"]

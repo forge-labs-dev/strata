@@ -100,6 +100,38 @@ def client(config, artifact_store, build_store):
     reset_signing_secret()
 
 
+@pytest.fixture
+def trusted_proxy_client(temp_dir, artifact_store, build_store):
+    """Create a trusted-proxy client for signed URL and tenant ACL tests."""
+    config = StrataConfig(
+        cache_dir=temp_dir / "cache-auth",
+        deployment_mode="service",
+        transforms_config={"enabled": True},
+        artifact_dir=temp_dir / "artifacts",
+        signed_url_expiry_seconds=600.0,
+        auth_mode="trusted_proxy",
+        proxy_token="test-token",
+        hide_forbidden_as_not_found=True,
+    )
+
+    set_signing_secret(b"test-secret-key-12345678901234")
+
+    mock_state = MagicMock()
+    mock_state.config = config
+    mock_state.planner = MagicMock()
+    mock_state.fetcher = MagicMock()
+    mock_state.scans = {}
+    mock_state.metrics = MagicMock()
+
+    original_state = server_module._state
+    server_module._state = mock_state
+
+    yield TestClient(app)
+
+    server_module._state = original_state
+    reset_signing_secret()
+
+
 def create_test_arrow_blob() -> bytes:
     """Create a small Arrow IPC stream for testing."""
     schema = pa.schema([("id", pa.int64()), ("value", pa.string())])
@@ -114,6 +146,21 @@ def create_test_arrow_blob() -> bytes:
         writer.write_batch(batch)
 
     return sink.getvalue().to_pybytes()
+
+
+def _auth_headers(
+    tenant: str,
+    principal: str = "user-1",
+    scopes: str | None = None,
+) -> dict[str, str]:
+    headers = {
+        "X-Strata-Proxy-Token": "test-token",
+        "X-Strata-Principal": principal,
+        "X-Tenant-ID": tenant,
+    }
+    if scopes:
+        headers["X-Strata-Scopes"] = scopes
+    return headers
 
 
 def create_test_artifact(artifact_store, artifact_id: str, finalize: bool = True) -> int:
@@ -226,6 +273,29 @@ class TestBuildManifestEndpoint:
         data = response.json()
         assert data["inputs"][0]["artifact_id"] == "tenant-a-input"
         assert data["inputs"][0]["version"] == version_a
+
+    def test_get_manifest_is_tenant_scoped_even_for_same_principal_id(
+        self,
+        trusted_proxy_client,
+        build_store,
+        artifact_store,
+    ):
+        """Manifest access requires both the owning principal and tenant."""
+        output_version = create_test_artifact(artifact_store, "output-authz", finalize=False)
+        build_store.create_build(
+            build_id="build-authz-001",
+            artifact_id="output-authz",
+            version=output_version,
+            executor_ref="duckdb_sql@v1",
+            tenant_id="team-a",
+            principal_id="shared-user",
+        )
+
+        response = trusted_proxy_client.get(
+            "/v1/builds/build-authz-001/manifest",
+            headers=_auth_headers("team-b", principal="shared-user"),
+        )
+        assert response.status_code == 404
 
     def test_get_manifest_not_found(self, client):
         """Returns 404 for non-existent build."""
@@ -689,6 +759,57 @@ class TestFinalizeEndpoint:
         assert build.state == "failed"
         assert build.error_code == "INVALID_ARROW_FORMAT"
 
+    def test_finalize_is_tenant_scoped_even_for_same_principal_id(
+        self,
+        trusted_proxy_client,
+        build_store,
+        artifact_store,
+    ):
+        """Unsigned finalize access requires both the owning principal and tenant."""
+        version = create_test_artifact(artifact_store, "fin-authz-output", finalize=False)
+        build_store.create_build(
+            build_id="fin-authz-001",
+            artifact_id="fin-authz-output",
+            version=version,
+            executor_ref="test@v1",
+            tenant_id="team-a",
+            principal_id="shared-user",
+        )
+        artifact_store.write_blob("fin-authz-output", version, create_test_arrow_blob())
+
+        response = trusted_proxy_client.post(
+            "/v1/builds/fin-authz-001/finalize",
+            headers=_auth_headers("team-b", principal="shared-user"),
+        )
+        assert response.status_code == 404
+
+
+class TestBuildStatusEndpoint:
+    """Tests for build status access control."""
+
+    def test_build_status_is_tenant_scoped_even_for_same_principal_id(
+        self,
+        trusted_proxy_client,
+        build_store,
+        artifact_store,
+    ):
+        """Build polling requires both the owning principal and tenant."""
+        version = create_test_artifact(artifact_store, "status-output", finalize=False)
+        build_store.create_build(
+            build_id="status-build-001",
+            artifact_id="status-output",
+            version=version,
+            executor_ref="test@v1",
+            tenant_id="team-a",
+            principal_id="shared-user",
+        )
+
+        response = trusted_proxy_client.get(
+            "/v1/artifacts/builds/status-build-001",
+            headers=_auth_headers("team-b", principal="shared-user"),
+        )
+        assert response.status_code == 404
+
 
 class TestPullModelEndToEnd:
     """End-to-end test of the complete pull model flow."""
@@ -757,3 +878,55 @@ class TestPullModelEndToEnd:
         assert name_info is not None
         assert name_info.artifact_id == "e2e-output"
         assert name_info.version == output_version
+
+    def test_signed_urls_are_self_sufficient_in_trusted_proxy_mode(
+        self,
+        trusted_proxy_client,
+        build_store,
+        artifact_store,
+    ):
+        """Signed pull-model URLs should work without proxy auth headers."""
+        input_version = create_test_artifact(artifact_store, "auth-e2e-input", finalize=True)
+        output_version = create_test_artifact(artifact_store, "auth-e2e-output", finalize=False)
+        build_store.create_build(
+            build_id="auth-e2e-build-001",
+            artifact_id="auth-e2e-output",
+            version=output_version,
+            executor_ref="test@v1",
+            tenant_id="team-a",
+            principal_id="user-1",
+            input_uris=[f"strata://artifact/auth-e2e-input@v={input_version}"],
+        )
+
+        manifest_response = trusted_proxy_client.get(
+            "/v1/builds/auth-e2e-build-001/manifest",
+            headers=_auth_headers("team-a", principal="user-1"),
+        )
+        assert manifest_response.status_code == 200
+        manifest = manifest_response.json()
+
+        input_url = manifest["inputs"][0]["url"]
+        parsed = urlparse(input_url)
+        params = parse_qs(parsed.query)
+        download_response = trusted_proxy_client.get(
+            "/v1/artifacts/download",
+            params={k: v[0] for k, v in params.items()},
+        )
+        assert download_response.status_code == 200
+
+        output_blob = create_test_arrow_blob()
+        output_url = manifest["output"]["url"]
+        parsed = urlparse(output_url)
+        params = parse_qs(parsed.query)
+        upload_response = trusted_proxy_client.post(
+            "/v1/artifacts/upload",
+            params={k: v[0] for k, v in params.items()},
+            content=output_blob,
+        )
+        assert upload_response.status_code == 200
+
+        finalize_response = trusted_proxy_client.post(
+            manifest["finalize_url"].replace("http://testserver", ""),
+        )
+        assert finalize_response.status_code == 200
+        assert finalize_response.json()["status"] == "finalized"

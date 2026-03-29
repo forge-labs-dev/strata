@@ -91,6 +91,21 @@ class SignedUploadURL:
 
 
 @dataclass(frozen=True)
+class SignedFinalizeURL:
+    """Signed URL for finalizing a build output.
+
+    Attributes:
+        url: Full URL with signature query params
+        build_id: Build ID the finalize is for
+        expires_at: Unix timestamp when URL expires
+    """
+
+    url: str
+    build_id: str
+    expires_at: float
+
+
+@dataclass(frozen=True)
 class BuildManifest:
     """Manifest of signed URLs for a build.
 
@@ -328,6 +343,52 @@ def verify_upload_signature(
     return _verify(data, signature, get_signing_secret())
 
 
+def generate_finalize_url(
+    base_url: str,
+    build_id: str,
+    expiry_seconds: float = 600.0,
+) -> SignedFinalizeURL:
+    """Generate a signed URL for finalizing a build."""
+    expires_at = time.time() + expiry_seconds
+
+    data = {
+        "op": "finalize",
+        "build_id": build_id,
+        "expires_at": expires_at,
+    }
+
+    signature = _sign(data, get_signing_secret())
+    params = {
+        "expires_at": str(expires_at),
+        "signature": signature,
+    }
+    url = f"{base_url}/v1/builds/{build_id}/finalize?{urlencode(params)}"
+
+    return SignedFinalizeURL(
+        url=url,
+        build_id=build_id,
+        expires_at=expires_at,
+    )
+
+
+def verify_finalize_signature(
+    build_id: str,
+    expires_at: float,
+    signature: str,
+) -> bool:
+    """Verify a finalize URL signature."""
+    if time.time() > expires_at:
+        return False
+
+    data = {
+        "op": "finalize",
+        "build_id": build_id,
+        "expires_at": expires_at,
+    }
+
+    return _verify(data, signature, get_signing_secret())
+
+
 def generate_build_manifest(
     base_url: str,
     build_id: str,
@@ -374,8 +435,11 @@ def generate_build_manifest(
         expiry_seconds=url_expiry_seconds,
     )
 
-    # Finalize URL (unsigned - executor will authenticate via build_id)
-    finalize_url = f"{base_url}/v1/builds/{build_id}/finalize"
+    finalize_url = generate_finalize_url(
+        base_url=base_url,
+        build_id=build_id,
+        expiry_seconds=url_expiry_seconds,
+    ).url
 
     return BuildManifest(
         build_id=build_id,

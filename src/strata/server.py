@@ -337,6 +337,76 @@ def get_state() -> ServerState:
     return _state
 
 
+def _is_signed_finalize_request(request: Request) -> bool:
+    """Return True when the request is using the signed finalize contract."""
+    return bool(
+        re.fullmatch(r"/v1/builds/[^/]+/finalize", request.url.path)
+        and "signature" in request.query_params
+        and "expires_at" in request.query_params
+    )
+
+
+def _is_signed_data_plane_request(request: Request) -> bool:
+    """Return True for pull-model data-plane requests that self-authenticate."""
+    return request.url.path in (
+        "/v1/artifacts/download",
+        "/v1/artifacts/upload",
+    ) or _is_signed_finalize_request(request)
+
+
+def _deny_build_access() -> None:
+    """Raise the configured build access error."""
+    state = get_state()
+    if state.config.hide_forbidden_as_not_found:
+        raise HTTPException(status_code=404, detail="Build not found")
+    raise HTTPException(status_code=403, detail="Access denied")
+
+
+def _authorize_build_access(
+    *,
+    owner_principal: str | None,
+    owner_tenant: str | None,
+) -> None:
+    """Authorize access to a build or identity stream under trusted proxy auth."""
+    state = get_state()
+    if state.config.auth_mode != "trusted_proxy":
+        return
+
+    principal = get_principal()
+    if principal is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    if principal.has_scope("admin:*"):
+        return
+    if owner_principal is None and owner_tenant is None:
+        _deny_build_access()
+    if owner_principal is not None and owner_principal != principal.id:
+        _deny_build_access()
+    if owner_tenant is not None and principal.tenant != owner_tenant:
+        _deny_build_access()
+
+
+def _input_version_to_artifact_ref(
+    input_uri: str,
+    input_version: str,
+) -> tuple[str, str, int] | None:
+    """Resolve stored input version metadata back to a concrete artifact URI."""
+    if not (
+        input_uri.startswith("strata://artifact/")
+        or input_uri.startswith("strata://name/")
+    ):
+        return None
+    if "@v=" not in input_version:
+        return None
+
+    artifact_id, version_text = input_version.split("@v=", 1)
+    try:
+        version = int(version_text)
+    except ValueError:
+        return None
+
+    return (f"strata://artifact/{artifact_id}@v={version}", artifact_id, version)
+
+
 def _apply_refresh_provenance(provenance_hash: str, refresh: bool) -> str:
     """Force a fresh artifact identity when refresh=True."""
     if not refresh:
@@ -1211,7 +1281,7 @@ async def tenant_context_middleware(request: Request, call_next):
     Returns 403 if tenant is disabled.
     Skips tenant setup for health/metrics endpoints.
     """
-    # Skip tenant setup for health/metrics endpoints
+    # Skip tenant setup for health/metrics endpoints and signed data-plane routes.
     path = request.url.path
     if path in (
         "/health",
@@ -1219,7 +1289,7 @@ async def tenant_context_middleware(request: Request, call_next):
         "/health/dependencies",
         "/metrics",
         "/metrics/prometheus",
-    ):
+    ) or _is_signed_data_plane_request(request):
         return await call_next(request)
 
     state = get_state()
@@ -1295,7 +1365,7 @@ async def auth_middleware(request: Request, call_next):
     if config.auth_mode == "none":
         return await call_next(request)
 
-    # Skip auth for health/metrics endpoints
+    # Skip auth for health/metrics endpoints and signed data-plane routes.
     path = request.url.path
     if path in (
         "/health",
@@ -1303,7 +1373,7 @@ async def auth_middleware(request: Request, call_next):
         "/health/dependencies",
         "/metrics",
         "/metrics/prometheus",
-    ):
+    ) or _is_signed_data_plane_request(request):
         return await call_next(request)
 
     # Verify proxy token
@@ -4090,22 +4160,19 @@ async def get_artifact_lineage(
             input_vers = json.loads(artifact.input_versions)
             for input_uri, input_version in input_vers.items():
                 direct_inputs.append(input_uri)
+                resolved_input = _input_version_to_artifact_ref(input_uri, input_version)
+                edge_from_uri = resolved_input[0] if resolved_input is not None else input_uri
                 edges.append(
                     LineageEdge(
-                        from_uri=input_uri,
+                        from_uri=edge_from_uri,
                         to_uri=artifact_uri,
                         input_version=input_version,
                     )
                 )
 
-                # Determine if this is an artifact or table
-                if input_uri.startswith("strata://artifact/"):
-                    # Parse artifact_id@v=N from version string
-                    if "@v=" in input_version:
-                        parts = input_version.split("@v=")
-                        inp_artifact_id = parts[0]
-                        inp_version = int(parts[1])
-                        queue.append((input_uri, inp_artifact_id, inp_version, 1))
+                if resolved_input is not None:
+                    resolved_uri, inp_artifact_id, inp_version = resolved_input
+                    queue.append((resolved_uri, inp_artifact_id, inp_version, 1))
                 else:
                     # It's a table input
                     if input_uri not in visited:
@@ -4174,20 +4241,19 @@ async def get_artifact_lineage(
             try:
                 inp_vers = json.loads(input_artifact.input_versions)
                 for inp_uri, inp_version in inp_vers.items():
+                    resolved_input = _input_version_to_artifact_ref(inp_uri, inp_version)
+                    edge_from_uri = resolved_input[0] if resolved_input is not None else inp_uri
                     edges.append(
                         LineageEdge(
-                            from_uri=inp_uri,
+                            from_uri=edge_from_uri,
                             to_uri=node_uri,
                             input_version=inp_version,
                         )
                     )
 
-                    if inp_uri.startswith("strata://artifact/"):
-                        if "@v=" in inp_version:
-                            parts = inp_version.split("@v=")
-                            nested_id = parts[0]
-                            nested_ver = int(parts[1])
-                            queue.append((inp_uri, nested_id, nested_ver, depth + 1))
+                    if resolved_input is not None:
+                        resolved_uri, nested_id, nested_ver = resolved_input
+                        queue.append((resolved_uri, nested_id, nested_ver, depth + 1))
                     else:
                         # Table input
                         if inp_uri not in visited:
@@ -4321,17 +4387,10 @@ async def get_build_status(build_id: str):
     # even when server-mode transforms are disabled.
     stream_state = state._streams.get(build_id)
     if isinstance(stream_state, StreamState):
-        if state.config.auth_mode == "trusted_proxy":
-            principal = get_principal()
-            if principal is None:
-                raise HTTPException(status_code=401, detail="Unauthorized")
-
-            is_owner = stream_state.plan.owner_principal == principal.id
-            is_admin = principal.has_scope("admin:*")
-            if not is_owner and not is_admin:
-                if state.config.hide_forbidden_as_not_found:
-                    raise HTTPException(status_code=404, detail="Build not found")
-                raise HTTPException(status_code=403, detail="Access denied")
+        _authorize_build_access(
+            owner_principal=stream_state.plan.owner_principal,
+            owner_tenant=stream_state.plan.owner_tenant,
+        )
 
         return _identity_build_status(stream_state)
 
@@ -4358,17 +4417,10 @@ async def get_build_status(build_id: str):
         raise HTTPException(status_code=404, detail="Build not found")
 
     # Check access control if auth is enabled
-    if state.config.auth_mode == "trusted_proxy":
-        principal = get_principal()
-        if principal is not None:
-            # Only build owner or admin can see build status
-            is_owner = build.principal_id == principal.id
-            is_admin = principal.has_scope("admin:*")
-
-            if not is_owner and not is_admin:
-                if state.config.hide_forbidden_as_not_found:
-                    raise HTTPException(status_code=404, detail="Build not found")
-                raise HTTPException(status_code=403, detail="Access denied")
+    _authorize_build_access(
+        owner_principal=build.principal_id,
+        owner_tenant=build.tenant_id,
+    )
 
     return BuildStatusResponse(
         build_id=build.build_id,
@@ -4403,7 +4455,7 @@ async def get_build_manifest(build_id: str, request: Request):
     This endpoint returns a manifest containing:
     - Signed download URLs for each input artifact
     - Signed upload URL for the output
-    - Finalize URL to call after upload completes
+    - Signed finalize URL to call after upload completes
 
     Executors use this manifest to:
     1. Pull inputs directly from Strata storage
@@ -4444,15 +4496,10 @@ async def get_build_manifest(build_id: str, request: Request):
         )
 
     # Access control
-    if state.config.auth_mode == "trusted_proxy":
-        principal = get_principal()
-        if principal is not None:
-            is_owner = build.principal_id == principal.id
-            is_admin = principal.has_scope("admin:*")
-            if not is_owner and not is_admin:
-                if state.config.hide_forbidden_as_not_found:
-                    raise HTTPException(status_code=404, detail="Build not found")
-                raise HTTPException(status_code=403, detail="Access denied")
+    _authorize_build_access(
+        owner_principal=build.principal_id,
+        owner_tenant=build.tenant_id,
+    )
 
     # Get artifact store to resolve input artifacts
     store = _get_artifact_store(allow_server_mode=True)
@@ -4640,7 +4687,12 @@ async def upload_artifact_signed(
 
 
 @app.post("/v1/builds/{build_id}/finalize")
-async def finalize_build(build_id: str, request: Request):
+async def finalize_build(
+    build_id: str,
+    request: Request,
+    expires_at: str | None = None,
+    signature: str | None = None,
+):
     """Finalize a build after upload (pull-model execution).
 
     Called by executors after uploading the output artifact.
@@ -4678,14 +4730,27 @@ async def finalize_build(build_id: str, request: Request):
     if build is None:
         raise HTTPException(status_code=404, detail="Build not found")
 
-    # Access control - only build owner or admin can finalize
-    if state.config.auth_mode == "trusted_proxy":
-        principal = get_principal()
-        if principal is not None:
-            is_owner = build.principal_id == principal.id
-            is_admin = principal.has_scope("admin:*")
-            if not is_owner and not is_admin:
-                raise HTTPException(status_code=403, detail="Access denied")
+    if signature is not None or expires_at is not None:
+        from strata.transforms.signed_urls import verify_finalize_signature
+
+        if signature is None or expires_at is None:
+            raise HTTPException(status_code=400, detail="Missing finalize signature parameters")
+        try:
+            expires_at_float = float(expires_at)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid parameter format")
+
+        if not verify_finalize_signature(
+            build_id=build_id,
+            expires_at=expires_at_float,
+            signature=signature,
+        ):
+            raise HTTPException(status_code=403, detail="Invalid or expired signature")
+    else:
+        _authorize_build_access(
+            owner_principal=build.principal_id,
+            owner_tenant=build.tenant_id,
+        )
 
     # Check build state
     if build.state not in _ACTIVE_BUILD_STATES:
@@ -4876,7 +4941,7 @@ async def get_artifact_stats():
         Artifact store statistics
     """
     store = _get_artifact_store()
-    return store.stats()
+    return store.stats(tenant=_get_artifact_request_tenant())
 
 
 @app.get("/v1/artifacts/usage")
@@ -4892,7 +4957,7 @@ async def get_artifact_usage():
         Usage metrics dictionary
     """
     store = _get_artifact_store()
-    return store.get_usage()
+    return store.get_usage(tenant=_get_artifact_request_tenant())
 
 
 @app.get("/v1/artifacts")
@@ -5000,7 +5065,10 @@ async def garbage_collect_artifacts(max_age_days: float = 7.0):
     if max_age_days < 0:
         raise HTTPException(status_code=400, detail="max_age_days must be non-negative")
 
-    result = store.garbage_collect(max_age_days=max_age_days)
+    result = store.garbage_collect(
+        max_age_days=max_age_days,
+        tenant=_get_artifact_request_tenant(),
+    )
     return result
 
 

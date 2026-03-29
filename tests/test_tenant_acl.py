@@ -558,3 +558,84 @@ class TestDirectArtifactEndpointIsolation:
         )
         assert allowed.status_code == 200
         assert artifact_store.get_artifact("team-a-art", version) is None
+
+    def test_stats_and_usage_are_tenant_scoped(
+        self,
+        artifact_store,
+        direct_artifact_client,
+    ):
+        version_a = _create_ready_artifact_for_tenant(
+            artifact_store,
+            "team-a-art",
+            "team-a",
+            b"aaaa",
+        )
+        version_b = _create_ready_artifact_for_tenant(
+            artifact_store,
+            "team-b-art",
+            "team-b",
+            b"bbbbbb",
+        )
+        artifact_store.set_name("team-a-name", "team-a-art", version_a, tenant="team-a")
+        artifact_store.set_name("team-b-name", "team-b-art", version_b, tenant="team-b")
+
+        stats_response = direct_artifact_client.get(
+            "/v1/artifacts/stats",
+            headers=_auth_headers("team-a"),
+        )
+        assert stats_response.status_code == 200
+        assert stats_response.json() == {
+            "total_versions": 1,
+            "ready_versions": 1,
+            "building_versions": 0,
+            "failed_versions": 0,
+            "total_bytes": 4,
+            "total_rows": 1,
+            "name_count": 1,
+        }
+
+        usage_response = direct_artifact_client.get(
+            "/v1/artifacts/usage",
+            headers=_auth_headers("team-a"),
+        )
+        assert usage_response.status_code == 200
+        usage = usage_response.json()
+        assert usage["unique_artifacts"] == 1
+        assert usage["total_versions"] == 1
+        assert usage["ready_versions"] == 1
+        assert usage["building_versions"] == 0
+        assert usage["failed_versions"] == 0
+        assert usage["total_bytes"] == 4
+        assert usage["total_rows"] == 1
+        assert usage["name_count"] == 1
+        assert usage["unreferenced_count"] == 0
+
+    def test_garbage_collect_is_tenant_scoped(
+        self,
+        artifact_store,
+        direct_artifact_client,
+    ):
+        version_a = _create_ready_artifact_for_tenant(
+            artifact_store,
+            "team-a-art",
+            "team-a",
+            b"aaaa",
+        )
+        version_b = _create_ready_artifact_for_tenant(
+            artifact_store,
+            "team-b-art",
+            "team-b",
+            b"bbbbbb",
+        )
+
+        response = direct_artifact_client.post(
+            "/v1/artifacts/gc",
+            params={"max_age_days": 0},
+            headers=_auth_headers("team-a"),
+        )
+        assert response.status_code == 200
+        assert response.json()["deleted_count"] == 1
+        assert response.json()["deleted_bytes"] == 4
+
+        assert artifact_store.get_artifact("team-a-art", version_a) is None
+        assert artifact_store.get_artifact("team-b-art", version_b) is not None

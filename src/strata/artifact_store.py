@@ -1530,7 +1530,11 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def garbage_collect(self, max_age_days: float = 7.0) -> dict:
+    def garbage_collect(
+        self,
+        max_age_days: float = 7.0,
+        tenant: str | None = None,
+    ) -> dict:
         """Delete unreferenced artifacts older than max_age.
 
         An artifact is "unreferenced" if no name pointer points to it.
@@ -1538,6 +1542,8 @@ class ArtifactStore:
 
         Args:
             max_age_days: Maximum age in days for unreferenced artifacts
+            tenant: Optional tenant filter. When provided, includes legacy
+                tenantless artifacts for backwards compatibility.
 
         Returns:
             Dictionary with GC statistics
@@ -1547,17 +1553,20 @@ class ArtifactStore:
             cutoff = time.time() - (max_age_days * 86400)
 
             # Find unreferenced artifacts older than cutoff
-            cursor = conn.execute(
-                """
+            query = """
                 SELECT av.id, av.version, av.byte_size
                 FROM artifact_versions av
                 LEFT JOIN artifact_names an ON av.id = an.artifact_id AND av.version = an.version
                 WHERE an.name IS NULL
                   AND av.state IN ('ready', 'failed')
                   AND av.created_at < ?
-                """,
-                (cutoff,),
-            )
+            """
+            params: list[float | str] = [cutoff]
+            if tenant is not None:
+                query += " AND (av.tenant = ? OR av.tenant IS NULL)"
+                params.append(tenant)
+
+            cursor = conn.execute(query, params)
             rows = cursor.fetchall()
 
             deleted_count = 0
@@ -1588,7 +1597,7 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def get_usage(self) -> dict:
+    def get_usage(self, tenant: str | None = None) -> dict:
         """Get artifact store usage statistics.
 
         Returns:
@@ -1596,8 +1605,7 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
+            usage_query = """
                 SELECT
                     COUNT(DISTINCT id) as unique_artifacts,
                     COUNT(*) as total_versions,
@@ -1609,22 +1617,36 @@ class ArtifactStore:
                     MIN(created_at) as oldest_artifact,
                     MAX(created_at) as newest_artifact
                 FROM artifact_versions
-                """
-            )
+            """
+            usage_params: list[str] = []
+            if tenant is not None:
+                usage_query += " WHERE tenant = ? OR tenant IS NULL"
+                usage_params.append(tenant)
+
+            cursor = conn.execute(usage_query, usage_params)
             row = cursor.fetchone()
 
-            cursor = conn.execute("SELECT COUNT(*) as count FROM artifact_names")
+            if tenant is not None:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) as count FROM artifact_names WHERE tenant = ? OR tenant = ''",
+                    (tenant,),
+                )
+            else:
+                cursor = conn.execute("SELECT COUNT(*) as count FROM artifact_names")
             names_count = cursor.fetchone()["count"]
 
             # Count unreferenced artifacts
-            cursor = conn.execute(
-                """
+            unreferenced_query = """
                 SELECT COUNT(*) as count
                 FROM artifact_versions av
                 LEFT JOIN artifact_names an ON av.id = an.artifact_id AND av.version = an.version
                 WHERE an.name IS NULL AND av.state = 'ready'
-                """
-            )
+            """
+            unreferenced_params: list[str] = []
+            if tenant is not None:
+                unreferenced_query += " AND (av.tenant = ? OR av.tenant IS NULL)"
+                unreferenced_params.append(tenant)
+            cursor = conn.execute(unreferenced_query, unreferenced_params)
             unreferenced_count = cursor.fetchone()["count"]
 
             return {
@@ -1681,7 +1703,7 @@ class ArtifactStore:
         finally:
             conn.close()
 
-    def stats(self) -> dict:
+    def stats(self, tenant: str | None = None) -> dict:
         """Get artifact store statistics.
 
         Returns:
@@ -1689,8 +1711,7 @@ class ArtifactStore:
         """
         conn = self._get_connection()
         try:
-            cursor = conn.execute(
-                """
+            stats_query = """
                 SELECT
                     COUNT(*) as total_versions,
                     COUNT(CASE WHEN state = 'ready' THEN 1 END) as ready_versions,
@@ -1699,11 +1720,22 @@ class ArtifactStore:
                     COALESCE(SUM(CASE WHEN state = 'ready' THEN byte_size END), 0) as total_bytes,
                     COALESCE(SUM(CASE WHEN state = 'ready' THEN row_count END), 0) as total_rows
                 FROM artifact_versions
-                """
-            )
+            """
+            stats_params: list[str] = []
+            if tenant is not None:
+                stats_query += " WHERE tenant = ? OR tenant IS NULL"
+                stats_params.append(tenant)
+
+            cursor = conn.execute(stats_query, stats_params)
             row = cursor.fetchone()
 
-            cursor = conn.execute("SELECT COUNT(*) as count FROM artifact_names")
+            if tenant is not None:
+                cursor = conn.execute(
+                    "SELECT COUNT(*) as count FROM artifact_names WHERE tenant = ? OR tenant = ''",
+                    (tenant,),
+                )
+            else:
+                cursor = conn.execute("SELECT COUNT(*) as count FROM artifact_names")
             names_count = cursor.fetchone()["count"]
 
             return {

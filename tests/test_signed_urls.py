@@ -7,14 +7,17 @@ import time
 from strata.transforms.signed_urls import (
     BuildManifest,
     SignedDownloadURL,
+    SignedFinalizeURL,
     SignedUploadURL,
     generate_build_manifest,
     generate_download_url,
+    generate_finalize_url,
     generate_upload_url,
     get_signing_secret,
     reset_signing_secret,
     set_signing_secret,
     verify_download_signature,
+    verify_finalize_signature,
     verify_upload_signature,
 )
 
@@ -288,7 +291,8 @@ class TestBuildManifest:
         assert manifest.input_urls[1].version == 3
         assert manifest.output_url.build_id == "build-123"
         assert manifest.output_url.max_bytes == 10 * 1024 * 1024
-        assert manifest.finalize_url == "http://localhost:8765/v1/builds/build-123/finalize"
+        assert manifest.finalize_url.startswith("http://localhost:8765/v1/builds/build-123/finalize?")
+        assert "signature=" in manifest.finalize_url
 
     def test_build_manifest_to_dict(self):
         """Build manifest can be serialized to dict."""
@@ -312,7 +316,7 @@ class TestBuildManifest:
         assert "expires_at" in d["inputs"][0]
         assert d["output"]["max_bytes"] == 1024
         assert "url" in d["output"]
-        assert d["finalize_url"] == "http://localhost:8765/v1/builds/build-123/finalize"
+        assert d["finalize_url"].startswith("http://localhost:8765/v1/builds/build-123/finalize?")
 
     def test_build_manifest_empty_inputs(self):
         """Build manifest can have no inputs."""
@@ -328,3 +332,90 @@ class TestBuildManifest:
         assert len(manifest.input_urls) == 0
         d = manifest.to_dict()
         assert d["inputs"] == []
+
+
+class TestFinalizeURL:
+    """Tests for finalize URL generation and verification."""
+
+    def setup_method(self):
+        set_signing_secret(b"test-secret-key-12345678901234")
+
+    def teardown_method(self):
+        reset_signing_secret()
+
+    def test_generate_finalize_url(self):
+        """Generate a signed finalize URL."""
+        url = generate_finalize_url(
+            base_url="http://localhost:8765",
+            build_id="build-123",
+            expiry_seconds=600.0,
+        )
+
+        assert isinstance(url, SignedFinalizeURL)
+        assert url.build_id == "build-123"
+        assert url.expires_at > time.time()
+        assert url.url.startswith("http://localhost:8765/v1/builds/build-123/finalize?")
+        assert "signature=" in url.url
+
+    def test_verify_finalize_signature_valid(self):
+        """Verify a valid finalize signature."""
+        url = generate_finalize_url(
+            base_url="http://localhost:8765",
+            build_id="build-123",
+            expiry_seconds=600.0,
+        )
+
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url.url)
+        params = parse_qs(parsed.query)
+
+        valid = verify_finalize_signature(
+            build_id="build-123",
+            expires_at=float(params["expires_at"][0]),
+            signature=params["signature"][0],
+        )
+
+        assert valid is True
+
+    def test_verify_finalize_signature_expired(self):
+        """Expired finalize signatures are rejected."""
+        url = generate_finalize_url(
+            base_url="http://localhost:8765",
+            build_id="build-123",
+            expiry_seconds=-1.0,
+        )
+
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url.url)
+        params = parse_qs(parsed.query)
+
+        valid = verify_finalize_signature(
+            build_id="build-123",
+            expires_at=float(params["expires_at"][0]),
+            signature=params["signature"][0],
+        )
+
+        assert valid is False
+
+    def test_verify_finalize_signature_tampered(self):
+        """Tampered finalize parameters are rejected."""
+        url = generate_finalize_url(
+            base_url="http://localhost:8765",
+            build_id="build-123",
+            expiry_seconds=600.0,
+        )
+
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(url.url)
+        params = parse_qs(parsed.query)
+
+        valid = verify_finalize_signature(
+            build_id="different-build",
+            expires_at=float(params["expires_at"][0]),
+            signature=params["signature"][0],
+        )
+
+        assert valid is False
