@@ -618,6 +618,7 @@ class MaterializeRequest(BaseModel):
         name: Optional name to assign to the result
         mode: Delivery mode - "stream" for immediate consumption,
               "artifact" for async build with later retrieval
+        refresh: Force a fresh build even if a cached artifact exists
         stream_timeout_seconds: Timeout for streaming mode
     """
 
@@ -625,6 +626,7 @@ class MaterializeRequest(BaseModel):
     transform: TransformSpec
     name: str | None = None  # Optional name to assign (e.g., "daily_revenue")
     mode: str = "stream"  # "stream" | "artifact"
+    refresh: bool = False
     stream_timeout_seconds: float | None = None
 
 
@@ -897,8 +899,8 @@ class BuildProgress(BaseModel):
 class BuildStatusResponse(BaseModel):
     """Response with async build status for server-mode transforms.
 
-    Use GET /v1/builds/{build_id} to poll build status.
-    Supports long-polling via ?wait=true&timeout=30 query params.
+    Use GET /v1/artifacts/builds/{build_id} to poll build status.
+    A compatibility alias also exists at GET /v1/builds/{build_id}.
 
     Attributes:
         build_id: Unique build identifier

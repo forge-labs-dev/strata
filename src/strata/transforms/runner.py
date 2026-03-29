@@ -447,13 +447,26 @@ class BuildRunner:
                 output_path.rename(final_path)
 
                 # Finalize artifact
-                self.artifact_store.finalize_artifact(
+                finalized_artifact = self.artifact_store.finalize_artifact(
                     artifact_id=build.artifact_id,
                     version=build.version,
                     schema_json=schema_json,
                     row_count=row_count,
                     byte_size=output_bytes,
                 )
+                if finalized_artifact is None:
+                    raise ValueError(
+                        f"Failed to finalize build artifact {build.artifact_id}@v={build.version}"
+                    )
+                if (
+                    finalized_artifact.id != build.artifact_id
+                    or finalized_artifact.version != build.version
+                ):
+                    self.build_store.update_build_output(
+                        build.build_id,
+                        finalized_artifact.id,
+                        finalized_artifact.version,
+                    )
 
                 # Set name if present in transform spec
                 # (Name is stored elsewhere, check artifact_names for pending name)

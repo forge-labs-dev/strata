@@ -531,7 +531,7 @@ class StrataClient:
                     raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
 
                 # Check build status
-                status_resp = self._client.get(f"/v1/builds/{build_id}")
+                status_resp = self._client.get(f"/v1/artifacts/builds/{build_id}")
                 if status_resp.status_code == 404:
                     status_resp = self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
 
@@ -1357,7 +1357,7 @@ class AsyncStrataClient:
                 if time.time() - start_time > timeout:
                     raise TimeoutError(f"Build {build_id} timed out after {timeout}s")
 
-                status_resp = await self._client.get(f"/v1/builds/{build_id}")
+                status_resp = await self._client.get(f"/v1/artifacts/builds/{build_id}")
                 if status_resp.status_code == 404:
                     status_resp = await self._client.get(f"/v1/artifacts/{artifact_id}/v/{version}")
 

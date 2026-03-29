@@ -88,6 +88,23 @@ class TestAsyncStrataClient:
             assert set(table.column_names) == {"id"}
 
     @pytest.mark.asyncio
+    async def test_artifact_mode_waits_for_identity_build(self, server_with_client):
+        """artifact mode polls the build-status endpoint and waits for readiness."""
+        config = server_with_client["config"]
+        table_uri = server_with_client["warehouse"]["table_uri"]
+
+        async with AsyncStrataClient(base_url=f"http://127.0.0.1:{config.port}") as client:
+            artifact = await client.materialize(
+                inputs=[table_uri],
+                transform=build_scan_transform(columns=["id", "value"]),
+                mode="artifact",
+            )
+
+            table = await client.fetch(artifact.uri)
+            assert table.num_rows == 500
+            assert set(table.column_names) == {"id", "value"}
+
+    @pytest.mark.asyncio
     async def test_column_projection(self, server_with_client):
         """materialize respects column projection."""
         config = server_with_client["config"]

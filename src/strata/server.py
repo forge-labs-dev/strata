@@ -292,6 +292,7 @@ class ServerState:
         # Unified materialize streaming state
         # Maps stream_id -> StreamState for active streams
         self._streams: dict[str, StreamState] = {}
+        self._stream_cleanup_tasks: dict[str, asyncio.Task[None]] = {}
         # TTL for stream entries (5 minutes after creation, stream is cleaned up)
         self._stream_ttl_seconds = 300
 
@@ -309,9 +310,17 @@ class StreamState:
     artifact_id: str  # Artifact being built
     artifact_version: int
     created_at: float  # Unix timestamp
+    mode: str = "stream"  # "stream" for client streaming, "artifact" for background build
+    name: str | None = None
+    tenant: str | None = None
+    executor_ref: str = "scan@v1"
     started: bool = False  # True once streaming has begun
     completed: bool = False  # True once streaming finished
     bytes_streamed: int = 0  # Bytes streamed to client so far
+    started_at: float | None = None
+    completed_at: float | None = None
+    error_message: str | None = None
+    background_task: asyncio.Task[None] | None = None
 
 
 # Global state (initialized in lifespan)
@@ -322,6 +331,155 @@ def get_state() -> ServerState:
     if _state is None:
         raise RuntimeError("Server not initialized")
     return _state
+
+
+def _apply_refresh_provenance(provenance_hash: str, refresh: bool) -> str:
+    """Force a fresh artifact identity when refresh=True."""
+    if not refresh:
+        return provenance_hash
+    return f"refresh:{uuid.uuid4().hex}:{provenance_hash}"
+
+
+def _cancel_stream_cleanup(state: ServerState, stream_id: str) -> None:
+    """Cancel any pending cleanup task for a stream."""
+    task = state._stream_cleanup_tasks.pop(stream_id, None)
+    if task is not None:
+        task.cancel()
+
+
+def _schedule_stream_cleanup(
+    state: ServerState,
+    stream_id: str,
+    scan_id: str | None = None,
+) -> None:
+    """Remove completed or abandoned stream state after the configured TTL."""
+    _cancel_stream_cleanup(state, stream_id)
+
+    async def _cleanup() -> None:
+        try:
+            await asyncio.sleep(state._stream_ttl_seconds)
+        except asyncio.CancelledError:
+            return
+        finally:
+            if state._stream_cleanup_tasks.get(stream_id) is asyncio.current_task():
+                state._stream_cleanup_tasks.pop(stream_id, None)
+
+        state._streams.pop(stream_id, None)
+        if scan_id is not None:
+            state.scans.pop(scan_id, None)
+
+    state._stream_cleanup_tasks[stream_id] = asyncio.create_task(_cleanup())
+
+
+def _mark_stream_artifact_failed(stream_state: StreamState) -> None:
+    """Best-effort transition a stream-backed artifact to failed state."""
+    from strata.artifact_store import get_artifact_store
+
+    state = get_state()
+    store = get_artifact_store(state.config.artifact_dir)
+    if store is None:
+        return
+
+    try:
+        store.fail_artifact(stream_state.artifact_id, stream_state.artifact_version)
+    except Exception:
+        pass
+
+
+def _identity_build_status(stream_state: StreamState) -> BuildStatusResponse:
+    """Project an identity stream/background build onto the build-status contract."""
+    from strata.artifact_store import get_artifact_store
+
+    state = get_state()
+    artifact_uri = f"strata://artifact/{stream_state.artifact_id}@v={stream_state.artifact_version}"
+
+    artifact_state = None
+    store = get_artifact_store(state.config.artifact_dir)
+    if store is not None:
+        artifact = store.get_artifact(stream_state.artifact_id, stream_state.artifact_version)
+        if artifact is not None:
+            artifact_state = artifact.state
+
+    if stream_state.error_message or artifact_state == "failed":
+        build_state = "failed"
+    elif artifact_state == "ready" or stream_state.completed:
+        build_state = "ready"
+    elif stream_state.started:
+        build_state = "building"
+    else:
+        build_state = "pending"
+
+    return BuildStatusResponse(
+        build_id=stream_state.stream_id,
+        artifact_id=stream_state.artifact_id,
+        version=stream_state.artifact_version,
+        state=build_state,
+        artifact_uri=artifact_uri,
+        executor_ref=stream_state.executor_ref,
+        created_at=stream_state.created_at,
+        started_at=stream_state.started_at,
+        completed_at=stream_state.completed_at,
+        error_message=stream_state.error_message,
+    )
+
+
+async def _build_identity_artifact(stream_state: StreamState) -> None:
+    """Build a scan@v1 artifact in the background for artifact-mode requests."""
+    state = get_state()
+    plan = stream_state.plan
+
+    stream_state.started = True
+    stream_state.started_at = time.time()
+
+    try:
+        if not plan.tasks:
+            if plan.schema is not None:
+                sink = pa.BufferOutputStream()
+                writer = ipc.new_stream(sink, plan.schema)
+                writer.close()
+                empty_stream = sink.getvalue().to_pybytes()
+            else:
+                empty_stream = b""
+
+            await _finalize_stream_artifact(stream_state, empty_stream, 0)
+            stream_state.bytes_streamed = len(empty_stream)
+            stream_state.completed = True
+            return
+
+        loop = asyncio.get_running_loop()
+        all_chunks: list[bytes] = []
+        bytes_out = 0
+
+        for task in plan.tasks:
+            if state._draining:
+                raise RuntimeError("Server is shutting down")
+
+            chunk = await loop.run_in_executor(
+                state._fetch_executor,
+                state.fetcher.fetch_as_stream_bytes,
+                task,
+            )
+            all_chunks.append(chunk)
+            bytes_out += len(chunk)
+
+        await _finalize_stream_artifact(stream_state, b"".join(all_chunks), len(plan.tasks))
+        stream_state.bytes_streamed = bytes_out
+        stream_state.completed = True
+    except asyncio.CancelledError:
+        stream_state.error_message = "Build cancelled"
+        _mark_stream_artifact_failed(stream_state)
+        raise
+    except Exception as e:
+        stream_state.error_message = str(e)
+        logger.error(
+            "identity_artifact_build_error",
+            artifact_id=stream_state.artifact_id,
+            error=str(e),
+        )
+        _mark_stream_artifact_failed(stream_state)
+    finally:
+        stream_state.completed_at = time.time()
+        _schedule_stream_cleanup(state, stream_state.stream_id)
 
 
 def require_writes_enabled() -> None:
@@ -634,6 +792,14 @@ async def _graceful_shutdown(state: ServerState) -> None:
 
         if _get_active_scan_count(state) == 0:
             state.metrics.log_event("shutdown_drained")
+
+    for cleanup_task in list(state._stream_cleanup_tasks.values()):
+        cleanup_task.cancel()
+    state._stream_cleanup_tasks.clear()
+
+    for stream_state in list(state._streams.values()):
+        if stream_state.background_task is not None and not stream_state.background_task.done():
+            stream_state.background_task.cancel()
 
     # Shutdown the executors
     state._planning_executor.shutdown(wait=False)
@@ -2982,6 +3148,7 @@ async def materialize_artifact(request: MaterializeRequest):
     input_hashes = [f"{uri}:{version}" for uri, version in sorted(input_versions.items())]
 
     provenance_hash = compute_provenance_hash(input_hashes, transform_spec)
+    provenance_hash = _apply_refresh_provenance(provenance_hash, request.refresh)
 
     # Check for existing artifact with same provenance (tenant-scoped)
     existing = store.find_by_provenance(provenance_hash, tenant=tenant_id)
@@ -3178,7 +3345,7 @@ async def finalize_artifact(request: UploadFinalizeRequest):
 
     # Finalize artifact
     try:
-        store.finalize_artifact(
+        finalized_artifact = store.finalize_artifact(
             artifact_id=request.artifact_id,
             version=request.version,
             schema_json=request.arrow_schema,
@@ -3188,13 +3355,16 @@ async def finalize_artifact(request: UploadFinalizeRequest):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    artifact_uri = f"strata://artifact/{request.artifact_id}@v={request.version}"
+    if finalized_artifact is None:
+        raise HTTPException(status_code=500, detail="Failed to finalize artifact")
+
+    artifact_uri = f"strata://artifact/{finalized_artifact.id}@v={finalized_artifact.version}"
     name_uri = None
 
     # Set name if requested
     if request.name:
         try:
-            store.set_name(request.name, request.artifact_id, request.version)
+            store.set_name(request.name, finalized_artifact.id, finalized_artifact.version)
             name_uri = f"strata://name/{request.name}"
         except ValueError as e:
             # Don't fail the whole request if name setting fails
@@ -3202,7 +3372,7 @@ async def finalize_artifact(request: UploadFinalizeRequest):
 
     return UploadFinalizeResponse(
         artifact_uri=artifact_uri,
-        byte_size=byte_size,
+        byte_size=finalized_artifact.byte_size or byte_size,
         name_uri=name_uri,
     )
 
@@ -3392,29 +3562,36 @@ async def put_artifact(request: Request):
 
     # Finalize
     schema_json = table.schema.to_string()
-    store.finalize_artifact(
+    finalized_artifact = store.finalize_artifact(
         artifact_id=artifact_id,
         version=version,
         schema_json=schema_json,
         row_count=table.num_rows,
         byte_size=len(arrow_bytes),
     )
+    if finalized_artifact is None:
+        raise HTTPException(status_code=500, detail="Failed to finalize artifact")
 
-    artifact_uri = f"strata://artifact/{artifact_id}@v={version}"
+    artifact_uri = f"strata://artifact/{finalized_artifact.id}@v={finalized_artifact.version}"
     name_uri = None
 
     # Set name if requested
     if artifact_name:
         try:
-            store.set_name(artifact_name, artifact_id, version, tenant=tenant_id)
+            store.set_name(
+                artifact_name,
+                finalized_artifact.id,
+                finalized_artifact.version,
+                tenant=tenant_id,
+            )
             name_uri = f"strata://name/{artifact_name}"
         except Exception as e:
             logger.warning(f"Failed to set name {artifact_name}: {e}")
 
     return PutArtifactResponse(
         artifact_uri=artifact_uri,
-        hit=False,
-        byte_size=len(arrow_bytes),
+        hit=finalized_artifact.id != artifact_id or finalized_artifact.version != version,
+        byte_size=finalized_artifact.byte_size or len(arrow_bytes),
         name_uri=name_uri,
     )
 
@@ -3913,12 +4090,15 @@ async def get_artifact_dependents(
     )
 
 
+_ACTIVE_BUILD_STATES = ("pending", "building", "running")
+
+
 @app.get("/v1/artifacts/builds/{build_id}", response_model=BuildStatusResponse)
 async def get_build_status(build_id: str):
-    """Get async build status (server-mode transforms only).
+    """Get async build status.
 
     Use this endpoint to poll the status of a build that was started
-    asynchronously via materialize in server mode.
+    asynchronously via materialize, including scan@v1 artifact-mode builds.
 
     Args:
         build_id: Build ID from materialize response
@@ -3926,9 +4106,25 @@ async def get_build_status(build_id: str):
     Returns:
         BuildStatusResponse with current build state
     """
-    from strata.transforms.build_store import get_build_store
-
     state = get_state()
+
+    # Identity materialize artifact-mode builds are tracked in the stream registry
+    # even when server-mode transforms are disabled.
+    stream_state = state._streams.get(build_id)
+    if isinstance(stream_state, StreamState):
+        if state.config.auth_mode == "trusted_proxy":
+            principal = get_principal()
+            if principal is None:
+                raise HTTPException(status_code=401, detail="Unauthorized")
+
+            is_owner = stream_state.plan.owner_principal == principal.id
+            is_admin = principal.has_scope("admin:*")
+            if not is_owner and not is_admin:
+                if state.config.hide_forbidden_as_not_found:
+                    raise HTTPException(status_code=404, detail="Build not found")
+                raise HTTPException(status_code=403, detail="Access denied")
+
+        return _identity_build_status(stream_state)
 
     # Build polling is only available when server transforms are enabled
     if not state.config.server_transforms_enabled:
@@ -3936,6 +4132,8 @@ async def get_build_status(build_id: str):
             status_code=404,
             detail="Build polling is only available in server mode with transforms enabled",
         )
+
+    from strata.transforms.build_store import get_build_store
 
     # Get build store
     build_store = get_build_store()
@@ -3952,8 +4150,6 @@ async def get_build_status(build_id: str):
 
     # Check access control if auth is enabled
     if state.config.auth_mode == "trusted_proxy":
-        from strata.auth import get_principal
-
         principal = get_principal()
         if principal is not None:
             # Only build owner or admin can see build status
@@ -3978,6 +4174,12 @@ async def get_build_status(build_id: str):
         error_message=build.error_message,
         error_code=build.error_code,
     )
+
+
+@app.get("/v1/builds/{build_id}", response_model=BuildStatusResponse, include_in_schema=False)
+async def get_build_status_compat(build_id: str):
+    """Compatibility alias for older clients polling build status."""
+    return await get_build_status(build_id)
 
 
 # ---------------------------------------------------------------------------
@@ -4026,10 +4228,10 @@ async def get_build_manifest(build_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Build not found")
 
     # Only allow manifest retrieval for pending/running builds
-    if build.state not in ("pending", "running"):
+    if build.state not in _ACTIVE_BUILD_STATES:
         raise HTTPException(
             status_code=400,
-            detail=f"Build is not in pending or running state (state={build.state})",
+            detail=f"Build is not in pending or building state (state={build.state})",
         )
 
     # Access control
@@ -4204,10 +4406,10 @@ async def upload_artifact_signed(
     if build is None:
         raise HTTPException(status_code=404, detail="Build not found")
 
-    if build.state not in ("pending", "running"):
+    if build.state not in _ACTIVE_BUILD_STATES:
         raise HTTPException(
             status_code=400,
-            detail=f"Build is not in pending or running state (state={build.state})",
+            detail=f"Build is not in pending or building state (state={build.state})",
         )
 
     # Read body with size limit
@@ -4277,10 +4479,10 @@ async def finalize_build(build_id: str, request: Request):
                 raise HTTPException(status_code=403, detail="Access denied")
 
     # Check build state
-    if build.state not in ("pending", "running"):
+    if build.state not in _ACTIVE_BUILD_STATES:
         raise HTTPException(
             status_code=400,
-            detail=f"Build is not in pending or running state (state={build.state})",
+            detail=f"Build is not in pending or building state (state={build.state})",
         )
 
     # Verify blob was uploaded
@@ -4320,7 +4522,7 @@ async def finalize_build(build_id: str, request: Request):
 
     # Finalize the artifact atomically with name if provided
     try:
-        store.finalize_and_set_name(
+        finalized_artifact = store.finalize_and_set_name(
             artifact_id=build.artifact_id,
             version=build.version,
             schema_json=schema_json,
@@ -4332,14 +4534,23 @@ async def finalize_build(build_id: str, request: Request):
     except ValueError as e:
         build_store.fail_build(build_id, str(e), "FINALIZE_FAILED")
         raise HTTPException(status_code=400, detail=str(e))
+    if finalized_artifact is None:
+        build_store.fail_build(build_id, "Failed to finalize artifact", "FINALIZE_FAILED")
+        raise HTTPException(status_code=500, detail="Failed to finalize artifact")
 
     # Mark build as complete
     # First start the build if it's still pending (pull model may finalize directly)
     if build.state == "pending":
         build_store.start_build(build_id)
+    if finalized_artifact.id != build.artifact_id or finalized_artifact.version != build.version:
+        build_store.update_build_output(
+            build_id,
+            finalized_artifact.id,
+            finalized_artifact.version,
+        )
     build_store.complete_build(build_id)
 
-    artifact_uri = f"strata://artifact/{build.artifact_id}@v={build.version}"
+    artifact_uri = f"strata://artifact/{finalized_artifact.id}@v={finalized_artifact.version}"
     name_uri = f"strata://name/{build.name}" if build.name else None
 
     return {
@@ -4929,6 +5140,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
         columns=identity_params.columns,
         filters=filters,
     )
+    provenance_hash = _apply_refresh_provenance(provenance_hash, request.refresh)
 
     # Get artifact store (allow writes for personal mode)
     store = get_artifact_store(state.config.artifact_dir)
@@ -4994,11 +5206,11 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
         artifact_id=artifact_id,
         artifact_version=artifact_version,
         created_at=time.time(),
+        mode=request.mode,
+        name=request.name,
+        tenant=tenant_id,
     )
     state._streams[stream_id] = stream_state
-
-    # Also register in scans dict for QoS tracking (reuse existing infrastructure)
-    state.scans[plan.scan_id] = plan
 
     logger.info(
         "identity_materialize_cache_miss",
@@ -5011,6 +5223,10 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     )
 
     if request.mode == "stream":
+        # Register for QoS/accounting only when a client will actually stream.
+        state.scans[plan.scan_id] = plan
+        _schedule_stream_cleanup(state, stream_id, plan.scan_id)
+
         return MaterializeResponse(
             hit=False,
             artifact_uri=artifact_uri,
@@ -5019,12 +5235,12 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
             stream_url=f"/v1/streams/{stream_id}",
         )
     else:
-        # Artifact mode - client will poll /v1/builds/{build_id}
-        # For identity transforms, we use the stream_id as build_id
+        # Artifact mode - start a background build and expose its status via build_id.
+        stream_state.background_task = asyncio.create_task(_build_identity_artifact(stream_state))
         return MaterializeResponse(
             hit=False,
             artifact_uri=artifact_uri,
-            state="building",
+            state="pending",
             build_id=stream_id,
         )
 
@@ -5083,7 +5299,9 @@ async def get_stream(stream_id: str, request: Request):
                 raise HTTPException(status_code=403, detail="Access denied")
 
     # Mark stream as started
+    _cancel_stream_cleanup(state, stream_id)
     stream_state.started = True
+    stream_state.started_at = time.time()
 
     # QoS: Classify query and acquire appropriate tier limiter
     tier = _classify_query(plan)
@@ -5154,6 +5372,8 @@ async def get_stream(stream_id: str, request: Request):
 
         # Mark stream as completed
         stream_state.completed = True
+        stream_state.completed_at = time.time()
+        _schedule_stream_cleanup(state, stream_id, scan_id)
 
         # Return valid empty Arrow IPC stream
         # Handle case where schema is None (empty table with no Parquet files)
@@ -5239,6 +5459,8 @@ async def get_stream(stream_id: str, request: Request):
 
             # Clean up stream state after TTL
             # (leave it for a while so client can retry on failure)
+            stream_state.completed_at = time.time()
+            _schedule_stream_cleanup(state, stream_id, scan_id)
 
     return StreamingResponse(
         stream_and_persist(),
@@ -5273,18 +5495,19 @@ async def _finalize_stream_artifact(stream_state: StreamState, data: bytes, row_
             except Exception:
                 pass
 
-        # Finalize artifact
-        store.finalize_artifact(
+        # Finalize artifact and atomically update the requested name pointer.
+        finalized_artifact = store.finalize_and_set_name(
             artifact_id=stream_state.artifact_id,
             version=stream_state.artifact_version,
             schema_json=schema_json,
             row_count=row_count,
             byte_size=len(data),
+            name=stream_state.name,
+            tenant=stream_state.tenant,
         )
-
-        # Set name if requested (stored in plan metadata or request)
-        # Note: name is passed via the original request, not stored in stream_state
-        # For now, skip name setting in finalize - it's set in cache hit path
+        if finalized_artifact is not None:
+            stream_state.artifact_id = finalized_artifact.id
+            stream_state.artifact_version = finalized_artifact.version
 
         logger.info(
             "stream_artifact_finalized",

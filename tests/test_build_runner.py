@@ -272,6 +272,73 @@ class TestBuildExecution:
         assert artifact.row_count == 3
 
     @pytest.mark.asyncio
+    async def test_duplicate_finalize_repoints_build_to_existing_artifact(
+        self, build_runner, artifact_store, build_store
+    ):
+        """Duplicate provenance should complete against the canonical artifact."""
+        provenance_hash = f"duplicate-hash-{uuid.uuid4()}"
+
+        existing_artifact_id = str(uuid.uuid4())
+        existing_version = artifact_store.create_artifact(existing_artifact_id, provenance_hash)
+        artifact_store.finalize_artifact(existing_artifact_id, existing_version, "{}", 1, 1)
+
+        duplicate_artifact_id = str(uuid.uuid4())
+        transform_spec = TransformSpec(
+            executor="service://test_sql@v1",
+            params={"query": "SELECT * FROM input0"},
+            inputs=[],
+        )
+        duplicate_version = artifact_store.create_artifact(
+            artifact_id=duplicate_artifact_id,
+            provenance_hash=provenance_hash,
+            transform_spec=transform_spec,
+            input_versions={},
+        )
+        build_id = str(uuid.uuid4())
+        build_store.create_build(
+            build_id=build_id,
+            artifact_id=duplicate_artifact_id,
+            version=duplicate_version,
+            executor_ref="test_sql@v1",
+            executor_url="http://test-executor:8080",
+            principal_id="test-user",
+        )
+
+        output_bytes = create_arrow_ipc_bytes({"id": [1], "value": ["a"]})
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {}
+
+        async def mock_aiter_bytes(chunk_size=65536):
+            yield output_bytes
+
+        mock_response.aiter_bytes = mock_aiter_bytes
+
+        async def mock_post(*args, **kwargs):
+            return mock_response
+
+        with patch("httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.post = mock_post
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=None)
+            MockClient.return_value = mock_client
+
+            build = build_store.get_build(build_id)
+            await build_runner._execute_build(build)
+
+        completed_build = build_store.get_build(build_id)
+        assert completed_build is not None
+        assert completed_build.state == "ready"
+        assert completed_build.artifact_id == existing_artifact_id
+        assert completed_build.version == existing_version
+
+        duplicate_artifact = artifact_store.get_artifact(duplicate_artifact_id, duplicate_version)
+        assert duplicate_artifact is not None
+        assert duplicate_artifact.state == "failed"
+
+    @pytest.mark.asyncio
     async def test_build_max_output_bytes_exceeded(self, build_runner, artifact_store, build_store):
         """Test build failure when output exceeds max_output_bytes."""
         # Create a pending build with small_output transform (100 byte limit)

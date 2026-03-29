@@ -677,6 +677,12 @@ class ArtifactStore:
             if row["state"] == "ready":
                 # Already finalized - set name and return (idempotent)
                 if name:
+                    artifact_tenant = row["tenant"] if row["tenant"] else None
+                    if not self._can_assign_name_for_tenant(artifact_tenant, tenant):
+                        raise ValueError(
+                            f"Artifact {artifact_id}@v={version} belongs to tenant "
+                            f"{artifact_tenant}, cannot assign name in tenant {tenant}"
+                        )
                     self._set_name_in_connection(conn, name, artifact_id, version, tenant)
                     conn.commit()
                 return self.get_artifact(artifact_id, version)
@@ -689,6 +695,13 @@ class ArtifactStore:
 
             provenance_hash = row["provenance_hash"]
             artifact_tenant = row["tenant"]
+            normalized_artifact_tenant = artifact_tenant if artifact_tenant else None
+
+            if name and not self._can_assign_name_for_tenant(normalized_artifact_tenant, tenant):
+                raise ValueError(
+                    f"Artifact {artifact_id}@v={version} belongs to tenant "
+                    f"{normalized_artifact_tenant}, cannot assign name in tenant {tenant}"
+                )
 
             # Check if another artifact with same (tenant, provenance_hash) already exists
             existing = self.find_by_provenance(provenance_hash, tenant=artifact_tenant)
@@ -998,6 +1011,20 @@ class ArtifactStore:
     # Name Pointers
     # -----------------------------------------------------------------------
 
+    @staticmethod
+    def _can_assign_name_for_tenant(
+        artifact_tenant: str | None,
+        requested_tenant: str | None,
+    ) -> bool:
+        """Return whether a name in requested_tenant may point at artifact_tenant.
+
+        Tenantless artifacts remain assignable for backwards compatibility with
+        older personal-mode behavior and existing tests.
+        """
+        if artifact_tenant is None:
+            return True
+        return artifact_tenant == requested_tenant
+
     def set_name(
         self,
         name: str,
@@ -1024,7 +1051,7 @@ class ArtifactStore:
             # Verify target exists and is ready
             cursor = conn.execute(
                 """
-                SELECT state FROM artifact_versions
+                SELECT state, tenant FROM artifact_versions
                 WHERE id = ? AND version = ?
                 """,
                 (artifact_id, version),
@@ -1035,6 +1062,12 @@ class ArtifactStore:
             if row["state"] != "ready":
                 raise ValueError(
                     f"Artifact {artifact_id}@v={version} is not ready (state={row['state']})"
+                )
+            artifact_tenant = row["tenant"] if row["tenant"] else None
+            if not self._can_assign_name_for_tenant(artifact_tenant, tenant):
+                raise ValueError(
+                    f"Artifact {artifact_id}@v={version} belongs to tenant "
+                    f"{artifact_tenant}, cannot assign name in tenant {tenant}"
                 )
 
             # Upsert name (tenant, name) is the unique key

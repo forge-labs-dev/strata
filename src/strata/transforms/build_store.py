@@ -382,6 +382,27 @@ class BuildStore:
         finally:
             conn.close()
 
+    def update_build_output(self, build_id: str, artifact_id: str, version: int) -> bool:
+        """Repoint a build at the canonical artifact it produced.
+
+        This is used when finalization deduplicates to an existing artifact
+        with the same provenance.
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                UPDATE artifact_builds
+                SET artifact_id = ?, version = ?
+                WHERE build_id = ?
+                """,
+                (artifact_id, version, build_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
     def start_build(self, build_id: str) -> bool:
         """Mark build as started (pending -> building).
 

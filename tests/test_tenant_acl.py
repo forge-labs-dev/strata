@@ -324,6 +324,20 @@ class TestArtifactStoreTenantIsolation:
         assert result_b is not None
         assert result_b.id == "art-b"
 
+    def test_set_name_rejects_cross_tenant_artifact(self, artifact_store):
+        """A tenant-scoped name cannot point at another tenant's artifact."""
+        artifact_store.create_artifact(
+            artifact_id="art-a",
+            provenance_hash="hash-a",
+            tenant="team-a",
+        )
+        artifact_store.finalize_artifact("art-a", 1, "{}", 10, 100)
+
+        with pytest.raises(ValueError, match="belongs to tenant team-a"):
+            artifact_store.set_name("report", "art-a", 1, tenant="team-b")
+
+        assert artifact_store.resolve_name("report", tenant="team-b") is None
+
     def test_get_name_tenant_scoped(self, artifact_store):
         """get_name should respect tenant scope."""
         artifact_store.create_artifact(

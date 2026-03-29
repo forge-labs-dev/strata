@@ -310,22 +310,31 @@ class TestEndToEnd:
         import strata.server as server_module
         from strata.server import ServerState, app
 
+        original_state = server_module._state
         server_module._state = ServerState(config)
 
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app=app,
+                host=config.host,
+                port=config.port,
+                log_level="error",
+            )
+        )
         server_thread = threading.Thread(
-            target=uvicorn.run,
-            kwargs={
-                "app": app,
-                "host": config.host,
-                "port": config.port,
-                "log_level": "error",
-            },
+            target=server.run,
             daemon=True,
         )
         server_thread.start()
 
         # Wait for server to start
-        time.sleep(1)
+        deadline = time.time() + 10
+        while not server.started:
+            if not server_thread.is_alive():
+                raise RuntimeError("Uvicorn server thread exited before startup")
+            if time.time() >= deadline:
+                raise RuntimeError("Timed out waiting for uvicorn server startup")
+            time.sleep(0.05)
 
         client = StrataClient(base_url=f"http://127.0.0.1:{port}")
 
@@ -336,6 +345,9 @@ class TestEndToEnd:
         }
 
         client.close()
+        server.should_exit = True
+        server_thread.join(timeout=5)
+        server_module._state = original_state
 
     def test_fetch_and_cache_hit(self, server_with_client):
         """Test fetching twice to demonstrate cache hit."""

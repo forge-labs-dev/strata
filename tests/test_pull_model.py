@@ -173,6 +173,25 @@ class TestBuildManifestEndpoint:
         assert "url" in data["output"]
         assert "finalize" in data["finalize_url"]
 
+    def test_get_manifest_for_building_build(self, client, build_store, artifact_store):
+        """Can get manifest for a build that has already started."""
+        input_version = create_test_artifact(artifact_store, "input-building", finalize=True)
+        output_version = create_test_artifact(artifact_store, "output-building", finalize=False)
+
+        build_store.create_build(
+            build_id="build-building-001",
+            artifact_id="output-building",
+            version=output_version,
+            executor_ref="duckdb_sql@v1",
+            input_uris=[f"strata://artifact/input-building@v={input_version}"],
+            params={"sql": "SELECT * FROM input"},
+        )
+        build_store.start_build("build-building-001")
+
+        response = client.get("/v1/builds/build-building-001/manifest")
+        assert response.status_code == 200
+        assert response.json()["build_id"] == "build-building-001"
+
     def test_get_manifest_not_found(self, client):
         """Returns 404 for non-existent build."""
         response = client.get("/v1/builds/nonexistent/manifest")
@@ -193,7 +212,7 @@ class TestBuildManifestEndpoint:
 
         response = client.get("/v1/builds/build-002/manifest")
         assert response.status_code == 400
-        assert "not in pending or running state" in response.json()["detail"]
+        assert "not in pending or building state" in response.json()["detail"]
 
 
 class TestDownloadEndpoint:
@@ -349,6 +368,45 @@ class TestUploadEndpoint:
         stored_blob = artifact_store.read_blob("up-output", version)
         assert stored_blob == blob
 
+    def test_upload_with_valid_signature_for_building_build(
+        self, client, build_store, artifact_store
+    ):
+        """Can upload artifact for a build that has already started."""
+        from strata.transforms.signed_urls import generate_upload_url
+
+        version = create_test_artifact(artifact_store, "up-output-building", finalize=False)
+        build_store.create_build(
+            build_id="up-build-building-001",
+            artifact_id="up-output-building",
+            version=version,
+            executor_ref="test@v1",
+        )
+        build_store.start_build("up-build-building-001")
+
+        blob = create_test_arrow_blob()
+        signed = generate_upload_url(
+            base_url="http://testserver",
+            build_id="up-build-building-001",
+            max_bytes=len(blob) + 1000,
+            expiry_seconds=300.0,
+        )
+
+        parsed = urlparse(signed.url)
+        params = parse_qs(parsed.query)
+        response = client.post(
+            "/v1/artifacts/upload",
+            params={
+                "build_id": params["build_id"][0],
+                "max_bytes": params["max_bytes"][0],
+                "expires_at": params["expires_at"][0],
+                "signature": params["signature"][0],
+            },
+            content=blob,
+        )
+
+        assert response.status_code == 200
+        assert artifact_store.read_blob("up-output-building", version) == blob
+
     def test_upload_exceeds_max_bytes_rejected(self, client, build_store, artifact_store):
         """Upload exceeding max_bytes is rejected."""
         from strata.transforms.signed_urls import generate_upload_url
@@ -460,6 +518,61 @@ class TestFinalizeEndpoint:
         artifact = artifact_store.get_artifact("fin-output", version)
         assert artifact.state == "ready"
 
+    def test_finalize_after_upload_for_building_build(self, client, build_store, artifact_store):
+        """Can finalize a build after it has already transitioned to building."""
+        version = create_test_artifact(artifact_store, "fin-output-building", finalize=False)
+        build_store.create_build(
+            build_id="fin-build-building-001",
+            artifact_id="fin-output-building",
+            version=version,
+            executor_ref="test@v1",
+            name="my-result-building",
+        )
+        build_store.start_build("fin-build-building-001")
+
+        blob = create_test_arrow_blob()
+        artifact_store.write_blob("fin-output-building", version, blob)
+
+        response = client.post("/v1/builds/fin-build-building-001/finalize")
+        assert response.status_code == 200
+        assert response.json()["artifact_uri"].endswith(f"fin-output-building@v={version}")
+
+    def test_finalize_duplicate_provenance_repoints_build(
+        self, client, build_store, artifact_store
+    ):
+        """Duplicate finalization returns the canonical artifact URI and repoints the build."""
+        existing_version = artifact_store.create_artifact("canonical-output", "shared-hash")
+        artifact_store.finalize_artifact("canonical-output", existing_version, "{}", 3, 100)
+
+        duplicate_version = artifact_store.create_artifact("duplicate-output", "shared-hash")
+        build_store.create_build(
+            build_id="fin-build-duplicate-001",
+            artifact_id="duplicate-output",
+            version=duplicate_version,
+            executor_ref="test@v1",
+            name="duplicate-result",
+        )
+        build_store.start_build("fin-build-duplicate-001")
+
+        blob = create_test_arrow_blob()
+        artifact_store.write_blob("duplicate-output", duplicate_version, blob)
+
+        response = client.post("/v1/builds/fin-build-duplicate-001/finalize")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["artifact_uri"] == f"strata://artifact/canonical-output@v={existing_version}"
+        assert data["name_uri"] == "strata://name/duplicate-result"
+
+        build = build_store.get_build("fin-build-duplicate-001")
+        assert build is not None
+        assert build.state == "ready"
+        assert build.artifact_id == "canonical-output"
+        assert build.version == existing_version
+
+        duplicate_artifact = artifact_store.get_artifact("duplicate-output", duplicate_version)
+        assert duplicate_artifact is not None
+        assert duplicate_artifact.state == "failed"
+
     def test_finalize_without_upload_rejected(self, client, build_store, artifact_store):
         """Cannot finalize without uploading blob first."""
         version = create_test_artifact(artifact_store, "fin-output2", finalize=False)
@@ -490,7 +603,7 @@ class TestFinalizeEndpoint:
 
         response = client.post("/v1/builds/fin-build-003/finalize")
         assert response.status_code == 400
-        assert "not in pending or running state" in response.json()["detail"]
+        assert "not in pending or building state" in response.json()["detail"]
 
     def test_finalize_invalid_arrow_fails_build(self, client, build_store, artifact_store):
         """Finalizing with invalid Arrow data marks build as failed."""

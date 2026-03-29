@@ -309,11 +309,61 @@ class TestUnifiedMaterialize:
 
         # Should be a cache miss with build_id
         assert data["hit"] is False
-        assert data["state"] == "building"
+        assert data["state"] == "pending"
         assert data["artifact_uri"].startswith("strata://artifact/")
         assert data["build_id"] is not None
         # In artifact mode, no stream_url should be provided
         assert data.get("stream_url") is None
+
+    def test_identity_artifact_mode_build_status_and_name(self, server_with_personal_mode):
+        """scan@v1 artifact mode builds in the background and sets names on miss."""
+        base_url = server_with_personal_mode["base_url"]
+        table_uri = server_with_personal_mode["warehouse"]["table_uri"]
+
+        response = requests.post(
+            f"{base_url}/v1/materialize",
+            json={
+                "inputs": [table_uri],
+                "transform": {
+                    "executor": "scan@v1",
+                    "params": {"columns": ["id", "name"]},
+                },
+                "mode": "artifact",
+                "name": "named_identity_build",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        build_id = data["build_id"]
+        artifact_uri = data["artifact_uri"]
+
+        deadline = time.time() + 10
+        while True:
+            status_resp = requests.get(f"{base_url}/v1/artifacts/builds/{build_id}")
+            assert status_resp.status_code == 200
+            build_status = status_resp.json()
+
+            if build_status["state"] == "ready":
+                break
+            assert build_status["state"] in {"pending", "building"}
+            assert time.time() < deadline
+            time.sleep(0.1)
+
+        assert build_status["artifact_uri"] == artifact_uri
+        assert build_status["executor_ref"] == "scan@v1"
+
+        name_resp = requests.get(f"{base_url}/v1/names/named_identity_build")
+        assert name_resp.status_code == 200
+        assert name_resp.json()["artifact_uri"] == artifact_uri
+
+        artifact_id, version = artifact_uri.removeprefix("strata://artifact/").split("@v=")
+        data_resp = requests.get(f"{base_url}/v1/artifacts/{artifact_id}/v/{version}/data")
+        assert data_resp.status_code == 200
+
+        table = ipc.open_stream(data_resp.content).read_all()
+        assert table.num_rows == 100
+        assert set(table.column_names) == {"id", "name"}
 
     def test_identity_requires_single_input(self, server_with_personal_mode):
         """Test that scan@v1 rejects multiple inputs."""
@@ -534,5 +584,53 @@ class TestClientFetch:
             )
             assert artifact2.cache_hit is True
             assert artifact2.artifact_id == artifact1.artifact_id
+        finally:
+            client.close()
+
+    def test_client_materialize_refresh_bypasses_cache(self, server_with_personal_mode):
+        """refresh=True should force a fresh artifact instead of reusing cache."""
+        from strata.client import StrataClient
+
+        base_url = server_with_personal_mode["base_url"]
+        table_uri = server_with_personal_mode["warehouse"]["table_uri"]
+
+        client = StrataClient(base_url=base_url)
+
+        try:
+            artifact1 = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id"]}},
+            )
+            artifact2 = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["id"]}},
+                refresh=True,
+            )
+
+            assert artifact1.cache_hit is False
+            assert artifact2.cache_hit is False
+            assert artifact2.artifact_id != artifact1.artifact_id
+        finally:
+            client.close()
+
+    def test_client_materialize_artifact_mode(self, server_with_personal_mode):
+        """The sync client can wait for scan@v1 artifact-mode builds."""
+        from strata.client import StrataClient
+
+        base_url = server_with_personal_mode["base_url"]
+        table_uri = server_with_personal_mode["warehouse"]["table_uri"]
+
+        client = StrataClient(base_url=base_url)
+
+        try:
+            artifact = client.materialize(
+                inputs=[table_uri],
+                transform={"executor": "scan@v1", "params": {"columns": ["value"]}},
+                mode="artifact",
+            )
+
+            table = client.fetch(artifact.uri)
+            assert table.num_rows == 100
+            assert set(table.column_names) == {"value"}
         finally:
             client.close()

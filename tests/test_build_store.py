@@ -63,6 +63,24 @@ class TestBuildStore:
         assert retrieved.build_id == build_id
         assert retrieved.state == "pending"
 
+    def test_update_build_output(self, build_store):
+        """Build output can be repointed to the canonical artifact."""
+        build_id = str(uuid.uuid4())
+        build_store.create_build(
+            build_id=build_id,
+            artifact_id="art-123",
+            version=1,
+            executor_ref="duckdb_sql@v1",
+        )
+
+        success = build_store.update_build_output(build_id, "canonical-artifact", 7)
+        assert success
+
+        updated = build_store.get_build(build_id)
+        assert updated is not None
+        assert updated.artifact_id == "canonical-artifact"
+        assert updated.version == 7
+
     def test_get_build_not_found(self, build_store):
         """Get build returns None for missing ID."""
         result = build_store.get_build("nonexistent")
