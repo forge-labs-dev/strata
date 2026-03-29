@@ -16,7 +16,7 @@ from strata.config import StrataConfig
 from strata.fetcher import Fetcher, create_fetcher
 from strata.metrics import MetricsCollector
 from strata.tracing import trace_span
-from strata.types import CacheKey, ReadPlan, Task
+from strata.types import CacheGranularity, CacheKey, ReadPlan, Task
 
 # Cache file extension (Arrow IPC Stream format for zero-copy serving)
 CACHE_FILE_EXTENSION = ".arrowstream"
@@ -175,6 +175,18 @@ class DiskCache:
         """Get the metadata sidecar path for a data file."""
         return data_path.with_suffix(CACHE_META_EXTENSION)
 
+    def _data_path_from_meta(self, meta_path: Path) -> Path:
+        """Get the data file path corresponding to a metadata sidecar."""
+        path_str = str(meta_path)
+        if path_str.endswith(CACHE_META_EXTENSION):
+            return Path(path_str.removesuffix(CACHE_META_EXTENSION) + CACHE_FILE_EXTENSION)
+        return meta_path
+
+    def _delete_entry_files(self, data_path: Path) -> None:
+        """Delete a cache entry's data file and metadata sidecar."""
+        data_path.unlink(missing_ok=True)
+        self._meta_path(data_path).unlink(missing_ok=True)
+
     def get(self, key: CacheKey) -> pa.RecordBatch | None:
         """Get a cached record batch.
 
@@ -195,7 +207,7 @@ class DiskCache:
             return batches[0]
         except Exception:
             # Corrupted cache file, remove it
-            path.unlink(missing_ok=True)
+            self._delete_entry_files(path)
             return None
 
     def get_as_stream_bytes(self, key: CacheKey) -> bytes | None:
@@ -222,7 +234,7 @@ class DiskCache:
             return fast_io.read_file_mmap(str(path))
         except Exception:
             # Corrupted cache file, remove it
-            path.unlink(missing_ok=True)
+            self._delete_entry_files(path)
             return None
 
     def get_path(self, key: CacheKey) -> Path | None:
@@ -270,7 +282,7 @@ class DiskCache:
                 row_group_id=key.row_group_id,
                 columns=None,  # Could be extracted from projection_fingerprint if needed
                 num_rows=batch.num_rows,
-                size_bytes=batch.nbytes,
+                size_bytes=len(stream_bytes),
                 created_at=datetime.now(UTC).isoformat(),
             )
             meta_tmp_path.write_text(json.dumps(metadata.to_dict()))
@@ -280,7 +292,7 @@ class DiskCache:
             os.replace(tmp_path, path)
             os.replace(meta_tmp_path, meta_path)
 
-            self.metrics.record_cache_write(batch.nbytes)
+            self.metrics.record_cache_write(len(stream_bytes))
 
             # Evict old entries if over size limit
             self._evict_if_needed()
@@ -342,9 +354,13 @@ class DiskCache:
 
         for meta_path in versioned_dir.rglob(f"*{CACHE_META_EXTENSION}"):
             try:
+                data_path = self._data_path_from_meta(meta_path)
+                if not data_path.exists():
+                    meta_path.unlink(missing_ok=True)
+                    continue
                 meta = CacheEntryMetadata.from_dict(json.loads(meta_path.read_text()))
                 total_entries += 1
-                total_size += meta.size_bytes
+                total_size += data_path.stat().st_size
                 timestamps.append(meta.created_at)
 
                 # Count by table
@@ -465,27 +481,41 @@ class CachedFetcher:
 
         self.cache = cache or DiskCache(config, self.metrics)
 
+    @staticmethod
+    def _project_batch(batch: pa.RecordBatch, columns: list[str] | None) -> pa.RecordBatch:
+        """Return the requested projection from a batch."""
+        if columns is None:
+            return batch
+        if batch.schema.names == columns:
+            return batch
+        return pa.RecordBatch.from_arrays(
+            [batch.column(batch.schema.get_field_index(name)) for name in columns],
+            names=columns,
+        )
+
     def fetch(self, task: Task) -> pa.RecordBatch:
         """Fetch a row group, using cache if available."""
         histogram = get_cache_histogram()
+        cache_full_row_groups = self.config.cache_granularity == CacheGranularity.ROW_GROUP
 
         # Check cache first
         cached_batch = self.cache.get(task.cache_key)
         if cached_batch is not None:
+            result_batch = self._project_batch(cached_batch, task.columns)
             task.cached = True
-            task.bytes_read = cached_batch.nbytes
+            task.bytes_read = result_batch.nbytes
             self.metrics.record_fetch(
-                bytes_read=cached_batch.nbytes,
-                rows_read=cached_batch.num_rows,
+                bytes_read=result_batch.nbytes,
+                rows_read=result_batch.num_rows,
                 elapsed_ms=0.0,
                 from_cache=True,
             )
             # Record hit in histogram
             histogram.record_hit(
-                bytes_accessed=cached_batch.nbytes,
+                bytes_accessed=result_batch.nbytes,
                 table_id=task.cache_key.table_id,
             )
-            return cached_batch
+            return result_batch
 
         # Fetch from storage with tracing
         with trace_span(
@@ -494,7 +524,17 @@ class CachedFetcher:
             row_group_id=task.row_group_id,
             cache_hit=False,
         ) as span:
-            batch = self.fetcher.fetch(task)
+            fetch_task = task
+            if cache_full_row_groups and task.columns is not None:
+                fetch_task = Task(
+                    file_path=task.file_path,
+                    row_group_id=task.row_group_id,
+                    cache_key=task.cache_key,
+                    num_rows=task.num_rows,
+                    columns=None,
+                    estimated_bytes=task.estimated_bytes,
+                )
+            batch = self.fetcher.fetch(fetch_task)
             span.set_attribute("bytes_read", batch.nbytes)
             span.set_attribute("num_rows", batch.num_rows)
 
@@ -507,7 +547,9 @@ class CachedFetcher:
         # Store in cache
         self.cache.put(task.cache_key, batch)
 
-        return batch
+        result_batch = self._project_batch(batch, task.columns)
+        task.bytes_read = result_batch.nbytes
+        return result_batch
 
     def execute_plan(self, plan: ReadPlan) -> list[pa.RecordBatch]:
         """Execute a read plan and return all batches."""
@@ -546,9 +588,12 @@ class CachedFetcher:
             bytes: Arrow IPC stream format, ready for network transfer
         """
         histogram = get_cache_histogram()
+        cache_full_row_groups = self.config.cache_granularity == CacheGranularity.ROW_GROUP
 
         # Check if DiskCache (not just Cache protocol) for optimized path
-        if isinstance(self.cache, DiskCache):
+        if isinstance(self.cache, DiskCache) and not (
+            cache_full_row_groups and task.columns is not None
+        ):
             stream_bytes = self.cache.get_as_stream_bytes(task.cache_key)
             if stream_bytes is not None:
                 task.cached = True

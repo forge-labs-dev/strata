@@ -70,6 +70,13 @@ class PyArrowFetcher:
         # OrderedDict for LRU eviction of file handles
         self._file_cache: OrderedDict[str, pq.ParquetFile] = OrderedDict()
 
+    @staticmethod
+    def _close_parquet_file(parquet_file: pq.ParquetFile) -> None:
+        """Close a ParquetFile handle if it exposes a close method."""
+        close = getattr(parquet_file, "close", None)
+        if callable(close):
+            close()
+
     def _get_parquet_file(self, file_path: str) -> pq.ParquetFile:
         """Get a cached ParquetFile handle with LRU eviction."""
         if file_path in self._file_cache:
@@ -93,7 +100,8 @@ class PyArrowFetcher:
 
         # Evict oldest if over limit
         while len(self._file_cache) > self._max_file_cache_size:
-            self._file_cache.popitem(last=False)
+            _, evicted = self._file_cache.popitem(last=False)
+            self._close_parquet_file(evicted)
 
         return pf
 
@@ -139,6 +147,8 @@ class PyArrowFetcher:
 
     def close(self) -> None:
         """Close cached file handles."""
+        for parquet_file in self._file_cache.values():
+            self._close_parquet_file(parquet_file)
         self._file_cache.clear()
 
 

@@ -279,8 +279,7 @@ class CacheGranularity(Enum):
 
     - ROW_GROUP: Cache key includes row_group_id only (ignores projection)
       Same row group = same cache entry regardless of columns requested.
-      Note: The first query for a row group determines what columns are cached.
-      Subsequent queries may need to re-fetch if they need columns not in cache.
+      The cache stores the full row group and projects on readback when needed.
       Best for: Workloads that always request all columns, or when cache reuse
       across different projections is more valuable than projection efficiency.
     """

@@ -5,7 +5,7 @@ import pyarrow.ipc as ipc
 import pytest
 
 from strata import fast_io
-from strata.cache import CachedFetcher, DiskCache
+from strata.cache import CACHE_META_EXTENSION, CachedFetcher, DiskCache
 from strata.config import StrataConfig
 from strata.types import CacheKey, TableIdentity
 
@@ -112,6 +112,43 @@ class TestDiskCacheGetPath:
         assert path is not None
         assert path.exists()
         assert path.suffix == ".arrowstream"
+
+
+class TestDiskCacheStatsAndCleanup:
+    """Tests for cache stats and corruption cleanup behavior."""
+
+    def test_stats_use_actual_stream_file_size(self, strata_config, cache_key, sample_batch):
+        """Reported cache size should match the stored Arrow stream bytes."""
+        cache = DiskCache(strata_config)
+        cache.put(cache_key, sample_batch)
+
+        path = cache.get_path(cache_key)
+        assert path is not None
+
+        stats = cache.get_stats()
+
+        assert stats.total_entries == 1
+        assert stats.total_size_bytes == path.stat().st_size
+        assert stats.total_size_bytes == cache.get_size_bytes()
+
+    def test_corrupted_data_removes_sidecar_and_disappears_from_stats(
+        self, strata_config, cache_key, sample_batch
+    ):
+        """Corrupted cache reads should remove both data and metadata files."""
+        cache = DiskCache(strata_config)
+        cache.put(cache_key, sample_batch)
+
+        path = cache.get_path(cache_key)
+        assert path is not None
+        meta_path = path.with_suffix(CACHE_META_EXTENSION)
+        assert meta_path.exists()
+
+        path.write_bytes(b"CORRUPTED DATA - NOT VALID ARROW IPC")
+
+        assert cache.get(cache_key) is None
+        assert not path.exists()
+        assert not meta_path.exists()
+        assert cache.get_stats().total_entries == 0
 
 
 class TestCachedFetcherFetchAsStreamBytes:

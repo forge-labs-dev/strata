@@ -1,11 +1,13 @@
 """Tests for cache granularity configuration."""
 
 import pyarrow as pa
+import pyarrow.ipc as ipc
+import pyarrow.parquet as pq
 import pytest
 
-from strata.cache import DiskCache
+from strata.cache import CachedFetcher, DiskCache
 from strata.config import StrataConfig
-from strata.types import CacheGranularity, CacheKey, TableIdentity
+from strata.types import CacheGranularity, CacheKey, TableIdentity, Task
 
 
 @pytest.fixture
@@ -221,3 +223,81 @@ class TestDiskCacheGranularity:
         # key1 should hit, key2 should miss (different row groups)
         assert cache.get(key1) is not None
         assert cache.get(key2) is None
+
+    def test_row_group_cached_fetcher_refetches_full_row_group_for_broader_projection(
+        self, tmp_path
+    ):
+        """ROW_GROUP mode should cache full row groups, not pin the first projection."""
+        parquet_path = tmp_path / "data.parquet"
+        pq.write_table(
+            pa.table(
+                {
+                    "id": [1, 2],
+                    "value": [10.0, 20.0],
+                    "name": ["a", "b"],
+                }
+            ),
+            parquet_path,
+        )
+
+        config = StrataConfig(
+            cache_dir=tmp_path / "cache",
+            cache_granularity=CacheGranularity.ROW_GROUP,
+        )
+        fetcher = CachedFetcher(config)
+        table_identity = TableIdentity.from_table_id("test_db.events")
+
+        subset_task = Task(
+            file_path=str(parquet_path),
+            row_group_id=0,
+            cache_key=CacheKey(
+                tenant_id="_default",
+                table_identity=table_identity,
+                snapshot_id=123,
+                file_path=str(parquet_path),
+                row_group_id=0,
+                projection_fingerprint=CacheKey.compute_projection_fingerprint(["id"]),
+            ),
+            num_rows=2,
+            columns=["id"],
+        )
+        subset_batch = fetcher.fetch(subset_task)
+        assert subset_batch.schema.names == ["id"]
+
+        full_task = Task(
+            file_path=str(parquet_path),
+            row_group_id=0,
+            cache_key=CacheKey(
+                tenant_id="_default",
+                table_identity=table_identity,
+                snapshot_id=123,
+                file_path=str(parquet_path),
+                row_group_id=0,
+                projection_fingerprint=CacheKey.compute_projection_fingerprint(None),
+            ),
+            num_rows=2,
+            columns=None,
+        )
+        full_batch = fetcher.fetch(full_task)
+
+        assert full_task.cached is True
+        assert full_batch.schema.names == ["id", "value", "name"]
+
+        projected_stream_task = Task(
+            file_path=str(parquet_path),
+            row_group_id=0,
+            cache_key=CacheKey(
+                tenant_id="_default",
+                table_identity=table_identity,
+                snapshot_id=123,
+                file_path=str(parquet_path),
+                row_group_id=0,
+                projection_fingerprint=CacheKey.compute_projection_fingerprint(["id"]),
+            ),
+            num_rows=2,
+            columns=["id"],
+        )
+        stream_bytes = fetcher.fetch_as_stream_bytes(projected_stream_task)
+        streamed_batch = list(ipc.open_stream(pa.BufferReader(stream_bytes)))[0]
+        assert projected_stream_task.cached is True
+        assert streamed_batch.schema.names == ["id"]

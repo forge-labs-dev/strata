@@ -281,6 +281,63 @@ class TestS3Fetcher:
         batch = fetcher.fetch(task)
         assert batch.num_rows == 5
 
+    def test_fetcher_closes_evicted_file_handles(self, monkeypatch):
+        """LRU eviction should close the evicted ParquetFile."""
+        import strata.fetcher as fetcher_module
+
+        created = []
+
+        class FakeParquetFile:
+            def __init__(self, path, filesystem=None):
+                self.path = path
+                self.filesystem = filesystem
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        def fake_parquet_file(path, filesystem=None):
+            pf = FakeParquetFile(path, filesystem=filesystem)
+            created.append(pf)
+            return pf
+
+        monkeypatch.setattr(fetcher_module.pq, "ParquetFile", fake_parquet_file)
+
+        fetcher = PyArrowFetcher(max_file_cache_size=1)
+        fetcher._get_parquet_file("/tmp/one.parquet")
+        fetcher._get_parquet_file("/tmp/two.parquet")
+
+        assert created[0].closed is True
+        assert created[1].closed is False
+
+    def test_fetcher_close_closes_cached_file_handles(self, monkeypatch):
+        """Explicit fetcher shutdown should close all cached ParquetFiles."""
+        import strata.fetcher as fetcher_module
+
+        created = []
+
+        class FakeParquetFile:
+            def __init__(self, path, filesystem=None):
+                self.path = path
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        def fake_parquet_file(path, filesystem=None):
+            pf = FakeParquetFile(path, filesystem=filesystem)
+            created.append(pf)
+            return pf
+
+        monkeypatch.setattr(fetcher_module.pq, "ParquetFile", fake_parquet_file)
+
+        fetcher = PyArrowFetcher(max_file_cache_size=2)
+        fetcher._get_parquet_file("/tmp/one.parquet")
+        fetcher._get_parquet_file("/tmp/two.parquet")
+        fetcher.close()
+
+        assert [pf.closed for pf in created] == [True, True]
+
 
 class TestS3ConfigIntegration:
     """Tests for S3 config integration."""
