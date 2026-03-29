@@ -478,6 +478,11 @@ class BuildRunner:
                     output_byte_count=output_bytes,
                     logs=executor_logs,
                 )
+                from strata.transforms.build_qos import get_build_qos
+
+                build_qos = get_build_qos()
+                if build_qos is not None:
+                    await build_qos.record_bytes(build.tenant_id or "__default__", output_bytes)
 
                 # Record success metric
                 metrics = get_build_metrics()

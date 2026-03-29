@@ -14,6 +14,12 @@ from pyiceberg.schema import Schema
 from pyiceberg.types import DoubleType, LongType, NestedField, StringType
 
 from strata.config import StrataConfig
+from strata.transforms.build_qos import (
+    BuildQoS,
+    BuildQoSConfig,
+    reset_build_qos,
+    set_build_qos,
+)
 
 
 @pytest.fixture
@@ -364,6 +370,33 @@ class TestUnifiedMaterialize:
         table = ipc.open_stream(data_resp.content).read_all()
         assert table.num_rows == 100
         assert set(table.column_names) == {"id", "name"}
+
+    def test_identity_artifact_mode_respects_build_qos_quota(self, server_with_personal_mode):
+        """Identity artifact-mode should be admitted through build QoS."""
+        qos = BuildQoS(BuildQoSConfig(bytes_per_day_limit=1))
+        set_build_qos(qos)
+
+        try:
+            base_url = server_with_personal_mode["base_url"]
+            table_uri = server_with_personal_mode["warehouse"]["table_uri"]
+
+            response = requests.post(
+                f"{base_url}/v1/materialize",
+                json={
+                    "inputs": [table_uri],
+                    "transform": {
+                        "executor": "scan@v1",
+                        "params": {"columns": ["id", "value", "name"]},
+                    },
+                    "mode": "artifact",
+                },
+            )
+
+            assert response.status_code == 429
+            data = response.json()
+            assert data["error"] == "quota_exceeded"
+        finally:
+            reset_build_qos()
 
     def test_identity_requires_single_input(self, server_with_personal_mode):
         """Test that scan@v1 rejects multiple inputs."""

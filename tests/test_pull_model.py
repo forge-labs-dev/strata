@@ -24,6 +24,12 @@ import strata.server as server_module
 from strata.artifact_store import get_artifact_store, reset_artifact_store
 from strata.config import StrataConfig
 from strata.server import app
+from strata.transforms.build_qos import (
+    BuildQoS,
+    BuildQoSConfig,
+    reset_build_qos,
+    set_build_qos,
+)
 from strata.transforms.build_store import (
     get_build_store,
     reset_build_store,
@@ -517,6 +523,33 @@ class TestFinalizeEndpoint:
         # Verify artifact is ready
         artifact = artifact_store.get_artifact("fin-output", version)
         assert artifact.state == "ready"
+
+    def test_finalize_records_quota_bytes(self, client, build_store, artifact_store):
+        """Pull-model finalize should account for produced bytes against build QoS quota."""
+        qos = BuildQoS(BuildQoSConfig(bytes_per_day_limit=10 * 1024 * 1024))
+        set_build_qos(qos)
+
+        try:
+            version = create_test_artifact(artifact_store, "fin-output-quota", finalize=False)
+            build_store.create_build(
+                build_id="fin-build-quota-001",
+                artifact_id="fin-output-quota",
+                version=version,
+                executor_ref="test@v1",
+                tenant_id="tenant-finalize",
+            )
+
+            blob = create_test_arrow_blob()
+            artifact_store.write_blob("fin-output-quota", version, blob)
+
+            response = client.post("/v1/builds/fin-build-quota-001/finalize")
+            assert response.status_code == 200
+
+            tenant_metrics = qos.get_tenant_metrics("tenant-finalize")
+            assert tenant_metrics is not None
+            assert tenant_metrics["quota"]["bytes_today"] == len(blob)
+        finally:
+            reset_build_qos()
 
     def test_finalize_after_upload_for_building_build(self, client, build_store, artifact_store):
         """Can finalize a build after it has already transitioned to building."""

@@ -22,6 +22,12 @@ from strata.artifact_store import (
     get_artifact_store,
     reset_artifact_store,
 )
+from strata.transforms.build_qos import (
+    BuildQoS,
+    BuildQoSConfig,
+    reset_build_qos,
+    set_build_qos,
+)
 from strata.transforms.build_store import get_build_store, reset_build_store
 from strata.transforms.registry import (
     TransformDefinition,
@@ -270,6 +276,58 @@ class TestBuildExecution:
         artifact = artifact_store.get_artifact(artifact_id, version)
         assert artifact.state == "ready"
         assert artifact.row_count == 3
+
+    @pytest.mark.asyncio
+    async def test_successful_build_records_quota_bytes(
+        self, build_runner, artifact_store, build_store
+    ):
+        """Successful server-mode builds should update per-tenant byte quotas."""
+        qos = BuildQoS(BuildQoSConfig(bytes_per_day_limit=10 * 1024 * 1024))
+        set_build_qos(qos)
+
+        try:
+            artifact_id, version, build_id = create_test_artifact(
+                artifact_store,
+                build_store,
+                tenant_id="tenant-quota",
+            )
+
+            output_bytes = create_arrow_ipc_bytes({"id": [1, 2], "value": ["a", "b"]})
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.raise_for_status = MagicMock()
+            mock_response.headers = {}
+
+            async def mock_aiter_bytes(chunk_size=65536):
+                yield output_bytes
+
+            mock_response.aiter_bytes = mock_aiter_bytes
+
+            async def mock_post(*args, **kwargs):
+                return mock_response
+
+            with patch("httpx.AsyncClient") as MockClient:
+                mock_client = AsyncMock()
+                mock_client.post = mock_post
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=None)
+                MockClient.return_value = mock_client
+
+                build = build_store.get_build(build_id)
+                await build_runner._execute_build(build)
+
+            tenant_metrics = qos.get_tenant_metrics("tenant-quota")
+            assert tenant_metrics is not None
+            assert tenant_metrics["quota"]["bytes_today"] == len(output_bytes)
+
+            build = build_store.get_build(build_id)
+            assert build is not None
+            assert build.state == "ready"
+            artifact = artifact_store.get_artifact(artifact_id, version)
+            assert artifact is not None
+            assert artifact.state == "ready"
+        finally:
+            reset_build_qos()
 
     @pytest.mark.asyncio
     async def test_duplicate_finalize_repoints_build_to_existing_artifact(

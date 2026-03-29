@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 
 if TYPE_CHECKING:
     from strata.adaptive_concurrency import AdaptiveConcurrencyController
+    from strata.transforms.build_qos import BuildSlot
 
 import pyarrow as pa
 import pyarrow.ipc as ipc
@@ -321,6 +322,8 @@ class StreamState:
     completed_at: float | None = None
     error_message: str | None = None
     background_task: asyncio.Task[None] | None = None
+    build_slot: BuildSlot | None = None
+    qos_tenant_id: str | None = None
 
 
 # Global state (initialized in lifespan)
@@ -384,6 +387,35 @@ def _mark_stream_artifact_failed(stream_state: StreamState) -> None:
         store.fail_artifact(stream_state.artifact_id, stream_state.artifact_version)
     except Exception:
         pass
+
+
+def _normalized_build_qos_tenant_id(tenant_id: str | None) -> str:
+    """Normalize tenant IDs for build QoS accounting."""
+    return tenant_id or "__default__"
+
+
+def _estimate_transform_output_bytes(
+    state: ServerState,
+    max_output_bytes: int | None,
+) -> int:
+    """Choose the best available output-size estimate for build admission."""
+    if max_output_bytes is not None and max_output_bytes > 0:
+        return max_output_bytes
+    return state.config.build_runner_default_max_output
+
+
+async def _record_build_output_bytes(tenant_id: str | None, bytes_produced: int) -> None:
+    """Best-effort quota accounting for completed builds."""
+    from strata.transforms.build_qos import get_build_qos
+
+    build_qos = get_build_qos()
+    if build_qos is None:
+        return
+
+    await build_qos.record_bytes(
+        _normalized_build_qos_tenant_id(tenant_id),
+        max(0, bytes_produced),
+    )
 
 
 def _identity_build_status(stream_state: StreamState) -> BuildStatusResponse:
@@ -478,6 +510,21 @@ async def _build_identity_artifact(stream_state: StreamState) -> None:
         )
         _mark_stream_artifact_failed(stream_state)
     finally:
+        from strata.artifact_store import get_artifact_store
+
+        artifact_ready = False
+        store = get_artifact_store(state.config.artifact_dir)
+        if store is not None:
+            artifact = store.get_artifact(stream_state.artifact_id, stream_state.artifact_version)
+            artifact_ready = artifact is not None and artifact.state == "ready"
+
+        if stream_state.completed and stream_state.error_message is None and artifact_ready:
+            await _record_build_output_bytes(
+                stream_state.qos_tenant_id,
+                stream_state.bytes_streamed,
+            )
+        if stream_state.build_slot is not None:
+            await stream_state.build_slot.release()
         stream_state.completed_at = time.time()
         _schedule_stream_cleanup(state, stream_state.stream_id)
 
@@ -3201,7 +3248,11 @@ async def materialize_artifact(request: MaterializeRequest):
             )
 
         # Use tenant for build QoS (fallback to __default__ for QoS tracking)
-        build_tenant_id = tenant_id if tenant_id else "__default__"
+        build_tenant_id = _normalized_build_qos_tenant_id(tenant_id)
+        estimated_output_bytes = _estimate_transform_output_bytes(
+            state,
+            transform_defn.max_output_bytes if transform_defn is not None else None,
+        )
 
         # Build QoS admission control
         # Classify build and check quotas before creating the build
@@ -3209,15 +3260,14 @@ async def materialize_artifact(request: MaterializeRequest):
         build_slot = None
 
         if build_qos is not None:
-            # Classify based on number of inputs (estimated output size not known yet)
+            # Classify and admit the build using the best available size estimate.
             priority = build_qos.classify_build(
-                estimated_output_bytes=None,
+                estimated_output_bytes=estimated_output_bytes,
                 input_count=len(request.inputs),
             )
 
-            # Check quota if enabled (estimated output not known, check against 0)
             try:
-                await build_qos.check_quota(build_tenant_id, 0)
+                await build_qos.check_quota(build_tenant_id, estimated_output_bytes)
             except BuildQoSError as e:
                 # Quota exceeded - clean up artifact and return 429
                 store.fail_artifact(artifact_id, version)
@@ -4549,6 +4599,7 @@ async def finalize_build(build_id: str, request: Request):
             finalized_artifact.version,
         )
     build_store.complete_build(build_id)
+    await _record_build_output_bytes(build.tenant_id, byte_size)
 
     artifact_uri = f"strata://artifact/{finalized_artifact.id}@v={finalized_artifact.version}"
     name_uri = f"strata://name/{build.name}" if build.name else None
@@ -5210,7 +5261,6 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
         name=request.name,
         tenant=tenant_id,
     )
-    state._streams[stream_id] = stream_state
 
     logger.info(
         "identity_materialize_cache_miss",
@@ -5223,6 +5273,7 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
     )
 
     if request.mode == "stream":
+        state._streams[stream_id] = stream_state
         # Register for QoS/accounting only when a client will actually stream.
         state.scans[plan.scan_id] = plan
         _schedule_stream_cleanup(state, stream_id, plan.scan_id)
@@ -5235,7 +5286,35 @@ async def _handle_identity_materialize(request: MaterializeRequest) -> Materiali
             stream_url=f"/v1/streams/{stream_id}",
         )
     else:
-        # Artifact mode - start a background build and expose its status via build_id.
+        # Artifact mode - admit through build QoS, then build in the background.
+        from strata.transforms.build_qos import (
+            BuildQoSError,
+            get_build_qos,
+        )
+
+        build_qos = get_build_qos()
+        if build_qos is not None:
+            qos_tenant_id = _normalized_build_qos_tenant_id(tenant_id)
+            estimated_output_bytes = max(0, plan.estimated_bytes)
+            priority = build_qos.classify_build(
+                estimated_output_bytes=estimated_output_bytes,
+                input_count=len(plan.tasks),
+            )
+
+            try:
+                await build_qos.check_quota(qos_tenant_id, estimated_output_bytes)
+                stream_state.build_slot = await build_qos.acquire(qos_tenant_id, priority)
+                stream_state.qos_tenant_id = qos_tenant_id
+            except BuildQoSError as e:
+                if store is not None:
+                    store.fail_artifact(artifact_id, artifact_version)
+                return JSONResponse(
+                    status_code=e.status_code,
+                    content=e.to_dict(),
+                    headers={"Retry-After": str(int(e.retry_after or 5))},
+                )
+
+        state._streams[stream_id] = stream_state
         stream_state.background_task = asyncio.create_task(_build_identity_artifact(stream_state))
         return MaterializeResponse(
             hit=False,

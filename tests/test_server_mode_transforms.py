@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from strata.artifact_store import get_artifact_store, reset_artifact_store
 from strata.config import StrataConfig
+from strata.transforms.build_qos import TenantQuotaExceededError
 from strata.transforms.build_store import get_build_store, reset_build_store
 from strata.transforms.registry import (
     TransformRegistry,
@@ -216,6 +217,92 @@ class TestTransformValidation:
         # In personal mode, build_spec is returned (client executes)
         assert data["build_spec"] is not None
         assert data["build_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_server_mode_materialize_respects_quota_estimate(
+        self, server_mode_config, monkeypatch
+    ):
+        """Quota checks should use a real output estimate, not zero."""
+        from unittest.mock import MagicMock
+
+        import strata.server as server_module
+        from strata.server import materialize_artifact
+        from strata.types import MaterializeRequest
+
+        reset_artifact_store()
+        reset_transform_registry()
+        reset_build_store()
+
+        transform_registry = TransformRegistry.from_config(server_mode_config.transforms_config)
+        set_transform_registry(transform_registry)
+        get_artifact_store(server_mode_config.artifact_dir)
+        get_build_store(server_mode_config.artifact_dir / "artifacts.sqlite")
+
+        mock_state = MagicMock()
+        mock_state.config = server_mode_config
+        mock_state.planner = MagicMock()
+        mock_state.fetcher = MagicMock()
+        mock_state.scans = {}
+        mock_state.metrics = MagicMock()
+
+        original_state = server_module._state
+        server_module._state = mock_state
+        captured: dict[str, object] = {}
+
+        class FakeQoS:
+            def classify_build(
+                self,
+                estimated_output_bytes=None,
+                input_count=0,
+                explicit_priority=None,
+            ):
+                captured["classified_estimated_bytes"] = estimated_output_bytes
+                captured["classified_input_count"] = input_count
+                return "interactive"
+
+            async def check_quota(self, tenant_id, estimated_bytes):
+                captured["quota_tenant_id"] = tenant_id
+                captured["quota_estimated_bytes"] = estimated_bytes
+                raise TenantQuotaExceededError(
+                    tenant_id=tenant_id,
+                    used_bytes=0,
+                    limit_bytes=1,
+                    reset_in_seconds=60.0,
+                )
+
+            async def acquire(self, tenant_id, priority):
+                captured["acquired"] = (tenant_id, priority)
+                raise AssertionError("quota rejection should happen before acquire")
+
+        qos = FakeQoS()
+        monkeypatch.setattr("strata.transforms.build_qos.get_build_qos", lambda: qos)
+
+        try:
+            response = await materialize_artifact(
+                MaterializeRequest.model_validate(
+                    {
+                        "inputs": ["file:///fake/table"],
+                        "transform": {
+                            "executor": "local://duckdb_sql@v1",
+                            "params": {"sql": "SELECT * FROM input"},
+                        },
+                    }
+                )
+            )
+
+            assert response.status_code == 429
+            assert response.body
+            assert b"quota_exceeded" in response.body
+            assert captured["quota_tenant_id"] == "__default__"
+            assert (
+                captured["quota_estimated_bytes"]
+                == server_mode_config.build_runner_default_max_output
+            )
+        finally:
+            server_module._state = original_state
+            reset_artifact_store()
+            reset_transform_registry()
+            reset_build_store()
 
 
 class TestAsyncBuildFlow:

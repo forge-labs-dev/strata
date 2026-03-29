@@ -1345,9 +1345,10 @@ class ArtifactStore:
                 if artifact.input_versions:
                     try:
                         input_vers = json.loads(artifact.input_versions)
-                        # Look for the artifact in the input_versions dict
+                        exact_uri = f"strata://artifact/{artifact_id}@v={version}"
+                        # Match the exact dependency entry instead of substring prefixes.
                         for uri, ver in input_vers.items():
-                            if artifact_id in uri and f"@v={version}" in ver:
+                            if uri == exact_uri or ver == input_version_used or ver == exact_uri:
                                 input_version_used = ver
                                 break
                     except json.JSONDecodeError:
