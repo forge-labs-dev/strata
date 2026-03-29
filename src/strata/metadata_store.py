@@ -14,6 +14,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import unquote, urlparse
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -40,6 +41,25 @@ class PersistedParquetMeta:
     num_row_groups: int
     row_groups: list[PersistedRowGroupMeta]
     column_names: list[str]
+
+
+def _local_path_for_stat(file_path: str) -> Path | None:
+    """Return a local path for stat-based validation, or None for remote URIs."""
+    parsed = urlparse(file_path)
+    if not parsed.scheme:
+        return Path(file_path)
+    if parsed.scheme == "file":
+        return Path(unquote(parsed.path))
+    return None
+
+
+def _stat_identity(file_path: str) -> tuple[float | None, int | None]:
+    """Return (mtime, size) for local files, or (None, None) for remote URIs."""
+    local_path = _local_path_for_stat(file_path)
+    if local_path is None:
+        return None, None
+    stat = local_path.stat()
+    return stat.st_mtime, stat.st_size
 
 
 class MetadataStore:
@@ -201,23 +221,25 @@ class MetadataStore:
 
             # Check if file has been modified using (mtime, size) tuple
             # This handles: mtime going backwards, same mtime with different content
-            try:
-                stat = Path(file_path).stat()
-                current_mtime = stat.st_mtime
-                current_size = stat.st_size
-                stored_mtime = row["file_mtime"]
-                stored_size = row["file_size"]
-                if stored_mtime is not None and stored_size is not None:
-                    if current_mtime != stored_mtime or current_size != stored_size:
-                        # Stale entry - return None, let put() overwrite later
-                        self.stale_invalidations += 1
-                        self.parquet_meta_misses += 1
-                        return None
-            except OSError:
-                # File doesn't exist - return None, cleanup will handle it
-                self.stale_invalidations += 1
-                self.parquet_meta_misses += 1
-                return None
+            local_path = _local_path_for_stat(file_path)
+            if local_path is not None:
+                try:
+                    stat = local_path.stat()
+                    current_mtime = stat.st_mtime
+                    current_size = stat.st_size
+                    stored_mtime = row["file_mtime"]
+                    stored_size = row["file_size"]
+                    if stored_mtime is not None and stored_size is not None:
+                        if current_mtime != stored_mtime or current_size != stored_size:
+                            # Stale entry - return None, let put() overwrite later
+                            self.stale_invalidations += 1
+                            self.parquet_meta_misses += 1
+                            return None
+                except OSError:
+                    # File doesn't exist - return None, cleanup will handle it
+                    self.stale_invalidations += 1
+                    self.parquet_meta_misses += 1
+                    return None
 
             self.parquet_meta_hits += 1
             # Deserialize row groups
@@ -241,9 +263,7 @@ class MetadataStore:
     def put_parquet_meta(self, file_path: str, meta: PersistedParquetMeta) -> None:
         """Store Parquet metadata."""
         try:
-            stat = Path(file_path).stat()
-            file_mtime = stat.st_mtime
-            file_size = stat.st_size
+            file_mtime, file_size = _stat_identity(file_path)
         except OSError:
             file_mtime = None
             file_size = None
@@ -300,21 +320,23 @@ class MetadataStore:
 
             for row in rows:
                 file_path = row["file_path"]
+                local_path = _local_path_for_stat(file_path)
 
-                # Check staleness
-                try:
-                    stat = Path(file_path).stat()
-                    stored_mtime = row["file_mtime"]
-                    stored_size = row["file_size"]
-                    if stored_mtime is not None and stored_size is not None:
-                        if stat.st_mtime != stored_mtime or stat.st_size != stored_size:
-                            self.stale_invalidations += 1
-                            self.parquet_meta_misses += 1
-                            continue
-                except OSError:
-                    self.stale_invalidations += 1
-                    self.parquet_meta_misses += 1
-                    continue
+                # Remote URIs have no local stat identity to validate against.
+                if local_path is not None:
+                    try:
+                        stat = local_path.stat()
+                        stored_mtime = row["file_mtime"]
+                        stored_size = row["file_size"]
+                        if stored_mtime is not None and stored_size is not None:
+                            if stat.st_mtime != stored_mtime or stat.st_size != stored_size:
+                                self.stale_invalidations += 1
+                                self.parquet_meta_misses += 1
+                                continue
+                    except OSError:
+                        self.stale_invalidations += 1
+                        self.parquet_meta_misses += 1
+                        continue
 
                 self.parquet_meta_hits += 1
                 # Deserialize
@@ -351,9 +373,7 @@ class MetadataStore:
         rows = []
         for file_path, meta in items:
             try:
-                stat = Path(file_path).stat()
-                file_mtime = stat.st_mtime
-                file_size = stat.st_size
+                file_mtime, file_size = _stat_identity(file_path)
             except OSError:
                 file_mtime = None
                 file_size = None
@@ -435,8 +455,11 @@ class MetadataStore:
             stale_paths = []
             for row in rows:
                 file_path = row["file_path"]
+                local_path = _local_path_for_stat(file_path)
+                if local_path is None:
+                    continue
                 try:
-                    stat = Path(file_path).stat()
+                    stat = local_path.stat()
                     stored_mtime = row["file_mtime"]
                     stored_size = row["file_size"]
                     if stored_mtime is not None and stored_size is not None:

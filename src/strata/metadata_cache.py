@@ -13,6 +13,7 @@ Architecture:
 Both use simple LRU eviction with configurable sizes.
 """
 
+import json
 from collections import OrderedDict
 from collections.abc import Callable, Hashable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -245,6 +246,63 @@ class ManifestResolution:
     data_files: list[ManifestEntry]
 
 
+def _json_safe_stat_value(value: object) -> object:
+    """Convert a statistics value to a JSON-serializable representation."""
+    if hasattr(value, "as_py"):
+        value = value.as_py()
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _persisted_parquet_meta_from_loaded(metadata: ParquetMetadata) -> "PersistedParquetMeta":
+    """Convert loaded Parquet metadata to the persisted representation."""
+    from strata.metadata_store import (
+        PersistedParquetMeta,
+        PersistedRowGroupMeta,
+        serialize_arrow_schema,
+    )
+
+    column_names = [
+        metadata.parquet_schema.column(i).name for i in range(len(metadata.parquet_schema))
+    ]
+    row_groups = []
+    for row_group in metadata.row_group_metadata:
+        column_stats: dict[str, dict[str, object]] = {}
+        for idx, column_name in enumerate(column_names):
+            column_meta = row_group.column(idx)
+            if not column_meta.is_stats_set or column_meta.statistics is None:
+                continue
+
+            stats = column_meta.statistics
+            stat_dict: dict[str, object] = {}
+            if getattr(stats, "has_min_max", False):
+                stat_dict["min"] = _json_safe_stat_value(stats.min)
+                stat_dict["max"] = _json_safe_stat_value(stats.max)
+            null_count = getattr(stats, "null_count", None)
+            if null_count is not None:
+                stat_dict["null_count"] = null_count
+            if stat_dict:
+                column_stats[column_name] = stat_dict
+
+        row_groups.append(
+            PersistedRowGroupMeta(
+                num_rows=row_group.num_rows,
+                total_byte_size=row_group.total_byte_size,
+                column_stats=column_stats,
+            )
+        )
+
+    return PersistedParquetMeta(
+        arrow_schema_bytes=serialize_arrow_schema(metadata.arrow_schema),
+        num_row_groups=metadata.num_row_groups,
+        row_groups=row_groups,
+        column_names=column_names,
+    )
+
+
 class ParquetMetadataCache:
     """Cache for Parquet file metadata with optional SQLite persistence.
 
@@ -396,14 +454,13 @@ class ParquetMetadataCache:
             first_path, first_error = next(iter(errors.items()))
             raise RuntimeError(f"Failed to load Parquet metadata for {first_path}: {first_error}")
 
-        # Batch persist to store (in background, don't block)
+        # Batch persist to store without rereading the Parquet files.
         if loaded and self._store is not None:
             to_persist: list[tuple[str, PersistedParquetMeta]] = []
-            from strata.metadata_store import extract_parquet_meta
 
-            for fp in loaded:
+            for fp, metadata in loaded.items():
                 try:
-                    persisted = extract_parquet_meta(fp, s3_filesystem=self._s3_filesystem)
+                    persisted = _persisted_parquet_meta_from_loaded(metadata)
                     to_persist.append((fp, persisted))
                 except Exception:
                     pass
@@ -508,12 +565,10 @@ class ParquetMetadataCache:
 
     def _save_to_store(self, file_path: str, metadata: ParquetMetadata) -> None:
         """Save metadata to persistent store."""
-        from strata.metadata_store import extract_parquet_meta
-
         if self._store is None:
             return
         try:
-            persisted = extract_parquet_meta(file_path, s3_filesystem=self._s3_filesystem)
+            persisted = _persisted_parquet_meta_from_loaded(metadata)
             self._store.put_parquet_meta(file_path, persisted)
         except Exception:
             pass  # Don't fail if persistence fails
@@ -604,8 +659,8 @@ class ManifestCache:
 
         Lookup order:
         - If filter_fingerprint != "nofilter": check filtered cache
-        - Check unfiltered in-memory cache
-        - Check SQLite store (unfiltered only)
+        - Check unfiltered in-memory cache as a correctness-preserving fallback
+        - Check SQLite store for the persisted unfiltered resolution
         """
         # For filtered queries, check filtered cache first
         if filter_fingerprint != "nofilter":
@@ -615,24 +670,19 @@ class ManifestCache:
             if cached is not None:
                 return cached
 
-        # Check unfiltered in-memory cache
-        # Only return this for unfiltered queries
-        if filter_fingerprint == "nofilter":
-            cached = self._cache.get((catalog_name, table_identity, snapshot_id))
-            if cached is not None:
-                return cached
+        # Check unfiltered cache as the correctness-preserving fallback.
+        cached = self._cache.get((catalog_name, table_identity, snapshot_id))
+        if cached is not None:
+            return cached
 
-            # Check persistent store if available (unfiltered only)
-            if self._store is not None:
-                persisted = self._store.get_manifest(catalog_name, table_identity, snapshot_id)
-                if persisted is not None:
-                    resolution = ManifestResolution(
-                        data_files=[
-                            ManifestEntry(file_path=fp, actual_path=ap) for fp, ap in persisted
-                        ]
-                    )
-                    self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
-                    return resolution
+        if self._store is not None:
+            persisted = self._store.get_manifest(catalog_name, table_identity, snapshot_id)
+            if persisted is not None:
+                resolution = ManifestResolution(
+                    data_files=[ManifestEntry(file_path=fp, actual_path=ap) for fp, ap in persisted]
+                )
+                self._cache.put((catalog_name, table_identity, snapshot_id), resolution)
+                return resolution
 
         return None
 

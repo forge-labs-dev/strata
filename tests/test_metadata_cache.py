@@ -282,6 +282,25 @@ class TestParquetMetadataCache:
         assert cache.get(files[1]) is not None
         assert cache.get(files[2]) is not None
 
+    def test_get_or_load_many_persists_without_rereading_file(
+        self, sample_parquet_file, tmp_path, monkeypatch
+    ):
+        """Batch loads should persist from loaded metadata, not reopen the file."""
+        import strata.metadata_store as metadata_store
+
+        store = metadata_store.MetadataStore(tmp_path / "metadata.sqlite")
+        cache = ParquetMetadataCache(max_size=10, store=store)
+
+        def fail_extract(*args, **kwargs):
+            raise AssertionError("extract_parquet_meta should not be called")
+
+        monkeypatch.setattr(metadata_store, "extract_parquet_meta", fail_extract)
+
+        result = cache.get_or_load_many([sample_parquet_file])
+
+        assert sample_parquet_file in result
+        assert store.get_parquet_meta(sample_parquet_file) is not None
+
 
 class TestManifestCache:
     """Tests for manifest resolution caching."""
@@ -349,6 +368,52 @@ class TestManifestCache:
         assert cache.get("default", "table1", 1) is None
         assert cache.get("default", "table2", 1) is not None
         assert cache.get("default", "table3", 1) is not None
+
+    def test_filtered_queries_fall_back_to_unfiltered_cache(self):
+        """Filtered lookups should reuse the unfiltered resolution when needed."""
+        cache = ManifestCache(max_size=10)
+        resolution = ManifestResolution(
+            data_files=[
+                ManifestEntry(
+                    file_path="/data/file1.parquet",
+                    actual_path="/abs/file1.parquet",
+                )
+            ]
+        )
+
+        cache.put("default", "strata.ns.table", 123, resolution)
+
+        cached = cache.get("default", "strata.ns.table", 123, filter_fingerprint="f1")
+
+        assert cached is not None
+        assert cached.data_files[0].file_path == "/data/file1.parquet"
+
+    def test_filtered_queries_fall_back_to_persisted_unfiltered(self, tmp_path):
+        """Filtered lookups should use persisted unfiltered manifest results after restart."""
+        from strata.metadata_store import MetadataStore
+
+        store = MetadataStore(tmp_path / "metadata.sqlite")
+        cache = ManifestCache(max_size=10, store=store)
+        resolution = ManifestResolution(
+            data_files=[
+                ManifestEntry(
+                    file_path="/data/file1.parquet",
+                    actual_path="/abs/file1.parquet",
+                )
+            ]
+        )
+        cache.put("default", "strata.ns.table", 123, resolution)
+
+        restarted_cache = ManifestCache(max_size=10, store=store)
+        cached = restarted_cache.get(
+            "default",
+            "strata.ns.table",
+            123,
+            filter_fingerprint="f1",
+        )
+
+        assert cached is not None
+        assert cached.data_files[0].actual_path == "/abs/file1.parquet"
 
 
 class TestGlobalCaches:
@@ -735,6 +800,23 @@ class TestMetadataStore:
         # Entry should be gone
         stats = store.stats()
         assert stats["parquet_entries"] == 0
+
+    def test_remote_parquet_meta_is_not_treated_as_stale(self, store, tmp_path):
+        """Remote parquet metadata should survive lookup and stale cleanup."""
+        from strata.metadata_store import extract_parquet_meta
+
+        source_file = tmp_path / "remote_source.parquet"
+        table = pa.table({"x": [1, 2, 3]})
+        pq.write_table(table, source_file)
+
+        meta = extract_parquet_meta(str(source_file))
+        remote_path = "s3://bucket/path/remote_source.parquet"
+        store.put_parquet_meta(remote_path, meta)
+
+        assert store.get_parquet_meta(remote_path) is not None
+        assert remote_path in store.get_parquet_meta_many([remote_path])
+        assert store.cleanup_stale_parquet_meta() == 0
+        assert store.stats()["parquet_entries"] == 1
 
     def test_schema_migration(self, tmp_path):
         """Test that schema migration works for old databases."""
