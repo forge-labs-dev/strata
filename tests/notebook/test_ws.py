@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -243,12 +244,12 @@ def test_cell_execute_uses_warm_pool_when_available(
     notebook_dir, _ = temp_notebook
 
     from strata.notebook.executor import CellExecutor
-    from strata.notebook.pool import PooledCellExecutor
+    from strata.notebook.pool import PooledCellExecutor, WarmProcessPool
     from strata.notebook.routes import get_session_manager
 
     session_manager = get_session_manager()
     session = session_manager.open_notebook(notebook_dir)
-    session.warm_pool = object()
+    session.warm_pool = cast(WarmProcessPool, object())
 
     root_cell = next((c for c in session.notebook_state.cells if c.upstream_ids == []), None)
     if not root_cell:
@@ -321,6 +322,397 @@ def test_cell_execute_uses_warm_pool_when_available(
         assert output_message["type"] == "cell_output"
         assert output_message["payload"]["execution_method"] == "warm"
         assert warm_calls == 1
+
+
+def _receive_execution_terminal_messages(websocket, cell_id: str) -> tuple[dict, dict]:
+    """Collect the output/error message and terminal status for one execution."""
+    output_message = None
+    terminal_status = None
+
+    for _ in range(20):
+        response = websocket.receive_json()
+        if response["type"] in ["cell_output", "cell_error"]:
+            output_message = response
+        if (
+            response["type"] == "cell_status"
+            and response["payload"].get("cell_id") == cell_id
+            and response["payload"]["status"] in ["ready", "error"]
+        ):
+            terminal_status = response
+            break
+
+    assert output_message is not None
+    assert terminal_status is not None
+    return output_message, terminal_status
+
+
+def test_ws_execute_supports_http_executor_worker(
+    client, temp_notebook, app, notebook_executor_server
+):
+    """The live WebSocket execution path should support HTTP notebook workers."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-a100",
+            config={"url": notebook_executor_server["execute_url"]},
+        )
+    ]
+    root_cell = next(c for c in session.notebook_state.cells if c.id == "root")
+    root_cell.worker = "gpu-http"
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, root_cell.id
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert output_message["payload"]["execution_method"] == "executor"
+        assert output_message["payload"]["outputs"]["x"]["preview"] == 1
+        assert terminal_status["payload"]["status"] == "ready"
+
+
+def test_ws_execute_supports_signed_http_executor_worker(
+    client,
+    temp_notebook,
+    app,
+    notebook_executor_server,
+    notebook_build_server,
+):
+    """The live WebSocket path should support signed remote notebook workers."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    notebook_build_server["config"].transforms_config["notebook_workers"] = [
+        {
+            "name": "gpu-http-signed",
+            "backend": "executor",
+            "runtime_id": "gpu-http-signed-a100",
+            "config": {
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        }
+    ]
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http-signed",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-signed-a100",
+            config={
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        )
+    ]
+    root_cell = next(c for c in session.notebook_state.cells if c.id == "root")
+    root_cell.worker = "gpu-http-signed"
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        first_output, first_terminal = _receive_execution_terminal_messages(
+            websocket, root_cell.id
+        )
+
+        assert first_output["type"] == "cell_output"
+        assert first_output["payload"]["execution_method"] == "executor"
+        assert first_output["payload"]["outputs"]["x"]["preview"] == 1
+        assert first_terminal["payload"]["status"] == "ready"
+
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 2,
+                "ts": "2026-03-30T00:00:01Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        second_output, second_terminal = _receive_execution_terminal_messages(
+            websocket, root_cell.id
+        )
+
+        assert second_output["type"] == "cell_output"
+        assert second_output["payload"]["execution_method"] == "cached"
+        assert second_terminal["payload"]["status"] == "ready"
+
+
+def test_ws_execute_reports_unavailable_http_executor_worker(
+    client, temp_notebook, app
+):
+    """The live WS path should surface unreachable HTTP executor workers."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http-dead",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-dead-a100",
+            config={"url": "http://127.0.0.1:9/v1/execute"},
+        )
+    ]
+    root_cell = next(c for c in session.notebook_state.cells if c.id == "root")
+    root_cell.worker = "gpu-http-dead"
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, root_cell.id
+        )
+
+        assert output_message["type"] == "cell_error"
+        assert "Remote executor request failed" in output_message["payload"]["error"]
+        assert terminal_status["payload"]["status"] == "error"
+
+
+def test_ws_execute_reports_signed_finalize_failure(
+    client,
+    temp_notebook,
+    app,
+    notebook_executor_server,
+    notebook_build_server,
+    monkeypatch,
+):
+    """The live WS path should surface signed transport finalize failures."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+    from strata.transforms.signed_urls import (
+        generate_build_manifest as real_generate_build_manifest,
+    )
+
+    class _BadFinalizeManifest:
+        def __init__(self, manifest):
+            self._manifest = manifest
+
+        def to_dict(self):
+            data = self._manifest.to_dict()
+            data["finalize_url"] = f"{data['finalize_url']}/missing-finalize"
+            return data
+
+    def fake_generate_build_manifest(*args, **kwargs):
+        return _BadFinalizeManifest(real_generate_build_manifest(*args, **kwargs))
+
+    monkeypatch.setattr(
+        "strata.notebook.executor.generate_build_manifest",
+        fake_generate_build_manifest,
+    )
+
+    notebook_build_server["config"].transforms_config["notebook_workers"] = [
+        {
+            "name": "gpu-http-signed",
+            "backend": "executor",
+            "runtime_id": "gpu-http-signed-a100",
+            "config": {
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        }
+    ]
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http-signed",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-signed-a100",
+            config={
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        )
+    ]
+    root_cell = next(c for c in session.notebook_state.cells if c.id == "root")
+    root_cell.worker = "gpu-http-signed"
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, root_cell.id
+        )
+
+        assert output_message["type"] == "cell_error"
+        assert "Failed to finalize notebook bundle build" in output_message["payload"]["error"]
+        assert terminal_status["payload"]["status"] == "error"
+
+
+def test_ws_cancelled_signed_http_executor_marks_build_failed(
+    client,
+    temp_notebook,
+    app,
+    notebook_executor_server,
+    notebook_build_server,
+    monkeypatch,
+):
+    """Cancelling signed remote execution over WS should fail the build cleanly."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    started = threading.Event()
+
+    async def _slow_run_harness(
+        harness_path: Path,
+        manifest_path: Path,
+        timeout_seconds: float,
+    ) -> dict[str, object]:
+        del harness_path, manifest_path, timeout_seconds
+        started.set()
+        await asyncio.sleep(60)
+        return {
+            "success": True,
+            "variables": {
+                "x": {
+                    "content_type": "json/object",
+                    "file": "x.json",
+                    "preview": 1,
+                }
+            },
+            "stdout": "",
+            "stderr": "",
+            "mutation_warnings": [],
+        }
+
+    monkeypatch.setattr(
+        "strata.notebook.remote_executor._run_harness",
+        _slow_run_harness,
+    )
+
+    notebook_build_server["config"].transforms_config["notebook_workers"] = [
+        {
+            "name": "gpu-http-signed",
+            "backend": "executor",
+            "runtime_id": "gpu-http-signed-a100",
+            "config": {
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        }
+    ]
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http-signed",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-signed-a100",
+            config={
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        )
+    ]
+    root_cell = next(c for c in session.notebook_state.cells if c.id == "root")
+    root_cell.worker = "gpu-http-signed"
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        running = websocket.receive_json()
+        assert running["type"] == "cell_status"
+        assert running["payload"]["cell_id"] == root_cell.id
+        assert running["payload"]["status"] == "running"
+        assert started.wait(timeout=2.0)
+
+        websocket.send_json(
+            {
+                "type": "cell_cancel",
+                "seq": 2,
+                "ts": "2026-03-30T00:00:01Z",
+                "payload": {"cell_id": root_cell.id},
+            }
+        )
+
+        idle_message = None
+        for _ in range(10):
+            response = websocket.receive_json()
+            if (
+                response["type"] == "cell_status"
+                and response["payload"].get("cell_id") == root_cell.id
+                and response["payload"]["status"] == "idle"
+            ):
+                idle_message = response
+                break
+
+        assert idle_message is not None
+
+    for _ in range(20):
+        stats = notebook_build_server["build_store"].get_stats()
+        if stats["pending"] == 0 and stats["building"] == 0:
+            break
+        time.sleep(0.05)
+
+    stats = notebook_build_server["build_store"].get_stats()
+    assert stats["failed"] == 1
+    assert stats["pending"] == 0
+    assert stats["building"] == 0
 
 
 def test_cascade_prompt_is_sent_only_to_requesting_websocket(
