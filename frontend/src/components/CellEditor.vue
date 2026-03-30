@@ -152,6 +152,9 @@ const effectiveWorkerTransportLabel = computed(() => {
   if (!entry || entry.backend === 'local') return null
   return workerTransportLabel(entry)
 })
+const lastRemoteWorkerLabel = computed(() => props.cell.remoteWorkerName || null)
+const lastRemoteTransportLabel = computed(() => props.cell.remoteTransport || null)
+const lastRemoteBuildId = computed(() => props.cell.remoteBuildId || null)
 const workerWarning = computed(() => {
   return workerWarningForEntry(effectiveWorkerEntry.value, effectiveWorkerLabel.value)
 })
@@ -317,6 +320,20 @@ function formatScalar(scalar: unknown): string {
           :title="`Remote worker transport: ${effectiveWorkerTransportLabel}`"
         >
           {{ effectiveWorkerTransportLabel }}
+        </span>
+        <span
+          v-if="lastRemoteTransportLabel"
+          class="remote-run-badge"
+          :title="`Last remote execution: ${lastRemoteWorkerLabel || effectiveWorkerLabel} via ${lastRemoteTransportLabel}`"
+        >
+          ran via {{ lastRemoteTransportLabel }}
+        </span>
+        <span
+          v-if="lastRemoteBuildId"
+          class="remote-build-badge"
+          :title="`Signed remote build: ${lastRemoteBuildId}`"
+        >
+          build {{ lastRemoteBuildId }}
         </span>
         <span
           v-if="effectiveWorkerHealthLabel"
@@ -506,8 +523,14 @@ function formatScalar(scalar: unknown): string {
           <div v-if="remoteExecutionIssueSummary" class="remote-error-summary">
             <span class="remote-error-label">Remote</span>
             <span>{{ remoteExecutionIssueSummary }}</span>
-            <span v-if="effectiveWorkerTransportLabel" class="remote-error-pill">
-              {{ effectiveWorkerTransportLabel }}
+            <span v-if="lastRemoteWorkerLabel" class="remote-error-pill">
+              {{ lastRemoteWorkerLabel }}
+            </span>
+            <span v-if="lastRemoteTransportLabel" class="remote-error-pill">
+              {{ lastRemoteTransportLabel }}
+            </span>
+            <span v-if="lastRemoteBuildId" class="remote-error-pill">
+              {{ lastRemoteBuildId }}
             </span>
             <span v-if="effectiveWorkerHealthLabel" class="remote-error-pill">
               {{ effectiveWorkerHealthLabel }}
@@ -685,6 +708,20 @@ function formatScalar(scalar: unknown): string {
 .worker-transport-badge {
   background: #89dceb22;
   color: #89dceb;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.remote-run-badge {
+  background: #74c7ec22;
+  color: #74c7ec;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.remote-build-badge {
+  background: #f5c2e722;
+  color: #f5c2e7;
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;

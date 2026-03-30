@@ -63,6 +63,7 @@ from strata.notebook.workers import (
     resolve_worker_spec,
     worker_runtime_identity,
     worker_supports_notebook_execution,
+    worker_transport,
 )
 from strata.transforms.build_store import get_build_store
 from strata.transforms.signed_urls import generate_build_manifest
@@ -137,6 +138,9 @@ class CellExecutionResult:
         execution_method: str = "cold",
         mutation_warnings: list[dict[str, Any]] | None = None,
         suggest_install: str | None = None,
+        remote_worker: str | None = None,
+        remote_transport: str | None = None,
+        remote_build_id: str | None = None,
     ):
         self.cell_id = cell_id
         self.success = success
@@ -150,6 +154,25 @@ class CellExecutionResult:
         self.execution_method = execution_method  # cold, warm, cached
         self.mutation_warnings = mutation_warnings or []
         self.suggest_install = suggest_install  # e.g. "requests"
+        self.remote_worker = remote_worker
+        self.remote_transport = remote_transport
+        self.remote_build_id = remote_build_id
+
+    def apply_remote_metadata(
+        self,
+        *,
+        remote_worker: str | None = None,
+        remote_transport: str | None = None,
+        remote_build_id: str | None = None,
+    ) -> CellExecutionResult:
+        """Attach remote execution metadata to this result."""
+        if remote_worker:
+            self.remote_worker = remote_worker
+        if remote_transport:
+            self.remote_transport = remote_transport
+        if remote_build_id:
+            self.remote_build_id = remote_build_id
+        return self
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -168,6 +191,12 @@ class CellExecutionResult:
         }
         if self.suggest_install:
             d["suggest_install"] = self.suggest_install
+        if self.remote_worker:
+            d["remote_worker"] = self.remote_worker
+        if self.remote_transport:
+            d["remote_transport"] = self.remote_transport
+        if self.remote_build_id:
+            d["remote_build_id"] = self.remote_build_id
         return d
 
 
@@ -318,6 +347,23 @@ class CellExecutor:
 
         return "local"
 
+    def _remote_execution_metadata(
+        self,
+        worker_spec: Any,
+        remote_build_id: str | None = None,
+    ) -> dict[str, str]:
+        """Return UI-facing remote execution metadata for a worker."""
+        if worker_spec is None or worker_spec.backend == WorkerBackendType.LOCAL:
+            return {}
+
+        metadata = {
+            "remote_worker": str(worker_spec.name),
+            "remote_transport": worker_transport(worker_spec),
+        }
+        if remote_build_id:
+            metadata["remote_build_id"] = remote_build_id
+        return metadata
+
     def _resolve_effective_timeout(
         self,
         cell_id: str,
@@ -369,6 +415,7 @@ class CellExecutor:
         materialize_upstreams: bool,
         use_cache: bool,
     ) -> CellExecutionResult:
+        remote_metadata: dict[str, str] = {}
         try:
             cell = next(
                 (c for c in self.session.notebook_state.cells if c.id == cell_id),
@@ -408,6 +455,7 @@ class CellExecutor:
                 self.session.notebook_state,
                 effective_worker,
             )
+            remote_metadata = self._remote_execution_metadata(worker_spec)
             runtime_identity = worker_runtime_identity(
                 self.session.notebook_state,
                 effective_worker,
@@ -537,11 +585,21 @@ class CellExecutor:
                         f"@v={cached_artifact.version}"
                     ),
                     execution_method="cached",
-                )
+                ).apply_remote_metadata(**remote_metadata)
 
             # ④ Cache miss — execute the cell.
             with tempfile.TemporaryDirectory() as tmpdir:
                 output_dir = Path(tmpdir)
+                remote_build_id = (
+                    f"nbbuild-{uuid.uuid4().hex[:12]}"
+                    if worker_spec is not None
+                    and worker_transport(worker_spec) == "signed"
+                    else None
+                )
+                remote_metadata = self._remote_execution_metadata(
+                    worker_spec,
+                    remote_build_id=remote_build_id,
+                )
 
                 # Load upstream blobs into output_dir for the harness.
                 # Force execution may intentionally skip upstream materialization,
@@ -564,12 +622,13 @@ class CellExecutor:
                     venv_path,
                     runtime_env,
                     timeout_seconds,
+                    remote_build_id=remote_build_id,
                 )
 
                 duration_ms = (time.time() - start_time) * 1000
                 exec_result = self._parse_result(
                     cell_id, result, duration_ms, execution_method,
-                )
+                ).apply_remote_metadata(**remote_metadata)
 
                 # ⑤ Store output artifacts for consumed variables.
                 if exec_result.success:
@@ -598,7 +657,7 @@ class CellExecutor:
                                 "store output artifacts. Check server logs."
                             ),
                             execution_method=exec_result.execution_method,
-                        )
+                        ).apply_remote_metadata(**remote_metadata)
 
                     # ⑥ Sync-back read-write mounts after successful execution.
                     if exec_result.success and resolved_mounts:
@@ -622,7 +681,7 @@ class CellExecutor:
                                 ),
                                 execution_method=exec_result.execution_method,
                                 mutation_warnings=exec_result.mutation_warnings,
-                            )
+                            ).apply_remote_metadata(**remote_metadata)
 
                 return exec_result
 
@@ -633,7 +692,7 @@ class CellExecutor:
                 success=False,
                 duration_ms=duration_ms,
                 error=f"Cell execution timed out after {timeout_seconds}s",
-            )
+            ).apply_remote_metadata(**remote_metadata)
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
             return CellExecutionResult(
@@ -641,7 +700,7 @@ class CellExecutor:
                 success=False,
                 duration_ms=duration_ms,
                 error=f"Execution failed: {e}",
-            )
+            ).apply_remote_metadata(**remote_metadata)
 
     async def _dispatch_execution(
         self,
@@ -653,6 +712,7 @@ class CellExecutor:
         venv_path: Path,
         runtime_env: dict[str, str],
         timeout_seconds: float,
+        remote_build_id: str | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Dispatch one cell execution through the selected worker backend."""
         if worker_spec.backend == WorkerBackendType.LOCAL:
@@ -686,6 +746,7 @@ class CellExecutor:
                 output_dir,
                 runtime_env,
                 timeout_seconds,
+                remote_build_id=remote_build_id,
             )
 
         raise RuntimeError(f"Unsupported worker backend: {worker_spec.backend.value}")
@@ -773,6 +834,7 @@ class CellExecutor:
         output_dir: Path,
         runtime_env: dict[str, str],
         timeout_seconds: float,
+        remote_build_id: str | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Run a cell through an external notebook executor over HTTP."""
         for mount in mount_specs:
@@ -798,6 +860,7 @@ class CellExecutor:
                 output_dir,
                 runtime_env,
                 timeout_seconds,
+                build_id=remote_build_id,
             )
 
         metadata = {
@@ -907,6 +970,7 @@ class CellExecutor:
         output_dir: Path,
         runtime_env: dict[str, str],
         timeout_seconds: float,
+        build_id: str | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Run a cell through the core build + signed-URL transport path."""
         from strata.auth import get_principal
@@ -939,7 +1003,7 @@ class CellExecutor:
         tenant_id = principal.tenant if principal is not None else None
         principal_id = principal.id if principal is not None else None
 
-        build_id = f"nbbuild-{uuid.uuid4().hex[:12]}"
+        build_id = build_id or f"nbbuild-{uuid.uuid4().hex[:12]}"
         artifact_id = (
             f"nb_remote_{self.session.notebook_state.id}_{build_id}"
         )

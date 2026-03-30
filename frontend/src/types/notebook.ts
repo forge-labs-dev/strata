@@ -142,6 +142,12 @@ export interface Cell {
   artifactSizeBytes?: number
   /** Which executor ran this cell (only present if remote) */
   executorName?: string
+  /** Name of the remote worker used for the last remote execution */
+  remoteWorkerName?: string
+  /** Transport used for the last remote execution */
+  remoteTransport?: WorkerTransport | null
+  /** Build id for the last signed remote execution */
+  remoteBuildId?: string | null
   /** Effective persisted worker after notebook default + cell override */
   worker: string | null
   /** Persisted cell-level worker override from notebook.toml */

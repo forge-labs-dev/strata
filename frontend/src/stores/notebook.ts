@@ -253,15 +253,18 @@ function parseManagedWorkerSpec(raw: any): ManagedWorkerSpec {
   }
 }
 
+function parseWorkerTransport(raw: unknown): WorkerCatalogEntry['transport'] | undefined {
+  return raw === 'local' ||
+    raw === 'embedded' ||
+    raw === 'direct' ||
+    raw === 'signed' ||
+    raw === 'executor'
+    ? raw
+    : undefined
+}
+
 function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
-  const transport =
-    raw?.transport === 'local' ||
-    raw?.transport === 'embedded' ||
-    raw?.transport === 'direct' ||
-    raw?.transport === 'signed' ||
-    raw?.transport === 'executor'
-      ? raw.transport
-      : undefined
+  const transport = parseWorkerTransport(raw?.transport)
   return {
     ...parseWorkerSpec(raw),
     health: raw?.health === 'healthy' || raw?.health === 'unavailable' ? raw.health : 'unknown',
@@ -281,6 +284,29 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
         ? raw.health_checked_at
         : null,
     lastError: typeof raw?.last_error === 'string' && raw.last_error.trim() ? raw.last_error : null,
+  }
+}
+
+function applyRemoteExecutionMetadata(cell: Cell, raw: Record<string, any>) {
+  const remoteWorker =
+    typeof raw.remote_worker === 'string' && raw.remote_worker.trim() ? raw.remote_worker : null
+  const remoteTransport = parseWorkerTransport(raw.remote_transport) ?? null
+  const remoteBuildId =
+    typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim()
+      ? raw.remote_build_id
+      : null
+
+  if (remoteWorker || remoteTransport || remoteBuildId) {
+    cell.remoteWorkerName = remoteWorker ?? undefined
+    cell.remoteTransport = remoteTransport
+    cell.remoteBuildId = remoteBuildId
+    return
+  }
+
+  if (raw.execution_method !== 'cached') {
+    cell.remoteWorkerName = undefined
+    cell.remoteTransport = null
+    cell.remoteBuildId = null
   }
 }
 
@@ -817,6 +843,7 @@ function initializeWebSocket() {
         if (p.execution_method) {
           cell.executorName = p.execution_method
         }
+        applyRemoteExecutionMetadata(cell, p)
         if (p.execution_method === 'executor') {
           updateWorkerHealth(effectiveWorkerNameForCell(cell), 'healthy')
         }
@@ -858,6 +885,7 @@ function initializeWebSocket() {
       const cell = cellMap.value.get(cellId)
       if (cell) {
         cell.status = 'error'
+        applyRemoteExecutionMetadata(cell, p)
         const workerName = effectiveWorkerNameForCell(cell)
         const workerEntry = availableWorkers.value.find((worker) => worker.name === workerName)
         if (workerEntry?.backend === 'executor' || error.includes('Remote executor')) {

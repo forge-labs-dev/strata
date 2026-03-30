@@ -384,6 +384,8 @@ def test_ws_execute_supports_http_executor_worker(
 
         assert output_message["type"] == "cell_output"
         assert output_message["payload"]["execution_method"] == "executor"
+        assert output_message["payload"]["remote_worker"] == "gpu-http"
+        assert output_message["payload"]["remote_transport"] == "direct"
         assert output_message["payload"]["outputs"]["x"]["preview"] == 1
         assert terminal_status["payload"]["status"] == "ready"
 
@@ -447,6 +449,9 @@ def test_ws_execute_supports_signed_http_executor_worker(
 
         assert first_output["type"] == "cell_output"
         assert first_output["payload"]["execution_method"] == "executor"
+        assert first_output["payload"]["remote_worker"] == "gpu-http-signed"
+        assert first_output["payload"]["remote_transport"] == "signed"
+        assert isinstance(first_output["payload"]["remote_build_id"], str)
         assert first_output["payload"]["outputs"]["x"]["preview"] == 1
         assert first_terminal["payload"]["status"] == "ready"
 
@@ -465,6 +470,9 @@ def test_ws_execute_supports_signed_http_executor_worker(
 
         assert second_output["type"] == "cell_output"
         assert second_output["payload"]["execution_method"] == "cached"
+        assert second_output["payload"]["remote_worker"] == "gpu-http-signed"
+        assert second_output["payload"]["remote_transport"] == "signed"
+        assert "remote_build_id" not in second_output["payload"]
         assert second_terminal["payload"]["status"] == "ready"
 
 
@@ -589,6 +597,9 @@ def test_ws_execute_reports_signed_finalize_failure(
 
         assert output_message["type"] == "cell_error"
         assert "Failed to finalize notebook bundle build" in output_message["payload"]["error"]
+        assert output_message["payload"]["remote_worker"] == "gpu-http-signed"
+        assert output_message["payload"]["remote_transport"] == "signed"
+        assert isinstance(output_message["payload"]["remote_build_id"], str)
         assert terminal_status["payload"]["status"] == "error"
 
 

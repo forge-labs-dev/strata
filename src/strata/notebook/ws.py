@@ -979,6 +979,21 @@ async def _execute_cell_directly(
                         # v1.1: Profiling data
                         "execution_method": result.execution_method,
                         "mutation_warnings": result.mutation_warnings,
+                        **(
+                            {"remote_worker": result.remote_worker}
+                            if result.remote_worker
+                            else {}
+                        ),
+                        **(
+                            {"remote_transport": result.remote_transport}
+                            if result.remote_transport
+                            else {}
+                        ),
+                        **(
+                            {"remote_build_id": result.remote_build_id}
+                            if result.remote_build_id
+                            else {}
+                        ),
                     },
                 },
             )
@@ -994,6 +1009,21 @@ async def _execute_cell_directly(
                     "payload": {
                         "cell_id": cell_id,
                         "error": result.error,
+                        **(
+                            {"remote_worker": result.remote_worker}
+                            if result.remote_worker
+                            else {}
+                        ),
+                        **(
+                            {"remote_transport": result.remote_transport}
+                            if result.remote_transport
+                            else {}
+                        ),
+                        **(
+                            {"remote_build_id": result.remote_build_id}
+                            if result.remote_build_id
+                            else {}
+                        ),
                         **({"suggest_install": result.suggest_install}
                            if result.suggest_install else {}),
                     },
@@ -1198,6 +1228,21 @@ async def _execute_cascade(
                                 "stderr": result.stderr,
                                 "execution_method": result.execution_method,
                                 "mutation_warnings": result.mutation_warnings,
+                                **(
+                                    {"remote_worker": result.remote_worker}
+                                    if result.remote_worker
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_transport": result.remote_transport}
+                                    if result.remote_transport
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_build_id": result.remote_build_id}
+                                    if result.remote_build_id
+                                    else {}
+                                ),
                             },
                         },
                     )
@@ -1213,6 +1258,21 @@ async def _execute_cascade(
                             "payload": {
                                 "cell_id": cell_id,
                                 "error": result.error,
+                                **(
+                                    {"remote_worker": result.remote_worker}
+                                    if result.remote_worker
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_transport": result.remote_transport}
+                                    if result.remote_transport
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_build_id": result.remote_build_id}
+                                    if result.remote_build_id
+                                    else {}
+                                ),
                                 **({"suggest_install": result.suggest_install}
                                    if result.suggest_install else {}),
                             },

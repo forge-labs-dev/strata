@@ -609,10 +609,15 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert first.success is True
         assert first.execution_method == "executor"
         assert first.cache_hit is False
+        assert first.remote_worker == "gpu-embedded"
+        assert first.remote_transport == "embedded"
+        assert first.remote_build_id is None
         assert "x" in first.outputs
 
         assert second.success is True
         assert second.cache_hit is True
+        assert second.remote_worker == "gpu-embedded"
+        assert second.remote_transport == "embedded"
 
     @pytest.mark.asyncio
     async def test_execute_supports_http_executor_worker(
@@ -700,10 +705,14 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert first.success is True
         assert first.execution_method == "executor"
         assert first.cache_hit is False
+        assert first.remote_worker == "gpu-http-signed"
+        assert first.remote_transport == "signed"
+        assert first.remote_build_id is not None
         assert first.outputs["x"]["preview"] == 1
 
         assert second.success is True
         assert second.cache_hit is True
+        assert second.remote_build_id is None
 
     @pytest.mark.asyncio
     async def test_execute_signed_http_executor_marks_build_failed_on_transport_error(
@@ -733,6 +742,9 @@ token = os.getenv("NOTEBOOK_TOKEN")
 
         assert result.success is False
         assert "Execution failed:" in str(result.error)
+        assert result.remote_worker == "gpu-http-signed"
+        assert result.remote_transport == "signed"
+        assert result.remote_build_id is not None
 
         stats = notebook_build_server["build_store"].get_stats()
         assert stats["failed"] == 1
