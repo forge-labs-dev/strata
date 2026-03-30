@@ -8,11 +8,13 @@ const props = withDefaults(
     title?: string
     compact?: boolean
     readOnly?: boolean
+    showPin?: boolean
   }>(),
   {
     title: 'Mounts',
     compact: false,
     readOnly: false,
+    showPin: true,
   },
 )
 
@@ -73,7 +75,12 @@ function save() {
       {{ readOnly ? 'No source annotations' : 'No mounts configured' }}
     </div>
 
-    <div v-for="(mount, index) in draft" :key="`${index}-${mount.name}`" class="mount-row">
+    <div
+      v-for="(mount, index) in draft"
+      :key="`${index}-${mount.name}`"
+      class="mount-row"
+      :class="{ 'mount-row-no-pin': !showPin }"
+    >
       <input
         v-model="mount.name"
         class="mount-input mount-name"
@@ -93,6 +100,7 @@ function save() {
         <option value="rw">rw</option>
       </select>
       <input
+        v-if="showPin"
         v-model="mount.pin"
         class="mount-input mount-pin"
         type="text"
@@ -163,8 +171,16 @@ function save() {
   gap: 6px;
 }
 
+.mount-row-no-pin {
+  grid-template-columns: minmax(90px, 1fr) minmax(220px, 2fr) 72px 28px;
+}
+
 .compact .mount-row {
   grid-template-columns: minmax(80px, 1fr) minmax(160px, 2fr) 64px minmax(100px, 1fr) 28px;
+}
+
+.compact .mount-row-no-pin {
+  grid-template-columns: minmax(80px, 1fr) minmax(160px, 2fr) 64px 28px;
 }
 
 .mount-input {

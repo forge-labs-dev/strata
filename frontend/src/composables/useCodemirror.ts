@@ -24,6 +24,7 @@ export function useCodemirror(
   } = {},
 ) {
   const view = ref<EditorView | null>(null)
+  let suppressNextUpdate = false
 
   onMounted(() => {
     if (!container.value) return
@@ -41,7 +42,7 @@ export function useCodemirror(
     ])
 
     const updateListener = EditorView.updateListener.of((update) => {
-      if (update.docChanged) {
+      if (update.docChanged && !suppressNextUpdate) {
         opts.onUpdate?.(update.state.doc.toString())
       }
     })
@@ -83,9 +84,12 @@ export function useCodemirror(
   function setDoc(doc: string) {
     const v = view.value
     if (!v) return
+    if (v.state.doc.toString() === doc) return
+    suppressNextUpdate = true
     v.dispatch({
       changes: { from: 0, to: v.state.doc.length, insert: doc },
     })
+    suppressNextUpdate = false
   }
 
   return { view, setDoc }

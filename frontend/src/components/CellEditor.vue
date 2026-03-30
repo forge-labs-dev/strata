@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useCodemirror } from '../composables/useCodemirror'
 import { useNotebook } from '../stores/notebook'
 import EnvVarsEditor from './EnvVarsEditor.vue'
@@ -14,6 +14,8 @@ import {
   workerTransportLabel,
   workerWarningForEntry,
 } from '../utils/notebookWorkers'
+import { applySourceAnnotations } from '../utils/notebookAnnotations'
+import type { CellAnnotations, MountSpec } from '../types/notebook'
 
 const props = defineProps<{ cell: Cell }>()
 const emit = defineEmits<{
@@ -23,6 +25,7 @@ const emit = defineEmits<{
 }>()
 
 const {
+  connected,
   updateSource,
   openInspect,
   inspectCellId,
@@ -49,12 +52,21 @@ const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
 const showInfra = ref(false)
 
-useCodemirror(editorEl, {
+const { view, setDoc } = useCodemirror(editorEl, {
   initialDoc: props.cell.source,
   language: props.cell.language,
   onUpdate: (doc) => updateSource(props.cell.id, doc),
   onRun: () => emit('run', props.cell.id),
 })
+
+watch(
+  () => props.cell.source,
+  (source) => {
+    if (view.value && view.value.state.doc.toString() !== source) {
+      setDoc(source)
+    }
+  },
+)
 
 const statusClass = computed(() => `status-${props.cell.status}`)
 const statusLabel = computed(() => {
@@ -173,6 +185,67 @@ const hasAnnotationOverrides = computed(() => {
   )
 })
 
+const annotationSummaryChips = computed(() => {
+  const annotations = props.cell.annotations
+  if (!annotations) return []
+
+  const chips: string[] = []
+  if (annotations.worker) chips.push(`@worker ${annotations.worker}`)
+  if (annotations.timeout != null) chips.push(`@timeout ${annotations.timeout}s`)
+  const envCount = Object.keys(annotations.env).length
+  if (envCount) chips.push(`@env ${envCount}`)
+  if (annotations.mounts.length) chips.push(`@mount ${annotations.mounts.length}`)
+  return chips
+})
+
+const visibleAnnotationSummaryChips = computed(() => annotationSummaryChips.value.slice(0, 2))
+const hiddenAnnotationSummaryCount = computed(() =>
+  Math.max(0, annotationSummaryChips.value.length - visibleAnnotationSummaryChips.value.length),
+)
+const annotationSummaryTitle = computed(() => {
+  if (!annotationSummaryChips.value.length) {
+    return 'Source annotations override saved config'
+  }
+  return `Source annotations: ${annotationSummaryChips.value.join(' · ')}`
+})
+
+function currentSourceAnnotations(): CellAnnotations {
+  return {
+    worker: props.cell.annotations?.worker ?? null,
+    timeout: props.cell.annotations?.timeout ?? null,
+    env: { ...(props.cell.annotations?.env || {}) },
+    mounts: (props.cell.annotations?.mounts || []).map((mount) => ({ ...mount })),
+  }
+}
+
+async function saveSourceAnnotations(next: Partial<CellAnnotations>) {
+  const annotations = currentSourceAnnotations()
+  const merged: CellAnnotations = {
+    worker: next.worker !== undefined ? next.worker : annotations.worker,
+    timeout: next.timeout !== undefined ? next.timeout : annotations.timeout,
+    env: next.env !== undefined ? next.env : annotations.env,
+    mounts: next.mounts !== undefined ? next.mounts : annotations.mounts,
+  }
+
+  await updateSource(props.cell.id, applySourceAnnotations(props.cell.source, merged))
+}
+
+function saveAnnotationWorker(worker: string | null) {
+  return saveSourceAnnotations({ worker })
+}
+
+function saveAnnotationTimeout(timeout: number | null) {
+  return saveSourceAnnotations({ timeout })
+}
+
+function saveAnnotationEnv(env: Record<string, string>) {
+  return saveSourceAnnotations({ env })
+}
+
+function saveAnnotationMounts(mounts: MountSpec[]) {
+  return saveSourceAnnotations({ mounts })
+}
+
 /** Check if scalar is only console output (no display value) */
 function isConsoleOnly(scalar: unknown): boolean {
   if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
@@ -263,6 +336,28 @@ function formatScalar(scalar: unknown): string {
         <span v-if="effectiveEnvCount" class="env-badge" :title="`${effectiveEnvCount} env vars`">
           env: {{ effectiveEnvCount }}
         </span>
+        <span
+          v-if="hasAnnotationOverrides"
+          class="annotation-badge"
+          :title="annotationSummaryTitle"
+        >
+          source overrides
+        </span>
+        <span
+          v-for="chip in visibleAnnotationSummaryChips"
+          :key="chip"
+          class="annotation-summary-chip"
+          :title="annotationSummaryTitle"
+        >
+          {{ chip }}
+        </span>
+        <span
+          v-if="hiddenAnnotationSummaryCount"
+          class="annotation-summary-chip"
+          :title="annotationSummaryTitle"
+        >
+          +{{ hiddenAnnotationSummaryCount }}
+        </span>
         <!-- v1.1: Cache/execution badges -->
         <span v-if="cell.output?.cacheHit" class="cache-badge" title="Result loaded from cache">
           &#x26A1; cached
@@ -324,30 +419,50 @@ function formatScalar(scalar: unknown): string {
           @save="(mounts) => updateCellMountsAction(cell.id, mounts)"
         />
 
-        <div v-if="hasAnnotationOverrides" class="annotation-panel">
-          <div class="annotation-title">Source Annotations Override Saved Config</div>
-          <MountListEditor
-            v-if="cell.annotations?.mounts?.length"
-            :mounts="cell.annotations.mounts"
-            title="Annotation Mounts"
+        <div class="annotation-panel">
+          <div class="annotation-title">Source Annotations</div>
+          <div class="annotation-copy">
+            Writes <code># @...</code> directives into the top comment block of this cell. These
+            override saved config when present.
+          </div>
+
+          <WorkerConfigEditor
+            :worker="cell.annotations?.worker ?? null"
+            :options="availableWorkers"
+            title="Annotation Worker"
             compact
-            read-only
+            :read-only="!connected"
+            @save="saveAnnotationWorker"
           />
-          <div v-if="cell.annotations?.timeout != null" class="annotation-item">
-            <span class="annotation-key">@timeout</span>
-            <code>{{ cell.annotations.timeout }}</code>
-          </div>
-          <div v-if="cell.annotations?.worker" class="annotation-item">
-            <span class="annotation-key">@worker</span>
-            <code>{{ cell.annotations.worker }}</code>
-          </div>
+
+          <TimeoutConfigEditor
+            :timeout="cell.annotations?.timeout ?? null"
+            title="Annotation Timeout"
+            compact
+            :read-only="!connected"
+            @save="saveAnnotationTimeout"
+          />
+
           <EnvVarsEditor
-            v-if="Object.keys(cell.annotations?.env || {}).length"
             :env="cell.annotations?.env || {}"
             title="Annotation Env"
             compact
-            read-only
+            :read-only="!connected"
+            @save="saveAnnotationEnv"
           />
+
+          <MountListEditor
+            :mounts="cell.annotations?.mounts || []"
+            title="Annotation Mounts"
+            compact
+            :read-only="!connected"
+            :show-pin="false"
+            @save="saveAnnotationMounts"
+          />
+
+          <div v-if="!hasAnnotationOverrides" class="annotation-copy annotation-copy-muted">
+            No source annotations are currently set for this cell.
+          </div>
         </div>
       </div>
 
@@ -649,12 +764,38 @@ function formatScalar(scalar: unknown): string {
   flex-direction: column;
   gap: 8px;
 }
+.annotation-badge {
+  background: #f9e2af22;
+  color: #f9e2af;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.annotation-summary-chip {
+  background: #fab38722;
+  color: #fab387;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
 .annotation-title {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #f9e2af;
+}
+.annotation-copy {
+  color: #a6adc8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.annotation-copy code {
+  color: #f9e2af;
+}
+.annotation-copy-muted {
+  color: #6c7086;
 }
 .annotation-item {
   display: flex;
