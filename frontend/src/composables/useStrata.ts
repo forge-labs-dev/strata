@@ -347,6 +347,34 @@ async function updateAdminNotebookWorkers(workers: any[]): Promise<any> {
   return resp.json()
 }
 
+async function patchAdminNotebookWorker(workerName: string, enabled: boolean): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/admin/notebook-workers/${encodeURIComponent(workerName)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to update admin notebook worker')
+  }
+  return resp.json()
+}
+
+async function refreshAdminNotebookWorker(workerName: string): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/admin/notebook-workers/${encodeURIComponent(workerName)}/refresh`,
+    {
+      method: 'POST',
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to refresh admin notebook worker')
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Dependency API
 // ---------------------------------------------------------------------------
@@ -412,6 +440,8 @@ export function useStrata() {
     updateWorkers,
     listAdminNotebookWorkers,
     updateAdminNotebookWorkers,
+    patchAdminNotebookWorker,
+    refreshAdminNotebookWorker,
     listDependencies,
     addDependency,
     removeDependency,

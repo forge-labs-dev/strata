@@ -81,6 +81,10 @@ test('effectiveWorkerNameForCell prefers source annotations over persisted worke
 test('workerWarningForEntry reports unresolved, blocked, and unreachable workers', () => {
   assert.equal(workerWarningForEntry(null, 'gpu-missing'), 'Worker "gpu-missing" is unresolved')
   assert.equal(
+    workerWarningForEntry(makeWorker({ enabled: false }), 'gpu-http'),
+    'Worker "gpu-http" is disabled by server policy',
+  )
+  assert.equal(
     workerWarningForEntry(makeWorker({ allowed: false }), 'gpu-http'),
     'Worker "gpu-http" is blocked by server policy',
   )

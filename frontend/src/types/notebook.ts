@@ -6,6 +6,7 @@ export type CellLanguage = 'python'
 export type MountMode = 'ro' | 'rw'
 export type WorkerBackend = 'local' | 'executor'
 export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable'
+export type WorkerTransport = 'local' | 'embedded' | 'direct' | 'signed' | 'executor'
 
 export interface MountSpec {
   name: string
@@ -21,10 +22,23 @@ export interface WorkerSpec {
   config: Record<string, unknown>
 }
 
+export interface EditableWorkerSpec extends WorkerSpec {
+  enabled?: boolean
+}
+
+export interface ManagedWorkerSpec extends WorkerSpec {
+  enabled: boolean
+}
+
 export interface WorkerCatalogEntry extends WorkerSpec {
   health: WorkerHealth
   source?: 'builtin' | 'notebook' | 'server' | 'referenced'
   allowed?: boolean
+  enabled?: boolean
+  transport?: WorkerTransport
+  healthUrl?: string | null
+  healthCheckedAt?: number | null
+  lastError?: string | null
 }
 
 export interface CellAnnotations {

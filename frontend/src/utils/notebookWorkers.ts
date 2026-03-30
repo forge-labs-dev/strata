@@ -8,6 +8,8 @@ const LOCAL_WORKER_ENTRY: WorkerCatalogEntry = {
   source: 'builtin',
   health: 'healthy',
   allowed: true,
+  enabled: true,
+  transport: 'local',
 }
 
 export function effectiveWorkerNameForCell(cell: {
@@ -29,8 +31,9 @@ export function resolveEffectiveWorkerEntry(
 }
 
 export function workerTransportLabel(
-  worker: Pick<WorkerCatalogEntry, 'backend' | 'config'>,
+  worker: Pick<WorkerCatalogEntry, 'backend' | 'config' | 'transport'>,
 ): string {
+  if (worker.transport) return worker.transport
   if (worker.backend === 'local') return 'local'
   const url = String(worker.config?.url || '')
   const transport = String(worker.config?.transport || 'direct')
@@ -49,6 +52,7 @@ export function workerWarningForEntry(
   workerLabel: string,
 ): string | null {
   if (!entry) return `Worker "${workerLabel}" is unresolved`
+  if (entry.enabled === false) return `Worker "${entry.name}" is disabled by server policy`
   if (entry.allowed === false) return `Worker "${entry.name}" is blocked by server policy`
   if (entry.backend === 'executor' && entry.health === 'unavailable') {
     return `Worker "${entry.name}" is currently unreachable`

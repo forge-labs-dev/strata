@@ -12,6 +12,8 @@ import type {
   ProfilingSummary,
   MountSpec,
   CellAnnotations,
+  EditableWorkerSpec,
+  ManagedWorkerSpec,
   WorkerCatalogEntry,
   WorkerHealth,
   WorkerSpec,
@@ -244,7 +246,22 @@ function parseWorkerSpec(raw: any): WorkerSpec {
   }
 }
 
+function parseManagedWorkerSpec(raw: any): ManagedWorkerSpec {
+  return {
+    ...parseWorkerSpec(raw),
+    enabled: raw?.enabled !== false,
+  }
+}
+
 function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
+  const transport =
+    raw?.transport === 'local' ||
+    raw?.transport === 'embedded' ||
+    raw?.transport === 'direct' ||
+    raw?.transport === 'signed' ||
+    raw?.transport === 'executor'
+      ? raw.transport
+      : undefined
   return {
     ...parseWorkerSpec(raw),
     health: raw?.health === 'healthy' || raw?.health === 'unavailable' ? raw.health : 'unknown',
@@ -256,6 +273,14 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
         ? raw.source
         : undefined,
     allowed: raw?.allowed !== false,
+    enabled: typeof raw?.enabled === 'boolean' ? raw.enabled : undefined,
+    transport,
+    healthUrl: typeof raw?.health_url === 'string' ? raw.health_url : null,
+    healthCheckedAt:
+      typeof raw?.health_checked_at === 'number' && Number.isFinite(raw.health_checked_at)
+        ? raw.health_checked_at
+        : null,
+    lastError: typeof raw?.last_error === 'string' && raw.last_error.trim() ? raw.last_error : null,
   }
 }
 
@@ -340,7 +365,7 @@ function syncWorkerDefinitionsEditableFromBackend(value: any) {
 
 function syncServerManagedWorkersFromBackend(serverWorkers: any[]) {
   serverManagedWorkers.value = Array.isArray(serverWorkers)
-    ? serverWorkers.map(parseWorkerSpec).filter((worker) => worker.name)
+    ? serverWorkers.map(parseManagedWorkerSpec).filter((worker) => worker.name)
     : []
 }
 
@@ -348,6 +373,7 @@ function clearServerWorkerRegistryState() {
   serverManagedWorkers.value = []
   serverWorkerRegistryAvailable.value = false
   serverWorkerRegistryLoading.value = false
+  serverWorkerActionLoading.value = {}
   serverWorkerRegistryError.value = null
 }
 
@@ -651,9 +677,10 @@ const workerHealthLoading = ref(false)
 const workerHealthCheckedAt = ref<number | null>(null)
 const notebookWorkerError = ref<string | null>(null)
 const workerRegistryError = ref<string | null>(null)
-const serverManagedWorkers = ref<WorkerSpec[]>([])
+const serverManagedWorkers = ref<ManagedWorkerSpec[]>([])
 const serverWorkerRegistryAvailable = ref(false)
 const serverWorkerRegistryLoading = ref(false)
+const serverWorkerActionLoading = ref<Record<string, boolean>>({})
 const serverWorkerRegistryError = ref<string | null>(null)
 const cellWorkerErrors = ref<Record<string, string>>({})
 
@@ -1099,6 +1126,24 @@ async function fetchServerWorkerRegistry(forceRefresh = false) {
   }
 }
 
+function setServerWorkerActionLoading(workerName: string, loading: boolean) {
+  if (loading) {
+    serverWorkerActionLoading.value = {
+      ...serverWorkerActionLoading.value,
+      [workerName]: true,
+    }
+    return
+  }
+
+  const nextLoading = { ...serverWorkerActionLoading.value }
+  delete nextLoading[workerName]
+  serverWorkerActionLoading.value = nextLoading
+}
+
+function isServerWorkerActionLoading(workerName: string): boolean {
+  return serverWorkerActionLoading.value[workerName] === true
+}
+
 async function addDependencyAction(pkg: string) {
   const sid = sessionId()
   if (!sid) return
@@ -1189,7 +1234,7 @@ async function updateNotebookWorkerAction(worker: string | null) {
   }
 }
 
-async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
+async function updateNotebookWorkersAction(workers: EditableWorkerSpec[]) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
@@ -1219,7 +1264,7 @@ async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
   }
 }
 
-async function updateServerWorkerRegistryAction(workers: WorkerSpec[]) {
+async function updateServerWorkerRegistryAction(workers: EditableWorkerSpec[]) {
   const strata = useStrata()
   serverWorkerRegistryError.value = null
   const payload = workers
@@ -1228,6 +1273,7 @@ async function updateServerWorkerRegistryAction(workers: WorkerSpec[]) {
       backend: worker.backend,
       runtime_id: worker.runtimeId || null,
       config: worker.config || {},
+      enabled: worker.enabled !== false,
     }))
     .filter((worker) => worker.name)
   try {
@@ -1240,6 +1286,44 @@ async function updateServerWorkerRegistryAction(workers: WorkerSpec[]) {
     await fetchWorkers(true)
   } catch (err: any) {
     serverWorkerRegistryError.value = err.message || 'Failed to update server worker registry'
+  }
+}
+
+async function updateServerWorkerEnabledAction(workerName: string, enabled: boolean) {
+  const strata = useStrata()
+  serverWorkerRegistryError.value = null
+  setServerWorkerActionLoading(workerName, true)
+  try {
+    const data = await strata.patchAdminNotebookWorker(workerName, enabled)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncServerManagedWorkersFromBackend(data.configured_workers)
+    }
+    serverWorkerRegistryAvailable.value = true
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    await fetchWorkers(true)
+  } catch (err: any) {
+    serverWorkerRegistryError.value = err.message || `Failed to update worker "${workerName}"`
+  } finally {
+    setServerWorkerActionLoading(workerName, false)
+  }
+}
+
+async function refreshServerWorkerAction(workerName: string) {
+  const strata = useStrata()
+  serverWorkerRegistryError.value = null
+  setServerWorkerActionLoading(workerName, true)
+  try {
+    const data = await strata.refreshAdminNotebookWorker(workerName)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncServerManagedWorkersFromBackend(data.configured_workers)
+    }
+    serverWorkerRegistryAvailable.value = true
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    await fetchWorkers(true)
+  } catch (err: any) {
+    serverWorkerRegistryError.value = err.message || `Failed to refresh worker "${workerName}"`
+  } finally {
+    setServerWorkerActionLoading(workerName, false)
   }
 }
 
@@ -1449,6 +1533,7 @@ export function useNotebook() {
     serverManagedWorkers,
     serverWorkerRegistryAvailable,
     serverWorkerRegistryLoading,
+    isServerWorkerActionLoading,
     serverWorkerRegistryError,
     cellWorkerErrorForCell,
     fetchWorkers,
@@ -1458,6 +1543,8 @@ export function useNotebook() {
     removeDependencyAction,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
+    updateServerWorkerEnabledAction,
+    refreshServerWorkerAction,
     updateNotebookWorkerAction,
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,

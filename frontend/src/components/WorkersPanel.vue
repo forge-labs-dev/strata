@@ -22,6 +22,9 @@ const {
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
   updateServerWorkerRegistryAction,
+  updateServerWorkerEnabledAction,
+  refreshServerWorkerAction,
+  isServerWorkerActionLoading,
 } = useNotebook()
 const showPanel = ref(false)
 
@@ -41,6 +44,15 @@ const lastCheckedLabel = computed(() => {
     second: '2-digit',
   })
 })
+
+function workerCheckedLabel(rawCheckedAt: number | null | undefined): string {
+  if (!rawCheckedAt) return 'not checked'
+  return new Date(rawCheckedAt).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+}
 </script>
 
 <template>
@@ -91,6 +103,7 @@ const lastCheckedLabel = computed(() => {
         v-else-if="canEditServerRegistry"
         :workers="serverManagedWorkers"
         title="Server Worker Catalog"
+        :show-enabled="true"
         :read-only="!connected || serverWorkerRegistryLoading"
         :error="serverWorkerRegistryError"
         @save="updateServerWorkerRegistryAction"
@@ -102,15 +115,75 @@ const lastCheckedLabel = computed(() => {
 
       <div v-if="availableWorkers.length" class="workers-catalog">
         <div class="workers-catalog-title">Visible Workers</div>
-        <div v-for="worker in availableWorkers" :key="worker.name" class="workers-catalog-row">
-          <code>{{ worker.name }}</code>
-          <span class="workers-catalog-meta">{{ worker.source || 'unknown' }}</span>
-          <span class="workers-catalog-meta">{{ worker.backend }}</span>
-          <span class="workers-catalog-meta">{{ workerTransportLabel(worker) }}</span>
-          <span class="workers-catalog-meta">{{ worker.health }}</span>
-          <span class="workers-catalog-meta" :class="{ disallowed: worker.allowed === false }">
-            {{ worker.allowed === false ? 'not allowed' : 'allowed' }}
-          </span>
+        <div v-for="worker in availableWorkers" :key="worker.name" class="workers-catalog-card">
+          <div class="workers-catalog-row">
+            <code>{{ worker.name }}</code>
+            <span class="workers-catalog-meta">{{ worker.source || 'unknown' }}</span>
+            <span class="workers-catalog-meta">{{ worker.backend }}</span>
+            <span class="workers-catalog-meta">{{
+              worker.transport || workerTransportLabel(worker)
+            }}</span>
+            <span
+              class="workers-catalog-meta"
+              :class="{
+                unhealthy: worker.health === 'unavailable',
+                unknown: worker.health === 'unknown',
+              }"
+            >
+              {{ worker.health }}
+            </span>
+            <span
+              class="workers-catalog-meta"
+              :class="{
+                disallowed: worker.allowed === false,
+                disabled: worker.enabled === false,
+              }"
+            >
+              {{
+                worker.enabled === false
+                  ? 'disabled'
+                  : worker.allowed === false
+                    ? 'not allowed'
+                    : 'allowed'
+              }}
+            </span>
+            <div
+              v-if="canEditServerRegistry && worker.source === 'server'"
+              class="workers-catalog-actions"
+            >
+              <button
+                class="workers-action"
+                :disabled="!connected || isServerWorkerActionLoading(worker.name)"
+                @click="refreshServerWorkerAction(worker.name)"
+              >
+                {{ isServerWorkerActionLoading(worker.name) ? 'Refreshing…' : 'Refresh' }}
+              </button>
+              <button
+                class="workers-action"
+                :disabled="!connected || isServerWorkerActionLoading(worker.name)"
+                @click="updateServerWorkerEnabledAction(worker.name, worker.enabled === false)"
+              >
+                {{
+                  isServerWorkerActionLoading(worker.name)
+                    ? 'Saving…'
+                    : worker.enabled === false
+                      ? 'Enable'
+                      : 'Disable'
+                }}
+              </button>
+            </div>
+          </div>
+          <div class="workers-catalog-detail-row">
+            <span class="workers-catalog-detail">
+              last checked {{ workerCheckedLabel(worker.healthCheckedAt) }}
+            </span>
+            <span v-if="worker.healthUrl" class="workers-catalog-detail">
+              health {{ worker.healthUrl }}
+            </span>
+          </div>
+          <div v-if="worker.lastError" class="workers-catalog-error">
+            {{ worker.lastError }}
+          </div>
         </div>
       </div>
     </div>
@@ -208,6 +281,16 @@ const lastCheckedLabel = computed(() => {
   gap: 6px;
 }
 
+.workers-catalog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #313244;
+  border-radius: 10px;
+  background: #11111b;
+}
+
 .workers-catalog-title {
   font-size: 11px;
   font-weight: 700;
@@ -219,6 +302,7 @@ const lastCheckedLabel = computed(() => {
 .workers-catalog-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   font-size: 12px;
   color: #bac2de;
@@ -234,5 +318,52 @@ const lastCheckedLabel = computed(() => {
 
 .workers-catalog-meta.disallowed {
   color: #f38ba8;
+}
+
+.workers-catalog-meta.disabled,
+.workers-catalog-meta.unknown {
+  color: #fab387;
+}
+
+.workers-catalog-meta.unhealthy {
+  color: #f38ba8;
+}
+
+.workers-catalog-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+}
+
+.workers-action {
+  border: 1px solid #313244;
+  background: #181825;
+  color: #cdd6f4;
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.workers-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.workers-catalog-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.workers-catalog-detail {
+  font-size: 11px;
+  color: #6c7086;
+}
+
+.workers-catalog-error {
+  font-size: 12px;
+  color: #f38ba8;
+  line-height: 1.4;
 }
 </style>

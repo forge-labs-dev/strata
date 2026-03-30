@@ -12,9 +12,9 @@ function isAnnotationLine(line: string): boolean {
 function hasAnyAnnotations(annotations: CellAnnotations): boolean {
   return Boolean(
     annotations.worker ||
-      annotations.timeout != null ||
-      Object.keys(annotations.env).length ||
-      annotations.mounts.length,
+    annotations.timeout != null ||
+    Object.keys(annotations.env).length ||
+    annotations.mounts.length,
   )
 }
 
@@ -53,10 +53,7 @@ export function applySourceAnnotations(source: string, annotations: CellAnnotati
   const preservedPrefix = prefix.filter((line) => !isAnnotationLine(line))
   const annotationLines = renderAnnotationLines(annotations)
 
-  while (
-    preservedPrefix.length > 0 &&
-    preservedPrefix[preservedPrefix.length - 1].trim() === ''
-  ) {
+  while (preservedPrefix.length > 0 && preservedPrefix[preservedPrefix.length - 1].trim() === '') {
     preservedPrefix.pop()
   }
 
@@ -68,11 +65,7 @@ export function applySourceAnnotations(source: string, annotations: CellAnnotati
     nextPrefix.push(...annotationLines)
   }
 
-  if (
-    nextPrefix.length > 0 &&
-    rest.length > 0 &&
-    nextPrefix[nextPrefix.length - 1].trim() !== ''
-  ) {
+  if (nextPrefix.length > 0 && rest.length > 0 && nextPrefix[nextPrefix.length - 1].trim() !== '') {
     nextPrefix.push('')
   }
 

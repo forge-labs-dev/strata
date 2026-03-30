@@ -47,13 +47,9 @@ test('applySourceAnnotations prepends a new annotation block to plain source', (
 })
 
 test('applySourceAnnotations replaces only annotation lines and preserves comments', () => {
-  const source = [
-    '# existing note',
-    '# @worker old-worker',
-    '# @env TOKEN=old',
-    '',
-    'x = 1',
-  ].join('\n')
+  const source = ['# existing note', '# @worker old-worker', '# @env TOKEN=old', '', 'x = 1'].join(
+    '\n',
+  )
 
   const next = applySourceAnnotations(
     source,

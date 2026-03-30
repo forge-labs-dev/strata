@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
-import type { WorkerSpec } from '../types/notebook'
+import type { EditableWorkerSpec, WorkerSpec } from '../types/notebook'
 
 interface WorkerDraft {
   name: string
   backend: WorkerSpec['backend']
+  enabled: boolean
   runtimeId: string
   executorUrl: string
   transport: 'direct' | 'signed'
@@ -14,30 +15,33 @@ interface WorkerDraft {
 
 const props = withDefaults(
   defineProps<{
-    workers: WorkerSpec[]
+    workers: EditableWorkerSpec[]
     title?: string
     compact?: boolean
+    showEnabled?: boolean
     readOnly?: boolean
     error?: string | null
   }>(),
   {
     title: 'Registered Workers',
     compact: false,
+    showEnabled: false,
     readOnly: false,
     error: null,
   },
 )
 
 const emit = defineEmits<{
-  save: [workers: WorkerSpec[]]
+  save: [workers: EditableWorkerSpec[]]
 }>()
 
 const draft = ref<WorkerDraft[]>([])
 
-function toDraft(workers: WorkerSpec[]): WorkerDraft[] {
+function toDraft(workers: EditableWorkerSpec[]): WorkerDraft[] {
   return workers.map((worker) => ({
     name: worker.name,
     backend: worker.backend,
+    enabled: worker.enabled !== false,
     runtimeId: worker.runtimeId ?? '',
     executorUrl: typeof worker.config?.url === 'string' ? worker.config.url : '',
     transport:
@@ -70,6 +74,7 @@ function addWorker() {
   draft.value.push({
     name: '',
     backend: 'executor',
+    enabled: true,
     runtimeId: '',
     executorUrl: '',
     transport: 'direct',
@@ -102,6 +107,7 @@ function save() {
         return {
           name: worker.name.trim(),
           backend: worker.backend,
+          ...(props.showEnabled ? { enabled: worker.enabled } : {}),
           runtimeId: worker.runtimeId.trim() || null,
           config,
         }
@@ -112,7 +118,7 @@ function save() {
 </script>
 
 <template>
-  <div class="worker-list-editor" :class="{ compact: compact }">
+  <div class="worker-list-editor" :class="{ compact: compact, 'show-enabled': showEnabled }">
     <div class="worker-list-header">
       <span class="worker-list-title">{{ title }}</span>
       <button v-if="!readOnly" class="worker-list-add" @click="addWorker">+ Worker</button>
@@ -123,6 +129,10 @@ function save() {
     </div>
 
     <div v-for="(worker, index) in draft" :key="`${index}-${worker.name}`" class="worker-list-row">
+      <label v-if="showEnabled" class="worker-enabled-toggle">
+        <input v-model="worker.enabled" type="checkbox" :disabled="readOnly" />
+        <span>{{ worker.enabled ? 'enabled' : 'disabled' }}</span>
+      </label>
       <input
         v-model="worker.name"
         class="worker-input"
@@ -244,6 +254,7 @@ function save() {
 .worker-list-row {
   display: grid;
   grid-template-columns:
+    110px
     minmax(100px, 1fr)
     110px
     minmax(130px, 1fr)
@@ -252,6 +263,33 @@ function save() {
     minmax(180px, 2fr)
     28px;
   gap: 6px;
+}
+
+.worker-list-editor:not(.show-enabled) .worker-list-row {
+  grid-template-columns:
+    minmax(100px, 1fr)
+    110px
+    minmax(130px, 1fr)
+    minmax(180px, 2fr)
+    110px
+    minmax(180px, 2fr)
+    28px;
+}
+
+.worker-enabled-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #313244;
+  background: #181825;
+  color: #bac2de;
+  font-size: 12px;
+}
+
+.worker-enabled-toggle input {
+  margin: 0;
 }
 
 .worker-input {
