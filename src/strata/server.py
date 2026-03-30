@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
     from strata.adaptive_concurrency import AdaptiveConcurrencyController
@@ -45,11 +45,13 @@ from strata.logging import (
 )
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
 from strata.metrics import MetricsCollector
-from strata.notebook.models import WorkerSpec
+from strata.notebook.models import WorkerBackendType, WorkerSpec
 from strata.notebook.workers import (
+    ManagedWorkerRecord,
     build_server_worker_catalog_with_health,
-    get_server_managed_workers,
-    set_server_managed_workers,
+    get_server_managed_worker_records,
+    replace_server_managed_worker_records,
+    set_server_managed_worker_enabled,
 )
 from strata.planner import ReadPlanner
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
@@ -111,10 +113,34 @@ SATURATION_THRESHOLD_SECONDS = 30.0  # Fail readiness if saturated for this long
 STUCK_SCAN_THRESHOLD_SECONDS = 60.0  # Fail readiness if scan makes no progress for this long
 
 
+class AdminNotebookWorkerEntryRequest(BaseModel):
+    """Service-managed notebook worker config entry."""
+
+    name: str = Field(..., pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+    backend: WorkerBackendType = Field(default=WorkerBackendType.LOCAL)
+    runtime_id: str | None = Field(default=None)
+    config: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+    def to_worker_spec(self) -> WorkerSpec:
+        return WorkerSpec(
+            name=self.name,
+            backend=self.backend,
+            runtime_id=self.runtime_id,
+            config=self.config,
+        )
+
+
 class AdminNotebookWorkersRequest(BaseModel):
     """Request payload for replacing the server-managed notebook worker registry."""
 
-    workers: list[WorkerSpec] = Field(default_factory=list)
+    workers: list[AdminNotebookWorkerEntryRequest] = Field(default_factory=list)
+
+
+class AdminNotebookWorkerPatchRequest(BaseModel):
+    """Request payload for patching one service-managed worker."""
+
+    enabled: bool
 
 
 class ResourceLimitError(Exception):
@@ -1707,7 +1733,11 @@ async def _serialize_admin_notebook_workers(
 ) -> dict[str, object]:
     return {
         "configured_workers": [
-            worker.model_dump(mode="json") for worker in get_server_managed_workers()
+            {
+                **record.worker.model_dump(mode="json"),
+                "enabled": record.enabled,
+            }
+            for record in get_server_managed_worker_records()
         ],
         "workers": await build_server_worker_catalog_with_health(
             force_refresh=force_refresh
@@ -1715,6 +1745,24 @@ async def _serialize_admin_notebook_workers(
         "definitions_editable": False,
         "health_checked_at": int(time.time() * 1000),
     }
+
+
+def _validate_admin_notebook_worker_names(
+    workers: list[AdminNotebookWorkerEntryRequest],
+) -> None:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for worker in workers:
+        if worker.name in seen:
+            duplicates.add(worker.name)
+        seen.add(worker.name)
+
+    if duplicates:
+        duplicate_list = ", ".join(sorted(duplicates))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Duplicate notebook worker names are not allowed: {duplicate_list}",
+        )
 
 
 @app.get("/v1/admin/notebook-workers")
@@ -1728,7 +1776,40 @@ async def list_admin_notebook_workers(refresh: bool = False):
 async def update_admin_notebook_workers(request: AdminNotebookWorkersRequest):
     """Replace the server-managed notebook worker registry."""
     _require_notebook_worker_admin_access()
-    set_server_managed_workers(request.workers)
+    _validate_admin_notebook_worker_names(request.workers)
+    replace_server_managed_worker_records(
+        [
+            ManagedWorkerRecord(
+                worker=worker.to_worker_spec(),
+                enabled=worker.enabled,
+            )
+            for worker in request.workers
+        ]
+    )
+    return await _serialize_admin_notebook_workers(force_refresh=True)
+
+
+@app.patch("/v1/admin/notebook-workers/{worker_name}")
+async def patch_admin_notebook_worker(
+    worker_name: str,
+    request: AdminNotebookWorkerPatchRequest,
+):
+    """Patch one service-managed notebook worker."""
+    _require_notebook_worker_admin_access()
+    try:
+        set_server_managed_worker_enabled(worker_name, request.enabled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Notebook worker not found: {worker_name}")
+    return await _serialize_admin_notebook_workers(force_refresh=True)
+
+
+@app.post("/v1/admin/notebook-workers/{worker_name}/refresh")
+async def refresh_admin_notebook_worker(worker_name: str):
+    """Force-refresh health for one service-managed notebook worker."""
+    _require_notebook_worker_admin_access()
+    known_workers = {record.worker.name for record in get_server_managed_worker_records()}
+    if worker_name not in known_workers:
+        raise HTTPException(status_code=404, detail=f"Notebook worker not found: {worker_name}")
     return await _serialize_admin_notebook_workers(force_refresh=True)
 
 

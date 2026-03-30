@@ -461,6 +461,44 @@ token = os.getenv("NOTEBOOK_TOKEN")
         )
 
     @pytest.mark.asyncio
+    async def test_execute_rejects_disabled_service_mode_worker(
+        self,
+        sample_notebook,
+        monkeypatch,
+    ):
+        """Service mode should reject disabled server-managed workers."""
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="service",
+                    transforms_config={
+                        "notebook_workers": [
+                            {
+                                "name": "gpu-a100",
+                                "backend": "executor",
+                                "runtime_id": "cuda-12.4",
+                                "config": {"url": "embedded://local"},
+                                "enabled": False,
+                            }
+                        ]
+                    },
+                )
+            ),
+        )
+        sample_notebook.notebook_state.worker = "gpu-a100"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-a100"
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert result.error == (
+            "Execution failed: Worker 'gpu-a100' is disabled by server policy. "
+            "Choose an enabled server-managed worker."
+        )
+
+    @pytest.mark.asyncio
     async def test_execute_allows_service_mode_server_worker(
         self,
         sample_notebook,

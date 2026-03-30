@@ -494,6 +494,41 @@ def test_update_notebook_worker_requires_allowlisted_service_worker(
         assert payload["definitions_editable"] is False
 
 
+def test_update_notebook_worker_rejects_disabled_service_worker(
+    service_mode_worker_state,
+):
+    """Service mode should reject server-managed workers that are disabled."""
+    service_mode_worker_state(
+        [
+            {
+                "name": "gpu-a100",
+                "backend": "executor",
+                "runtime_id": "cuda-12.4",
+                "config": {"url": "embedded://local"},
+                "enabled": False,
+            }
+        ]
+    )
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Disabled Service Worker Assignment Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        blocked = client.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-a100"},
+        )
+        assert blocked.status_code == 403
+        assert "disabled by server policy" in blocked.json()["detail"]
+
+
 def test_update_cell_worker_requires_allowlisted_service_worker(
     service_mode_worker_state,
 ):

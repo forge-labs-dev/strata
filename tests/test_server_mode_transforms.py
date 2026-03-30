@@ -264,16 +264,103 @@ class TestNotebookWorkerAdminApi:
         assert data["definitions_editable"] is False
         assert data["configured_workers"][0]["name"] == "gpu-a100"
         assert data["configured_workers"][0]["backend"] == "executor"
+        assert data["configured_workers"][0]["enabled"] is True
         assert any(
             worker["name"] == "gpu-a100"
             and worker["source"] == "server"
             and worker["health"] == "healthy"
+            and worker["transport"] == "embedded"
             for worker in data["workers"]
         )
 
         listed = server_mode_app.get("/v1/admin/notebook-workers")
         assert listed.status_code == 200
         assert listed.json()["configured_workers"][0]["name"] == "gpu-a100"
+
+    def test_patch_notebook_worker_enabled_state(self, server_mode_app):
+        """Service-mode worker admin can disable and re-enable one worker."""
+        seeded = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "config": {"url": "embedded://local"},
+                    }
+                ]
+            },
+        )
+        assert seeded.status_code == 200
+
+        disabled = server_mode_app.patch(
+            "/v1/admin/notebook-workers/gpu-a100",
+            json={"enabled": False},
+        )
+        assert disabled.status_code == 200
+        disabled_payload = disabled.json()
+        assert disabled_payload["configured_workers"][0]["enabled"] is False
+        assert any(
+            worker["name"] == "gpu-a100"
+            and worker["allowed"] is False
+            and worker["enabled"] is False
+            for worker in disabled_payload["workers"]
+        )
+
+        enabled = server_mode_app.patch(
+            "/v1/admin/notebook-workers/gpu-a100",
+            json={"enabled": True},
+        )
+        assert enabled.status_code == 200
+        assert enabled.json()["configured_workers"][0]["enabled"] is True
+
+    def test_refresh_notebook_worker_health(self, server_mode_app):
+        """Service-mode worker admin can force-refresh one worker by name."""
+        seeded = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "config": {"url": "embedded://local"},
+                    }
+                ]
+            },
+        )
+        assert seeded.status_code == 200
+
+        refreshed = server_mode_app.post("/v1/admin/notebook-workers/gpu-a100/refresh")
+        assert refreshed.status_code == 200
+        payload = refreshed.json()
+        assert isinstance(payload["health_checked_at"], int)
+        assert any(
+            worker["name"] == "gpu-a100" and worker["health_checked_at"] is not None
+            for worker in payload["workers"]
+        )
+
+    def test_update_notebook_workers_rejects_duplicate_names(self, server_mode_app):
+        """Service-mode worker admin should reject duplicate worker names."""
+        response = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "config": {"url": "embedded://local"},
+                    },
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "config": {"url": "embedded://local"},
+                    },
+                ]
+            },
+        )
+
+        assert response.status_code == 400
+        assert "Duplicate notebook worker names" in response.json()["detail"]
 
     def test_notebook_workers_admin_requires_service_mode(self, personal_mode_app):
         """The admin registry should not exist in personal mode."""
@@ -309,6 +396,14 @@ class TestNotebookWorkerAdminApi:
         )
         assert allowed.status_code == 200
         assert allowed.json()["configured_workers"][0]["name"] == "gpu-signed"
+
+        patched = server_mode_auth_app.patch(
+            "/v1/admin/notebook-workers/gpu-signed",
+            headers=_auth_headers(scopes="admin:notebook-workers"),
+            json={"enabled": False},
+        )
+        assert patched.status_code == 200
+        assert patched.json()["configured_workers"][0]["enabled"] is False
 
 
 class TestTransformValidation:
