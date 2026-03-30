@@ -4792,6 +4792,7 @@ async def finalize_build(
             row_count = 0
         except Exception as e:
             build_store.fail_build(build_id, str(e), "INVALID_NOTEBOOK_BUNDLE")
+            store.fail_artifact(build.artifact_id, build.version)
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid notebook output bundle: {e}",
@@ -4812,6 +4813,7 @@ async def finalize_build(
         except Exception as e:
             # Mark build as failed
             build_store.fail_build(build_id, str(e), "INVALID_ARROW_FORMAT")
+            store.fail_artifact(build.artifact_id, build.version)
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid Arrow IPC format: {e}",
@@ -4830,9 +4832,11 @@ async def finalize_build(
         )
     except ValueError as e:
         build_store.fail_build(build_id, str(e), "FINALIZE_FAILED")
+        store.fail_artifact(build.artifact_id, build.version)
         raise HTTPException(status_code=400, detail=str(e))
     if finalized_artifact is None:
         build_store.fail_build(build_id, "Failed to finalize artifact", "FINALIZE_FAILED")
+        store.fail_artifact(build.artifact_id, build.version)
         raise HTTPException(status_code=500, detail="Failed to finalize artifact")
 
     # Mark build as complete

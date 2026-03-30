@@ -943,6 +943,31 @@ class CellExecutor:
         artifact_id = (
             f"nb_remote_{self.session.notebook_state.id}_{build_id}"
         )
+        artifact_version: int | None = None
+        failure_recorded = False
+
+        def _mark_failed(message: str, error_code: str) -> None:
+            nonlocal failure_recorded
+            if failure_recorded:
+                return
+            failure_recorded = True
+            try:
+                build_store.fail_build(build_id, message, error_code)
+            except Exception:
+                logger.exception(
+                    "Failed to mark notebook build %s as failed (%s)",
+                    build_id,
+                    error_code,
+                )
+            if artifact_version is not None:
+                try:
+                    artifact_store.fail_artifact(artifact_id, artifact_version)
+                except Exception:
+                    logger.exception(
+                        "Failed to mark notebook artifact %s@v=%s as failed",
+                        artifact_id,
+                        artifact_version,
+                    )
 
         input_uris = sorted(
             {
@@ -988,99 +1013,108 @@ class CellExecutor:
             inputs=input_uris,
         )
 
-        version = artifact_store.create_artifact(
-            artifact_id=artifact_id,
-            provenance_hash=transport_provenance,
-            transform_spec=transform_spec,
-            input_versions={uri: uri for uri in input_uris},
-            tenant=tenant_id,
-            principal=principal_id,
-        )
-        build_store.create_build(
-            build_id=build_id,
-            artifact_id=artifact_id,
-            version=version,
-            executor_ref=NOTEBOOK_EXECUTOR_TRANSFORM_REF,
-            executor_url=executor_url,
-            tenant_id=tenant_id,
-            principal_id=principal_id,
-            input_uris=input_uris,
-            params=build_params,
-        )
-        build_store.start_build(build_id)
-
-        manifest = generate_build_manifest(
-            base_url=base_url,
-            build_id=build_id,
-            metadata={
-                "build_id": build_id,
-                "artifact_id": artifact_id,
-                "version": version,
-                "executor_ref": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
-                "params": build_params,
-            },
-            input_artifacts=input_artifacts,
-            max_output_bytes=state.config.max_transform_output_bytes,
-            url_expiry_seconds=state.config.signed_url_expiry_seconds,
-        ).to_dict()
-
-        manifest_execute_url = self._manifest_execute_url(executor_url)
         try:
-            async with httpx.AsyncClient(timeout=max(timeout_seconds + 10.0, 30.0)) as client:
+            artifact_version = artifact_store.create_artifact(
+                artifact_id=artifact_id,
+                provenance_hash=transport_provenance,
+                transform_spec=transform_spec,
+                input_versions={uri: uri for uri in input_uris},
+                tenant=tenant_id,
+                principal=principal_id,
+            )
+            build_store.create_build(
+                build_id=build_id,
+                artifact_id=artifact_id,
+                version=artifact_version,
+                executor_ref=NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+                executor_url=executor_url,
+                tenant_id=tenant_id,
+                principal_id=principal_id,
+                input_uris=input_uris,
+                params=build_params,
+            )
+            build_store.start_build(build_id)
+
+            manifest = generate_build_manifest(
+                base_url=base_url,
+                build_id=build_id,
+                metadata={
+                    "build_id": build_id,
+                    "artifact_id": artifact_id,
+                    "version": artifact_version,
+                    "executor_ref": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+                    "params": build_params,
+                },
+                input_artifacts=input_artifacts,
+                max_output_bytes=state.config.max_transform_output_bytes,
+                url_expiry_seconds=state.config.signed_url_expiry_seconds,
+            ).to_dict()
+
+            manifest_execute_url = self._manifest_execute_url(executor_url)
+            async with httpx.AsyncClient(
+                timeout=max(timeout_seconds + 10.0, 30.0)
+            ) as client:
                 response = await client.post(manifest_execute_url, json=manifest)
+        except asyncio.CancelledError:
+            _mark_failed("Notebook manifest execution cancelled", "CANCELLED")
+            raise
         except httpx.TimeoutException as exc:
-            build_store.fail_build(build_id, "Notebook manifest execution timed out", "TIMEOUT")
-            artifact_store.fail_artifact(artifact_id, version)
             raise TimeoutError() from exc
         except httpx.HTTPError as exc:
-            build_store.fail_build(
-                build_id,
-                f"Notebook manifest execution request failed: {exc}",
-                "HTTP_ERROR",
-            )
-            artifact_store.fail_artifact(artifact_id, version)
             raise RuntimeError(
                 f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
             ) from exc
-
-        if response.status_code == 408:
-            build_store.fail_build(build_id, "Notebook manifest execution timed out", "TIMEOUT")
-            artifact_store.fail_artifact(artifact_id, version)
-            raise TimeoutError()
-        if response.status_code != 200:
-            detail = self._extract_remote_error(response)
-            build_store.fail_build(
-                build_id,
-                f"Notebook manifest execution failed: {detail}",
-                "EXECUTOR_ERROR",
-            )
-            artifact_store.fail_artifact(artifact_id, version)
+        except Exception as exc:
+            _mark_failed(str(exc), "SETUP_FAILED")
             raise RuntimeError(
-                f"Remote executor '{worker_spec.name}' returned "
-                f"{response.status_code}: {detail}"
-            )
+                f"Remote executor setup failed for worker '{worker_spec.name}': {exc}"
+            ) from exc
 
-        build = build_store.get_build(build_id)
-        if build is None or build.state != "ready":
-            artifact_store.fail_artifact(artifact_id, version)
-            raise RuntimeError(
-                f"Notebook build {build_id} did not complete successfully"
-            )
+        try:
+            if response.status_code == 408:
+                raise TimeoutError()
+            if response.status_code != 200:
+                detail = self._extract_remote_error(response)
+                raise RuntimeError(
+                    f"Remote executor '{worker_spec.name}' returned "
+                    f"{response.status_code}: {detail}"
+                )
 
-        blob = artifact_store.read_blob(build.artifact_id, build.version)
-        if blob is None:
-            raise RuntimeError(
-                f"Notebook build {build_id} completed without a stored bundle artifact"
-            )
+            build = build_store.get_build(build_id)
+            if build is None or build.state != "ready":
+                raise RuntimeError(
+                    f"Notebook build {build_id} did not complete successfully"
+                )
 
-        read_notebook_output_bundle_manifest(blob)
-        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
-        with open(bundle_path, "wb") as f:
-            f.write(blob)
+            blob = artifact_store.read_blob(build.artifact_id, build.version)
+            if blob is None:
+                raise RuntimeError(
+                    f"Notebook build {build_id} completed without a stored bundle artifact"
+                )
 
-        unpacked_dir = output_dir / "_executor_result"
-        unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
-        return unpacked_result, unpacked_dir, "executor", {}
+            try:
+                read_notebook_output_bundle_manifest(blob)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Notebook build {build_id} produced an invalid output bundle: {exc}"
+                ) from exc
+
+            bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+            with open(bundle_path, "wb") as f:
+                f.write(blob)
+
+            unpacked_dir = output_dir / "_executor_result"
+            unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
+            return unpacked_result, unpacked_dir, "executor", {}
+        except asyncio.CancelledError:
+            _mark_failed("Notebook manifest execution cancelled", "CANCELLED")
+            raise
+        except TimeoutError:
+            _mark_failed("Notebook manifest execution timed out", "TIMEOUT")
+            raise
+        except Exception as exc:
+            _mark_failed(str(exc), "EXECUTOR_ERROR")
+            raise
 
     def _manifest_execute_url(self, executor_url: str) -> str:
         """Map an executor base URL to the notebook manifest execution endpoint."""

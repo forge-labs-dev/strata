@@ -20,7 +20,10 @@ def _add_bytes(tar: tarfile.TarFile, arcname: str, content: bytes) -> None:
 
 def _read_member(tar: tarfile.TarFile, name: str) -> bytes:
     """Read one tar member fully."""
-    member = tar.getmember(name)
+    try:
+        member = tar.getmember(name)
+    except KeyError as exc:
+        raise ValueError(f"Bundle member not found: {name}") from exc
     extracted = tar.extractfile(member)
     if extracted is None:
         raise ValueError(f"Bundle member is not a regular file: {name}")
@@ -164,11 +167,49 @@ def read_notebook_output_bundle_manifest(data: bytes) -> dict[str, Any]:
     """Read and validate the top-level manifest from bundle bytes."""
     with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
         manifest_data = json.loads(_read_member(tar, "manifest.json").decode("utf-8"))
+        _validate_bundle_manifest(manifest_data, tar)
 
+    return manifest_data
+
+
+def _validate_bundle_manifest(
+    manifest_data: dict[str, Any],
+    tar: tarfile.TarFile,
+) -> None:
+    """Validate bundle manifest shape and referenced members."""
     if manifest_data.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
             "Unsupported notebook bundle schema: "
             f"{manifest_data.get('schema_version')!r}"
         )
 
-    return manifest_data
+    variables = manifest_data.get("variables", {})
+    if not isinstance(variables, dict):
+        raise ValueError("Bundle manifest variables must be a dict")
+
+    for stream_field in ("stdout_file", "stderr_file"):
+        stream_name = manifest_data.get(stream_field)
+        if not isinstance(stream_name, str) or not stream_name:
+            raise ValueError(f"Bundle manifest is missing {stream_field}")
+        _read_member(tar, stream_name)
+
+    for var_name, meta in variables.items():
+        if not isinstance(meta, dict):
+            raise ValueError(f"Variable metadata for {var_name} must be a dict")
+
+        if "error" in meta:
+            continue
+
+        bundle_file = meta.get("file")
+        if not isinstance(bundle_file, str) or not bundle_file:
+            raise ValueError(f"Variable {var_name} is missing bundle file metadata")
+
+        bundle_path = Path(bundle_file)
+        if (
+            not bundle_file.startswith("files/")
+            or ".." in bundle_path.parts
+            or len(bundle_path.parts) < 2
+        ):
+            raise ValueError(f"Invalid bundle file path for {var_name}: {bundle_file}")
+
+        _read_member(tar, bundle_file)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -664,6 +666,108 @@ token = os.getenv("NOTEBOOK_TOKEN")
 
         assert second.success is True
         assert second.cache_hit is True
+
+    @pytest.mark.asyncio
+    async def test_execute_signed_http_executor_marks_build_failed_on_transport_error(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+        notebook_build_server,
+    ):
+        """Signed transport failures should leave no pending/building notebook builds."""
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": "http://127.0.0.1:9",
+                },
+            }
+        ]
+        sample_notebook.notebook_state.worker = "gpu-http-signed"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-http-signed"
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert "Execution failed:" in str(result.error)
+
+        stats = notebook_build_server["build_store"].get_stats()
+        assert stats["failed"] == 1
+        assert stats["pending"] == 0
+        assert stats["building"] == 0
+
+    @pytest.mark.asyncio
+    async def test_cancelled_signed_http_executor_marks_build_failed(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+        notebook_build_server,
+        monkeypatch,
+    ):
+        """Cancelling signed transport execution should fail the in-flight build."""
+        started = threading.Event()
+
+        async def _slow_run_harness(
+            harness_path: Path,
+            manifest_path: Path,
+            timeout_seconds: float,
+        ) -> dict[str, object]:
+            del harness_path, manifest_path, timeout_seconds
+            started.set()
+            await asyncio.sleep(0.5)
+            return {
+                "success": True,
+                "variables": {
+                    "x": {
+                        "content_type": "json/object",
+                        "file": "x.json",
+                        "preview": 1,
+                    }
+                },
+                "stdout": "",
+                "stderr": "",
+                "mutation_warnings": [],
+            }
+
+        monkeypatch.setattr(
+            "strata.notebook.remote_executor._run_harness",
+            _slow_run_harness,
+        )
+
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            }
+        ]
+        sample_notebook.notebook_state.worker = "gpu-http-signed"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-http-signed"
+
+        task = asyncio.create_task(
+            CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+        )
+        assert await asyncio.to_thread(started.wait, 2.0)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        stats = notebook_build_server["build_store"].get_stats()
+        assert stats["failed"] == 1
+        assert stats["pending"] == 0
+        assert stats["building"] == 0
 
     @pytest.mark.asyncio
     async def test_execute_rejects_file_mounts_for_http_executor_worker(

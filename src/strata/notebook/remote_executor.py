@@ -69,6 +69,20 @@ def create_notebook_executor_app() -> FastAPI:
             "module/import": ".module.json",
         }.get(content_type, ".bin")
 
+    def _response_error_detail(response: httpx.Response) -> str:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            detail = payload.get("detail") or payload.get("error")
+            if detail:
+                return str(detail)
+
+        text = response.text.strip()
+        return text or f"HTTP {response.status_code}"
+
     async def _execute_bundle(
         *,
         source: str,
@@ -439,32 +453,45 @@ def create_notebook_executor_app() -> FastAPI:
             return bundle_response
 
         bundle_bytes = bytes(bundle_response.body)
-        async with httpx.AsyncClient(timeout=max(timeout_seconds, 30.0)) as client:
-            upload_response = await client.post(
-                upload_url,
-                content=bundle_bytes,
-                headers={"Content-Type": "application/gzip"},
-            )
-            if upload_response.status_code != 200:
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        "Failed to upload notebook bundle output: "
-                        f"{upload_response.status_code}"
-                    ),
+        try:
+            async with httpx.AsyncClient(timeout=max(timeout_seconds, 30.0)) as client:
+                upload_response = await client.post(
+                    upload_url,
+                    content=bundle_bytes,
+                    headers={"Content-Type": "application/gzip"},
                 )
+                if upload_response.status_code != 200:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=(
+                            "Failed to upload notebook bundle output: "
+                            f"{upload_response.status_code} "
+                            f"({_response_error_detail(upload_response)})"
+                        ),
+                    )
 
-            finalize_response = await client.post(
-                finalize_url,
-                json={"output_format": "notebook-output-bundle@v1"},
-            )
+                finalize_response = await client.post(
+                    finalize_url,
+                    json={"output_format": "notebook-output-bundle@v1"},
+                )
+        except httpx.TimeoutException as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Notebook bundle transfer timed out: {exc}",
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Notebook bundle transfer failed: {exc}",
+            ) from exc
 
         if finalize_response.status_code != 200:
             raise HTTPException(
                 status_code=502,
                 detail=(
                     "Failed to finalize notebook bundle build: "
-                    f"{finalize_response.status_code}"
+                    f"{finalize_response.status_code} "
+                    f"({_response_error_detail(finalize_response)})"
                 ),
             )
 
