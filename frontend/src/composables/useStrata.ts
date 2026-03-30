@@ -74,6 +74,27 @@ async function fetchStream(streamId: string): Promise<ArrayBuffer> {
   return resp.arrayBuffer()
 }
 
+async function throwApiError(resp: Response, fallback: string): Promise<never> {
+  let detail = ''
+  try {
+    const payload = await resp.json()
+    if (payload && typeof payload === 'object') {
+      detail = String((payload as Record<string, unknown>).detail || (payload as Record<string, unknown>).error || '')
+    }
+  } catch {
+    try {
+      detail = (await resp.text()).trim()
+    } catch {
+      detail = ''
+    }
+  }
+
+  if (detail) {
+    throw new Error(detail)
+  }
+  throw new Error(`${fallback}: ${resp.status}`)
+}
+
 // ---------------------------------------------------------------------------
 // Execute a cell — try real server, fall back to mock
 // ---------------------------------------------------------------------------
@@ -203,7 +224,7 @@ async function updateNotebookWorker(notebookId: string, worker: string | null): 
     body: JSON.stringify({ worker }),
   })
   if (!resp.ok) {
-    throw new Error(`Failed to update notebook worker: ${resp.status}`)
+    await throwApiError(resp, 'Failed to update notebook worker')
   }
   return resp.json()
 }
@@ -215,7 +236,7 @@ async function updateCellWorker(notebookId: string, cellId: string, worker: stri
     body: JSON.stringify({ worker }),
   })
   if (!resp.ok) {
-    throw new Error(`Failed to update cell worker: ${resp.status}`)
+    await throwApiError(resp, 'Failed to update cell worker')
   }
   return resp.json()
 }
@@ -268,8 +289,9 @@ async function updateCellEnv(notebookId: string, cellId: string, env: Record<str
   return resp.json()
 }
 
-async function listWorkers(notebookId: string): Promise<any> {
-  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/workers`)
+async function listWorkers(notebookId: string, refresh = false): Promise<any> {
+  const params = refresh ? '?refresh=true' : ''
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/workers${params}`)
   if (!resp.ok) {
     throw new Error(`Failed to list workers: ${resp.status}`)
   }
@@ -283,7 +305,7 @@ async function updateWorkers(notebookId: string, workers: any[]): Promise<any> {
     body: JSON.stringify({ workers }),
   })
   if (!resp.ok) {
-    throw new Error(`Failed to update workers: ${resp.status}`)
+    await throwApiError(resp, 'Failed to update workers')
   }
   return resp.json()
 }

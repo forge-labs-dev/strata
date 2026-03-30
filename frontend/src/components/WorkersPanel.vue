@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useNotebook } from '../stores/notebook'
+import { workerTransportLabel } from '../utils/notebookWorkers'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import WorkerListEditor from './WorkerListEditor.vue'
 
@@ -9,6 +10,11 @@ const {
   connected,
   availableWorkers,
   workerDefinitionsEditable,
+  workerHealthLoading,
+  workerHealthCheckedAt,
+  notebookWorkerError,
+  workerRegistryError,
+  fetchWorkers,
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
 } = useNotebook()
@@ -16,6 +22,17 @@ const showPanel = ref(false)
 
 const workerLabel = computed(() => notebook.worker || 'local')
 const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
+const lastCheckedLabel = computed(() => {
+  if (!workerHealthCheckedAt.value) {
+    return 'Not checked yet'
+  }
+
+  return new Date(workerHealthCheckedAt.value).toLocaleTimeString([], {
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+  })
+})
 </script>
 
 <template>
@@ -27,6 +44,19 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
     </button>
 
     <div v-if="showPanel" class="workers-content">
+      <div class="workers-health-row">
+        <span class="workers-health-text">
+          Last checked: {{ lastCheckedLabel }}
+        </span>
+        <button
+          class="workers-refresh"
+          :disabled="!connected || workerHealthLoading"
+          @click="fetchWorkers(true)"
+        >
+          {{ workerHealthLoading ? 'Refreshing…' : 'Refresh health' }}
+        </button>
+      </div>
+
       <p class="workers-copy">
         Notebook default. Cells can override this individually.
         <span v-if="registryManagedByServer">
@@ -41,6 +71,7 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
         :options="availableWorkers"
         title="Notebook Default Worker"
         :read-only="!connected"
+        :error="notebookWorkerError"
         @save="updateNotebookWorkerAction"
       />
 
@@ -49,6 +80,7 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
         :workers="notebook.workers"
         title="Notebook Worker Catalog"
         :read-only="!connected || !workerDefinitionsEditable"
+        :error="workerRegistryError"
         @save="updateNotebookWorkersAction"
       />
       <div v-else class="workers-copy workers-copy-muted">
@@ -66,6 +98,7 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
           <code>{{ worker.name }}</code>
           <span class="workers-catalog-meta">{{ worker.source || 'unknown' }}</span>
           <span class="workers-catalog-meta">{{ worker.backend }}</span>
+          <span class="workers-catalog-meta">{{ workerTransportLabel(worker) }}</span>
           <span class="workers-catalog-meta">{{ worker.health }}</span>
           <span
             class="workers-catalog-meta"
@@ -125,6 +158,33 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.workers-health-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workers-health-text {
+  font-size: 12px;
+  color: #6c7086;
+}
+
+.workers-refresh {
+  border: 1px solid #313244;
+  background: #181825;
+  color: #cdd6f4;
+  border-radius: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.workers-refresh:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .workers-copy {

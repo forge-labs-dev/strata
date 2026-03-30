@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import re
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -45,7 +46,7 @@ from strata.notebook.writer import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from strata.notebook.session import NotebookSession
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,23 @@ def validate_env_vars(env: dict[str, str]) -> dict[str, str]:
             raise ValueError(f"Invalid env var value for {key}")
         validated[normalized_key] = value
     return validated
+
+
+async def _serialize_worker_catalog(
+    session: NotebookSession,
+    *,
+    force_refresh: bool = False,
+) -> dict:
+    return {
+        "workers": await build_worker_catalog_with_health(
+            session.notebook_state,
+            force_refresh=force_refresh,
+        ),
+        "definitions_editable": notebook_worker_definitions_editable(
+            session.notebook_state
+        ),
+        "health_checked_at": int(time.time() * 1000),
+    }
 
 
 # ============================================================================
@@ -419,18 +437,13 @@ async def update_cell_mounts_endpoint(
 
 
 @router.get("/{notebook_id}/workers")
-async def list_notebook_workers(notebook_id: str) -> dict:
+async def list_notebook_workers(notebook_id: str, refresh: bool = False) -> dict:
     """List the worker catalog visible to a notebook."""
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    return {
-        "workers": await build_worker_catalog_with_health(session.notebook_state),
-        "definitions_editable": notebook_worker_definitions_editable(
-            session.notebook_state
-        ),
-    }
+    return await _serialize_worker_catalog(session, force_refresh=refresh)
 
 
 @router.put("/{notebook_id}/workers")
@@ -455,12 +468,7 @@ async def update_notebook_workers_endpoint(
             "configured_workers": [
                 worker.model_dump() for worker in session.notebook_state.workers
             ],
-            "workers": await build_worker_catalog_with_health(
-                session.notebook_state,
-            ),
-            "definitions_editable": notebook_worker_definitions_editable(
-                session.notebook_state
-            ),
+            **await _serialize_worker_catalog(session),
         }
     except Exception:
         logger.exception("Internal server error")
@@ -485,12 +493,7 @@ async def update_notebook_worker_endpoint(
         session.reload()
         return {
             "worker": session.notebook_state.worker,
-            "workers": await build_worker_catalog_with_health(
-                session.notebook_state,
-            ),
-            "definitions_editable": notebook_worker_definitions_editable(
-                session.notebook_state
-            ),
+            **await _serialize_worker_catalog(session),
             "cells": session.serialize_cells(),
         }
     except Exception:
@@ -565,12 +568,7 @@ async def update_cell_worker_endpoint(
         return {
             "cell": session.serialize_cell(cell),
             "worker": cell.worker_override,
-            "workers": await build_worker_catalog_with_health(
-                session.notebook_state,
-            ),
-            "definitions_editable": notebook_worker_definitions_editable(
-                session.notebook_state
-            ),
+            **await _serialize_worker_catalog(session),
             "cells": session.serialize_cells(),
         }
     except ValueError as e:

@@ -1,10 +1,15 @@
 import { reactive, computed, ref } from 'vue'
 import type {
   Cell, CellId, CellOutput, CellStatus, DagEdge, DependencyInfo, Notebook, WsMessage,
-  ImpactPreview, ProfilingSummary, MountSpec, CellAnnotations, WorkerCatalogEntry, WorkerSpec,
+  ImpactPreview, ProfilingSummary, MountSpec, CellAnnotations, WorkerCatalogEntry, WorkerHealth, WorkerSpec,
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
 import { useWebSocket } from '../composables/useWebSocket'
+import {
+  applyWorkerHealth,
+  effectiveWorkerNameForCell,
+  isRemoteExecutorLikelyUnreachable,
+} from '../utils/notebookWorkers'
 
 let nextOrder = 0
 
@@ -312,6 +317,16 @@ function syncWorkerCatalogFromBackend(serverWorkers: any[]) {
     : []
 }
 
+function syncWorkerHealthCheckedAtFromBackend(rawCheckedAt: unknown) {
+  if (typeof rawCheckedAt === 'number' && Number.isFinite(rawCheckedAt)) {
+    workerHealthCheckedAt.value = rawCheckedAt
+  }
+}
+
+function updateWorkerHealth(workerName: string, health: WorkerHealth) {
+  availableWorkers.value = applyWorkerHealth(availableWorkers.value, workerName, health)
+}
+
 function syncWorkerDefinitionsEditableFromBackend(value: any) {
   workerDefinitionsEditable.value = value !== false
 }
@@ -437,6 +452,10 @@ async function boot(): Promise<void> {
   const strata = useStrata()
   try {
     connectError.value = null
+    notebookWorkerError.value = null
+    workerRegistryError.value = null
+    cellWorkerErrors.value = {}
+    workerHealthCheckedAt.value = null
     // Create a scratch notebook
     const data = await strata.createNotebook('/tmp/strata-notebooks', 'scratch')
     notebook.id = data.id
@@ -496,6 +515,10 @@ async function openNotebook(path: string): Promise<void> {
   const strata = useStrata()
   // Cleanup existing WebSocket
   cleanupWebSocket()
+  notebookWorkerError.value = null
+  workerRegistryError.value = null
+  cellWorkerErrors.value = {}
+  workerHealthCheckedAt.value = null
 
   const data = await strata.openNotebook(path)
   notebook.id = data.id
@@ -559,6 +582,11 @@ const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
+const workerHealthLoading = ref(false)
+const workerHealthCheckedAt = ref<number | null>(null)
+const notebookWorkerError = ref<string | null>(null)
+const workerRegistryError = ref<string | null>(null)
+const cellWorkerErrors = ref<Record<string, string>>({})
 
 // Inspect REPL state
 interface InspectEntry {
@@ -691,6 +719,9 @@ function initializeWebSocket() {
         if (p.execution_method) {
           cell.executorName = p.execution_method
         }
+        if (p.execution_method === 'executor') {
+          updateWorkerHealth(effectiveWorkerNameForCell(cell), 'healthy')
+        }
         // Capture suggest_install for "click to install" UX
         cell.suggestInstall = p.suggest_install || undefined
       }
@@ -725,6 +756,16 @@ function initializeWebSocket() {
       const cell = cellMap.value.get(cellId)
       if (cell) {
         cell.status = 'error'
+        const workerName = effectiveWorkerNameForCell(cell)
+        const workerEntry = availableWorkers.value.find((worker) => worker.name === workerName)
+        if (workerEntry?.backend === 'executor' || error.includes('Remote executor')) {
+          cell.executorName = 'executor'
+          if (isRemoteExecutorLikelyUnreachable(error)) {
+            updateWorkerHealth(workerName, 'unavailable')
+          } else if (workerEntry?.backend === 'executor') {
+            updateWorkerHealth(workerName, 'healthy')
+          }
+        }
         cell.output = { contentType: 'json/object', error }
         cell.suggestInstall = p.suggest_install || undefined
       }
@@ -939,20 +980,24 @@ async function fetchDependencies() {
   }
 }
 
-async function fetchWorkers() {
+async function fetchWorkers(forceRefresh = false) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
+  workerHealthLoading.value = true
   try {
-    const data = await strata.listWorkers(sid)
+    const data = await strata.listWorkers(sid, forceRefresh)
     if (data.workers && Array.isArray(data.workers)) {
       syncWorkerCatalogFromBackend(data.workers)
     }
     if ('definitions_editable' in data) {
       syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
     }
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
   } catch (err) {
     console.error('Failed to fetch workers:', err)
+  } finally {
+    workerHealthLoading.value = false
   }
 }
 
@@ -1023,20 +1068,26 @@ async function updateNotebookWorkerAction(worker: string | null) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
-  const data = await strata.updateNotebookWorker(sid, worker)
-  if ('worker' in data) {
-    syncNotebookWorkerFromBackend(data.worker)
-  }
-  if (data.cells && Array.isArray(data.cells)) {
-    syncCellsFromBackend(data.cells)
-  }
-  if (data.workers && Array.isArray(data.workers)) {
-    syncWorkerCatalogFromBackend(data.workers)
-  } else {
-    fetchWorkers()
-  }
-  if ('definitions_editable' in data) {
-    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+  notebookWorkerError.value = null
+  try {
+    const data = await strata.updateNotebookWorker(sid, worker)
+    if ('worker' in data) {
+      syncNotebookWorkerFromBackend(data.worker)
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
+    if (data.workers && Array.isArray(data.workers)) {
+      syncWorkerCatalogFromBackend(data.workers)
+      syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    } else {
+      fetchWorkers()
+    }
+    if ('definitions_editable' in data) {
+      syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+    }
+  } catch (err: any) {
+    notebookWorkerError.value = err.message || 'Failed to update notebook worker'
   }
 }
 
@@ -1044,6 +1095,7 @@ async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
+  workerRegistryError.value = null
   const payload = workers
     .map((worker) => ({
       name: worker.name.trim(),
@@ -1052,15 +1104,20 @@ async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
       config: worker.config || {},
     }))
     .filter((worker) => worker.name)
-  const data = await strata.updateWorkers(sid, payload)
-  if (data.configured_workers && Array.isArray(data.configured_workers)) {
-    syncNotebookWorkersFromBackend(data.configured_workers)
-  }
-  if (data.workers && Array.isArray(data.workers)) {
-    syncWorkerCatalogFromBackend(data.workers)
-  }
-  if ('definitions_editable' in data) {
-    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+  try {
+    const data = await strata.updateWorkers(sid, payload)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncNotebookWorkersFromBackend(data.configured_workers)
+    }
+    if (data.workers && Array.isArray(data.workers)) {
+      syncWorkerCatalogFromBackend(data.workers)
+      syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    }
+    if ('definitions_editable' in data) {
+      syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+    }
+  } catch (err: any) {
+    workerRegistryError.value = err.message || 'Failed to update worker registry'
   }
 }
 
@@ -1094,24 +1151,39 @@ async function updateCellWorkerAction(cellId: CellId, worker: string | null) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
-  const data = await strata.updateCellWorker(sid, cellId, worker)
-  if (data.cell) {
-    const cell = cellMap.value.get(cellId)
-    if (cell) {
-      applyBackendCellState(cell, data.cell)
+  const nextCellWorkerErrors = { ...cellWorkerErrors.value }
+  delete nextCellWorkerErrors[cellId]
+  cellWorkerErrors.value = nextCellWorkerErrors
+  try {
+    const data = await strata.updateCellWorker(sid, cellId, worker)
+    if (data.cell) {
+      const cell = cellMap.value.get(cellId)
+      if (cell) {
+        applyBackendCellState(cell, data.cell)
+      }
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
+    if (data.workers && Array.isArray(data.workers)) {
+      syncWorkerCatalogFromBackend(data.workers)
+      syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    } else {
+      fetchWorkers()
+    }
+    if ('definitions_editable' in data) {
+      syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+    }
+  } catch (err: any) {
+    cellWorkerErrors.value = {
+      ...cellWorkerErrors.value,
+      [cellId]: err.message || 'Failed to update cell worker',
     }
   }
-  if (data.cells && Array.isArray(data.cells)) {
-    syncCellsFromBackend(data.cells)
-  }
-  if (data.workers && Array.isArray(data.workers)) {
-    syncWorkerCatalogFromBackend(data.workers)
-  } else {
-    fetchWorkers()
-  }
-  if ('definitions_editable' in data) {
-    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
-  }
+}
+
+function cellWorkerErrorForCell(cellId: CellId): string | null {
+  return cellWorkerErrors.value[cellId] || null
 }
 
 async function updateCellTimeoutAction(cellId: CellId, timeout: number | null) {
@@ -1248,6 +1320,11 @@ export function useNotebook() {
     dependencyError,
     availableWorkers,
     workerDefinitionsEditable,
+    workerHealthLoading,
+    workerHealthCheckedAt,
+    notebookWorkerError,
+    workerRegistryError,
+    cellWorkerErrorForCell,
     fetchWorkers,
     fetchDependencies,
     addDependencyAction,

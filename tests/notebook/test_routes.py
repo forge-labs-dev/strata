@@ -315,6 +315,55 @@ def test_list_notebook_workers():
         data = response.json()
         assert any(worker["name"] == "local" for worker in data["workers"])
         assert data["definitions_editable"] is True
+        assert isinstance(data["health_checked_at"], int)
+
+
+def test_list_notebook_workers_refresh_bypasses_health_cache(monkeypatch):
+    """Refreshing the worker list should bypass the short health cache."""
+    import strata.notebook.routes as notebook_routes
+
+    calls: list[bool] = []
+
+    async def _fake_build_worker_catalog_with_health(notebook_state, *, force_refresh=False):
+        calls.append(force_refresh)
+        return [
+            {
+                "name": "local",
+                "backend": "local",
+                "runtime_id": None,
+                "config": {},
+                "source": "builtin",
+                "health": "healthy",
+                "allowed": True,
+            }
+        ]
+
+    monkeypatch.setattr(
+        notebook_routes,
+        "build_worker_catalog_with_health",
+        _fake_build_worker_catalog_with_health,
+    )
+
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Worker Refresh Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.get(f"/v1/notebooks/{session_id}/workers")
+        assert response.status_code == 200
+        assert response.json()["health_checked_at"] > 0
+
+        response = client.get(f"/v1/notebooks/{session_id}/workers?refresh=true")
+        assert response.status_code == 200
+        assert response.json()["health_checked_at"] > 0
+
+    assert calls == [False, True]
 
 
 def test_list_notebook_workers_in_service_mode(service_mode_worker_state):

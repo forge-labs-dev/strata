@@ -302,7 +302,12 @@ def _health_url_for_worker(worker: WorkerSpec) -> str | None:
     return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
-async def probe_worker_health(worker: WorkerSpec, *, timeout_seconds: float = 1.5) -> str:
+async def probe_worker_health(
+    worker: WorkerSpec,
+    *,
+    timeout_seconds: float = 1.5,
+    force_refresh: bool = False,
+) -> str:
     """Probe a worker health endpoint and return a UI health string."""
     if worker.backend == WorkerBackendType.LOCAL or is_embedded_executor_worker(worker):
         return "healthy"
@@ -313,9 +318,13 @@ async def probe_worker_health(worker: WorkerSpec, *, timeout_seconds: float = 1.
     if not health_url:
         return "unknown"
 
-    cached = _worker_health_cache.get(health_url)
     now = time.time()
-    if cached is not None and now - cached[0] < _HEALTH_CACHE_TTL_SECONDS:
+    cached = _worker_health_cache.get(health_url)
+    if (
+        not force_refresh
+        and cached is not None
+        and now - cached[0] < _HEALTH_CACHE_TTL_SECONDS
+    ):
         return cached[1]
 
     try:
@@ -347,6 +356,8 @@ async def probe_worker_health(worker: WorkerSpec, *, timeout_seconds: float = 1.
 
 async def build_worker_catalog_with_health(
     notebook_state: NotebookState,
+    *,
+    force_refresh: bool = False,
 ) -> list[dict[str, Any]]:
     """Build a worker catalog enriched with live health probes where possible."""
     catalog = build_worker_catalog(notebook_state)
@@ -368,6 +379,9 @@ async def build_worker_catalog_with_health(
         if worker is None:
             continue
 
-        entry["health"] = await probe_worker_health(worker)
+        entry["health"] = await probe_worker_health(
+            worker,
+            force_refresh=force_refresh,
+        )
 
     return catalog

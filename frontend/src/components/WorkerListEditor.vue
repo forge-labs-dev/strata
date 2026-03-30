@@ -7,6 +7,9 @@ interface WorkerDraft {
   backend: WorkerSpec['backend']
   runtimeId: string
   executorUrl: string
+  transport: 'direct' | 'signed'
+  strataUrl: string
+  extraConfig: Record<string, unknown>
 }
 
 const props = withDefaults(defineProps<{
@@ -14,10 +17,12 @@ const props = withDefaults(defineProps<{
   title?: string
   compact?: boolean
   readOnly?: boolean
+  error?: string | null
 }>(), {
   title: 'Registered Workers',
   compact: false,
   readOnly: false,
+  error: null,
 })
 
 const emit = defineEmits<{
@@ -33,6 +38,20 @@ function toDraft(workers: WorkerSpec[]): WorkerDraft[] {
     runtimeId: worker.runtimeId ?? '',
     executorUrl:
       typeof worker.config?.url === 'string' ? worker.config.url : '',
+    transport:
+      String(worker.config?.transport || 'direct').trim().toLowerCase() === 'signed'
+        ? 'signed'
+        : 'direct',
+    strataUrl:
+      typeof worker.config?.strata_url === 'string' ? worker.config.strata_url : '',
+    extraConfig:
+      worker.config && typeof worker.config === 'object'
+        ? Object.fromEntries(
+            Object.entries(worker.config).filter(
+              ([key]) => !['url', 'transport', 'strata_url'].includes(key),
+            ),
+          )
+        : {},
   }))
 }
 
@@ -50,6 +69,9 @@ function addWorker() {
     backend: 'executor',
     runtimeId: '',
     executorUrl: '',
+    transport: 'direct',
+    strataUrl: '',
+    extraConfig: {},
   })
 }
 
@@ -61,15 +83,26 @@ function save() {
   emit(
     'save',
     draft.value
-      .map((worker) => ({
-        name: worker.name.trim(),
-        backend: worker.backend,
-        runtimeId: worker.runtimeId.trim() || null,
-        config:
-          worker.backend === 'executor' && worker.executorUrl.trim()
-            ? { url: worker.executorUrl.trim() }
-            : {},
-      }))
+      .map((worker) => {
+        const config =
+          worker.backend === 'executor'
+            ? {
+                ...worker.extraConfig,
+                ...(worker.executorUrl.trim() ? { url: worker.executorUrl.trim() } : {}),
+                ...(worker.transport === 'signed' ? { transport: 'signed' } : {}),
+                ...(worker.transport === 'signed' && worker.strataUrl.trim()
+                  ? { strata_url: worker.strataUrl.trim() }
+                  : {}),
+              }
+            : {}
+
+        return {
+          name: worker.name.trim(),
+          backend: worker.backend,
+          runtimeId: worker.runtimeId.trim() || null,
+          config,
+        }
+      })
       .filter((worker) => worker.name),
   )
 }
@@ -116,11 +149,47 @@ function save() {
         placeholder="executor url (executor only)"
         :disabled="readOnly"
       />
+      <select
+        v-model="worker.transport"
+        class="worker-input"
+        :disabled="readOnly || worker.backend !== 'executor'"
+      >
+        <option value="direct">direct</option>
+        <option value="signed">signed</option>
+      </select>
+      <input
+        v-model="worker.strataUrl"
+        class="worker-input"
+        type="text"
+        placeholder="strata url (signed only, optional)"
+        :disabled="readOnly || worker.backend !== 'executor' || worker.transport !== 'signed'"
+      />
       <button v-if="!readOnly" class="worker-list-remove" @click="removeWorker(index)">×</button>
+    </div>
+
+    <div
+      v-for="(worker, index) in draft"
+      :key="`hint-${index}-${worker.name}`"
+      class="worker-list-hint"
+    >
+      <template v-if="worker.backend === 'executor' && worker.transport === 'signed'">
+        Signed transport uses the Strata build + signed-URL path. Set <code>strata_url</code>
+        when the worker cannot reach the default server URL.
+      </template>
+      <template v-else-if="worker.backend === 'executor'">
+        Direct transport uploads notebook inputs to the executor over HTTP and returns the output bundle directly.
+      </template>
+      <template v-else>
+        Local workers execute in the notebook runtime on this machine.
+      </template>
     </div>
 
     <div v-if="!readOnly" class="worker-list-actions">
       <button class="worker-list-save" @click="save">Save workers</button>
+    </div>
+
+    <div v-if="error" class="worker-list-error">
+      {{ error }}
     </div>
   </div>
 </template>
@@ -176,7 +245,14 @@ function save() {
 
 .worker-list-row {
   display: grid;
-  grid-template-columns: minmax(100px, 1fr) 110px minmax(130px, 1fr) minmax(180px, 2fr) 28px;
+  grid-template-columns:
+    minmax(100px, 1fr)
+    110px
+    minmax(130px, 1fr)
+    minmax(180px, 2fr)
+    110px
+    minmax(180px, 2fr)
+    28px;
   gap: 6px;
 }
 
@@ -196,9 +272,26 @@ function save() {
   font-size: 12px;
 }
 
+.worker-list-hint {
+  margin-top: -2px;
+  color: #6c7086;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.worker-list-hint code {
+  color: #89b4fa;
+}
+
 .worker-list-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.worker-list-error {
+  color: #f38ba8;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 @media (max-width: 920px) {

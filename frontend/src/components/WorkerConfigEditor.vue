@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import type { WorkerCatalogEntry } from '../types/notebook'
+import { workerTransportLabel } from '../utils/notebookWorkers'
 
 const props = withDefaults(defineProps<{
   worker: string | null
@@ -8,11 +9,13 @@ const props = withDefaults(defineProps<{
   title?: string
   compact?: boolean
   readOnly?: boolean
+  error?: string | null
 }>(), {
   title: 'Worker',
   compact: false,
   readOnly: false,
   options: () => [],
+  error: null,
 })
 
 const emit = defineEmits<{
@@ -48,7 +51,21 @@ const normalizedOptions = computed(() => {
   return options
 })
 
+const selectedOption = computed(() =>
+  normalizedOptions.value.find((option) => option.name === draft.value) ?? null,
+)
+
+const canSave = computed(() => {
+  if (!draft.value.trim()) return true
+  const option = selectedOption.value
+  if (!option) return true
+  if (option.allowed === false) return false
+  if (option.backend === 'executor' && option.health === 'unavailable') return false
+  return true
+})
+
 function save() {
+  if (!canSave.value) return
   const normalized = draft.value.trim()
   emit('save', normalized || null)
 }
@@ -76,6 +93,7 @@ function sourceLabel(option: WorkerCatalogEntry) {
       return option.backend
   }
 }
+
 </script>
 
 <template>
@@ -96,17 +114,40 @@ function sourceLabel(option: WorkerCatalogEntry) {
           :key="option.name"
           :value="option.name"
         >
-          {{ option.name }} · {{ sourceLabel(option) }} · {{ healthLabel(option.health) }}{{ option.allowed === false ? ' · blocked' : '' }}
+          {{ option.name }} · {{ sourceLabel(option) }} · {{ workerTransportLabel(option) }} · {{ healthLabel(option.health) }}{{ option.allowed === false ? ' · blocked' : '' }}
         </option>
       </select>
-      <button v-if="!readOnly" class="worker-save" @click="save">Save</button>
+      <button
+        v-if="!readOnly"
+        class="worker-save"
+        :disabled="!canSave"
+        @click="save"
+      >
+        Save
+      </button>
     </div>
 
-    <div v-if="draft" class="worker-hint">
-      Empty means local execution. Worker selection affects runtime identity and cache lineage.
+    <div
+      v-if="draft && selectedOption?.allowed === false"
+      class="worker-hint worker-hint-warning"
+    >
+      This worker is visible for reference but blocked by the current server policy.
+    </div>
+    <div
+      v-else-if="draft && selectedOption?.backend === 'executor' && selectedOption?.health === 'unavailable'"
+      class="worker-hint worker-hint-warning"
+    >
+      This executor is currently unreachable. Saving it would likely fail execution immediately.
+    </div>
+    <div v-else-if="draft" class="worker-hint">
+      Empty means local execution. Worker selection affects runtime identity, transport, and cache lineage.
     </div>
     <div v-else class="worker-hint">
       Empty means local execution.
+    </div>
+
+    <div v-if="error" class="worker-error">
+      {{ error }}
     </div>
   </div>
 </template>
@@ -162,8 +203,23 @@ function sourceLabel(option: WorkerCatalogEntry) {
   cursor: pointer;
 }
 
+.worker-save:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .worker-hint {
   color: #6c7086;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.worker-hint-warning {
+  color: #f9e2af;
+}
+
+.worker-error {
+  color: #f38ba8;
   font-size: 12px;
   line-height: 1.4;
 }

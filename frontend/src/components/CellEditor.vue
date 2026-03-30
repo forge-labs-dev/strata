@@ -8,6 +8,12 @@ import MountListEditor from './MountListEditor.vue'
 import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import type { Cell } from '../types/notebook'
+import {
+  resolveEffectiveWorkerEntry,
+  summarizeRemoteExecutionIssue,
+  workerTransportLabel,
+  workerWarningForEntry,
+} from '../utils/notebookWorkers'
 
 const props = defineProps<{ cell: Cell }>()
 const emit = defineEmits<{
@@ -21,6 +27,7 @@ const {
   openInspect,
   inspectCellId,
   availableWorkers,
+  cellWorkerErrorForCell,
   addDependencyAction,
   updateCellEnvAction,
   updateCellTimeoutAction,
@@ -108,6 +115,29 @@ const mountSummary = computed(() =>
 const effectiveWorkerLabel = computed(() =>
   props.cell.annotations?.worker || props.cell.worker || 'local',
 )
+const effectiveWorkerEntry = computed(() =>
+  resolveEffectiveWorkerEntry(availableWorkers.value, effectiveWorkerLabel.value),
+)
+const effectiveWorkerHealthLabel = computed(() => {
+  const entry = effectiveWorkerEntry.value
+  if (!entry || entry.backend === 'local') return null
+  return entry.health
+})
+const effectiveWorkerTransportLabel = computed(() => {
+  const entry = effectiveWorkerEntry.value
+  if (!entry || entry.backend === 'local') return null
+  return workerTransportLabel(entry)
+})
+const workerWarning = computed(() => {
+  return workerWarningForEntry(effectiveWorkerEntry.value, effectiveWorkerLabel.value)
+})
+const remoteExecutionIssueSummary = computed(() => {
+  return summarizeRemoteExecutionIssue(
+    props.cell.output?.error || '',
+    effectiveWorkerEntry.value,
+    effectiveWorkerLabel.value,
+  )
+})
 const effectiveTimeoutLabel = computed(() => {
   const timeout = props.cell.annotations?.timeout ?? props.cell.timeout
   return timeout == null ? null : `${timeout}s`
@@ -187,6 +217,21 @@ function formatScalar(scalar: unknown): string {
         <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
           worker: {{ effectiveWorkerLabel }}
         </span>
+        <span
+          v-if="effectiveWorkerTransportLabel"
+          class="worker-transport-badge"
+          :title="`Remote worker transport: ${effectiveWorkerTransportLabel}`"
+        >
+          {{ effectiveWorkerTransportLabel }}
+        </span>
+        <span
+          v-if="effectiveWorkerHealthLabel"
+          class="worker-health-badge"
+          :class="{ warning: workerWarning }"
+          :title="workerWarning || `Worker health: ${effectiveWorkerHealthLabel}`"
+        >
+          {{ workerWarning ? 'attention' : effectiveWorkerHealthLabel }}
+        </span>
         <span v-if="effectiveTimeoutLabel" class="timeout-badge" :title="`Timeout: ${effectiveTimeoutLabel}`">
           timeout: {{ effectiveTimeoutLabel }}
         </span>
@@ -216,11 +261,16 @@ function formatScalar(scalar: unknown): string {
       </div>
 
       <div v-if="showInfra" class="infra-panel">
+        <div v-if="workerWarning" class="infra-warning">
+          {{ workerWarning }}
+        </div>
+
         <WorkerConfigEditor
           :worker="cell.workerOverride"
           :options="availableWorkers"
           title="Cell Worker Override"
           compact
+          :error="cellWorkerErrorForCell(cell.id)"
           @save="(worker) => updateCellWorkerAction(cell.id, worker)"
         />
 
@@ -309,7 +359,17 @@ function formatScalar(scalar: unknown): string {
       <!-- Output -->
       <div v-if="cell.output" class="cell-output">
         <div v-if="cell.output.error" class="output-error">
-          {{ cell.output.error }}
+          <div v-if="remoteExecutionIssueSummary" class="remote-error-summary">
+            <span class="remote-error-label">Remote</span>
+            <span>{{ remoteExecutionIssueSummary }}</span>
+            <span v-if="effectiveWorkerTransportLabel" class="remote-error-pill">
+              {{ effectiveWorkerTransportLabel }}
+            </span>
+            <span v-if="effectiveWorkerHealthLabel" class="remote-error-pill">
+              {{ effectiveWorkerHealthLabel }}
+            </span>
+          </div>
+          <pre class="output-error-detail">{{ cell.output.error }}</pre>
           <div v-if="cell.suggestInstall" class="suggest-install">
             <span>Missing package <code>{{ cell.suggestInstall }}</code></span>
             <button class="btn-install" @click="addDependencyAction(cell.suggestInstall!)">
@@ -431,6 +491,24 @@ function formatScalar(scalar: unknown): string {
   border-radius: 3px;
   font-size: 10px;
 }
+.worker-transport-badge {
+  background: #89dceb22;
+  color: #89dceb;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.worker-health-badge {
+  background: #89b4fa22;
+  color: #89b4fa;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.worker-health-badge.warning {
+  background: #f9e2af22;
+  color: #f9e2af;
+}
 .timeout-badge {
   background: #f9e2af22;
   color: #f9e2af;
@@ -475,6 +553,14 @@ function formatScalar(scalar: unknown): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.infra-warning {
+  padding: 8px 10px;
+  border: 1px solid #f9e2af33;
+  background: #f9e2af14;
+  color: #f9e2af;
+  border-radius: 6px;
+  font-size: 12px;
 }
 .annotation-panel {
   border: 1px solid #45475a;
@@ -587,8 +673,30 @@ function formatScalar(scalar: unknown): string {
 }
 .output-error {
   color: #f38ba8;
+}
+.output-error-detail {
+  margin: 0;
   font-family: monospace;
   white-space: pre-wrap;
+}
+.remote-error-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: #f9e2af;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+.remote-error-label,
+.remote-error-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #313244;
+  color: #f9e2af;
+  font-size: 11px;
+  font-weight: 700;
 }
 .suggest-install {
   margin-top: 8px;
