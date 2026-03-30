@@ -13,8 +13,10 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import traceback
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +116,47 @@ def _exec_with_display(source: str, namespace: dict) -> Any | None:
         return None
 
 
+def inject_mounts(manifest: dict, namespace: dict) -> None:
+    """Inject mount paths as Path variables into the cell namespace.
+
+    Each mount becomes a ``pathlib.Path`` bound to the mount's local path.
+    Read-only mounts are verified to exist; read-write mounts are created
+    if missing.
+    """
+    mounts = manifest.get("mounts", {})
+    for mount_name, spec in mounts.items():
+        local_path = Path(spec.get("local_path", ""))
+        if local_path and local_path.exists():
+            namespace[mount_name] = local_path
+        elif spec.get("mode") == "rw":
+            local_path.mkdir(parents=True, exist_ok=True)
+            namespace[mount_name] = local_path
+        else:
+            print(
+                f"Warning: mount '{mount_name}' path does not exist: {local_path}",
+                file=sys.stderr,
+            )
+
+
+@contextmanager
+def apply_env_overrides(manifest: dict):
+    """Apply manifest-scoped environment overrides for one execution."""
+    overrides = {
+        str(key): str(value)
+        for key, value in manifest.get("env", {}).items()
+    }
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]:
     """Execute a cell and return (outputs, stdout, stderr, mutation_warnings)."""
     namespace = dict(inputs)
@@ -175,7 +218,12 @@ def main():
         output_dir = Path(manifest.get("output_dir", "/tmp/strata_output"))
 
         inputs = deserialize_inputs(manifest)
-        outputs, stdout_text, stderr_text, mutation_warnings = execute_cell(source, inputs)
+        inject_mounts(manifest, inputs)
+        with apply_env_overrides(manifest):
+            outputs, stdout_text, stderr_text, mutation_warnings = execute_cell(
+                source,
+                inputs,
+            )
 
         serialized: dict[str, Any] = {}
         for var_name, value in outputs.items():

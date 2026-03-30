@@ -15,7 +15,9 @@ loaded via ``importlib.util``.
 import importlib.util
 import io
 import json
+import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +126,25 @@ def _exec_with_display(source: str, namespace: dict) -> Any | None:
         return None
 
 
+@contextmanager
+def _apply_env_overrides(manifest: dict):
+    """Apply manifest-scoped environment overrides for one worker execution."""
+    overrides = {
+        str(key): str(value)
+        for key, value in manifest.get("env", {}).items()
+    }
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def execute_harness(manifest: dict) -> dict:
     """Execute a cell manifest and return the result dict."""
     source = manifest.get("source", "")
@@ -159,7 +180,8 @@ def execute_harness(manifest: dict) -> dict:
     _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
 
     try:
-        _display_value = _exec_with_display(source, namespace)
+        with _apply_env_overrides(manifest):
+            _display_value = _exec_with_display(source, namespace)
 
         sys.stdout = old_stdout
         sys.stderr = old_stderr

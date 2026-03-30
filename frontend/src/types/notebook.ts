@@ -3,6 +3,35 @@
 export type CellId = string
 
 export type CellLanguage = 'python'
+export type MountMode = 'ro' | 'rw'
+export type WorkerBackend = 'local' | 'executor'
+export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable'
+
+export interface MountSpec {
+  name: string
+  uri: string
+  mode: MountMode
+  pin?: string | null
+}
+
+export interface WorkerSpec {
+  name: string
+  backend: WorkerBackend
+  runtimeId?: string | null
+  config: Record<string, unknown>
+}
+
+export interface WorkerCatalogEntry extends WorkerSpec {
+  health: WorkerHealth
+  source?: 'builtin' | 'notebook' | 'referenced'
+}
+
+export interface CellAnnotations {
+  worker?: string | null
+  timeout?: number | null
+  env: Record<string, string>
+  mounts: MountSpec[]
+}
 
 export type CellStatus =
   | 'idle'        // never executed
@@ -98,6 +127,24 @@ export interface Cell {
   artifactSizeBytes?: number
   /** Which executor ran this cell (only present if remote) */
   executorName?: string
+  /** Effective persisted worker after notebook default + cell override */
+  worker: string | null
+  /** Persisted cell-level worker override from notebook.toml */
+  workerOverride: string | null
+  /** Effective persisted timeout after notebook default + cell override */
+  timeout: number | null
+  /** Persisted cell-level timeout override from notebook.toml */
+  timeoutOverride: number | null
+  /** Effective persisted env after notebook default + cell override */
+  env: Record<string, string>
+  /** Persisted cell-level env overrides from notebook.toml */
+  envOverrides: Record<string, string>
+  /** Effective mounts after notebook defaults + cell overrides */
+  mounts: MountSpec[]
+  /** Persisted cell-level overrides from notebook.toml */
+  mountOverrides: MountSpec[]
+  /** Source-level annotations parsed by the backend */
+  annotations?: CellAnnotations
   /** Causality chain explaining why this cell is stale */
   causality?: CausalityChain
   /** Suggested package to install (when execution fails with ModuleNotFoundError) */
@@ -193,6 +240,11 @@ export interface DependencyInfo {
 export interface Notebook {
   id: string
   name: string
+  worker: string | null
+  timeout: number | null
+  env: Record<string, string>
+  workers: WorkerSpec[]
+  mounts: MountSpec[]
   cells: Cell[]
   /** Environment info */
   environment: {

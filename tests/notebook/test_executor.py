@@ -7,6 +7,12 @@ from pathlib import Path
 import pytest
 
 from strata.notebook.executor import CellExecutor
+from strata.notebook.models import (
+    MountMode,
+    MountSpec,
+    WorkerBackendType,
+    WorkerSpec,
+)
 from strata.notebook.parser import parse_notebook
 from strata.notebook.pool import WarmProcessPool
 from strata.notebook.session import NotebookSession
@@ -179,6 +185,387 @@ x = 1
         assert "error message" in result.stderr
 
     @pytest.mark.asyncio
+    async def test_execute_surfaces_mount_resolution_error(self, sample_notebook):
+        """Mount resolution failures should be surfaced, not silently ignored."""
+        executor = CellExecutor(sample_notebook)
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.mounts = [
+            MountSpec(
+                name="raw_data",
+                uri="file:///definitely/not/a/real/path",
+                mode=MountMode.READ_ONLY,
+            )
+        ]
+
+        result = await executor.execute_cell("cell1", "x = raw_data")
+
+        assert result.success is False
+        assert result.error is not None
+        assert "Local mount 'raw_data' path does not exist" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_fails_when_rw_sync_back_fails(
+        self,
+        sample_notebook,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        """RW mount sync-back failures should mark the execution failed."""
+        executor = CellExecutor(sample_notebook)
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.mounts = [
+            MountSpec(
+                name="scratch",
+                uri=f"file://{tmp_path / 'scratch'}",
+                mode=MountMode.READ_WRITE,
+            )
+        ]
+
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("sync failed")
+
+        monkeypatch.setattr(executor._mount_resolver, "sync_back", _boom)
+
+        result = await executor.execute_cell(
+            "cell1",
+            '(scratch / "result.txt").write_text("ok")',
+        )
+
+        assert result.success is False
+        assert result.error is not None
+        assert "failed to sync read-write mounts: sync failed" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_applies_env_annotations(self, sample_notebook):
+        """@env annotations should be visible inside cell execution."""
+        executor = CellExecutor(sample_notebook)
+
+        source = """
+# @env NOTEBOOK_TOKEN=secret-value
+import os
+token = os.getenv("NOTEBOOK_TOKEN")
+"""
+        result = await executor.execute_cell("cell1", source)
+
+        assert result.success is True
+        assert result.outputs["token"]["preview"] == "secret-value"
+
+    @pytest.mark.asyncio
+    async def test_execute_applies_persisted_env_defaults(self, sample_notebook):
+        """Persisted env defaults should be visible inside cell execution."""
+        executor = CellExecutor(sample_notebook)
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        sample_notebook.notebook_state.env = {"NOTEBOOK_TOKEN": "saved-default"}
+        cell.env = {"NOTEBOOK_TOKEN": "saved-default"}
+
+        source = """
+import os
+token = os.getenv("NOTEBOOK_TOKEN")
+"""
+        result = await executor.execute_cell("cell1", source)
+
+        assert result.success is True
+        assert result.outputs["token"]["preview"] == "saved-default"
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_timeout_annotation(
+        self,
+        sample_notebook,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """@timeout annotations should override the executor timeout."""
+        executor = CellExecutor(sample_notebook)
+        observed: list[float] = []
+
+        async def _fake_run_harness(
+            manifest_path: Path,
+            venv_python: Path,
+            timeout_seconds: float,
+        ) -> dict[str, object]:
+            del manifest_path, venv_python
+            observed.append(timeout_seconds)
+            return {
+                "success": True,
+                "variables": {},
+                "stdout": "",
+                "stderr": "",
+                "mutation_warnings": [],
+            }
+
+        monkeypatch.setattr(executor, "_run_harness", _fake_run_harness)
+
+        result = await executor.execute_cell(
+            "cell1",
+            "# @timeout 1.5\nx = 1",
+            timeout_seconds=30,
+        )
+
+        assert result.success is True
+        assert observed == [1.5]
+
+    @pytest.mark.asyncio
+    async def test_execute_uses_persisted_timeout_override(
+        self,
+        sample_notebook,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Persisted timeout defaults should affect execution timeout."""
+        executor = CellExecutor(sample_notebook)
+        observed: list[float] = []
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        sample_notebook.notebook_state.timeout = 6.0
+        cell.timeout = 2.5
+        cell.timeout_override = 2.5
+
+        async def _fake_run_harness(
+            manifest_path: Path,
+            venv_python: Path,
+            timeout_seconds: float,
+        ) -> dict[str, object]:
+            del manifest_path, venv_python
+            observed.append(timeout_seconds)
+            return {
+                "success": True,
+                "variables": {},
+                "stdout": "",
+                "stderr": "",
+                "mutation_warnings": [],
+            }
+
+        monkeypatch.setattr(executor, "_run_harness", _fake_run_harness)
+
+        result = await executor.execute_cell("cell1", "x = 1", timeout_seconds=30)
+
+        assert result.success is True
+        assert observed == [2.5]
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_unimplemented_worker_annotation(
+        self,
+        sample_notebook,
+    ):
+        """@worker should fail fast until worker routing is implemented."""
+        executor = CellExecutor(sample_notebook)
+
+        result = await executor.execute_cell(
+            "cell1",
+            "# @worker gpu-a100\nx = 1",
+        )
+
+        assert result.success is False
+        assert result.error == "Execution failed: worker 'gpu-a100' is not implemented yet"
+
+    @pytest.mark.asyncio
+    async def test_execute_allows_registered_local_worker_annotation(
+        self,
+        sample_notebook,
+    ):
+        """Named local workers should execute through the existing local path."""
+        executor = CellExecutor(sample_notebook)
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="cpu-analytics",
+                backend=WorkerBackendType.LOCAL,
+                runtime_id="python-analytics",
+            )
+        ]
+
+        result = await executor.execute_cell(
+            "cell1",
+            "# @worker cpu-analytics\nx = 1",
+        )
+
+        assert result.success is True
+        assert result.error is None
+        assert "x" in result.outputs
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_unimplemented_notebook_worker(
+        self,
+        sample_notebook,
+    ):
+        """Persisted notebook worker defaults should affect execution routing."""
+        executor = CellExecutor(sample_notebook)
+        sample_notebook.notebook_state.worker = "gpu-default"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-default"
+
+        result = await executor.execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert result.error == "Execution failed: worker 'gpu-default' is not implemented yet"
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_unimplemented_cell_worker_override(
+        self,
+        sample_notebook,
+    ):
+        """Persisted cell worker overrides should take precedence over notebook defaults."""
+        executor = CellExecutor(sample_notebook)
+        sample_notebook.notebook_state.worker = "gpu-default"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-override"
+        cell.worker_override = "gpu-override"
+
+        result = await executor.execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert result.error == "Execution failed: worker 'gpu-override' is not implemented yet"
+
+    @pytest.mark.asyncio
+    async def test_worker_runtime_identity_invalidates_cache(
+        self,
+        sample_notebook,
+    ):
+        """Changing a local worker runtime identity should invalidate cache."""
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="cpu-analytics",
+                backend=WorkerBackendType.LOCAL,
+                runtime_id="py311-a",
+            )
+        ]
+        sample_notebook.notebook_state.worker = "cpu-analytics"
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.worker = "cpu-analytics"
+        cell2.worker = "cpu-analytics"
+        cell1.source = "x = 1"
+        cell2.source = "y = x + 1"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+
+        first = await executor.execute_cell("cell1", "x = 1")
+        second = await executor.execute_cell("cell1", "x = 1")
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert second.success is True
+        assert second.cache_hit is True
+
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="cpu-analytics",
+                backend=WorkerBackendType.LOCAL,
+                runtime_id="py311-b",
+            )
+        ]
+
+        third = await executor.execute_cell("cell1", "x = 1")
+
+        assert third.success is True
+        assert third.cache_hit is False
+
+    @pytest.mark.asyncio
+    async def test_execute_supports_embedded_executor_worker(
+        self,
+        sample_notebook,
+    ):
+        """Supported executor workers should use the bundle-based executor path."""
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-embedded",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-a100",
+                config={"url": "embedded://local"},
+            )
+        ]
+        sample_notebook.notebook_state.worker = "gpu-embedded"
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.worker = "gpu-embedded"
+        cell2.worker = "gpu-embedded"
+        cell1.source = "x = 1"
+        cell2.source = "y = x + 1"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+        first = await executor.execute_cell("cell1", "x = 1")
+        second = await executor.execute_cell("cell1", "x = 1")
+
+        assert first.success is True
+        assert first.execution_method == "executor"
+        assert first.cache_hit is False
+        assert "x" in first.outputs
+
+        assert second.success is True
+        assert second.cache_hit is True
+
+    @pytest.mark.asyncio
+    async def test_execute_supports_http_executor_worker(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+    ):
+        """HTTP executor workers should execute through the remote bundle transport."""
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-a100",
+                config={"url": notebook_executor_server["execute_url"]},
+            )
+        ]
+        sample_notebook.notebook_state.worker = "gpu-http"
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.worker = "gpu-http"
+        cell2.worker = "gpu-http"
+        cell1.source = "x = 1"
+        cell2.source = "y = x + 1"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+        first = await executor.execute_cell("cell1", "x = 1")
+        second = await executor.execute_cell("cell1", "x = 1")
+
+        assert first.success is True
+        assert first.execution_method == "executor"
+        assert first.cache_hit is False
+        assert "x" in first.outputs
+
+        assert second.success is True
+        assert second.cache_hit is True
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_file_mounts_for_http_executor_worker(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+        tmp_path: Path,
+    ):
+        """HTTP executor workers should reject notebook-declared file mounts."""
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-a100",
+                config={"url": notebook_executor_server["execute_url"]},
+            )
+        ]
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-http"
+        cell.mounts = [
+            MountSpec(
+                name="raw_data",
+                uri=f"file://{tmp_path}",
+                mode=MountMode.READ_ONLY,
+            )
+        ]
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert result.error == (
+            "Execution failed: Remote executor workers do not support file:// mounts: "
+            "'raw_data'"
+        )
+
+    @pytest.mark.asyncio
     async def test_execution_duration(self, sample_notebook):
         """Test that execution duration is measured."""
         executor = CellExecutor(sample_notebook)
@@ -228,6 +615,36 @@ result = add(2, 3)
             assert result.success is True
             assert result.execution_method == "warm"
             assert result.outputs["x"]["preview"] == 2
+        finally:
+            await pool.drain()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
+    async def test_warm_execution_applies_env_annotations(self, sample_notebook):
+        """Warm workers should honor @env overrides the same way cold execution does."""
+        sample_notebook.ensure_venv_synced()
+        pool = WarmProcessPool(
+            sample_notebook.path,
+            pool_size=1,
+            python_executable=sample_notebook.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            executor = CellExecutor(sample_notebook, pool)
+            result = await executor.execute_cell(
+                "cell1",
+                """
+# @env NOTEBOOK_TOKEN=warm-secret
+import os
+token = os.getenv("NOTEBOOK_TOKEN")
+""",
+            )
+
+            assert result.success is True
+            assert result.execution_method == "warm"
+            assert result.outputs["token"]["preview"] == "warm-secret"
         finally:
             await pool.drain()
 

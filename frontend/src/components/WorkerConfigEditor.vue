@@ -1,0 +1,156 @@
+<script setup lang="ts">
+import { computed, ref, watch } from 'vue'
+import type { WorkerCatalogEntry } from '../types/notebook'
+
+const props = withDefaults(defineProps<{
+  worker: string | null
+  options?: WorkerCatalogEntry[]
+  title?: string
+  compact?: boolean
+  readOnly?: boolean
+}>(), {
+  title: 'Worker',
+  compact: false,
+  readOnly: false,
+  options: () => [],
+})
+
+const emit = defineEmits<{
+  save: [worker: string | null]
+}>()
+
+const draft = ref('')
+
+watch(
+  () => props.worker,
+  (worker) => {
+    draft.value = worker ?? ''
+  },
+  { immediate: true },
+)
+
+const normalizedOptions = computed(() => {
+  const options = props.options.filter((option) => option.name !== 'local')
+  if (
+    draft.value &&
+    !options.some((option) => option.name === draft.value)
+  ) {
+    options.push({
+      name: draft.value,
+      backend: 'executor',
+      runtimeId: null,
+      config: {},
+      health: 'unavailable',
+      source: 'referenced',
+    })
+  }
+  return options
+})
+
+function save() {
+  const normalized = draft.value.trim()
+  emit('save', normalized || null)
+}
+
+function healthLabel(health: WorkerCatalogEntry['health']) {
+  switch (health) {
+    case 'healthy':
+      return 'healthy'
+    case 'unavailable':
+      return 'missing'
+    default:
+      return 'unknown'
+  }
+}
+</script>
+
+<template>
+  <div class="worker-editor" :class="{ compact: compact }">
+    <div class="worker-editor-header">
+      <span class="worker-editor-title">{{ title }}</span>
+    </div>
+
+    <div class="worker-row">
+      <select
+        v-model="draft"
+        class="worker-select"
+        :disabled="readOnly"
+      >
+        <option value="">local</option>
+        <option
+          v-for="option in normalizedOptions"
+          :key="option.name"
+          :value="option.name"
+        >
+          {{ option.name }} · {{ option.backend }} · {{ healthLabel(option.health) }}
+        </option>
+      </select>
+      <button v-if="!readOnly" class="worker-save" @click="save">Save</button>
+    </div>
+
+    <div v-if="draft" class="worker-hint">
+      Empty means local execution. Worker selection affects runtime identity and cache lineage.
+    </div>
+    <div v-else class="worker-hint">
+      Empty means local execution.
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.worker-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.worker-editor.compact {
+  gap: 6px;
+}
+
+.worker-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.worker-editor-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #a6adc8;
+}
+
+.worker-row {
+  display: flex;
+  gap: 8px;
+}
+
+.worker-select {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  background: #11111b;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  color: #cdd6f4;
+  font-size: 12px;
+}
+
+.worker-save {
+  padding: 6px 10px;
+  font-size: 12px;
+  background: #313244;
+  border: 1px solid #45475a;
+  color: #cdd6f4;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.worker-hint {
+  color: #6c7086;
+  font-size: 12px;
+  line-height: 1.4;
+}
+</style>

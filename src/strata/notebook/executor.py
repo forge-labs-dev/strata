@@ -31,8 +31,30 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from strata.notebook.env import compute_lockfile_hash
+import httpx
+
+from strata.notebook.annotations import parse_annotations
+from strata.notebook.env import compute_execution_env_hash
+from strata.notebook.models import MountSpec, WorkerBackendType
+from strata.notebook.mounts import (
+    MountFingerprinter,
+    MountResolver,
+    ResolvedMount,
+    resolve_cell_mounts,
+)
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
+from strata.notebook.remote_bundle import (
+    pack_notebook_output_bundle,
+    unpack_notebook_output_bundle,
+)
+from strata.notebook.remote_executor import NOTEBOOK_EXECUTOR_PROTOCOL_VERSION
+from strata.notebook.workers import (
+    is_embedded_executor_worker,
+    is_http_executor_worker,
+    resolve_worker_spec,
+    worker_runtime_identity,
+    worker_supports_notebook_execution,
+)
 
 if TYPE_CHECKING:
     from strata.notebook.pool import WarmProcessPool
@@ -159,6 +181,9 @@ class CellExecutor:
         # execute_cell() recursive tree. Each top-level call creates a fresh
         # CellExecutor, so the guard resets between independent executions.
         self._materializing: set[str] = set()
+        self._mount_resolver = MountResolver(
+            cache_dir=session.path / ".strata" / "mount_cache",
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -207,6 +232,27 @@ class CellExecutor:
         use_cache: bool,
     ) -> CellExecutionResult:
         """Shared execution entrypoint with explicit cache/materialization policy."""
+        annotations = parse_annotations(source)
+        timeout_seconds = self._resolve_effective_timeout(
+            cell_id,
+            timeout_seconds,
+            annotations.timeout,
+        )
+        effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
+        worker_spec = resolve_worker_spec(
+            self.session.notebook_state,
+            effective_worker,
+        )
+        if not worker_supports_notebook_execution(worker_spec):
+            return CellExecutionResult(
+                cell_id=cell_id,
+                success=False,
+                error=(
+                    f"Execution failed: worker '{effective_worker}' is not "
+                    "implemented yet"
+                ),
+            )
+
         start_time = time.time()
 
         # --- cycle guard --------------------------------------------------
@@ -232,6 +278,65 @@ class CellExecutor:
             )
         finally:
             self._materializing.discard(cell_id)
+
+    def _resolve_effective_worker(
+        self,
+        cell_id: str,
+        annotation_worker: str | None,
+    ) -> str:
+        """Resolve the effective worker with annotation precedence."""
+        if annotation_worker:
+            return annotation_worker
+
+        cell = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        if cell and cell.worker:
+            return cell.worker
+
+        notebook_worker = self.session.notebook_state.worker
+        if notebook_worker:
+            return notebook_worker
+
+        return "local"
+
+    def _resolve_effective_timeout(
+        self,
+        cell_id: str,
+        timeout_seconds: float,
+        annotation_timeout: float | None,
+    ) -> float:
+        """Resolve the effective timeout with annotation precedence."""
+        if annotation_timeout is not None:
+            return annotation_timeout
+
+        cell = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        if cell and cell.timeout is not None:
+            return cell.timeout
+
+        notebook_timeout = self.session.notebook_state.timeout
+        if notebook_timeout is not None:
+            return notebook_timeout
+
+        return timeout_seconds
+
+    def _resolve_effective_runtime_env(
+        self,
+        cell_id: str,
+        annotation_env: dict[str, str],
+    ) -> dict[str, str]:
+        """Resolve the effective runtime env with annotation precedence."""
+        cell = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        runtime_env = dict(cell.env) if cell is not None else {}
+        runtime_env.update(annotation_env)
+        return runtime_env
 
     # ------------------------------------------------------------------
     # Core: the materialize pipeline
@@ -261,21 +366,56 @@ class CellExecutor:
             if materialize_upstreams:
                 await self._materialize_upstreams(cell_id)
 
+            # ①½ Resolve mount declarations for this cell.
+            mount_specs = self._resolve_cell_mount_specs(cell_id, source)
+            annotations = parse_annotations(source)
+            mount_fingerprints, has_rw_mount = await self._fingerprint_mounts(
+                mount_specs,
+            )
+
+            # RW mounts make the cell non-cacheable (side effects).
+            if has_rw_mount:
+                use_cache = False
+
             # ② Compute provenance (all upstream artifact_uris are now set).
             source_hash = compute_source_hash(source)
-            env_hash = compute_lockfile_hash(self.session.path)
+            runtime_env = self._resolve_effective_runtime_env(
+                cell_id,
+                annotations.env,
+            )
+            effective_worker = self._resolve_effective_worker(
+                cell_id,
+                annotations.worker,
+            )
+            worker_spec = resolve_worker_spec(
+                self.session.notebook_state,
+                effective_worker,
+            )
+            runtime_identity = worker_runtime_identity(
+                self.session.notebook_state,
+                effective_worker,
+            )
+            env_hash = compute_execution_env_hash(
+                self.session.path,
+                runtime_env,
+                runtime_identity=runtime_identity,
+            )
             input_hashes = self._collect_input_hashes(cell_id)
+            # Mount fingerprints participate in provenance — a cell reading
+            # from s3://bucket/data invalidates when the data changes.
+            all_hashes = input_hashes + mount_fingerprints
             provenance_hash = compute_provenance_hash(
-                input_hashes, source_hash, env_hash,
+                all_hashes, source_hash, env_hash,
             )
 
             logger.info(
                 "execute_cell %s: source_hash=%s env_hash=%s "
-                "input_hashes=%s provenance=%s",
+                "input_hashes=%s mount_fps=%s provenance=%s",
                 cell_id,
                 source_hash[:12],
                 env_hash[:12],
                 [h[:12] for h in input_hashes],
+                [fp[:20] for fp in mount_fingerprints],
                 provenance_hash[:12],
             )
 
@@ -391,41 +531,23 @@ class CellExecutor:
                 # so missing inputs are allowed to surface at execution time.
                 input_specs = self._load_input_blobs(cell_id, output_dir)
 
-                # Write the manifest the harness expects.
-                manifest = {
-                    "source": source,
-                    "inputs": input_specs,
-                    "output_dir": str(output_dir),
-                }
-                manifest_path = output_dir / "manifest.json"
-                with open(manifest_path, "w") as f:
-                    json.dump(manifest, f)
-
                 venv_path = self.session.venv_python or Path("python")
 
-                # Try warm pool first (M6).
-                execution_method = "cold"
-                result = None
-                if self.pool is not None:
-                    from strata.notebook.pool import PooledCellExecutor
-
-                    pool_result = await PooledCellExecutor.execute_with_pool(
-                        self.pool,
-                        manifest_path,
-                        self.session.path,
-                        timeout_seconds,
-                    )
-                    if pool_result is not None:
-                        result = pool_result
-                        execution_method = "warm"
-                        logger.debug("Executed cell %s with warm process", cell_id)
-
-                # Fall back to cold spawn.
-                if result is None:
-                    result = await self._run_harness(
-                        manifest_path, venv_path, timeout_seconds,
-                    )
-                    execution_method = "cold"
+                (
+                    result,
+                    result_output_dir,
+                    execution_method,
+                    resolved_mounts,
+                ) = await self._dispatch_execution(
+                    worker_spec,
+                    source,
+                    input_specs,
+                    mount_specs,
+                    output_dir,
+                    venv_path,
+                    runtime_env,
+                    timeout_seconds,
+                )
 
                 duration_ms = (time.time() - start_time) * 1000
                 exec_result = self._parse_result(
@@ -436,7 +558,7 @@ class CellExecutor:
                 if exec_result.success:
                     stored_ok = self._store_outputs(
                         cell_id,
-                        output_dir,
+                        result_output_dir,
                         provenance_hash,
                         input_hashes,
                         source_hash=source_hash,
@@ -461,6 +583,30 @@ class CellExecutor:
                             execution_method=exec_result.execution_method,
                         )
 
+                    # ⑥ Sync-back read-write mounts after successful execution.
+                    if exec_result.success and resolved_mounts:
+                        try:
+                            await self._mount_resolver.sync_back(resolved_mounts)
+                        except Exception as exc:
+                            logger.exception(
+                                "Failed to sync-back RW mounts for cell %s",
+                                cell_id,
+                            )
+                            exec_result = CellExecutionResult(
+                                cell_id=cell_id,
+                                success=False,
+                                stdout=exec_result.stdout,
+                                stderr=exec_result.stderr,
+                                outputs=exec_result.outputs,
+                                duration_ms=exec_result.duration_ms,
+                                error=(
+                                    "Cell executed successfully but failed to sync "
+                                    f"read-write mounts: {exc}"
+                                ),
+                                execution_method=exec_result.execution_method,
+                                mutation_warnings=exec_result.mutation_warnings,
+                            )
+
                 return exec_result
 
         except TimeoutError:
@@ -479,6 +625,322 @@ class CellExecutor:
                 duration_ms=duration_ms,
                 error=f"Execution failed: {e}",
             )
+
+    async def _dispatch_execution(
+        self,
+        worker_spec: Any,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        mount_specs: list[MountSpec],
+        output_dir: Path,
+        venv_path: Path,
+        runtime_env: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
+        """Dispatch one cell execution through the selected worker backend."""
+        if worker_spec.backend == WorkerBackendType.LOCAL:
+            return await self._dispatch_local(
+                source,
+                input_specs,
+                mount_specs,
+                output_dir,
+                venv_path,
+                runtime_env,
+                timeout_seconds,
+            )
+
+        if is_embedded_executor_worker(worker_spec):
+            return await self._dispatch_embedded_executor(
+                source,
+                input_specs,
+                mount_specs,
+                output_dir,
+                venv_path,
+                runtime_env,
+                timeout_seconds,
+            )
+
+        if is_http_executor_worker(worker_spec):
+            return await self._dispatch_http_executor(
+                worker_spec,
+                source,
+                input_specs,
+                mount_specs,
+                output_dir,
+                runtime_env,
+                timeout_seconds,
+            )
+
+        raise RuntimeError(f"Unsupported worker backend: {worker_spec.backend.value}")
+
+    async def _dispatch_local(
+        self,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        mount_specs: list[MountSpec],
+        output_dir: Path,
+        venv_path: Path,
+        runtime_env: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
+        """Run the existing direct local execution path."""
+        result = None
+        execution_method = "cold"
+        resolved_mounts = await self._prepare_mounts(mount_specs)
+        manifest_path = self._write_manifest(
+            source,
+            input_specs,
+            output_dir,
+            runtime_env,
+            resolved_mounts,
+        )
+
+        if self.pool is not None:
+            from strata.notebook.pool import PooledCellExecutor
+
+            pool_result = await PooledCellExecutor.execute_with_pool(
+                self.pool,
+                manifest_path,
+                self.session.path,
+                timeout_seconds,
+            )
+            if pool_result is not None:
+                result = pool_result
+                execution_method = "warm"
+                logger.debug(
+                    "Executed cell %s with warm process",
+                    manifest_path.parent.name,
+                )
+
+        if result is None:
+            result = await self._run_harness(
+                manifest_path, venv_path, timeout_seconds,
+            )
+
+        return result, output_dir, execution_method, resolved_mounts
+
+    async def _dispatch_embedded_executor(
+        self,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        mount_specs: list[MountSpec],
+        output_dir: Path,
+        venv_path: Path,
+        runtime_env: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
+        """Run the bundle-based executor path locally for supported executor workers."""
+        resolved_mounts = await self._prepare_mounts(mount_specs)
+        manifest_path = self._write_manifest(
+            source,
+            input_specs,
+            output_dir,
+            runtime_env,
+            resolved_mounts,
+        )
+        result = await self._run_harness(manifest_path, venv_path, timeout_seconds)
+
+        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+        pack_notebook_output_bundle(bundle_path, result, output_dir)
+
+        unpacked_dir = output_dir / "_executor_result"
+        unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
+        return unpacked_result, unpacked_dir, "executor", resolved_mounts
+
+    async def _dispatch_http_executor(
+        self,
+        worker_spec: Any,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        mount_specs: list[MountSpec],
+        output_dir: Path,
+        runtime_env: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
+        """Run a cell through an external notebook executor over HTTP."""
+        for mount in mount_specs:
+            if mount.uri.startswith("file://"):
+                raise RuntimeError(
+                    "Remote executor workers do not support file:// mounts: "
+                    f"'{mount.name}'"
+                )
+
+        executor_url = str(worker_spec.config.get("url", "")).strip()
+        if not executor_url:
+            raise RuntimeError(
+                f"Executor worker '{worker_spec.name}' is missing config.url"
+            )
+
+        metadata = {
+            "protocol_version": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
+            "source": source,
+            "timeout_seconds": timeout_seconds,
+            "inputs": input_specs,
+            "mounts": [mount.model_dump(mode="json") for mount in mount_specs],
+            "env": runtime_env,
+        }
+
+        files: list[tuple[str, tuple[str, bytes, str]]] = [
+            (
+                "metadata",
+                (
+                    "metadata.json",
+                    json.dumps(metadata).encode("utf-8"),
+                    "application/json",
+                ),
+            )
+        ]
+        for spec in input_specs.values():
+            file_name = str(spec["file"])
+            input_path = output_dir / file_name
+            with open(input_path, "rb") as f:
+                files.append(
+                    (
+                        file_name,
+                        (
+                            file_name,
+                            f.read(),
+                            "application/octet-stream",
+                        ),
+                    )
+                )
+
+        timeout = max(timeout_seconds + 5.0, 30.0)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(executor_url, files=files)
+        except httpx.TimeoutException as exc:
+            raise TimeoutError() from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
+            ) from exc
+
+        if response.status_code == 408:
+            raise TimeoutError()
+        if response.status_code != 200:
+            detail = self._extract_remote_error(response)
+            raise RuntimeError(
+                f"Remote executor '{worker_spec.name}' returned "
+                f"{response.status_code}: {detail}"
+            )
+
+        protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
+        if protocol and protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"Remote executor '{worker_spec.name}' returned unsupported "
+                f"protocol version {protocol!r}"
+            )
+
+        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+        with open(bundle_path, "wb") as f:
+            f.write(response.content)
+
+        unpacked_dir = output_dir / "_executor_result"
+        unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
+        return unpacked_result, unpacked_dir, "executor", {}
+
+    # ------------------------------------------------------------------
+    # ①½ Resolve mounts
+    # ------------------------------------------------------------------
+
+    def _resolve_cell_mount_specs(
+        self,
+        cell_id: str,
+        source: str,
+    ) -> list[MountSpec]:
+        """Resolve all mount declarations for a cell.
+
+        Priority: annotation > cell-meta > notebook-level.
+        """
+        cell = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+
+        # Cell-level mounts already include notebook defaults from parser.py.
+        cell_mounts_spec = cell.mounts if cell else []
+
+        # Annotation mounts (from # @mount in source)
+        annotations = parse_annotations(source)
+        annotation_mounts = annotations.mounts
+
+        # Merge with priority
+        merged = resolve_cell_mounts(
+            [], cell_mounts_spec, annotation_mounts,
+        )
+
+        return merged
+
+    async def _fingerprint_mounts(
+        self,
+        mount_specs: list[MountSpec],
+    ) -> tuple[list[str], bool]:
+        """Compute mount fingerprints without preparing local materializations."""
+        mount_fingerprints: list[str] = []
+        has_rw_mount = False
+        for mount in sorted(mount_specs, key=lambda item: item.name):
+            fingerprint = await MountFingerprinter.fingerprint_mount(mount)
+            if fingerprint is None:
+                has_rw_mount = True
+            else:
+                mount_fingerprints.append(f"{mount.name}:{fingerprint}")
+        return mount_fingerprints, has_rw_mount
+
+    async def _prepare_mounts(
+        self,
+        mount_specs: list[MountSpec],
+    ) -> dict[str, ResolvedMount]:
+        """Prepare local mount materializations for local execution paths."""
+        if not mount_specs:
+            return {}
+        return await self._mount_resolver.prepare_mounts(mount_specs)
+
+    def _write_manifest(
+        self,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        output_dir: Path,
+        runtime_env: dict[str, str],
+        resolved_mounts: dict[str, ResolvedMount],
+    ) -> Path:
+        """Write the harness manifest for one local execution."""
+        manifest_mounts = {
+            name: {
+                "uri": rm.spec.uri,
+                "mode": rm.spec.mode.value,
+                "local_path": str(rm.local_path),
+            }
+            for name, rm in resolved_mounts.items()
+        }
+        manifest = {
+            "source": source,
+            "inputs": input_specs,
+            "output_dir": str(output_dir),
+            "mounts": manifest_mounts,
+            "env": runtime_env,
+        }
+        manifest_path = output_dir / "manifest.json"
+        with open(manifest_path, "w", encoding="utf-8") as f:
+            json.dump(manifest, f)
+        return manifest_path
+
+    def _extract_remote_error(self, response: httpx.Response) -> str:
+        """Extract the most useful error message from a remote executor response."""
+        try:
+            payload = response.json()
+        except ValueError:
+            text = response.text.strip()
+            return text or "Unknown remote executor error"
+
+        if isinstance(payload, dict):
+            detail = payload.get("detail")
+            if isinstance(detail, str) and detail:
+                return detail
+            error = payload.get("error")
+            if isinstance(error, str) and error:
+                return error
+        return "Unknown remote executor error"
 
     # ------------------------------------------------------------------
     # ① Materialise upstream cells

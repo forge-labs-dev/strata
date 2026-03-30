@@ -172,6 +172,122 @@ async function reorderCells(notebookId: string, cellIds: string[]): Promise<void
   }
 }
 
+async function updateNotebookMounts(notebookId: string, mounts: any[]): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/mounts`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mounts }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update notebook mounts: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateCellMounts(notebookId: string, cellId: string, mounts: any[]): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/mounts`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mounts }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update cell mounts: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateNotebookWorker(notebookId: string, worker: string | null): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/worker`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ worker }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update notebook worker: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateCellWorker(notebookId: string, cellId: string, worker: string | null): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/worker`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ worker }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update cell worker: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateNotebookTimeout(notebookId: string, timeout: number | null): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/timeout`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timeout }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update notebook timeout: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateCellTimeout(notebookId: string, cellId: string, timeout: number | null): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/timeout`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ timeout }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update cell timeout: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateNotebookEnv(notebookId: string, env: Record<string, string>): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/env`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ env }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update notebook env: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateCellEnv(notebookId: string, cellId: string, env: Record<string, string>): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/env`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ env }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update cell env: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function listWorkers(notebookId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/workers`)
+  if (!resp.ok) {
+    throw new Error(`Failed to list workers: ${resp.status}`)
+  }
+  return resp.json()
+}
+
+async function updateWorkers(notebookId: string, workers: any[]): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/workers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workers }),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update workers: ${resp.status}`)
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Dependency API
 // ---------------------------------------------------------------------------
@@ -222,6 +338,16 @@ export function useStrata() {
     addCell,
     removeCell,
     reorderCells,
+    updateNotebookMounts,
+    updateCellMounts,
+    updateNotebookWorker,
+    updateCellWorker,
+    updateNotebookTimeout,
+    updateCellTimeout,
+    updateNotebookEnv,
+    updateCellEnv,
+    listWorkers,
+    updateWorkers,
     listDependencies,
     addDependency,
     removeDependency,

@@ -2,7 +2,11 @@
 import { ref, computed } from 'vue'
 import { useCodemirror } from '../composables/useCodemirror'
 import { useNotebook } from '../stores/notebook'
+import EnvVarsEditor from './EnvVarsEditor.vue'
 import InspectPanel from './InspectPanel.vue'
+import MountListEditor from './MountListEditor.vue'
+import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
+import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import type { Cell } from '../types/notebook'
 
 const props = defineProps<{ cell: Cell }>()
@@ -12,7 +16,17 @@ const emit = defineEmits<{
   addBelow: [cellId: string]
 }>()
 
-const { updateSource, openInspect, inspectCellId, addDependencyAction } = useNotebook()
+const {
+  updateSource,
+  openInspect,
+  inspectCellId,
+  availableWorkers,
+  addDependencyAction,
+  updateCellEnvAction,
+  updateCellTimeoutAction,
+  updateCellWorkerAction,
+  updateCellMountsAction,
+} = useNotebook()
 
 const isInspecting = computed(() => inspectCellId.value === props.cell.id)
 
@@ -26,6 +40,7 @@ function toggleInspect() {
 
 const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
+const showInfra = ref(false)
 
 useCodemirror(editorEl, {
   initialDoc: props.cell.source,
@@ -86,6 +101,37 @@ function toggleCausality() {
   showCausality.value = !showCausality.value
 }
 
+const mountSummary = computed(() =>
+  props.cell.mounts.map((mount) => `${mount.name}:${mount.mode}`).join(', '),
+)
+
+const effectiveWorkerLabel = computed(() =>
+  props.cell.annotations?.worker || props.cell.worker || 'local',
+)
+const effectiveTimeoutLabel = computed(() => {
+  const timeout = props.cell.annotations?.timeout ?? props.cell.timeout
+  return timeout == null ? null : `${timeout}s`
+})
+const effectiveEnvCount = computed(() =>
+  Object.keys({
+    ...props.cell.env,
+    ...(props.cell.annotations?.env || {}),
+  }).length,
+)
+
+const hasAnnotationOverrides = computed(() => {
+  const annotations = props.cell.annotations
+  return Boolean(
+    annotations &&
+    (
+      annotations.mounts.length ||
+      annotations.worker ||
+      annotations.timeout != null ||
+      Object.keys(annotations.env).length
+    )
+  )
+})
+
 /** Check if scalar is only console output (no display value) */
 function isConsoleOnly(scalar: unknown): boolean {
   if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
@@ -135,6 +181,18 @@ function formatScalar(scalar: unknown): string {
         <span v-if="cell.upstreamIds.length" class="cell-vars">
           reads: <code>{{ cell.references.join(', ') }}</code>
         </span>
+        <span v-if="cell.mounts.length" class="mount-badge" :title="mountSummary">
+          mounts: {{ cell.mounts.length }}
+        </span>
+        <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
+          worker: {{ effectiveWorkerLabel }}
+        </span>
+        <span v-if="effectiveTimeoutLabel" class="timeout-badge" :title="`Timeout: ${effectiveTimeoutLabel}`">
+          timeout: {{ effectiveTimeoutLabel }}
+        </span>
+        <span v-if="effectiveEnvCount" class="env-badge" :title="`${effectiveEnvCount} env vars`">
+          env: {{ effectiveEnvCount }}
+        </span>
         <!-- v1.1: Cache/execution badges -->
         <span v-if="cell.output?.cacheHit" class="cache-badge" title="Result loaded from cache">
           &#x26A1; cached
@@ -152,6 +210,66 @@ function formatScalar(scalar: unknown): string {
         >
           Why stale?
         </button>
+        <button class="infra-btn" @click="showInfra = !showInfra">
+          {{ showInfra ? 'Hide infra' : 'Infra' }}
+        </button>
+      </div>
+
+      <div v-if="showInfra" class="infra-panel">
+        <WorkerConfigEditor
+          :worker="cell.workerOverride"
+          :options="availableWorkers"
+          title="Cell Worker Override"
+          compact
+          @save="(worker) => updateCellWorkerAction(cell.id, worker)"
+        />
+
+        <TimeoutConfigEditor
+          :timeout="cell.timeoutOverride"
+          title="Cell Timeout Override"
+          compact
+          @save="(timeout) => updateCellTimeoutAction(cell.id, timeout)"
+        />
+
+        <EnvVarsEditor
+          :env="cell.envOverrides"
+          title="Cell Env Overrides"
+          compact
+          @save="(env) => updateCellEnvAction(cell.id, env)"
+        />
+
+        <MountListEditor
+          :mounts="cell.mountOverrides"
+          title="Cell Mount Overrides"
+          compact
+          @save="(mounts) => updateCellMountsAction(cell.id, mounts)"
+        />
+
+        <div v-if="hasAnnotationOverrides" class="annotation-panel">
+          <div class="annotation-title">Source Annotations Override Saved Config</div>
+          <MountListEditor
+            v-if="cell.annotations?.mounts?.length"
+            :mounts="cell.annotations.mounts"
+            title="Annotation Mounts"
+            compact
+            read-only
+          />
+          <div v-if="cell.annotations?.timeout != null" class="annotation-item">
+            <span class="annotation-key">@timeout</span>
+            <code>{{ cell.annotations.timeout }}</code>
+          </div>
+          <div v-if="cell.annotations?.worker" class="annotation-item">
+            <span class="annotation-key">@worker</span>
+            <code>{{ cell.annotations.worker }}</code>
+          </div>
+          <EnvVarsEditor
+            v-if="Object.keys(cell.annotations?.env || {}).length"
+            :env="cell.annotations?.env || {}"
+            title="Annotation Env"
+            compact
+            read-only
+          />
+        </div>
       </div>
 
       <!-- v1.1: Causality chain detail (expanded) -->
@@ -299,6 +417,34 @@ function formatScalar(scalar: unknown): string {
   border-radius: 3px;
   font-weight: 600;
 }
+.mount-badge {
+  background: #94e2d522;
+  color: #94e2d5;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.worker-badge {
+  background: #cba6f722;
+  color: #cba6f7;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.timeout-badge {
+  background: #f9e2af22;
+  color: #f9e2af;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.env-badge {
+  background: #fab38722;
+  color: #fab387;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+}
 .exec-method-badge {
   background: #89b4fa22;
   color: #89b4fa;
@@ -314,6 +460,49 @@ function formatScalar(scalar: unknown): string {
   font-weight: 600;
 }
 .duration { margin-left: auto; }
+.infra-btn {
+  background: #313244;
+  border: 1px solid #45475a;
+  color: #cdd6f4;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.infra-panel {
+  border-bottom: 1px solid #2a2a3c;
+  padding: 10px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.annotation-panel {
+  border: 1px solid #45475a;
+  border-radius: 8px;
+  padding: 10px;
+  background: #181825;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.annotation-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #f9e2af;
+}
+.annotation-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #a6adc8;
+}
+.annotation-key {
+  color: #f9e2af;
+  font-weight: 600;
+}
 
 /* v1.1: Causality inspector */
 .causality-btn {

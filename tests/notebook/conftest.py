@@ -6,9 +6,13 @@ import asyncio
 import json
 import shlex
 import sys
+import threading
 from pathlib import Path
 
 import pytest
+import uvicorn
+
+from tests.conftest import find_free_port, wait_for_server
 
 
 def _fake_uv_sync(notebook_dir: Path, *, timeout: int = 60) -> bool:
@@ -101,3 +105,33 @@ def fast_notebook_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRe
             return json.load(f)
 
     monkeypatch.setattr("strata.notebook.executor.CellExecutor._run_harness", _run_harness_direct)
+
+
+@pytest.fixture
+def notebook_executor_server():
+    """Run the notebook HTTP executor in a background thread."""
+    from strata.notebook.remote_executor import create_notebook_executor_app
+
+    port = find_free_port()
+    app = create_notebook_executor_app()
+    server_config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(server_config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    if not wait_for_server(port):
+        raise RuntimeError(f"Notebook executor server failed to start on port {port}")
+
+    try:
+        yield {
+            "base_url": f"http://127.0.0.1:{port}",
+            "execute_url": f"http://127.0.0.1:{port}/v1/notebook-execute",
+        }
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2.0)

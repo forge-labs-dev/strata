@@ -17,8 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from strata.notebook.env import compute_lockfile_hash
+from strata.notebook.annotations import parse_annotations
+from strata.notebook.env import compute_execution_env_hash
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
+from strata.notebook.workers import worker_runtime_identity
 
 if TYPE_CHECKING:
     from strata.notebook.session import NotebookSession
@@ -294,7 +296,6 @@ def compute_causality_on_staleness(
     if session.dag is None:
         return {}
 
-    env_hash = compute_lockfile_hash(session.path)
     causality_map: dict[str, CausalityChain] = {}
 
     for cell_id in session.dag.topological_order:
@@ -306,7 +307,28 @@ def compute_causality_on_staleness(
             continue
 
         details: list[CausalityDetail] = []
+        annotations = parse_annotations(cell.source)
         source_hash = compute_source_hash(cell.source)
+        runtime_env = dict(cell.env)
+        runtime_env.update(annotations.env)
+        effective_worker = (
+            annotations.worker or cell.worker or session.notebook_state.worker
+        )
+        env_hash = compute_execution_env_hash(
+            session.path,
+            runtime_env,
+            runtime_identity=worker_runtime_identity(
+                session.notebook_state,
+                effective_worker,
+            ),
+        )
+        mount_fingerprints, has_rw_mount = session._collect_mount_fingerprints(cell)
+
+        if has_rw_mount:
+            # RW mounts are intentionally non-cacheable side effects.
+            # They should remain stale/idle without pretending there is a
+            # meaningful cached provenance explanation.
+            continue
 
         # Compute current provenance — use per-variable artifact_uris
         input_hashes: list[str] = []
@@ -334,7 +356,7 @@ def compute_causality_on_staleness(
                     pass
 
         provenance_hash = compute_provenance_hash(
-            input_hashes, source_hash, env_hash
+            input_hashes + mount_fingerprints, source_hash, env_hash
         )
 
         if session._resolve_cached_outputs(cell_id, provenance_hash) is not None:
@@ -392,7 +414,7 @@ def compute_causality_on_staleness(
                 details.append(
                     CausalityDetail(
                         type="env_changed",
-                        package="uv.lock",
+                        package="notebook env",
                     )
                 )
             if source_changed or (not env_changed_flag):

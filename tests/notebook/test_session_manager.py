@@ -5,12 +5,21 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from strata.notebook.models import (
+    CellMeta,
+    MountMode,
+    MountSpec,
+    NotebookToml,
+    WorkerBackendType,
+    WorkerSpec,
+)
 from strata.notebook.session import SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
     rename_notebook,
     write_cell,
+    write_notebook_toml,
 )
 
 
@@ -60,3 +69,152 @@ def test_reload_preserves_ready_leaf_runtime_state(tmp_path: Path):
 
     cell = next(c for c in session.notebook_state.cells if c.id == "c1")
     assert cell.status == "ready"
+
+
+def test_reload_does_not_restore_ready_state_after_mount_change(tmp_path: Path):
+    """Reload should not preserve ready state when cell mount provenance changed."""
+    notebook_dir = create_notebook(tmp_path, "reload_mount_state")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(notebook_dir, "c1", "x = raw_data.name")
+
+    data_a = tmp_path / "data_a"
+    data_b = tmp_path / "data_b"
+    data_a.mkdir()
+    data_b.mkdir()
+
+    def _write_notebook_mount(uri: str) -> None:
+        write_notebook_toml(
+            notebook_dir,
+            NotebookToml(
+                notebook_id="reload_mount_state",
+                name="reload_mount_state",
+                cells=[CellMeta(id="c1", file="c1.py", order=0)],
+                mounts=[
+                    MountSpec(
+                        name="raw_data",
+                        uri=uri,
+                        mode=MountMode.READ_ONLY,
+                    )
+                ],
+            ),
+        )
+
+    _write_notebook_mount(f"file://{data_a}")
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", "x = raw_data.name")).success
+
+    asyncio.run(_prime())
+    session.mark_executed_ready("c1")
+
+    _write_notebook_mount(f"file://{data_b}")
+    session.reload()
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell.status == "idle"
+
+
+def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
+    """Reload should not preserve ready state when runtime env provenance changed."""
+    notebook_dir = create_notebook(tmp_path, "reload_env_state")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(notebook_dir, "c1", "x = 1")
+
+    write_notebook_toml(
+        notebook_dir,
+        NotebookToml(
+            notebook_id="reload_env_state",
+            name="reload_env_state",
+            cells=[CellMeta(id="c1", file="c1.py", order=0)],
+            env={"TOKEN": "a"},
+        ),
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", "x = 1")).success
+
+    asyncio.run(_prime())
+    session.mark_executed_ready("c1")
+
+    write_notebook_toml(
+        notebook_dir,
+        NotebookToml(
+            notebook_id="reload_env_state",
+            name="reload_env_state",
+            cells=[CellMeta(id="c1", file="c1.py", order=0)],
+            env={"TOKEN": "b"},
+        ),
+    )
+    session.reload()
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell.status == "idle"
+
+
+def test_reload_does_not_restore_ready_state_after_worker_runtime_change(tmp_path: Path):
+    """Reload should not preserve ready state when worker runtime identity changes."""
+    notebook_dir = create_notebook(tmp_path, "reload_worker_state")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(notebook_dir, "c1", "x = 1")
+
+    write_notebook_toml(
+        notebook_dir,
+        NotebookToml(
+            notebook_id="reload_worker_state",
+            name="reload_worker_state",
+            cells=[CellMeta(id="c1", file="c1.py", order=0)],
+            worker="cpu-analytics",
+            workers=[
+                WorkerSpec(
+                    name="cpu-analytics",
+                    backend=WorkerBackendType.LOCAL,
+                    runtime_id="py311-a",
+                )
+            ],
+        ),
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", "x = 1")).success
+
+    asyncio.run(_prime())
+    session.mark_executed_ready("c1")
+
+    write_notebook_toml(
+        notebook_dir,
+        NotebookToml(
+            notebook_id="reload_worker_state",
+            name="reload_worker_state",
+            cells=[CellMeta(id="c1", file="c1.py", order=0)],
+            worker="cpu-analytics",
+            workers=[
+                WorkerSpec(
+                    name="cpu-analytics",
+                    backend=WorkerBackendType.LOCAL,
+                    runtime_id="py311-b",
+                )
+            ],
+        ),
+    )
+    session.reload()
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell.status == "idle"

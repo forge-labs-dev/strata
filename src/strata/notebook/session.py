@@ -12,19 +12,30 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from strata.notebook.analyzer import analyze_cell
+from strata.notebook.annotations import parse_annotations
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
-from strata.notebook.env import compute_lockfile_hash
-from strata.notebook.models import CellStaleness, CellStatus, NotebookState
+from strata.notebook.dependencies import DependencyChangeResult
+from strata.notebook.env import compute_execution_env_hash, compute_lockfile_hash
+from strata.notebook.models import (
+    CellStaleness,
+    CellStatus,
+    NotebookState,
+)
+from strata.notebook.mounts import MountFingerprinter, resolve_cell_mounts
 from strata.notebook.parser import parse_notebook
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
+from strata.notebook.workers import (
+    build_worker_catalog,
+    resolve_worker_spec,
+    worker_runtime_identity,
+    worker_supports_notebook_execution,
+)
 from strata.notebook.writer import _uv_sync, update_environment_metadata
 
 if TYPE_CHECKING:
     from strata.notebook.artifact_integration import NotebookArtifactManager
     from strata.notebook.pool import WarmProcessPool
-
-from strata.notebook.dependencies import DependencyChangeResult
 
 logger = logging.getLogger(__name__)
 
@@ -100,11 +111,15 @@ class NotebookSession:
     def reload(self) -> None:
         """Reload notebook state from disk."""
         previous_cells = {cell.id: cell.model_copy(deep=True) for cell in self.notebook_state.cells}
+        previous_runtime_identities = {
+            cell.id: self._effective_worker_runtime_identity(cell)
+            for cell in self.notebook_state.cells
+        }
         self.notebook_state = parse_notebook(self.path)
         # Re-analyze all cells and rebuild DAG
         self._analyze_and_build_dag()
         self.compute_staleness()
-        self._restore_ready_runtime_state(previous_cells)
+        self._restore_ready_runtime_state(previous_cells, previous_runtime_identities)
 
     def _analyze_and_build_dag(self) -> None:
         """Analyze all cells and build the DAG.
@@ -141,7 +156,11 @@ class NotebookSession:
             logger.warning("Cycle detected in DAG: %s", e)
             self.dag = None
 
-    def _restore_ready_runtime_state(self, previous_cells: dict[str, Any]) -> None:
+    def _restore_ready_runtime_state(
+        self,
+        previous_cells: dict[str, Any],
+        previous_runtime_identities: dict[str, str | None],
+    ) -> None:
         """Preserve ready leaf-like runtime state across metadata-only reloads."""
         for cell in self.notebook_state.cells:
             previous = previous_cells.get(cell.id)
@@ -150,9 +169,16 @@ class NotebookSession:
                 and previous.source == cell.source
                 and previous.status == CellStatus.READY
                 and cell.status == CellStatus.IDLE
+                and previous.worker == cell.worker
+                and previous.worker_override == cell.worker_override
+                and previous.env == cell.env
+                and previous.env_overrides == cell.env_overrides
                 and previous.upstream_ids == cell.upstream_ids
                 and previous.downstream_ids == cell.downstream_ids
+                and previous.mounts == cell.mounts
                 and previous.is_leaf == cell.is_leaf
+                and previous_runtime_identities.get(cell.id)
+                == self._effective_worker_runtime_identity(cell)
             )
             if not can_restore_ready_state:
                 continue
@@ -204,8 +230,6 @@ class NotebookSession:
         """
         staleness_map: dict[str, CellStaleness] = {}
         stale_cells: set[str] = set()  # Track stale cells for propagation
-        env_hash = compute_lockfile_hash(self.path)
-
         if self.dag is None:
             # No DAG — all cells are idle
             for cell in self.notebook_state.cells:
@@ -234,16 +258,38 @@ class NotebookSession:
                 stale_cells.add(cell_id)
                 continue
 
+            effective_worker = self._effective_worker_name(cell)
+            worker_spec = resolve_worker_spec(
+                self.notebook_state,
+                effective_worker,
+            )
+            if not worker_supports_notebook_execution(worker_spec):
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
+                stale_cells.add(cell_id)
+                continue
+
             # Compute current provenance hash
             source_hash = compute_source_hash(cell.source)
+            runtime_env = self._collect_runtime_env(cell)
+            env_hash = compute_execution_env_hash(
+                self.path,
+                runtime_env,
+                runtime_identity=self._effective_worker_runtime_identity(cell),
+            )
 
             # Get input hashes from upstream artifacts. Use the same
             # per-variable artifact selection as execution, not the legacy
             # single artifact_uri field.
             input_hashes = self._collect_input_hashes(cell_id)
+            mount_fingerprints, has_rw_mount = self._collect_mount_fingerprints(cell)
+
+            if has_rw_mount:
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
+                stale_cells.add(cell_id)
+                continue
 
             provenance_hash = compute_provenance_hash(
-                input_hashes, source_hash, env_hash
+                input_hashes + mount_fingerprints, source_hash, env_hash
             )
 
             # Check if cached artifact exists.
@@ -309,6 +355,13 @@ class NotebookSession:
             if cell.staleness and cell.staleness.reasons
             else []
         )
+        annotations = parse_annotations(cell.source)
+        data["annotations"] = {
+            "worker": annotations.worker,
+            "timeout": annotations.timeout,
+            "env": annotations.env,
+            "mounts": [mount.model_dump() for mount in annotations.mounts],
+        }
         causality = self.causality_map.get(cell.id)
         if causality is not None:
             data["causality"] = causality.to_dict()
@@ -323,6 +376,10 @@ class NotebookSession:
         data = self.notebook_state.model_dump()
         data["cells"] = self.serialize_cells()
         return data
+
+    def serialize_worker_catalog(self) -> list[dict[str, Any]]:
+        """Serialize the worker catalog visible to this notebook."""
+        return build_worker_catalog(self.notebook_state)
 
     def _resolve_cached_outputs(
         self, cell_id: str, provenance_hash: str
@@ -407,6 +464,50 @@ class NotebookSession:
                     pass
 
         return hashes
+
+    def _collect_mount_fingerprints(self, cell: Any) -> tuple[list[str], bool]:
+        """Return deterministic mount provenance components for a cell.
+
+        Cell mounts already include notebook defaults from parser.py. Source
+        annotations can override them again at execution time, so staleness
+        must merge both layers exactly like the executor does.
+        """
+        annotations = parse_annotations(cell.source)
+        merged_mounts = resolve_cell_mounts([], cell.mounts, annotations.mounts)
+
+        mount_fingerprints: list[str] = []
+        has_rw_mount = False
+        for mount in sorted(merged_mounts, key=lambda m: m.name):
+            fingerprint = MountFingerprinter.fingerprint_mount_sync(mount)
+            if fingerprint is None:
+                has_rw_mount = True
+            else:
+                mount_fingerprints.append(f"{mount.name}:{fingerprint}")
+
+        return mount_fingerprints, has_rw_mount
+
+    def _collect_runtime_env(self, cell: Any) -> dict[str, str]:
+        """Return the effective runtime env for a cell with annotation precedence."""
+        annotations = parse_annotations(cell.source)
+        runtime_env = dict(cell.env)
+        runtime_env.update(annotations.env)
+        return runtime_env
+
+    def _effective_worker_name(self, cell: Any) -> str | None:
+        """Return the effective worker name with annotation precedence."""
+        annotations = parse_annotations(cell.source)
+        if annotations.worker:
+            return annotations.worker
+        if cell.worker:
+            return cell.worker
+        return self.notebook_state.worker
+
+    def _effective_worker_runtime_identity(self, cell: Any) -> str | None:
+        """Return the worker runtime identity used in provenance."""
+        return worker_runtime_identity(
+            self.notebook_state,
+            self._effective_worker_name(cell),
+        )
 
     def record_execution(
         self, cell_id: str, duration_ms: float, cache_hit: bool

@@ -18,9 +18,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from strata.notebook.executor import CellExecutor
+from strata.notebook.models import CellMeta, MountMode, MountSpec, NotebookToml
 from strata.notebook.parser import parse_notebook
 from strata.notebook.session import NotebookSession
-from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+from strata.notebook.writer import (
+    add_cell_to_notebook,
+    create_notebook,
+    write_cell,
+    write_notebook_toml,
+)
 from tests.notebook.e2e_fixtures import (
     NotebookBuilder,
     create_test_app,
@@ -51,6 +57,70 @@ def pipeline_notebook(tmp_path):
 
 class TestUpstreamInvalidation:
     """Editing an upstream cell must invalidate downstream caches."""
+
+    @pytest.mark.asyncio
+    async def test_mount_change_invalidates_cached_upstream(self, tmp_path):
+        """Mounted inputs must participate in staleness, not just execution-time provenance."""
+        notebook_dir = tmp_path / "mount_pipeline"
+        notebook_dir.mkdir()
+        cells_dir = notebook_dir / "cells"
+        cells_dir.mkdir()
+        data_dir = tmp_path / "mount_data"
+        data_dir.mkdir()
+        (data_dir / "data.txt").write_text("hello", encoding="utf-8")
+
+        (cells_dir / "c1.py").write_text(
+            'value = (raw_data / "data.txt").read_text()',
+            encoding="utf-8",
+        )
+        (cells_dir / "c2.py").write_text(
+            "result = value.upper()",
+            encoding="utf-8",
+        )
+        (cells_dir / "c3.py").write_text(
+            "print(result)",
+            encoding="utf-8",
+        )
+        (notebook_dir / "pyproject.toml").write_text(
+            "[project]\nname = 'mount-pipeline'\n",
+            encoding="utf-8",
+        )
+
+        write_notebook_toml(
+            notebook_dir,
+            NotebookToml(
+                notebook_id="mount-nb",
+                name="Mount Pipeline",
+                cells=[
+                    CellMeta(id="c1", file="c1.py", order=0),
+                    CellMeta(id="c2", file="c2.py", order=1),
+                    CellMeta(id="c3", file="c3.py", order=2),
+                ],
+                mounts=[
+                    MountSpec(
+                        name="raw_data",
+                        uri=f"file://{data_dir}",
+                        mode=MountMode.READ_ONLY,
+                    )
+                ],
+            ),
+        )
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        result = await executor.execute_cell("c2", "result = value.upper()")
+        assert result.success, result.error
+
+        staleness = session.compute_staleness()
+        assert staleness["c1"].status == "ready"
+        assert staleness["c2"].status == "ready"
+
+        (data_dir / "data.txt").write_text("goodbye", encoding="utf-8")
+
+        staleness = session.compute_staleness()
+        assert staleness["c1"].status == "idle"
+        assert staleness["c2"].status == "idle"
 
     @pytest.mark.asyncio
     async def test_multi_output_upstream_stays_ready_when_unchanged(self, tmp_path):

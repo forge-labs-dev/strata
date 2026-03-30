@@ -1,7 +1,7 @@
 import { reactive, computed, ref } from 'vue'
 import type {
   Cell, CellId, CellOutput, CellStatus, DagEdge, DependencyInfo, Notebook, WsMessage,
-  ImpactPreview, ProfilingSummary,
+  ImpactPreview, ProfilingSummary, MountSpec, CellAnnotations, WorkerCatalogEntry, WorkerSpec,
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
 import { useWebSocket } from '../composables/useWebSocket'
@@ -21,6 +21,11 @@ const connectError = ref<string | null>(null)
 const notebook = reactive<Notebook>({
   id: '',
   name: 'Untitled Notebook',
+  worker: null,
+  timeout: null,
+  env: {},
+  workers: [],
+  mounts: [],
   cells: [],
   environment: { pythonVersion: '', lockfileHash: '', packageCount: 0 },
   createdAt: Date.now(),
@@ -77,6 +82,15 @@ async function addCell(afterId?: CellId) {
       language: data.language || 'python',
       order: data.order ?? nextOrder++,
       status: 'idle',
+      worker: data.worker ?? notebook.worker ?? null,
+      workerOverride: data.worker_override ?? null,
+      timeout: data.timeout ?? notebook.timeout ?? null,
+      timeoutOverride: data.timeout_override ?? null,
+      env: parseEnvMap(data.env),
+      envOverrides: parseEnvMap(data.env_overrides),
+      mounts: Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : [...notebook.mounts],
+      mountOverrides: Array.isArray(data.mount_overrides) ? data.mount_overrides.map(parseMountSpec) : [],
+      annotations: parseBackendAnnotations(data.annotations) || { worker: null, timeout: null, env: {}, mounts: [] },
       upstreamIds: [],
       downstreamIds: [],
       defines: [],
@@ -186,6 +200,55 @@ function parseBackendCausality(raw: any): Cell['causality'] | undefined {
   }
 }
 
+function parseMountSpec(raw: any): MountSpec {
+  return {
+    name: raw.name,
+    uri: raw.uri,
+    mode: raw.mode || 'ro',
+    pin: raw.pin ?? null,
+  }
+}
+
+function parseWorkerSpec(raw: any): WorkerSpec {
+  return {
+    name: String(raw?.name || ''),
+    backend: raw?.backend === 'executor' ? 'executor' : 'local',
+    runtimeId: raw?.runtime_id ?? raw?.runtimeId ?? null,
+    config: raw?.config && typeof raw.config === 'object' ? raw.config : {},
+  }
+}
+
+function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
+  return {
+    ...parseWorkerSpec(raw),
+    health:
+      raw?.health === 'healthy' || raw?.health === 'unavailable'
+        ? raw.health
+        : 'unknown',
+    source:
+      raw?.source === 'builtin' || raw?.source === 'notebook' || raw?.source === 'referenced'
+        ? raw.source
+        : undefined,
+  }
+}
+
+function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
+  if (!raw) return undefined
+  return {
+    worker: raw.worker ?? null,
+    timeout: raw.timeout ?? null,
+    env: raw.env || {},
+    mounts: Array.isArray(raw.mounts) ? raw.mounts.map(parseMountSpec) : [],
+  }
+}
+
+function parseEnvMap(raw: any): Record<string, string> {
+  if (!raw || typeof raw !== 'object') return {}
+  return Object.fromEntries(
+    Object.entries(raw).map(([key, value]) => [key, String(value)]),
+  )
+}
+
 function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.defines = serverCell.defines || []
   localCell.references = serverCell.references || []
@@ -193,6 +256,19 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.downstreamIds = serverCell.downstream_ids || []
   localCell.isLeaf = serverCell.is_leaf || false
   localCell.status = serverCell.status || 'idle'
+  localCell.worker = serverCell.worker ?? null
+  localCell.workerOverride = serverCell.worker_override ?? null
+  localCell.timeout = serverCell.timeout ?? null
+  localCell.timeoutOverride = serverCell.timeout_override ?? null
+  localCell.env = parseEnvMap(serverCell.env)
+  localCell.envOverrides = parseEnvMap(serverCell.env_overrides)
+  localCell.mounts = Array.isArray(serverCell.mounts)
+    ? serverCell.mounts.map(parseMountSpec)
+    : []
+  localCell.mountOverrides = Array.isArray(serverCell.mount_overrides)
+    ? serverCell.mount_overrides.map(parseMountSpec)
+    : []
+  localCell.annotations = parseBackendAnnotations(serverCell.annotations)
   localCell.stalenessReasons =
     serverCell.staleness_reasons ||
     serverCell.staleness?.reasons ||
@@ -206,6 +282,38 @@ function syncCellsFromBackend(serverCells: any[]) {
     if (!localCell) continue
     applyBackendCellState(localCell, serverCell)
   }
+}
+
+function syncNotebookMountsFromBackend(serverMounts: any[]) {
+  notebook.mounts = Array.isArray(serverMounts)
+    ? serverMounts.map(parseMountSpec)
+    : []
+}
+
+function syncNotebookWorkerFromBackend(serverWorker: any) {
+  notebook.worker = typeof serverWorker === 'string' && serverWorker.trim()
+    ? serverWorker
+    : null
+}
+
+function syncNotebookWorkersFromBackend(serverWorkers: any[]) {
+  notebook.workers = Array.isArray(serverWorkers)
+    ? serverWorkers.map(parseWorkerSpec).filter((worker) => worker.name)
+    : []
+}
+
+function syncWorkerCatalogFromBackend(serverWorkers: any[]) {
+  availableWorkers.value = Array.isArray(serverWorkers)
+    ? serverWorkers.map(parseWorkerCatalogEntry).filter((worker) => worker.name)
+    : []
+}
+
+function syncNotebookTimeoutFromBackend(serverTimeout: any) {
+  notebook.timeout = typeof serverTimeout === 'number' ? serverTimeout : null
+}
+
+function syncNotebookEnvFromBackend(serverEnv: any) {
+  notebook.env = parseEnvMap(serverEnv)
 }
 
 function moveCell(id: CellId, direction: 'up' | 'down') {
@@ -325,6 +433,11 @@ async function boot(): Promise<void> {
     const data = await strata.createNotebook('/tmp/strata-notebooks', 'scratch')
     notebook.id = data.id
     notebook.name = data.name
+    notebook.worker = data.worker ?? null
+    notebook.timeout = data.timeout ?? null
+    notebook.env = parseEnvMap(data.env)
+    notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
+    notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
     notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
     notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
     ;(notebook as any).sessionId = data.session_id
@@ -337,6 +450,15 @@ async function boot(): Promise<void> {
       language: cellData.language || 'python',
       order: 0,
       status: 'idle' as CellStatus,
+      worker: notebook.worker,
+      workerOverride: null,
+      timeout: notebook.timeout,
+      timeoutOverride: null,
+      env: { ...notebook.env },
+      envOverrides: {},
+      mounts: [...notebook.mounts],
+      mountOverrides: [],
+      annotations: { worker: null, timeout: null, env: {}, mounts: [] },
       upstreamIds: [],
       downstreamIds: [],
       defines: [],
@@ -350,6 +472,7 @@ async function boot(): Promise<void> {
     await waitForWebSocket()
 
     connected.value = true
+    fetchWorkers()
     fetchDependencies()
   } catch (e: any) {
     console.error('Failed to boot notebook:', e)
@@ -369,6 +492,11 @@ async function openNotebook(path: string): Promise<void> {
   const data = await strata.openNotebook(path)
   notebook.id = data.id
   notebook.name = data.name
+  notebook.worker = data.worker ?? null
+  notebook.timeout = data.timeout ?? null
+  notebook.env = parseEnvMap(data.env)
+  notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
+  notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
   notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
   notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
   ;(notebook as any).sessionId = data.session_id
@@ -379,6 +507,15 @@ async function openNotebook(path: string): Promise<void> {
     language: c.language || 'python',
     order: c.order ?? 0,
     status: (c.status || 'idle') as CellStatus,
+    worker: c.worker ?? null,
+    workerOverride: c.worker_override ?? null,
+    timeout: c.timeout ?? null,
+    timeoutOverride: c.timeout_override ?? null,
+    env: parseEnvMap(c.env),
+    envOverrides: parseEnvMap(c.env_overrides),
+    mounts: Array.isArray(c.mounts) ? c.mounts.map(parseMountSpec) : [],
+    mountOverrides: Array.isArray(c.mount_overrides) ? c.mount_overrides.map(parseMountSpec) : [],
+    annotations: parseBackendAnnotations(c.annotations),
     upstreamIds: c.upstream_ids || [],
     downstreamIds: c.downstream_ids || [],
     defines: c.defines || [],
@@ -398,6 +535,7 @@ async function openNotebook(path: string): Promise<void> {
   connected.value = true
 
   // Load dependencies after connection is established
+  fetchWorkers()
   fetchDependencies()
 }
 
@@ -411,6 +549,7 @@ const profilingSummary = ref<ProfilingSummary | null>(null)
 const dependencies = ref<DependencyInfo[]>([])
 const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
+const availableWorkers = ref<WorkerCatalogEntry[]>([])
 
 // Inspect REPL state
 interface InspectEntry {
@@ -609,6 +748,21 @@ function initializeWebSocket() {
 
     wsInstance.onMessage('notebook_state', (msg: WsMessage) => {
       const state = msg.payload as Record<string, any>
+      if ('worker' in state) {
+        syncNotebookWorkerFromBackend(state.worker)
+      }
+      if ('workers' in state) {
+        syncNotebookWorkersFromBackend(state.workers)
+      }
+      if ('timeout' in state) {
+        syncNotebookTimeoutFromBackend(state.timeout)
+      }
+      if ('env' in state) {
+        syncNotebookEnvFromBackend(state.env)
+      }
+      if ('mounts' in state) {
+        syncNotebookMountsFromBackend(state.mounts)
+      }
       if (state.cells && Array.isArray(state.cells)) {
         syncCellsFromBackend(state.cells)
       }
@@ -776,6 +930,20 @@ async function fetchDependencies() {
   }
 }
 
+async function fetchWorkers() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  try {
+    const data = await strata.listWorkers(sid)
+    if (data.workers && Array.isArray(data.workers)) {
+      syncWorkerCatalogFromBackend(data.workers)
+    }
+  } catch (err) {
+    console.error('Failed to fetch workers:', err)
+  }
+}
+
 async function addDependencyAction(pkg: string) {
   const sid = sessionId()
   if (!sid) return
@@ -823,6 +991,153 @@ async function removeDependencyAction(pkg: string) {
     dependencyError.value = err.message || 'Failed to remove dependency'
   } finally {
     dependencyLoading.value = false
+  }
+}
+
+async function updateNotebookMountsAction(mounts: MountSpec[]) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookMounts(sid, mounts)
+  if (data.mounts) {
+    syncNotebookMountsFromBackend(data.mounts)
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+}
+
+async function updateNotebookWorkerAction(worker: string | null) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookWorker(sid, worker)
+  if ('worker' in data) {
+    syncNotebookWorkerFromBackend(data.worker)
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+  if (data.workers && Array.isArray(data.workers)) {
+    syncWorkerCatalogFromBackend(data.workers)
+  } else {
+    fetchWorkers()
+  }
+}
+
+async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const payload = workers
+    .map((worker) => ({
+      name: worker.name.trim(),
+      backend: worker.backend,
+      runtime_id: worker.runtimeId || null,
+      config: worker.config || {},
+    }))
+    .filter((worker) => worker.name)
+  const data = await strata.updateWorkers(sid, payload)
+  if (data.configured_workers && Array.isArray(data.configured_workers)) {
+    syncNotebookWorkersFromBackend(data.configured_workers)
+  }
+  if (data.workers && Array.isArray(data.workers)) {
+    syncWorkerCatalogFromBackend(data.workers)
+  }
+}
+
+async function updateNotebookTimeoutAction(timeout: number | null) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookTimeout(sid, timeout)
+  if ('timeout' in data) {
+    syncNotebookTimeoutFromBackend(data.timeout)
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+}
+
+async function updateNotebookEnvAction(env: Record<string, string>) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookEnv(sid, env)
+  if ('env' in data) {
+    syncNotebookEnvFromBackend(data.env)
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+}
+
+async function updateCellWorkerAction(cellId: CellId, worker: string | null) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateCellWorker(sid, cellId, worker)
+  if (data.cell) {
+    const cell = cellMap.value.get(cellId)
+    if (cell) {
+      applyBackendCellState(cell, data.cell)
+    }
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+  if (data.workers && Array.isArray(data.workers)) {
+    syncWorkerCatalogFromBackend(data.workers)
+  } else {
+    fetchWorkers()
+  }
+}
+
+async function updateCellTimeoutAction(cellId: CellId, timeout: number | null) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateCellTimeout(sid, cellId, timeout)
+  if (data.cell) {
+    const cell = cellMap.value.get(cellId)
+    if (cell) {
+      applyBackendCellState(cell, data.cell)
+    }
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+}
+
+async function updateCellEnvAction(cellId: CellId, env: Record<string, string>) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateCellEnv(sid, cellId, env)
+  if (data.cell) {
+    const cell = cellMap.value.get(cellId)
+    if (cell) {
+      applyBackendCellState(cell, data.cell)
+    }
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+}
+
+async function updateCellMountsAction(cellId: CellId, mounts: MountSpec[]) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateCellMounts(sid, cellId, mounts)
+  if (data.cell) {
+    const cell = cellMap.value.get(cellId)
+    if (cell) {
+      applyBackendCellState(cell, data.cell)
+    }
+  }
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
   }
 }
 
@@ -910,8 +1225,19 @@ export function useNotebook() {
     dependencies,
     dependencyLoading,
     dependencyError,
+    availableWorkers,
+    fetchWorkers,
     fetchDependencies,
     addDependencyAction,
     removeDependencyAction,
+    updateNotebookWorkersAction,
+    updateNotebookWorkerAction,
+    updateNotebookTimeoutAction,
+    updateNotebookEnvAction,
+    updateCellWorkerAction,
+    updateCellTimeoutAction,
+    updateCellEnvAction,
+    updateNotebookMountsAction,
+    updateCellMountsAction,
   }
 }

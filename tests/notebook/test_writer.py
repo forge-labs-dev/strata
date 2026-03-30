@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from strata.notebook.models import CellMeta, NotebookToml
+from strata.notebook.models import (
+    CellMeta,
+    MountMode,
+    MountSpec,
+    NotebookToml,
+    WorkerBackendType,
+    WorkerSpec,
+)
 from strata.notebook.parser import parse_notebook
 from strata.notebook.writer import (
     add_cell_to_notebook,
@@ -14,6 +21,13 @@ from strata.notebook.writer import (
     remove_cell_from_notebook,
     rename_notebook,
     reorder_cells,
+    update_cell_env,
+    update_cell_timeout,
+    update_cell_worker,
+    update_notebook_env,
+    update_notebook_timeout,
+    update_notebook_worker,
+    update_notebook_workers,
     write_cell,
     write_notebook_toml,
 )
@@ -216,8 +230,29 @@ def test_write_notebook_toml():
             name="Custom Notebook",
             created_at=now,
             updated_at=now,
+            worker="gpu-default",
+            timeout=9.5,
+            env={"API_ROOT": "https://example.test"},
+            mounts=[
+                MountSpec(name="raw_data", uri="s3://bucket/dataset", mode=MountMode.READ_ONLY),
+            ],
             cells=[
-                CellMeta(id="c1", file="cell1.py", language="python", order=0),
+                CellMeta(
+                    id="c1",
+                    file="cell1.py",
+                    language="python",
+                    order=0,
+                    worker="gpu-worker",
+                    timeout=2.0,
+                    env={"TOKEN": "cell-secret"},
+                    mounts=[
+                        MountSpec(
+                            name="scratch",
+                            uri="file:///tmp/scratch",
+                            mode=MountMode.READ_WRITE,
+                        )
+                    ],
+                ),
                 CellMeta(id="c2", file="cell2.py", language="python", order=1),
             ],
         )
@@ -229,4 +264,108 @@ def test_write_notebook_toml():
         notebook_state = parse_notebook(notebook_dir)
         assert notebook_state.id == "custom-id"
         assert notebook_state.name == "Custom Notebook"
+        assert notebook_state.worker == "gpu-default"
+        assert notebook_state.timeout == 9.5
+        assert notebook_state.env == {"API_ROOT": "https://example.test"}
         assert len(notebook_state.cells) == 2
+        assert notebook_state.cells[0].worker == "gpu-worker"
+        assert notebook_state.cells[0].worker_override == "gpu-worker"
+        assert notebook_state.cells[0].timeout == 2.0
+        assert notebook_state.cells[0].timeout_override == 2.0
+        assert notebook_state.cells[0].env == {
+            "API_ROOT": "https://example.test",
+            "TOKEN": "cell-secret",
+        }
+        assert notebook_state.cells[0].env_overrides == {"TOKEN": "cell-secret"}
+        assert notebook_state.cells[1].worker == "gpu-default"
+        assert notebook_state.cells[1].timeout == 9.5
+        assert len(notebook_state.cells[0].mounts) == 2
+        assert {mount.name for mount in notebook_state.cells[0].mounts} == {
+            "raw_data",
+            "scratch",
+        }
+        assert len(notebook_state.cells[1].mounts) == 1
+        assert notebook_state.cells[1].mounts[0].name == "raw_data"
+
+
+def test_update_notebook_worker():
+    """Test persisting notebook-level worker configuration."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Worker Notebook")
+        update_notebook_worker(notebook_dir, "gpu-default")
+
+        notebook_state = parse_notebook(notebook_dir)
+        assert notebook_state.worker == "gpu-default"
+
+
+def test_update_notebook_workers():
+    """Test persisting notebook-scoped worker definitions."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Worker Catalog Notebook")
+        update_notebook_workers(
+            notebook_dir,
+            [
+                WorkerSpec(name="local", backend=WorkerBackendType.LOCAL),
+                WorkerSpec(
+                    name="gpu-a100",
+                    backend=WorkerBackendType.EXECUTOR,
+                    runtime_id="cuda-12.4",
+                    config={"url": "https://executor.internal/gpu-a100"},
+                ),
+            ],
+        )
+
+        notebook_state = parse_notebook(notebook_dir)
+        assert [worker.name for worker in notebook_state.workers] == [
+            "local",
+            "gpu-a100",
+        ]
+        assert notebook_state.workers[1].backend == WorkerBackendType.EXECUTOR
+        assert notebook_state.workers[1].runtime_id == "cuda-12.4"
+        assert notebook_state.workers[1].config == {
+            "url": "https://executor.internal/gpu-a100"
+        }
+
+
+def test_update_notebook_timeout_and_env():
+    """Test persisting notebook-level timeout/env configuration."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Notebook Runtime")
+        update_notebook_timeout(notebook_dir, 7.5)
+        update_notebook_env(notebook_dir, {"TOKEN": "secret"})
+
+        notebook_state = parse_notebook(notebook_dir)
+        assert notebook_state.timeout == 7.5
+        assert notebook_state.env == {"TOKEN": "secret"}
+
+
+def test_update_cell_worker():
+    """Test persisting cell-level worker overrides."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Cell Worker Notebook")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        update_notebook_worker(notebook_dir, "gpu-default")
+        update_cell_worker(notebook_dir, "cell-1", "gpu-override")
+
+        notebook_state = parse_notebook(notebook_dir)
+        assert notebook_state.cells[0].worker == "gpu-override"
+        assert notebook_state.cells[0].worker_override == "gpu-override"
+
+
+def test_update_cell_timeout_and_env():
+    """Test persisting cell-level timeout/env overrides."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Cell Runtime Notebook")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        update_notebook_timeout(notebook_dir, 7.5)
+        update_notebook_env(notebook_dir, {"TOKEN": "base"})
+        update_cell_timeout(notebook_dir, "cell-1", 2.0)
+        update_cell_env(notebook_dir, "cell-1", {"TOKEN": "override"})
+
+        notebook_state = parse_notebook(notebook_dir)
+        assert notebook_state.cells[0].timeout == 2.0
+        assert notebook_state.cells[0].timeout_override == 2.0
+        assert notebook_state.cells[0].env == {"TOKEN": "override"}
+        assert notebook_state.cells[0].env_overrides == {"TOKEN": "override"}

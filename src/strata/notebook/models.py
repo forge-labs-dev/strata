@@ -5,8 +5,75 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class MountMode(StrEnum):
+    """Access mode for a filesystem mount."""
+
+    READ_ONLY = "ro"
+    READ_WRITE = "rw"
+
+
+class MountSpec(BaseModel):
+    """A filesystem mount declaration.
+
+    Mounts give cells transparent access to local and remote directories
+    via standard ``pathlib.Path`` operations.  The mount ``name`` becomes
+    a variable in the cell namespace bound to a local ``Path`` that the
+    executor resolves before execution.
+
+    Supported URI schemes: ``file://``, ``s3://``, ``gs://``, ``az://``.
+    """
+
+    name: str = Field(
+        ...,
+        description="Mount name — injected as a Path variable in the cell namespace",
+        pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$",
+    )
+    uri: str = Field(
+        ...,
+        description="URI: file:///path, s3://bucket/prefix, gs://bucket/prefix, az://container/prefix",
+    )
+    mode: MountMode = Field(
+        default=MountMode.READ_ONLY,
+        description="Access mode: 'ro' (read-only) or 'rw' (read-write)",
+    )
+    pin: str | None = Field(
+        default=None,
+        description="Pinned version/etag — disables fingerprinting when set",
+    )
+
+
+class WorkerBackendType(StrEnum):
+    """Execution backend type for notebook workers."""
+
+    LOCAL = "local"
+    EXECUTOR = "executor"
+
+
+class WorkerSpec(BaseModel):
+    """A named worker declaration."""
+
+    name: str = Field(
+        ...,
+        description="Worker name used in notebook metadata and cell overrides",
+        pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+    )
+    backend: WorkerBackendType = Field(
+        default=WorkerBackendType.LOCAL,
+        description="Worker backend type",
+    )
+    runtime_id: str | None = Field(
+        default=None,
+        description="Stable runtime fingerprint override for provenance",
+    )
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Backend-specific worker configuration",
+    )
 
 
 class CellStatus(StrEnum):
@@ -69,6 +136,22 @@ class CellMeta(BaseModel):
     file: str = Field(..., description="Path to cell source file (relative to cells/)")
     language: str = Field(default="python", description="Programming language")
     order: float = Field(default=0, description="Display order in notebook")
+    worker: str | None = Field(
+        default=None,
+        description="Cell-level worker override (overrides notebook default)",
+    )
+    timeout: float | None = Field(
+        default=None,
+        description="Cell-level execution timeout override in seconds",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Cell-level environment variable overrides",
+    )
+    mounts: list[MountSpec] = Field(
+        default_factory=list,
+        description="Cell-level mount overrides (supplement/override notebook-level mounts)",
+    )
 
 
 class NotebookToml(BaseModel):
@@ -79,6 +162,26 @@ class NotebookToml(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(tz=UTC))
     cells: list[CellMeta] = Field(default_factory=list, description="Cell metadata")
+    worker: str | None = Field(
+        default=None,
+        description="Notebook-level default worker name",
+    )
+    timeout: float | None = Field(
+        default=None,
+        description="Notebook-level default execution timeout in seconds",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Notebook-level default environment variables",
+    )
+    workers: list[WorkerSpec] = Field(
+        default_factory=list,
+        description="Registered workers (personal/dev mode)",
+    )
+    mounts: list[MountSpec] = Field(
+        default_factory=list,
+        description="Notebook-level filesystem mounts",
+    )
     # Preserved in TOML round-trip but not used at runtime
     artifacts: dict = Field(default_factory=dict)
     environment: dict = Field(default_factory=dict)
@@ -134,6 +237,38 @@ class CellState(BaseModel):
     downstream_ids: list[str] = Field(
         default_factory=list, description="Cell IDs that depend on this cell"
     )
+    worker: str | None = Field(
+        default=None,
+        description="Resolved persisted worker for this cell (notebook default + cell override)",
+    )
+    worker_override: str | None = Field(
+        default=None,
+        description="Persisted cell-level worker override from notebook.toml",
+    )
+    timeout: float | None = Field(
+        default=None,
+        description="Resolved persisted timeout for this cell in seconds",
+    )
+    timeout_override: float | None = Field(
+        default=None,
+        description="Persisted cell-level timeout override from notebook.toml",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Resolved persisted environment variables for this cell",
+    )
+    env_overrides: dict[str, str] = Field(
+        default_factory=dict,
+        description="Persisted cell-level environment overrides from notebook.toml",
+    )
+    mounts: list[MountSpec] = Field(
+        default_factory=list,
+        description="Resolved mounts for this cell (notebook-level + cell-level overrides)",
+    )
+    mount_overrides: list[MountSpec] = Field(
+        default_factory=list,
+        description="Persisted cell-level mount overrides from notebook.toml",
+    )
     is_leaf: bool = Field(
         default=False,
         description="Whether this is a leaf node (no downstream consumers)",
@@ -159,6 +294,26 @@ class NotebookState(BaseModel):
 
     id: str = Field(..., description="Notebook ID")
     name: str = Field(default="Untitled Notebook", description="Notebook name")
+    worker: str | None = Field(
+        default=None,
+        description="Notebook-level default worker name",
+    )
+    timeout: float | None = Field(
+        default=None,
+        description="Notebook-level default execution timeout in seconds",
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Notebook-level default environment variables",
+    )
+    workers: list[WorkerSpec] = Field(
+        default_factory=list,
+        description="Registered workers available to this notebook",
+    )
+    mounts: list[MountSpec] = Field(
+        default_factory=list,
+        description="Notebook-level filesystem mount defaults",
+    )
     cells: list[CellState] = Field(default_factory=list, description="Cells with source")
     path: Path | None = Field(
         default=None,

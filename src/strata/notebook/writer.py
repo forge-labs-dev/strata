@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import tomli_w
 
-from strata.notebook.models import NotebookToml
+from strata.notebook.models import MountSpec, NotebookToml, WorkerSpec
 
 # Python 3.10 compatibility
 try:
@@ -21,6 +21,37 @@ except ModuleNotFoundError:
 
 if TYPE_CHECKING:
     pass
+
+
+def _serialize_mounts(mounts: list[MountSpec]) -> list[dict[str, str]]:
+    """Convert mount specs into TOML-friendly dicts."""
+    return [
+        {
+            "name": mount.name,
+            "uri": mount.uri,
+            "mode": mount.mode.value,
+            **({"pin": mount.pin} if mount.pin is not None else {}),
+        }
+        for mount in mounts
+    ]
+
+
+def _serialize_env(env: dict[str, str]) -> dict[str, str]:
+    """Convert env vars into a TOML-friendly dict."""
+    return {key: value for key, value in sorted(env.items())}
+
+
+def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:
+    """Convert worker specs into TOML-friendly dicts."""
+    return [
+        {
+            "name": worker.name,
+            "backend": worker.backend.value,
+            **({"runtime_id": worker.runtime_id} if worker.runtime_id else {}),
+            **({"config": worker.config} if worker.config else {}),
+        }
+        for worker in workers
+    ]
 
 
 def write_cell(notebook_dir: Path, cell_id: str, source: str) -> None:
@@ -92,9 +123,18 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
                 "file": cell.file,
                 "language": cell.language,
                 "order": cell.order,
+                **({"worker": cell.worker} if cell.worker is not None else {}),
+                **({"timeout": cell.timeout} if cell.timeout is not None else {}),
+                **({"env": _serialize_env(cell.env)} if cell.env else {}),
+                "mounts": _serialize_mounts(cell.mounts),
             }
             for cell in toml.cells
         ],
+        **({"worker": toml.worker} if toml.worker is not None else {}),
+        **({"timeout": toml.timeout} if toml.timeout is not None else {}),
+        **({"env": _serialize_env(toml.env)} if toml.env else {}),
+        "workers": _serialize_workers(toml.workers),
+        "mounts": _serialize_mounts(toml.mounts),
         "artifacts": toml.artifacts,
         "environment": toml.environment,
         "cache": toml.cache,
@@ -395,3 +435,192 @@ def rename_notebook(notebook_dir: Path, new_name: str) -> None:
 
     with open(notebook_toml_path, "wb") as f:
         tomli_w.dump(toml_data, f)
+
+
+def update_notebook_mounts(notebook_dir: Path, mounts: list[MountSpec]) -> None:
+    """Persist notebook-level mount defaults."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    toml_data["mounts"] = _serialize_mounts(mounts)
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
+def update_notebook_worker(notebook_dir: Path, worker: str | None) -> None:
+    """Persist the notebook-level default worker."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    if worker is None:
+        toml_data.pop("worker", None)
+    else:
+        toml_data["worker"] = worker
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
+def update_notebook_workers(notebook_dir: Path, workers: list[WorkerSpec]) -> None:
+    """Persist notebook-scoped worker definitions."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    toml_data["workers"] = _serialize_workers(workers)
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
+def update_notebook_timeout(notebook_dir: Path, timeout: float | None) -> None:
+    """Persist the notebook-level default timeout."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    if timeout is None:
+        toml_data.pop("timeout", None)
+    else:
+        toml_data["timeout"] = timeout
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
+def update_notebook_env(notebook_dir: Path, env: dict[str, str]) -> None:
+    """Persist notebook-level default environment variables."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    if env:
+        toml_data["env"] = _serialize_env(env)
+    else:
+        toml_data.pop("env", None)
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
+def update_cell_mounts(
+    notebook_dir: Path,
+    cell_id: str,
+    mounts: list[MountSpec],
+) -> None:
+    """Persist cell-level mount overrides."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    cells_data = toml_data.get("cells", [])
+    for cell in cells_data:
+        if cell.get("id") == cell_id:
+            cell["mounts"] = _serialize_mounts(mounts)
+            toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+            with open(notebook_toml_path, "wb") as out:
+                tomli_w.dump(toml_data, out)
+            return
+
+    raise ValueError(f"Cell {cell_id} not found")
+
+
+def update_cell_worker(
+    notebook_dir: Path,
+    cell_id: str,
+    worker: str | None,
+) -> None:
+    """Persist a cell-level worker override."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    cells_data = toml_data.get("cells", [])
+    for cell in cells_data:
+        if cell.get("id") == cell_id:
+            if worker is None:
+                cell.pop("worker", None)
+            else:
+                cell["worker"] = worker
+            toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+            with open(notebook_toml_path, "wb") as out:
+                tomli_w.dump(toml_data, out)
+            return
+
+    raise ValueError(f"Cell {cell_id} not found")
+
+
+def update_cell_timeout(
+    notebook_dir: Path,
+    cell_id: str,
+    timeout: float | None,
+) -> None:
+    """Persist a cell-level timeout override."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    cells_data = toml_data.get("cells", [])
+    for cell in cells_data:
+        if cell.get("id") == cell_id:
+            if timeout is None:
+                cell.pop("timeout", None)
+            else:
+                cell["timeout"] = timeout
+            toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+            with open(notebook_toml_path, "wb") as out:
+                tomli_w.dump(toml_data, out)
+            return
+
+    raise ValueError(f"Cell {cell_id} not found")
+
+
+def update_cell_env(
+    notebook_dir: Path,
+    cell_id: str,
+    env: dict[str, str],
+) -> None:
+    """Persist a cell-level environment override map."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    cells_data = toml_data.get("cells", [])
+    for cell in cells_data:
+        if cell.get("id") == cell_id:
+            if env:
+                cell["env"] = _serialize_env(env)
+            else:
+                cell.pop("env", None)
+            toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+            with open(notebook_toml_path, "wb") as out:
+                tomli_w.dump(toml_data, out)
+            return
+
+    raise ValueError(f"Cell {cell_id} not found")
