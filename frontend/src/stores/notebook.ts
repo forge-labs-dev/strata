@@ -338,6 +338,19 @@ function syncWorkerDefinitionsEditableFromBackend(value: any) {
   workerDefinitionsEditable.value = value !== false
 }
 
+function syncServerManagedWorkersFromBackend(serverWorkers: any[]) {
+  serverManagedWorkers.value = Array.isArray(serverWorkers)
+    ? serverWorkers.map(parseWorkerSpec).filter((worker) => worker.name)
+    : []
+}
+
+function clearServerWorkerRegistryState() {
+  serverManagedWorkers.value = []
+  serverWorkerRegistryAvailable.value = false
+  serverWorkerRegistryLoading.value = false
+  serverWorkerRegistryError.value = null
+}
+
 function syncNotebookTimeoutFromBackend(serverTimeout: any) {
   notebook.timeout = typeof serverTimeout === 'number' ? serverTimeout : null
 }
@@ -504,6 +517,7 @@ async function boot(): Promise<void> {
     workerRegistryError.value = null
     cellWorkerErrors.value = {}
     workerHealthCheckedAt.value = null
+    clearServerWorkerRegistryState()
     // Create a scratch notebook
     const data = await strata.createNotebook('/tmp/strata-notebooks', 'scratch')
     notebook.id = data.id
@@ -569,6 +583,7 @@ async function openNotebook(path: string): Promise<void> {
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
   workerHealthCheckedAt.value = null
+  clearServerWorkerRegistryState()
 
   const data = await strata.openNotebook(path)
   notebook.id = data.id
@@ -636,6 +651,10 @@ const workerHealthLoading = ref(false)
 const workerHealthCheckedAt = ref<number | null>(null)
 const notebookWorkerError = ref<string | null>(null)
 const workerRegistryError = ref<string | null>(null)
+const serverManagedWorkers = ref<WorkerSpec[]>([])
+const serverWorkerRegistryAvailable = ref(false)
+const serverWorkerRegistryLoading = ref(false)
+const serverWorkerRegistryError = ref<string | null>(null)
 const cellWorkerErrors = ref<Record<string, string>>({})
 
 // Inspect REPL state
@@ -1050,10 +1069,33 @@ async function fetchWorkers(forceRefresh = false) {
       syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
     }
     syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    if (data.definitions_editable === false) {
+      await fetchServerWorkerRegistry(forceRefresh)
+    } else {
+      clearServerWorkerRegistryState()
+    }
   } catch (err) {
     console.error('Failed to fetch workers:', err)
   } finally {
     workerHealthLoading.value = false
+  }
+}
+
+async function fetchServerWorkerRegistry(forceRefresh = false) {
+  const strata = useStrata()
+  serverWorkerRegistryLoading.value = true
+  try {
+    const data = await strata.listAdminNotebookWorkers(forceRefresh)
+    syncServerManagedWorkersFromBackend(data.configured_workers)
+    serverWorkerRegistryAvailable.value = true
+    serverWorkerRegistryError.value = null
+  } catch (err) {
+    serverManagedWorkers.value = []
+    serverWorkerRegistryAvailable.value = false
+    serverWorkerRegistryError.value = null
+    console.debug('Admin notebook worker registry unavailable:', err)
+  } finally {
+    serverWorkerRegistryLoading.value = false
   }
 }
 
@@ -1174,6 +1216,30 @@ async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
     }
   } catch (err: any) {
     workerRegistryError.value = err.message || 'Failed to update worker registry'
+  }
+}
+
+async function updateServerWorkerRegistryAction(workers: WorkerSpec[]) {
+  const strata = useStrata()
+  serverWorkerRegistryError.value = null
+  const payload = workers
+    .map((worker) => ({
+      name: worker.name.trim(),
+      backend: worker.backend,
+      runtime_id: worker.runtimeId || null,
+      config: worker.config || {},
+    }))
+    .filter((worker) => worker.name)
+  try {
+    const data = await strata.updateAdminNotebookWorkers(payload)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncServerManagedWorkersFromBackend(data.configured_workers)
+    }
+    serverWorkerRegistryAvailable.value = true
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    await fetchWorkers(true)
+  } catch (err: any) {
+    serverWorkerRegistryError.value = err.message || 'Failed to update server worker registry'
   }
 }
 
@@ -1380,12 +1446,18 @@ export function useNotebook() {
     workerHealthCheckedAt,
     notebookWorkerError,
     workerRegistryError,
+    serverManagedWorkers,
+    serverWorkerRegistryAvailable,
+    serverWorkerRegistryLoading,
+    serverWorkerRegistryError,
     cellWorkerErrorForCell,
     fetchWorkers,
+    fetchServerWorkerRegistry,
     fetchDependencies,
     addDependencyAction,
     removeDependencyAction,
     updateNotebookWorkersAction,
+    updateServerWorkerRegistryAction,
     updateNotebookWorkerAction,
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,

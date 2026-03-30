@@ -224,6 +224,93 @@ def _auth_headers(
     return headers
 
 
+class TestNotebookWorkerAdminApi:
+    """Tests for the server-managed notebook worker admin API."""
+
+    def test_list_notebook_workers_service_mode(self, server_mode_app):
+        """Service mode should expose the server-managed notebook worker registry."""
+        response = server_mode_app.get("/v1/admin/notebook-workers")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["configured_workers"] == []
+        assert data["definitions_editable"] is False
+        assert isinstance(data["health_checked_at"], int)
+        assert any(
+            worker["name"] == "local"
+            and worker["source"] == "builtin"
+            and worker["health"] == "healthy"
+            for worker in data["workers"]
+        )
+
+    def test_update_notebook_workers_service_mode(self, server_mode_app):
+        """Replacing the registry should update both stored specs and catalog."""
+        response = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "runtime_id": "cuda-12.4",
+                        "config": {"url": "embedded://local"},
+                    }
+                ]
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["definitions_editable"] is False
+        assert data["configured_workers"][0]["name"] == "gpu-a100"
+        assert data["configured_workers"][0]["backend"] == "executor"
+        assert any(
+            worker["name"] == "gpu-a100"
+            and worker["source"] == "server"
+            and worker["health"] == "healthy"
+            for worker in data["workers"]
+        )
+
+        listed = server_mode_app.get("/v1/admin/notebook-workers")
+        assert listed.status_code == 200
+        assert listed.json()["configured_workers"][0]["name"] == "gpu-a100"
+
+    def test_notebook_workers_admin_requires_service_mode(self, personal_mode_app):
+        """The admin registry should not exist in personal mode."""
+        response = personal_mode_app.get("/v1/admin/notebook-workers")
+
+        assert response.status_code == 409
+        assert "service mode" in response.json()["detail"]
+
+    def test_notebook_workers_admin_requires_scope(self, server_mode_auth_app):
+        """Trusted-proxy mode should require the notebook worker admin scope."""
+        blocked = server_mode_auth_app.get(
+            "/v1/admin/notebook-workers",
+            headers=_auth_headers(),
+        )
+        assert blocked.status_code == 403
+        assert blocked.json()["detail"] == "Insufficient scope"
+
+        allowed = server_mode_auth_app.put(
+            "/v1/admin/notebook-workers",
+            headers=_auth_headers(scopes="admin:notebook-workers"),
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-signed",
+                        "backend": "executor",
+                        "config": {
+                            "url": "https://executor.internal/v1/execute",
+                            "transport": "signed",
+                        },
+                    }
+                ]
+            },
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["configured_workers"][0]["name"] == "gpu-signed"
+
+
 class TestTransformValidation:
     """Tests for transform allowlist validation in server mode."""
 

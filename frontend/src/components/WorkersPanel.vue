@@ -10,18 +10,26 @@ const {
   connected,
   availableWorkers,
   workerDefinitionsEditable,
+  serverManagedWorkers,
+  serverWorkerRegistryAvailable,
+  serverWorkerRegistryLoading,
   workerHealthLoading,
   workerHealthCheckedAt,
   notebookWorkerError,
   workerRegistryError,
+  serverWorkerRegistryError,
   fetchWorkers,
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
+  updateServerWorkerRegistryAction,
 } = useNotebook()
 const showPanel = ref(false)
 
 const workerLabel = computed(() => notebook.worker || 'local')
 const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
+const canEditServerRegistry = computed(
+  () => registryManagedByServer.value && serverWorkerRegistryAvailable.value,
+)
 const lastCheckedLabel = computed(() => {
   if (!workerHealthCheckedAt.value) {
     return 'Not checked yet'
@@ -78,6 +86,14 @@ const lastCheckedLabel = computed(() => {
         :read-only="!connected || !workerDefinitionsEditable"
         :error="workerRegistryError"
         @save="updateNotebookWorkersAction"
+      />
+      <WorkerListEditor
+        v-else-if="canEditServerRegistry"
+        :workers="serverManagedWorkers"
+        title="Server Worker Catalog"
+        :read-only="!connected || serverWorkerRegistryLoading"
+        :error="serverWorkerRegistryError"
+        @save="updateServerWorkerRegistryAction"
       />
       <div v-else class="workers-copy workers-copy-muted">
         This notebook can select from the visible server-managed workers below, but it cannot change

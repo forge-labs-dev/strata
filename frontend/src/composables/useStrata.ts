@@ -326,6 +326,27 @@ async function updateWorkers(notebookId: string, workers: any[]): Promise<any> {
   return resp.json()
 }
 
+async function listAdminNotebookWorkers(refresh = false): Promise<any> {
+  const params = refresh ? '?refresh=true' : ''
+  const resp = await fetch(`${STRATA_BASE}/v1/admin/notebook-workers${params}`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to list admin notebook workers')
+  }
+  return resp.json()
+}
+
+async function updateAdminNotebookWorkers(workers: any[]): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/admin/notebook-workers`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ workers }),
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to update admin notebook workers')
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Dependency API
 // ---------------------------------------------------------------------------
@@ -389,6 +410,8 @@ export function useStrata() {
     updateCellEnv,
     listWorkers,
     updateWorkers,
+    listAdminNotebookWorkers,
+    updateAdminNotebookWorkers,
     listDependencies,
     addDependency,
     removeDependency,

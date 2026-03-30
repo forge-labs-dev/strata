@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from strata.adaptive_concurrency import ResizableLimiter
 from strata.auth import (
@@ -44,6 +45,12 @@ from strata.logging import (
 )
 from strata.memory_profiler import get_detailed_memory_report, get_memory_snapshot
 from strata.metrics import MetricsCollector
+from strata.notebook.models import WorkerSpec
+from strata.notebook.workers import (
+    build_server_worker_catalog_with_health,
+    get_server_managed_workers,
+    set_server_managed_workers,
+)
 from strata.planner import ReadPlanner
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
 from strata.rate_limiter import (
@@ -102,6 +109,12 @@ DRAIN_TIMEOUT_SECONDS = 30  # Max time to wait for active scans to complete
 # Readiness probe thresholds
 SATURATION_THRESHOLD_SECONDS = 30.0  # Fail readiness if saturated for this long
 STUCK_SCAN_THRESHOLD_SECONDS = 60.0  # Fail readiness if scan makes no progress for this long
+
+
+class AdminNotebookWorkersRequest(BaseModel):
+    """Request payload for replacing the server-managed notebook worker registry."""
+
+    workers: list[WorkerSpec] = Field(default_factory=list)
 
 
 class ResourceLimitError(Exception):
@@ -1668,6 +1681,55 @@ async def metrics_table(table_id: str):
         raise HTTPException(status_code=404, detail=f"No metrics found for table: {table_id}")
 
     return table_metrics.to_dict()
+
+
+def _require_notebook_worker_admin_access() -> ServerState:
+    """Authorize access to the service-mode notebook worker registry."""
+    state = get_state()
+
+    if state.config.deployment_mode != "service":
+        raise HTTPException(
+            status_code=409,
+            detail="Server-managed notebook workers are only available in service mode",
+        )
+
+    if state.config.auth_mode == "trusted_proxy":
+        principal = get_principal()
+        if principal is None or not principal.has_scope("admin:notebook-workers"):
+            raise HTTPException(status_code=403, detail="Insufficient scope")
+
+    return state
+
+
+async def _serialize_admin_notebook_workers(
+    *,
+    force_refresh: bool = False,
+) -> dict[str, object]:
+    return {
+        "configured_workers": [
+            worker.model_dump(mode="json") for worker in get_server_managed_workers()
+        ],
+        "workers": await build_server_worker_catalog_with_health(
+            force_refresh=force_refresh
+        ),
+        "definitions_editable": False,
+        "health_checked_at": int(time.time() * 1000),
+    }
+
+
+@app.get("/v1/admin/notebook-workers")
+async def list_admin_notebook_workers(refresh: bool = False):
+    """List the server-managed notebook worker registry."""
+    _require_notebook_worker_admin_access()
+    return await _serialize_admin_notebook_workers(force_refresh=refresh)
+
+
+@app.put("/v1/admin/notebook-workers")
+async def update_admin_notebook_workers(request: AdminNotebookWorkersRequest):
+    """Replace the server-managed notebook worker registry."""
+    _require_notebook_worker_admin_access()
+    set_server_managed_workers(request.workers)
+    return await _serialize_admin_notebook_workers(force_refresh=True)
 
 
 @app.get("/v1/admin/tenants")

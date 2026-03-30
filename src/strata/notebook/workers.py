@@ -89,6 +89,29 @@ def notebook_worker_definitions_editable(notebook_state: NotebookState) -> bool:
     return _load_worker_policy(notebook_state).definitions_editable
 
 
+def get_server_managed_workers() -> list[WorkerSpec]:
+    """Return the configured service-mode notebook worker registry."""
+    try:
+        from strata.server import get_state
+
+        return _parse_worker_specs(
+            get_state().config.transforms_config.get("notebook_workers", [])
+        )
+    except Exception:
+        return []
+
+
+def set_server_managed_workers(workers: list[WorkerSpec]) -> list[WorkerSpec]:
+    """Replace the configured service-mode notebook worker registry."""
+    from strata.server import get_state
+
+    state = get_state()
+    state.config.transforms_config["notebook_workers"] = [
+        worker.model_dump(mode="json") for worker in workers
+    ]
+    return get_server_managed_workers()
+
+
 def validate_worker_assignment(
     notebook_state: NotebookState,
     worker_name: str | None,
@@ -382,6 +405,40 @@ async def build_worker_catalog_with_health(
         entry["health"] = await probe_worker_health(
             worker,
             force_refresh=force_refresh,
+        )
+
+    return catalog
+
+
+async def build_server_worker_catalog_with_health(
+    *,
+    force_refresh: bool = False,
+) -> list[dict[str, Any]]:
+    """Build the service-mode worker catalog without notebook-local entries."""
+    catalog: list[dict[str, Any]] = [
+        {
+            "name": "local",
+            "backend": WorkerBackendType.LOCAL.value,
+            "runtime_id": None,
+            "config": {},
+            "source": "builtin",
+            "health": "healthy",
+            "allowed": True,
+        }
+    ]
+
+    for worker in get_server_managed_workers():
+        health = await probe_worker_health(worker, force_refresh=force_refresh)
+        catalog.append(
+            {
+                "name": worker.name,
+                "backend": worker.backend.value,
+                "runtime_id": worker.runtime_id,
+                "config": worker.config,
+                "source": "server",
+                "health": health,
+                "allowed": True,
+            }
         )
 
     return catalog
