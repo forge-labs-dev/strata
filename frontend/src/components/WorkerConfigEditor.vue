@@ -42,6 +42,7 @@ const normalizedOptions = computed(() => {
       config: {},
       health: 'unavailable',
       source: 'referenced',
+      allowed: false,
     })
   }
   return options
@@ -60,6 +61,19 @@ function healthLabel(health: WorkerCatalogEntry['health']) {
       return 'missing'
     default:
       return 'unknown'
+  }
+}
+
+function sourceLabel(option: WorkerCatalogEntry) {
+  switch (option.source) {
+    case 'server':
+      return 'server'
+    case 'notebook':
+      return 'notebook'
+    case 'referenced':
+      return 'referenced'
+    default:
+      return option.backend
   }
 }
 </script>
@@ -82,7 +96,7 @@ function healthLabel(health: WorkerCatalogEntry['health']) {
           :key="option.name"
           :value="option.name"
         >
-          {{ option.name }} · {{ option.backend }} · {{ healthLabel(option.health) }}
+          {{ option.name }} · {{ sourceLabel(option) }} · {{ healthLabel(option.health) }}{{ option.allowed === false ? ' · blocked' : '' }}
         </option>
       </select>
       <button v-if="!readOnly" class="worker-save" @click="save">Save</button>

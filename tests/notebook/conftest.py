@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import uvicorn
 
+from strata.config import StrataConfig
 from tests.conftest import find_free_port, wait_for_server
 
 
@@ -130,8 +131,61 @@ def notebook_executor_server():
     try:
         yield {
             "base_url": f"http://127.0.0.1:{port}",
-            "execute_url": f"http://127.0.0.1:{port}/v1/notebook-execute",
+            "execute_url": f"http://127.0.0.1:{port}/v1/execute",
+            "notebook_execute_url": f"http://127.0.0.1:{port}/v1/notebook-execute",
+            "manifest_execute_url": f"http://127.0.0.1:{port}/v1/execute-manifest",
         }
     finally:
         server.should_exit = True
         thread.join(timeout=2.0)
+
+
+@pytest.fixture
+def notebook_build_server(tmp_path: Path):
+    """Run a real service-mode Strata server for signed notebook build tests."""
+    import strata.server as server_module
+    from strata.artifact_store import get_artifact_store, reset_artifact_store
+    from strata.server import ServerState, app
+    from strata.transforms.build_store import get_build_store, reset_build_store
+
+    port = find_free_port()
+    artifact_dir = tmp_path / "service-artifacts"
+    config = StrataConfig(
+        host="127.0.0.1",
+        port=port,
+        cache_dir=tmp_path / "service-cache",
+        artifact_dir=artifact_dir,
+        deployment_mode="service",
+        transforms_config={"enabled": True},
+    )
+
+    reset_artifact_store()
+    reset_build_store()
+    server_module._state = ServerState(config)
+
+    server_config = uvicorn.Config(
+        app,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
+    server = uvicorn.Server(server_config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+
+    if not wait_for_server(port):
+        raise RuntimeError(f"Signed notebook build server failed to start on port {port}")
+
+    try:
+        yield {
+            "base_url": f"http://127.0.0.1:{port}",
+            "config": config,
+            "artifact_store": get_artifact_store(artifact_dir),
+            "build_store": get_build_store(artifact_dir / "artifacts.sqlite"),
+        }
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2.0)
+        server_module._state = None
+        reset_artifact_store()
+        reset_build_store()

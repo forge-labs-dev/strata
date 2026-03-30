@@ -23,7 +23,8 @@ export interface WorkerSpec {
 
 export interface WorkerCatalogEntry extends WorkerSpec {
   health: WorkerHealth
-  source?: 'builtin' | 'notebook' | 'referenced'
+  source?: 'builtin' | 'notebook' | 'server' | 'referenced'
+  allowed?: boolean
 }
 
 export interface CellAnnotations {

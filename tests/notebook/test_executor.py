@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -413,6 +414,85 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert result.error == "Execution failed: worker 'gpu-override' is not implemented yet"
 
     @pytest.mark.asyncio
+    async def test_execute_rejects_disallowed_service_mode_worker(
+        self,
+        sample_notebook,
+        monkeypatch,
+    ):
+        """Service mode should reject notebook-local workers outside the server registry."""
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="service",
+                    transforms_config={
+                        "notebook_workers": [
+                            {
+                                "name": "gpu-a100",
+                                "backend": "executor",
+                                "runtime_id": "cuda-12.4",
+                                "config": {"url": "embedded://local"},
+                            }
+                        ]
+                    },
+                )
+            ),
+        )
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-shadow",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="shadow-runtime",
+                config={"url": "embedded://local"},
+            )
+        ]
+        sample_notebook.notebook_state.worker = "gpu-shadow"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-shadow"
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is False
+        assert result.error == (
+            "Execution failed: Worker 'gpu-shadow' is not allowed in service mode. "
+            "Choose a server-managed worker."
+        )
+
+    @pytest.mark.asyncio
+    async def test_execute_allows_service_mode_server_worker(
+        self,
+        sample_notebook,
+        monkeypatch,
+    ):
+        """Service mode should resolve executor workers from the server registry."""
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="service",
+                    transforms_config={
+                        "notebook_workers": [
+                            {
+                                "name": "gpu-a100",
+                                "backend": "executor",
+                                "runtime_id": "cuda-12.4",
+                                "config": {"url": "embedded://local"},
+                            }
+                        ]
+                    },
+                )
+            ),
+        )
+        sample_notebook.notebook_state.worker = "gpu-a100"
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.worker = "gpu-a100"
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is True
+        assert result.execution_method == "executor"
+
+    @pytest.mark.asyncio
     async def test_worker_runtime_identity_invalidates_cache(
         self,
         sample_notebook,
@@ -527,6 +607,60 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert first.execution_method == "executor"
         assert first.cache_hit is False
         assert "x" in first.outputs
+
+        assert second.success is True
+        assert second.cache_hit is True
+
+    @pytest.mark.asyncio
+    async def test_execute_supports_signed_http_executor_worker(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+        notebook_build_server,
+    ):
+        """HTTP executor workers can opt into the build + signed-URL transport."""
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            }
+        ]
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http-signed",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-signed-a100",
+                config={
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            )
+        ]
+        sample_notebook.notebook_state.worker = "gpu-http-signed"
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.worker = "gpu-http-signed"
+        cell2.worker = "gpu-http-signed"
+        cell1.source = "x = 1"
+        cell2.source = "y = x + 1"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+        first = await executor.execute_cell("cell1", "x = 1")
+        second = await executor.execute_cell("cell1", "x = 1")
+
+        assert first.success is True
+        assert first.execution_method == "executor"
+        assert first.cache_hit is False
+        assert first.outputs["x"]["preview"] == 1
 
         assert second.success is True
         assert second.cache_hit is True

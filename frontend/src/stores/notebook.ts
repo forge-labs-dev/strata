@@ -226,9 +226,13 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
         ? raw.health
         : 'unknown',
     source:
-      raw?.source === 'builtin' || raw?.source === 'notebook' || raw?.source === 'referenced'
+      raw?.source === 'builtin'
+        || raw?.source === 'notebook'
+        || raw?.source === 'server'
+        || raw?.source === 'referenced'
         ? raw.source
         : undefined,
+    allowed: raw?.allowed !== false,
   }
 }
 
@@ -306,6 +310,10 @@ function syncWorkerCatalogFromBackend(serverWorkers: any[]) {
   availableWorkers.value = Array.isArray(serverWorkers)
     ? serverWorkers.map(parseWorkerCatalogEntry).filter((worker) => worker.name)
     : []
+}
+
+function syncWorkerDefinitionsEditableFromBackend(value: any) {
+  workerDefinitionsEditable.value = value !== false
 }
 
 function syncNotebookTimeoutFromBackend(serverTimeout: any) {
@@ -550,6 +558,7 @@ const dependencies = ref<DependencyInfo[]>([])
 const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
+const workerDefinitionsEditable = ref(true)
 
 // Inspect REPL state
 interface InspectEntry {
@@ -939,6 +948,9 @@ async function fetchWorkers() {
     if (data.workers && Array.isArray(data.workers)) {
       syncWorkerCatalogFromBackend(data.workers)
     }
+    if ('definitions_editable' in data) {
+      syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+    }
   } catch (err) {
     console.error('Failed to fetch workers:', err)
   }
@@ -1023,6 +1035,9 @@ async function updateNotebookWorkerAction(worker: string | null) {
   } else {
     fetchWorkers()
   }
+  if ('definitions_editable' in data) {
+    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
+  }
 }
 
 async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
@@ -1043,6 +1058,9 @@ async function updateNotebookWorkersAction(workers: WorkerSpec[]) {
   }
   if (data.workers && Array.isArray(data.workers)) {
     syncWorkerCatalogFromBackend(data.workers)
+  }
+  if ('definitions_editable' in data) {
+    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
   }
 }
 
@@ -1090,6 +1108,9 @@ async function updateCellWorkerAction(cellId: CellId, worker: string | null) {
     syncWorkerCatalogFromBackend(data.workers)
   } else {
     fetchWorkers()
+  }
+  if ('definitions_editable' in data) {
+    syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
   }
 }
 
@@ -1226,6 +1247,7 @@ export function useNotebook() {
     dependencyLoading,
     dependencyError,
     availableWorkers,
+    workerDefinitionsEditable,
     fetchWorkers,
     fetchDependencies,
     addDependencyAction,

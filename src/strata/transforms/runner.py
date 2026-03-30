@@ -64,6 +64,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _is_runner_managed_build(build: BuildState) -> bool:
+    """Return whether the generic build runner should execute this build."""
+    params = build.params or {}
+    if not isinstance(params, dict):
+        return True
+    return params.get("_dispatch_mode") != "external"
+
+
 @dataclass
 class RunnerConfig:
     """Configuration for the build runner.
@@ -208,6 +216,8 @@ class BuildRunner:
                 pending = self.build_store.list_pending_builds(limit=50)
 
                 for build in pending:
+                    if not _is_runner_managed_build(build):
+                        continue
                     # Skip if already running
                     if build.build_id in self._running_builds:
                         continue

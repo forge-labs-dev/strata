@@ -219,6 +219,43 @@ class TestBuildRunnerBasics:
         await build_runner.stop()
 
     @pytest.mark.asyncio
+    async def test_runner_ignores_external_dispatch_builds(
+        self,
+        artifact_store,
+        build_store,
+        build_runner,
+    ):
+        """Externally driven builds should stay pending for their own controller."""
+        artifact_id = str(uuid.uuid4())
+        version = artifact_store.create_artifact(
+            artifact_id=artifact_id,
+            provenance_hash=f"prov-{artifact_id}",
+            transform_spec=TransformSpec(
+                executor="notebook_cell@v1",
+                params={"_dispatch_mode": "external"},
+                inputs=[],
+            ),
+        )
+        build_id = str(uuid.uuid4())
+        build_store.create_build(
+            build_id=build_id,
+            artifact_id=artifact_id,
+            version=version,
+            executor_ref="notebook_cell@v1",
+            executor_url="http://notebook-executor:8080",
+            params={"_dispatch_mode": "external"},
+        )
+
+        await build_runner.start()
+        try:
+            await asyncio.sleep(build_runner.config.poll_interval_ms / 1000.0 * 3)
+            build = build_store.get_build(build_id)
+            assert build is not None
+            assert build.state == "pending"
+        finally:
+            await build_runner.stop()
+
+    @pytest.mark.asyncio
     async def test_double_stop(self, build_runner):
         """Stopping twice should be idempotent."""
         await build_runner.start()

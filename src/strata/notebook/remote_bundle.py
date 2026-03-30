@@ -158,3 +158,17 @@ def unpack_notebook_output_bundle(
         json.dump(result, f, indent=2)
 
     return result
+
+
+def read_notebook_output_bundle_manifest(data: bytes) -> dict[str, Any]:
+    """Read and validate the top-level manifest from bundle bytes."""
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        manifest_data = json.loads(_read_member(tar, "manifest.json").decode("utf-8"))
+
+    if manifest_data.get("schema_version") != SCHEMA_VERSION:
+        raise ValueError(
+            "Unsupported notebook bundle schema: "
+            f"{manifest_data.get('schema_version')!r}"
+        )
+
+    return manifest_data

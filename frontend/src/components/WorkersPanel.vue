@@ -8,12 +8,14 @@ const {
   notebook,
   connected,
   availableWorkers,
+  workerDefinitionsEditable,
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
 } = useNotebook()
 const showPanel = ref(false)
 
 const workerLabel = computed(() => notebook.worker || 'local')
+const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
 </script>
 
 <template>
@@ -26,8 +28,13 @@ const workerLabel = computed(() => notebook.worker || 'local')
 
     <div v-if="showPanel" class="workers-content">
       <p class="workers-copy">
-        Notebook default. Cells can override this individually. Non-local workers
-        are saved and surfaced now, but execution still errors until routing lands.
+        Notebook default. Cells can override this individually.
+        <span v-if="registryManagedByServer">
+          Worker definitions are managed by the server in service mode.
+        </span>
+        <span v-else>
+          Worker definitions are stored with the notebook in personal mode.
+        </span>
       </p>
       <WorkerConfigEditor
         :worker="notebook.worker"
@@ -38,11 +45,16 @@ const workerLabel = computed(() => notebook.worker || 'local')
       />
 
       <WorkerListEditor
+        v-if="workerDefinitionsEditable"
         :workers="notebook.workers"
         title="Notebook Worker Catalog"
-        :read-only="!connected"
+        :read-only="!connected || !workerDefinitionsEditable"
         @save="updateNotebookWorkersAction"
       />
+      <div v-else class="workers-copy workers-copy-muted">
+        This notebook can select from the visible server-managed workers below,
+        but it cannot change the worker registry.
+      </div>
 
       <div v-if="availableWorkers.length" class="workers-catalog">
         <div class="workers-catalog-title">Visible Workers</div>
@@ -52,8 +64,15 @@ const workerLabel = computed(() => notebook.worker || 'local')
           class="workers-catalog-row"
         >
           <code>{{ worker.name }}</code>
+          <span class="workers-catalog-meta">{{ worker.source || 'unknown' }}</span>
           <span class="workers-catalog-meta">{{ worker.backend }}</span>
           <span class="workers-catalog-meta">{{ worker.health }}</span>
+          <span
+            class="workers-catalog-meta"
+            :class="{ disallowed: worker.allowed === false }"
+          >
+            {{ worker.allowed === false ? 'not allowed' : 'allowed' }}
+          </span>
         </div>
       </div>
     </div>
@@ -114,6 +133,10 @@ const workerLabel = computed(() => notebook.worker || 'local')
   line-height: 1.4;
 }
 
+.workers-copy-muted {
+  margin-top: -2px;
+}
+
 .workers-catalog {
   display: flex;
   flex-direction: column;
@@ -142,5 +165,9 @@ const workerLabel = computed(() => notebook.worker || 'local')
   background: #313244;
   color: #89b4fa;
   font-size: 11px;
+}
+
+.workers-catalog-meta.disallowed {
+  color: #f38ba8;
 }
 </style>

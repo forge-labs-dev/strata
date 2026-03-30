@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -33,6 +34,34 @@ def create_test_app():
     app = FastAPI()
     app.include_router(router)
     return app
+
+
+@pytest.fixture
+def service_mode_worker_state(monkeypatch):
+    """Configure a fake server state with a service-mode worker registry."""
+
+    def _configure(workers: list[dict] | None = None) -> None:
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="service",
+                    transforms_config={
+                        "notebook_workers": workers
+                        or [
+                            {
+                                "name": "gpu-a100",
+                                "backend": "executor",
+                                "runtime_id": "cuda-12.4",
+                                "config": {"url": "embedded://local"},
+                            }
+                        ]
+                    },
+                )
+            ),
+        )
+
+    return _configure
 
 
 def test_open_notebook():
@@ -285,6 +314,33 @@ def test_list_notebook_workers():
         assert response.status_code == 200
         data = response.json()
         assert any(worker["name"] == "local" for worker in data["workers"])
+        assert data["definitions_editable"] is True
+
+
+def test_list_notebook_workers_in_service_mode(service_mode_worker_state):
+    """Service mode should expose a server-managed worker registry."""
+    service_mode_worker_state()
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Worker Catalog Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.get(f"/v1/notebooks/{session_id}/workers")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["definitions_editable"] is False
+        assert any(
+            worker["name"] == "gpu-a100"
+            and worker["source"] == "server"
+            and worker["allowed"] is True
+            for worker in data["workers"]
+        )
 
 
 def test_update_notebook_workers():
@@ -319,7 +375,140 @@ def test_update_notebook_workers():
         assert data["configured_workers"][0]["backend"] == "executor"
         assert any(worker["name"] == "local" for worker in data["workers"])
         assert any(
-            worker["name"] == "gpu-a100" and worker["health"] == "unknown"
+            worker["name"] == "gpu-a100" and worker["health"] == "unavailable"
+            for worker in data["workers"]
+        )
+        assert data["definitions_editable"] is True
+
+
+def test_update_notebook_workers_forbidden_in_service_mode(service_mode_worker_state):
+    """Notebook-scoped worker definitions should be disabled in service mode."""
+    service_mode_worker_state()
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Worker Update Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.put(
+            f"/v1/notebooks/{session_id}/workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-local",
+                        "backend": "executor",
+                        "config": {"url": "https://executor.internal/gpu-local"},
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 403
+        assert "managed by the server" in response.json()["detail"]
+
+
+def test_update_notebook_worker_requires_allowlisted_service_worker(
+    service_mode_worker_state,
+):
+    """Service mode should reject worker names outside the server registry."""
+    service_mode_worker_state()
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Worker Assignment Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        blocked = client.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-shadow"},
+        )
+        assert blocked.status_code == 403
+        assert "not allowed in service mode" in blocked.json()["detail"]
+
+        allowed = client.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-a100"},
+        )
+        assert allowed.status_code == 200
+        payload = allowed.json()
+        assert payload["worker"] == "gpu-a100"
+        assert payload["definitions_editable"] is False
+
+
+def test_update_cell_worker_requires_allowlisted_service_worker(
+    service_mode_worker_state,
+):
+    """Cell-level worker overrides should follow the same service-mode policy."""
+    service_mode_worker_state()
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Cell Worker Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        blocked = client.put(
+            f"/v1/notebooks/{session_id}/cells/cell-1/worker",
+            json={"worker": "gpu-shadow"},
+        )
+        assert blocked.status_code == 403
+        assert "not allowed in service mode" in blocked.json()["detail"]
+
+        allowed = client.put(
+            f"/v1/notebooks/{session_id}/cells/cell-1/worker",
+            json={"worker": "gpu-a100"},
+        )
+        assert allowed.status_code == 200
+        payload = allowed.json()
+        assert payload["cell"]["worker"] == "gpu-a100"
+        assert payload["definitions_editable"] is False
+
+
+def test_update_notebook_workers_probes_executor_health(notebook_executor_server):
+    """Configured notebook workers should surface healthy executor probes."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Worker Health Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.put(
+            f"/v1/notebooks/{session_id}/workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "runtime_id": "cuda-12.4",
+                        "config": {"url": notebook_executor_server["execute_url"]},
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert any(
+            worker["name"] == "gpu-a100" and worker["health"] == "healthy"
             for worker in data["workers"]
         )
 

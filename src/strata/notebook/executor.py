@@ -28,11 +28,15 @@ import json
 import logging
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse, urlunparse
 
 import httpx
 
+from strata.artifact_store import TransformSpec as ArtifactTransformSpec
+from strata.artifact_store import get_artifact_store
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.env import compute_execution_env_hash
 from strata.notebook.models import MountSpec, WorkerBackendType
@@ -45,16 +49,24 @@ from strata.notebook.mounts import (
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 from strata.notebook.remote_bundle import (
     pack_notebook_output_bundle,
+    read_notebook_output_bundle_manifest,
     unpack_notebook_output_bundle,
 )
-from strata.notebook.remote_executor import NOTEBOOK_EXECUTOR_PROTOCOL_VERSION
+from strata.notebook.remote_executor import (
+    NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
+    NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+)
 from strata.notebook.workers import (
+    get_worker_execution_error,
     is_embedded_executor_worker,
     is_http_executor_worker,
     resolve_worker_spec,
     worker_runtime_identity,
     worker_supports_notebook_execution,
 )
+from strata.transforms.build_store import get_build_store
+from strata.transforms.signed_urls import generate_build_manifest
+from strata.types import EXECUTOR_PROTOCOL_HEADER, EXECUTOR_PROTOCOL_VERSION
 
 if TYPE_CHECKING:
     from strata.notebook.pool import WarmProcessPool
@@ -244,10 +256,15 @@ class CellExecutor:
             effective_worker,
         )
         if not worker_supports_notebook_execution(worker_spec):
+            policy_error = get_worker_execution_error(
+                self.session.notebook_state,
+                effective_worker,
+            )
             return CellExecutionResult(
                 cell_id=cell_id,
                 success=False,
-                error=(
+                error=policy_error
+                or (
                     f"Execution failed: worker '{effective_worker}' is not "
                     "implemented yet"
                 ),
@@ -771,13 +788,45 @@ class CellExecutor:
                 f"Executor worker '{worker_spec.name}' is missing config.url"
             )
 
+        transport = str(worker_spec.config.get("transport", "direct")).strip().lower()
+        if transport in {"signed", "manifest", "build"}:
+            return await self._dispatch_http_executor_with_manifest(
+                worker_spec,
+                source,
+                input_specs,
+                mount_specs,
+                output_dir,
+                runtime_env,
+                timeout_seconds,
+            )
+
         metadata = {
-            "protocol_version": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
-            "source": source,
-            "timeout_seconds": timeout_seconds,
-            "inputs": input_specs,
-            "mounts": [mount.model_dump(mode="json") for mount in mount_specs],
-            "env": runtime_env,
+            "protocol_version": EXECUTOR_PROTOCOL_VERSION,
+            "build_id": f"notebook-{uuid.uuid4().hex[:12]}",
+            "tenant": None,
+            "principal": None,
+            "provenance_hash": hashlib.sha256(
+                f"{source}:{sorted(input_specs)}".encode()
+            ).hexdigest(),
+            "transform": {
+                "ref": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+                "code_hash": compute_source_hash(source),
+                "params": {
+                    "source": source,
+                    "timeout_seconds": timeout_seconds,
+                    "mounts": [mount.model_dump(mode="json") for mount in mount_specs],
+                    "env": runtime_env,
+                },
+            },
+            "inputs": [
+                {
+                    "name": var_name,
+                    "format": str(spec.get("content_type", "pickle/object")),
+                    "uri": None,
+                    "byte_size": (output_dir / str(spec["file"])).stat().st_size,
+                }
+                for var_name, spec in sorted(input_specs.items())
+            ],
         }
 
         files: list[tuple[str, tuple[str, bytes, str]]] = [
@@ -806,9 +855,12 @@ class CellExecutor:
                 )
 
         timeout = max(timeout_seconds + 5.0, 30.0)
+        headers = {
+            EXECUTOR_PROTOCOL_HEADER: EXECUTOR_PROTOCOL_VERSION,
+        }
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(executor_url, files=files)
+                response = await client.post(executor_url, files=files, headers=headers)
         except httpx.TimeoutException as exc:
             raise TimeoutError() from exc
         except httpx.HTTPError as exc:
@@ -825,11 +877,17 @@ class CellExecutor:
                 f"{response.status_code}: {detail}"
             )
 
-        protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
-        if protocol and protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
+        protocol = response.headers.get(EXECUTOR_PROTOCOL_HEADER)
+        if protocol and protocol != EXECUTOR_PROTOCOL_VERSION:
             raise RuntimeError(
                 f"Remote executor '{worker_spec.name}' returned unsupported "
                 f"protocol version {protocol!r}"
+            )
+        notebook_protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
+        if notebook_protocol and notebook_protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
+            raise RuntimeError(
+                f"Remote executor '{worker_spec.name}' returned unsupported "
+                f"notebook protocol version {notebook_protocol!r}"
             )
 
         bundle_path = output_dir / "notebook-output-bundle.tar.gz"
@@ -839,6 +897,216 @@ class CellExecutor:
         unpacked_dir = output_dir / "_executor_result"
         unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
         return unpacked_result, unpacked_dir, "executor", {}
+
+    async def _dispatch_http_executor_with_manifest(
+        self,
+        worker_spec: Any,
+        source: str,
+        input_specs: dict[str, dict[str, str]],
+        mount_specs: list[MountSpec],
+        output_dir: Path,
+        runtime_env: dict[str, str],
+        timeout_seconds: float,
+    ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
+        """Run a cell through the core build + signed-URL transport path."""
+        from strata.auth import get_principal
+        from strata.server import get_state
+
+        state = get_state()
+        if not state.config.server_transforms_enabled:
+            raise RuntimeError(
+                "Signed notebook executor transport requires "
+                "server-mode transforms to be enabled"
+            )
+
+        artifact_dir = state.config.artifact_dir
+        if artifact_dir is None:
+            raise RuntimeError("Artifact store is not configured for server-mode transforms")
+
+        artifact_store = get_artifact_store(artifact_dir)
+        build_store = get_build_store(artifact_dir / "artifacts.sqlite")
+        if artifact_store is None or build_store is None:
+            raise RuntimeError("Build store is not initialized")
+
+        executor_url = str(worker_spec.config.get("url", "")).strip()
+        if not executor_url:
+            raise RuntimeError(
+                f"Executor worker '{worker_spec.name}' is missing config.url"
+            )
+
+        base_url = str(worker_spec.config.get("strata_url", "")).strip() or state.config.server_url
+        principal = get_principal()
+        tenant_id = principal.tenant if principal is not None else None
+        principal_id = principal.id if principal is not None else None
+
+        build_id = f"nbbuild-{uuid.uuid4().hex[:12]}"
+        artifact_id = (
+            f"nb_remote_{self.session.notebook_state.id}_{build_id}"
+        )
+
+        input_uris = sorted(
+            {
+                str(spec["uri"])
+                for spec in input_specs.values()
+                if spec.get("uri")
+            }
+        )
+        input_artifacts = [
+            self._parse_artifact_uri(input_uri)
+            for input_uri in input_uris
+        ]
+
+        build_params = {
+            "source": source,
+            "timeout_seconds": timeout_seconds,
+            "mounts": [mount.model_dump(mode="json") for mount in mount_specs],
+            "env": runtime_env,
+            "input_specs": {
+                name: {
+                    "uri": str(spec["uri"]),
+                    "content_type": str(spec.get("content_type", "pickle/object")),
+                }
+                for name, spec in sorted(input_specs.items())
+            },
+            "output_format": "notebook-output-bundle@v1",
+            "_dispatch_mode": "external",
+        }
+        transport_provenance = hashlib.sha256(
+            json.dumps(
+                {
+                    "executor": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+                    "executor_url": executor_url,
+                    "inputs": input_uris,
+                    "params": build_params,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+        transform_spec = ArtifactTransformSpec(
+            executor=NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+            params=build_params,
+            inputs=input_uris,
+        )
+
+        version = artifact_store.create_artifact(
+            artifact_id=artifact_id,
+            provenance_hash=transport_provenance,
+            transform_spec=transform_spec,
+            input_versions={uri: uri for uri in input_uris},
+            tenant=tenant_id,
+            principal=principal_id,
+        )
+        build_store.create_build(
+            build_id=build_id,
+            artifact_id=artifact_id,
+            version=version,
+            executor_ref=NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+            executor_url=executor_url,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+            input_uris=input_uris,
+            params=build_params,
+        )
+        build_store.start_build(build_id)
+
+        manifest = generate_build_manifest(
+            base_url=base_url,
+            build_id=build_id,
+            metadata={
+                "build_id": build_id,
+                "artifact_id": artifact_id,
+                "version": version,
+                "executor_ref": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
+                "params": build_params,
+            },
+            input_artifacts=input_artifacts,
+            max_output_bytes=state.config.max_transform_output_bytes,
+            url_expiry_seconds=state.config.signed_url_expiry_seconds,
+        ).to_dict()
+
+        manifest_execute_url = self._manifest_execute_url(executor_url)
+        try:
+            async with httpx.AsyncClient(timeout=max(timeout_seconds + 10.0, 30.0)) as client:
+                response = await client.post(manifest_execute_url, json=manifest)
+        except httpx.TimeoutException as exc:
+            build_store.fail_build(build_id, "Notebook manifest execution timed out", "TIMEOUT")
+            artifact_store.fail_artifact(artifact_id, version)
+            raise TimeoutError() from exc
+        except httpx.HTTPError as exc:
+            build_store.fail_build(
+                build_id,
+                f"Notebook manifest execution request failed: {exc}",
+                "HTTP_ERROR",
+            )
+            artifact_store.fail_artifact(artifact_id, version)
+            raise RuntimeError(
+                f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
+            ) from exc
+
+        if response.status_code == 408:
+            build_store.fail_build(build_id, "Notebook manifest execution timed out", "TIMEOUT")
+            artifact_store.fail_artifact(artifact_id, version)
+            raise TimeoutError()
+        if response.status_code != 200:
+            detail = self._extract_remote_error(response)
+            build_store.fail_build(
+                build_id,
+                f"Notebook manifest execution failed: {detail}",
+                "EXECUTOR_ERROR",
+            )
+            artifact_store.fail_artifact(artifact_id, version)
+            raise RuntimeError(
+                f"Remote executor '{worker_spec.name}' returned "
+                f"{response.status_code}: {detail}"
+            )
+
+        build = build_store.get_build(build_id)
+        if build is None or build.state != "ready":
+            artifact_store.fail_artifact(artifact_id, version)
+            raise RuntimeError(
+                f"Notebook build {build_id} did not complete successfully"
+            )
+
+        blob = artifact_store.read_blob(build.artifact_id, build.version)
+        if blob is None:
+            raise RuntimeError(
+                f"Notebook build {build_id} completed without a stored bundle artifact"
+            )
+
+        read_notebook_output_bundle_manifest(blob)
+        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+        with open(bundle_path, "wb") as f:
+            f.write(blob)
+
+        unpacked_dir = output_dir / "_executor_result"
+        unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
+        return unpacked_result, unpacked_dir, "executor", {}
+
+    def _manifest_execute_url(self, executor_url: str) -> str:
+        """Map an executor base URL to the notebook manifest execution endpoint."""
+        parsed = urlparse(executor_url)
+        path = parsed.path or ""
+        if path.endswith("/v1/execute"):
+            path = path[: -len("/v1/execute")] + "/v1/execute-manifest"
+        elif path.endswith("/v1/notebook-execute"):
+            path = path[: -len("/v1/notebook-execute")] + "/v1/execute-manifest"
+        elif not path or path == "/":
+            path = "/v1/execute-manifest"
+        else:
+            path = f"{path.rstrip('/')}/v1/execute-manifest"
+        return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+    def _parse_artifact_uri(self, input_uri: str) -> tuple[str, int]:
+        """Parse a canonical artifact URI into (artifact_id, version)."""
+        import re
+
+        match = re.fullmatch(r"strata://artifact/([^@]+)@v=(\d+)", input_uri)
+        if match is None:
+            raise RuntimeError(
+                "Signed notebook executor transport only supports artifact inputs, "
+                f"got {input_uri!r}"
+            )
+        return match.group(1), int(match.group(2))
 
     # ------------------------------------------------------------------
     # ①½ Resolve mounts
@@ -1126,6 +1394,10 @@ class CellExecutor:
                     input_specs[var_name] = {
                         "content_type": content_type,
                         "file": f"{var_name}{ext}",
+                        "uri": (
+                            f"strata://artifact/{artifact.id}"
+                            f"@v={artifact.version}"
+                        ),
                     }
                     logger.info(
                         "Loaded input %s from artifact store "

@@ -21,6 +21,11 @@ from strata.notebook.dependencies import (
 from strata.notebook.executor import CellExecutor
 from strata.notebook.models import CellStatus, MountSpec, WorkerSpec
 from strata.notebook.session import SessionManager
+from strata.notebook.workers import (
+    build_worker_catalog_with_health,
+    notebook_worker_definitions_editable,
+    validate_worker_assignment,
+)
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
@@ -420,7 +425,12 @@ async def list_notebook_workers(notebook_id: str) -> dict:
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    return {"workers": session.serialize_worker_catalog()}
+    return {
+        "workers": await build_worker_catalog_with_health(session.notebook_state),
+        "definitions_editable": notebook_worker_definitions_editable(
+            session.notebook_state
+        ),
+    }
 
 
 @router.put("/{notebook_id}/workers")
@@ -432,6 +442,11 @@ async def update_notebook_workers_endpoint(
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
+    if not notebook_worker_definitions_editable(session.notebook_state):
+        raise HTTPException(
+            status_code=403,
+            detail="Notebook worker definitions are managed by the server in service mode",
+        )
 
     try:
         update_notebook_workers(session.path, req.workers)
@@ -440,7 +455,12 @@ async def update_notebook_workers_endpoint(
             "configured_workers": [
                 worker.model_dump() for worker in session.notebook_state.workers
             ],
-            "workers": session.serialize_worker_catalog(),
+            "workers": await build_worker_catalog_with_health(
+                session.notebook_state,
+            ),
+            "definitions_editable": notebook_worker_definitions_editable(
+                session.notebook_state
+            ),
         }
     except Exception:
         logger.exception("Internal server error")
@@ -456,13 +476,21 @@ async def update_notebook_worker_endpoint(
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
+    policy_error = validate_worker_assignment(session.notebook_state, req.worker)
+    if policy_error is not None:
+        raise HTTPException(status_code=403, detail=policy_error)
 
     try:
         update_notebook_worker(session.path, req.worker)
         session.reload()
         return {
             "worker": session.notebook_state.worker,
-            "workers": session.serialize_worker_catalog(),
+            "workers": await build_worker_catalog_with_health(
+                session.notebook_state,
+            ),
+            "definitions_editable": notebook_worker_definitions_editable(
+                session.notebook_state
+            ),
             "cells": session.serialize_cells(),
         }
     except Exception:
@@ -524,6 +552,9 @@ async def update_cell_worker_endpoint(
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
+    policy_error = validate_worker_assignment(session.notebook_state, req.worker)
+    if policy_error is not None:
+        raise HTTPException(status_code=403, detail=policy_error)
 
     try:
         update_cell_worker(session.path, cell_id, req.worker)
@@ -534,7 +565,12 @@ async def update_cell_worker_endpoint(
         return {
             "cell": session.serialize_cell(cell),
             "worker": cell.worker_override,
-            "workers": session.serialize_worker_catalog(),
+            "workers": await build_worker_catalog_with_health(
+                session.notebook_state,
+            ),
+            "definitions_editable": notebook_worker_definitions_editable(
+                session.notebook_state
+            ),
             "cells": session.serialize_cells(),
         }
     except ValueError as e:

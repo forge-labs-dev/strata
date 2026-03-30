@@ -4759,6 +4759,15 @@ async def finalize_build(
             detail=f"Build is not in pending or building state (state={build.state})",
         )
 
+    try:
+        finalize_payload = await request.json()
+        if not isinstance(finalize_payload, dict):
+            finalize_payload = {}
+    except Exception:
+        finalize_payload = {}
+
+    output_format = str(finalize_payload.get("output_format", "")).strip()
+
     # Verify blob was uploaded
     store = _get_artifact_store(allow_server_mode=True)
     if not store.blob_exists(build.artifact_id, build.version):
@@ -4774,25 +4783,39 @@ async def finalize_build(
 
     byte_size = len(blob)
 
-    # Parse Arrow IPC to get schema and row count
-    try:
-        import io
+    if output_format == "notebook-output-bundle@v1":
+        try:
+            from strata.notebook.remote_bundle import read_notebook_output_bundle_manifest
 
-        import pyarrow.ipc as arrow_ipc
+            read_notebook_output_bundle_manifest(blob)
+            schema_json = ""
+            row_count = 0
+        except Exception as e:
+            build_store.fail_build(build_id, str(e), "INVALID_NOTEBOOK_BUNDLE")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid notebook output bundle: {e}",
+            )
+    else:
+        # Parse Arrow IPC to get schema and row count
+        try:
+            import io
 
-        reader = arrow_ipc.open_stream(io.BytesIO(blob))
-        schema = reader.schema
-        row_count = 0
-        for batch in reader:
-            row_count += batch.num_rows
-        schema_json = schema.to_string()
-    except Exception as e:
-        # Mark build as failed
-        build_store.fail_build(build_id, str(e), "INVALID_ARROW_FORMAT")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid Arrow IPC format: {e}",
-        )
+            import pyarrow.ipc as arrow_ipc
+
+            reader = arrow_ipc.open_stream(io.BytesIO(blob))
+            schema = reader.schema
+            row_count = 0
+            for batch in reader:
+                row_count += batch.num_rows
+            schema_json = schema.to_string()
+        except Exception as e:
+            # Mark build as failed
+            build_store.fail_build(build_id, str(e), "INVALID_ARROW_FORMAT")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid Arrow IPC format: {e}",
+            )
 
     # Finalize the artifact atomically with name if provided
     try:
