@@ -909,6 +909,7 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
         executor = CellExecutor(session, session.warm_pool)
         result = await executor.execute_cell(cell_id, cell.source)
         session.record_execution(cell_id, result.duration_ms, result.cache_hit)
+        session.apply_execution_result_metadata(cell_id, result)
         if result.success:
             session.compute_staleness()
             session.mark_executed_ready(cell_id)

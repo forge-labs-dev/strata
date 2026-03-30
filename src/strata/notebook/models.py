@@ -287,6 +287,22 @@ class CellState(BaseModel):
         default=False,
         description="Whether last execution was a cache hit",
     )
+    execution_method: str | None = Field(
+        default=None,
+        description="Last execution method: cached, warm, cold, executor",
+    )
+    remote_worker: str | None = Field(
+        default=None,
+        description="Remote worker name used for the last remote execution",
+    )
+    remote_transport: str | None = Field(
+        default=None,
+        description="Remote transport used for the last remote execution",
+    )
+    remote_build_id: str | None = Field(
+        default=None,
+        description="Signed build id for the last remote execution, when applicable",
+    )
 
 
 class NotebookState(BaseModel):

@@ -957,6 +957,7 @@ async def _execute_cell_directly(
         session.record_execution(
             cell_id, result.duration_ms, result.cache_hit
         )
+        session.apply_execution_result_metadata(cell_id, result)
 
         # Send output with v1.1 profiling data
         if result.success:
@@ -1189,6 +1190,7 @@ async def _execute_cascade(
                 session.record_execution(
                     cell_id, result.duration_ms, result.cache_hit
                 )
+                session.apply_execution_result_metadata(cell_id, result)
 
                 # Send console output for cascade cells
                 if result.stdout:

@@ -121,6 +121,74 @@ def test_open_notebook_rehydrates_cached_status():
         assert cells["c2"]["status"] == "idle"
 
 
+def test_list_cells_includes_remote_execution_metadata(
+    notebook_executor_server,
+    notebook_build_server,
+):
+    """List-cells should retain remote execution metadata from the current session."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Remote Metadata Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+        write_cell(notebook_dir, "cell-1", "x = 1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.executor import CellExecutor
+        from strata.notebook.models import WorkerBackendType, WorkerSpec
+        from strata.notebook.routes import get_session_manager
+
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            }
+        ]
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        session.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http-signed",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-signed-a100",
+                config={
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            )
+        ]
+        session.notebook_state.worker = "gpu-http-signed"
+        cell = next(c for c in session.notebook_state.cells if c.id == "cell-1")
+        cell.worker = "gpu-http-signed"
+
+        async def _prime() -> None:
+            executor = CellExecutor(session)
+            assert (await executor.execute_cell("cell-1", "x = 1")).success
+
+        asyncio.run(_prime())
+
+        response = client.get(f"/v1/notebooks/{session_id}/cells")
+        assert response.status_code == 200
+        cell_payload = response.json()["cells"][0]
+        assert cell_payload["execution_method"] == "executor"
+        assert cell_payload["remote_worker"] == "gpu-http-signed"
+        assert cell_payload["remote_transport"] == "signed"
+        assert isinstance(cell_payload["remote_build_id"], str)
+
+
 def test_open_notebook_not_found():
     """Test opening a non-existent notebook."""
     client = TestClient(create_test_app())

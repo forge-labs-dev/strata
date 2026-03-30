@@ -310,6 +310,18 @@ function applyRemoteExecutionMetadata(cell: Cell, raw: Record<string, any>) {
   }
 }
 
+function applySerializedExecutionMetadata(cell: Cell, raw: Record<string, any>) {
+  cell.executorName =
+    typeof raw.execution_method === 'string' && raw.execution_method.trim()
+      ? raw.execution_method
+      : undefined
+  cell.remoteWorkerName =
+    typeof raw.remote_worker === 'string' && raw.remote_worker.trim() ? raw.remote_worker : undefined
+  cell.remoteTransport = parseWorkerTransport(raw.remote_transport) ?? null
+  cell.remoteBuildId =
+    typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim() ? raw.remote_build_id : null
+}
+
 function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
   if (!raw) return undefined
   return {
@@ -345,6 +357,7 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.annotations = parseBackendAnnotations(serverCell.annotations)
   localCell.stalenessReasons = serverCell.staleness_reasons || serverCell.staleness?.reasons || []
   localCell.causality = parseBackendCausality(serverCell.causality)
+  applySerializedExecutionMetadata(localCell, serverCell)
 }
 
 function syncCellsFromBackend(serverCells: any[]) {
@@ -672,6 +685,17 @@ async function openNotebook(path: string): Promise<void> {
     isLeaf: c.is_leaf || false,
     stalenessReasons: c.staleness_reasons || c.staleness?.reasons || [],
     causality: parseBackendCausality(c.causality),
+    executorName:
+      typeof c.execution_method === 'string' && c.execution_method.trim()
+        ? c.execution_method
+        : undefined,
+    remoteWorkerName:
+      typeof c.remote_worker === 'string' && c.remote_worker.trim() ? c.remote_worker : undefined,
+    remoteTransport: parseWorkerTransport(c.remote_transport) ?? null,
+    remoteBuildId:
+      typeof c.remote_build_id === 'string' && c.remote_build_id.trim()
+        ? c.remote_build_id
+        : null,
   }))
   notebook.cells.sort((a, b) => a.order - b.order)
   if (data.dag) {

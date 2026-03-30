@@ -574,7 +574,7 @@ class CellExecutor:
                             )
                             cell.artifact_uris[var_name] = uri
                             cell.artifact_uri = uri  # backward compat
-                return CellExecutionResult(
+                cached_result = CellExecutionResult(
                     cell_id=cell_id,
                     success=True,
                     outputs={},
@@ -586,6 +586,8 @@ class CellExecutor:
                     ),
                     execution_method="cached",
                 ).apply_remote_metadata(**remote_metadata)
+                self.session.apply_execution_result_metadata(cell_id, cached_result)
+                return cached_result
 
             # ④ Cache miss — execute the cell.
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -683,24 +685,29 @@ class CellExecutor:
                                 mutation_warnings=exec_result.mutation_warnings,
                             ).apply_remote_metadata(**remote_metadata)
 
+                self.session.apply_execution_result_metadata(cell_id, exec_result)
                 return exec_result
 
         except TimeoutError:
             duration_ms = (time.time() - start_time) * 1000
-            return CellExecutionResult(
+            timeout_result = CellExecutionResult(
                 cell_id=cell_id,
                 success=False,
                 duration_ms=duration_ms,
                 error=f"Cell execution timed out after {timeout_seconds}s",
             ).apply_remote_metadata(**remote_metadata)
+            self.session.apply_execution_result_metadata(cell_id, timeout_result)
+            return timeout_result
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
-            return CellExecutionResult(
+            error_result = CellExecutionResult(
                 cell_id=cell_id,
                 success=False,
                 duration_ms=duration_ms,
                 error=f"Execution failed: {e}",
             ).apply_remote_metadata(**remote_metadata)
+            self.session.apply_execution_result_metadata(cell_id, error_result)
+            return error_result
 
     async def _dispatch_execution(
         self,

@@ -189,6 +189,10 @@ class NotebookSession:
             cell.artifact_uri = previous.artifact_uri
             cell.artifact_uris = dict(previous.artifact_uris)
             cell.cache_hit = previous.cache_hit
+            cell.execution_method = previous.execution_method
+            cell.remote_worker = previous.remote_worker
+            cell.remote_transport = previous.remote_transport
+            cell.remote_build_id = previous.remote_build_id
             self.causality_map.pop(cell.id, None)
 
     def re_analyze_cell(self, cell_id: str) -> None:
@@ -346,6 +350,26 @@ class NotebookSession:
         cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
         cell.status = CellStatus.READY
         self.causality_map.pop(cell_id, None)
+
+    def apply_execution_result_metadata(self, cell_id: str, result: Any) -> None:
+        """Persist transient execution metadata onto the session cell state."""
+        cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
+        if cell is None:
+            return
+
+        cell.execution_method = result.execution_method
+
+        if result.remote_worker or result.remote_transport or result.remote_build_id:
+            cell.remote_worker = result.remote_worker
+            cell.remote_transport = result.remote_transport
+            if result.remote_build_id is not None:
+                cell.remote_build_id = result.remote_build_id
+            return
+
+        if result.execution_method != "cached":
+            cell.remote_worker = None
+            cell.remote_transport = None
+            cell.remote_build_id = None
 
     def serialize_cell(self, cell: Any) -> dict[str, Any]:
         """Serialize a cell with causality and flattened staleness reasons."""

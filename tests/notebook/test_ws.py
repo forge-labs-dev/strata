@@ -139,6 +139,77 @@ def test_notebook_sync_includes_causality_and_staleness(client, temp_notebook, a
         assert root["causality"]["reason"] == "self"
 
 
+def test_notebook_sync_includes_remote_execution_metadata(
+    client,
+    temp_notebook,
+    app,
+    notebook_executor_server,
+    notebook_build_server,
+):
+    """Notebook sync should retain remote execution metadata from the live session."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    notebook_build_server["config"].transforms_config["notebook_workers"] = [
+        {
+            "name": "gpu-http-signed",
+            "backend": "executor",
+            "runtime_id": "gpu-http-signed-a100",
+            "config": {
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        }
+    ]
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.notebook_state.workers = [
+        WorkerSpec(
+            name="gpu-http-signed",
+            backend=WorkerBackendType.EXECUTOR,
+            runtime_id="gpu-http-signed-a100",
+            config={
+                "url": notebook_executor_server["execute_url"],
+                "transport": "signed",
+                "strata_url": notebook_build_server["base_url"],
+            },
+        )
+    ]
+    root = next(c for c in session.notebook_state.cells if c.id == "root")
+    root.worker = "gpu-http-signed"
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("root", "x = 1")).success
+
+    asyncio.run(_prime())
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "notebook_sync",
+                "seq": 1,
+                "ts": "2026-03-30T00:00:00Z",
+                "payload": {},
+            }
+        )
+
+        response = websocket.receive_json()
+        assert response["type"] == "notebook_state"
+        state = response["payload"]
+        root = next(cell for cell in state["cells"] if cell["id"] == "root")
+
+        assert root["execution_method"] == "executor"
+        assert root["remote_worker"] == "gpu-http-signed"
+        assert root["remote_transport"] == "signed"
+        assert isinstance(root["remote_build_id"], str)
+
+
 def test_cell_execute_no_cascade(client, temp_notebook, app):
     """Test cell_execute on a root cell (no cascade needed)."""
     notebook_dir, notebook_state = temp_notebook
