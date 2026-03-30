@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from strata.artifact_store import get_artifact_store, reset_artifact_store
 from strata.config import StrataConfig
+from strata.notebook.writer import create_notebook
 from strata.transforms.build_qos import TenantQuotaExceededError
 from strata.transforms.build_store import get_build_store, reset_build_store
 from strata.transforms.registry import (
@@ -361,6 +362,101 @@ class TestNotebookWorkerAdminApi:
 
         assert response.status_code == 400
         assert "Duplicate notebook worker names" in response.json()["detail"]
+
+    def test_admin_disable_propagates_into_notebook_catalog_and_assignment(
+        self,
+        server_mode_app,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Admin enable/disable should flow through notebook worker APIs."""
+
+        monkeypatch.setattr("strata.notebook.session._uv_sync", lambda path, **kw: True)
+
+        async def _noop_start(self):
+            del self
+
+        monkeypatch.setattr("strata.notebook.pool.WarmProcessPool.start", _noop_start)
+
+        configured = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-a100",
+                        "backend": "executor",
+                        "runtime_id": "cuda-12.4",
+                        "config": {"url": "embedded://local"},
+                    }
+                ]
+            },
+        )
+        assert configured.status_code == 200
+
+        notebook_dir = create_notebook(tmp_path, "Service Notebook Worker Policy")
+        opened = server_mode_app.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        assert opened.status_code == 200
+        session_id = opened.json()["session_id"]
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        before_disable = next(
+            worker
+            for worker in workers.json()["workers"]
+            if worker["name"] == "gpu-a100"
+        )
+        assert before_disable["enabled"] is True
+        assert before_disable["allowed"] is True
+
+        disabled = server_mode_app.patch(
+            "/v1/admin/notebook-workers/gpu-a100",
+            json={"enabled": False},
+        )
+        assert disabled.status_code == 200
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        after_disable = next(
+            worker
+            for worker in workers.json()["workers"]
+            if worker["name"] == "gpu-a100"
+        )
+        assert after_disable["enabled"] is False
+        assert after_disable["allowed"] is False
+        assert "not selectable" in after_disable["last_error"]
+
+        blocked = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-a100"},
+        )
+        assert blocked.status_code == 403
+        assert "disabled by server policy" in blocked.json()["detail"]
+
+        enabled = server_mode_app.patch(
+            "/v1/admin/notebook-workers/gpu-a100",
+            json={"enabled": True},
+        )
+        assert enabled.status_code == 200
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        after_enable = next(
+            worker
+            for worker in workers.json()["workers"]
+            if worker["name"] == "gpu-a100"
+        )
+        assert after_enable["enabled"] is True
+        assert after_enable["allowed"] is True
+
+        allowed = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-a100"},
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["worker"] == "gpu-a100"
 
     def test_notebook_workers_admin_requires_service_mode(self, personal_mode_app):
         """The admin registry should not exist in personal mode."""
