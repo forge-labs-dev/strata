@@ -340,6 +340,83 @@ class TestNotebookWorkerAdminApi:
             for worker in payload["workers"]
         )
 
+    def test_refresh_notebook_worker_health_records_recent_history(
+        self,
+        server_mode_app,
+        monkeypatch,
+    ):
+        """Forced refreshes should accumulate a short recent probe trail."""
+        import strata.notebook.workers as notebook_workers
+
+        class _FakeResponse:
+            def __init__(self, status_code: int, payload: dict):
+                self.status_code = status_code
+                self._payload = payload
+
+            def json(self) -> dict:
+                return self._payload
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                del args, kwargs
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                del exc_type, exc, tb
+                return None
+
+            async def get(self, url: str):
+                del url
+                status_code, payload = responses.pop(0)
+                return _FakeResponse(status_code, payload)
+
+        responses = [
+            (503, {"status": "unavailable"}),
+            (
+                200,
+                {
+                    "status": "healthy",
+                    "capabilities": {"transform_refs": ["notebook_cell@v1"]},
+                },
+            ),
+        ]
+
+        monkeypatch.setattr(notebook_workers, "_worker_health_cache", {})
+        monkeypatch.setattr(notebook_workers.httpx, "AsyncClient", _FakeAsyncClient)
+
+        seeded = server_mode_app.put(
+            "/v1/admin/notebook-workers",
+            json={
+                "workers": [
+                    {
+                        "name": "gpu-http",
+                        "backend": "executor",
+                        "config": {"url": "https://executor.internal/v1/execute"},
+                    }
+                ]
+            },
+        )
+        assert seeded.status_code == 200
+        seeded_worker = next(
+            worker for worker in seeded.json()["workers"] if worker["name"] == "gpu-http"
+        )
+        assert seeded_worker["health"] == "unavailable"
+        assert seeded_worker["health_history"][0]["health"] == "unavailable"
+
+        refreshed = server_mode_app.post("/v1/admin/notebook-workers/gpu-http/refresh")
+        assert refreshed.status_code == 200
+        refreshed_worker = next(
+            worker for worker in refreshed.json()["workers"] if worker["name"] == "gpu-http"
+        )
+        assert refreshed_worker["health"] == "healthy"
+        assert refreshed_worker["last_error"] is None
+        assert [entry["health"] for entry in refreshed_worker["health_history"][:2]] == [
+            "healthy",
+            "unavailable",
+        ]
+
     def test_update_notebook_workers_rejects_duplicate_names(self, server_mode_app):
         """Service-mode worker admin should reject duplicate worker names."""
         response = server_mode_app.put(

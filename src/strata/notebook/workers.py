@@ -15,6 +15,7 @@ from strata.notebook.models import NotebookState, WorkerBackendType, WorkerSpec
 from strata.notebook.remote_executor import NOTEBOOK_EXECUTOR_TRANSFORM_REF
 
 _HEALTH_CACHE_TTL_SECONDS = 5.0
+_HEALTH_HISTORY_LIMIT = 6
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,15 @@ class WorkerHealthSnapshot:
     error: str | None = None
 
 
-_worker_health_cache: dict[str, WorkerHealthSnapshot] = {}
+@dataclass(frozen=True)
+class WorkerHealthRecord:
+    """Cached worker health plus a short recent probe trail."""
+
+    latest: WorkerHealthSnapshot
+    history: tuple[WorkerHealthSnapshot, ...]
+
+
+_worker_health_cache: dict[str, WorkerHealthRecord] = {}
 
 
 @dataclass(frozen=True)
@@ -356,6 +365,7 @@ def build_worker_catalog(notebook_state: NotebookState) -> list[dict[str, Any]]:
                 "health_url": _health_url_for_worker(worker),
                 "health_checked_at": None,
                 "last_error": None,
+                "health_history": [],
             }
         )
 
@@ -451,6 +461,35 @@ def _health_url_for_worker(worker: WorkerSpec) -> str | None:
     return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
+def _record_worker_health_snapshot(
+    health_url: str,
+    snapshot: WorkerHealthSnapshot,
+) -> WorkerHealthRecord:
+    """Persist one probe result in the short in-memory health history."""
+    existing = _worker_health_cache.get(health_url)
+    history = (snapshot, *(existing.history if existing is not None else ()))
+    record = WorkerHealthRecord(
+        latest=snapshot,
+        history=history[:_HEALTH_HISTORY_LIMIT],
+    )
+    _worker_health_cache[health_url] = record
+    return record
+
+
+def _serialize_worker_health_history(
+    history: tuple[WorkerHealthSnapshot, ...],
+) -> list[dict[str, Any]]:
+    """Serialize recent health probes for API responses."""
+    return [
+        {
+            "checked_at": int(snapshot.checked_at * 1000),
+            "health": snapshot.health,
+            "error": snapshot.error,
+        }
+        for snapshot in history
+    ]
+
+
 async def probe_worker_health(
     worker: WorkerSpec,
     *,
@@ -472,9 +511,9 @@ async def probe_worker_health(
     if (
         not force_refresh
         and cached is not None
-        and now - cached.checked_at < _HEALTH_CACHE_TTL_SECONDS
+        and now - cached.latest.checked_at < _HEALTH_CACHE_TTL_SECONDS
     ):
-        return cached
+        return cached.latest
 
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -515,7 +554,7 @@ async def probe_worker_health(
             error=str(exc),
         )
 
-    _worker_health_cache[health_url] = snapshot
+    _record_worker_health_snapshot(health_url, snapshot)
     return snapshot
 
 
@@ -538,14 +577,23 @@ async def build_worker_catalog_with_health(
         if name == "local":
             entry["health"] = "healthy"
             entry["health_checked_at"] = int(time.time() * 1000)
+            entry["health_history"] = []
             continue
+        policy_error: str | None = None
+        if entry.get("allowed") is False:
+            if entry.get("enabled") is False:
+                policy_error = "Worker is disabled by server policy and is not selectable"
+            else:
+                policy_error = "Worker is not selectable in the current notebook policy"
         if entry.get("allowed") is False and entry.get("source") != "server":
             entry["health"] = "unavailable"
-            entry["last_error"] = "Worker is not selectable in the current notebook policy"
+            entry["last_error"] = policy_error
+            entry["health_history"] = []
             continue
 
         worker = worker_by_name.get(name)
         if worker is None:
+            entry["health_history"] = []
             continue
 
         snapshot = await probe_worker_health(
@@ -554,7 +602,15 @@ async def build_worker_catalog_with_health(
         )
         entry["health"] = snapshot.health
         entry["health_checked_at"] = int(snapshot.checked_at * 1000)
-        entry["last_error"] = snapshot.error
+        entry["last_error"] = policy_error or snapshot.error
+        health_url = _health_url_for_worker(worker)
+        if health_url is None:
+            entry["health_history"] = []
+        else:
+            record = _worker_health_cache.get(health_url)
+            entry["health_history"] = (
+                _serialize_worker_health_history(record.history) if record is not None else []
+            )
 
     return catalog
 
@@ -578,12 +634,15 @@ async def build_server_worker_catalog_with_health(
             "health_url": None,
             "health_checked_at": int(time.time() * 1000),
             "last_error": None,
+            "health_history": [],
         }
     ]
 
     for record in get_server_managed_worker_records():
         worker = record.worker
         snapshot = await probe_worker_health(worker, force_refresh=force_refresh)
+        health_url = _health_url_for_worker(worker)
+        cached_record = _worker_health_cache.get(health_url) if health_url else None
         catalog.append(
             {
                 "name": worker.name,
@@ -595,9 +654,14 @@ async def build_server_worker_catalog_with_health(
                 "allowed": record.enabled,
                 "enabled": record.enabled,
                 "transport": worker_transport(worker),
-                "health_url": _health_url_for_worker(worker),
+                "health_url": health_url,
                 "health_checked_at": int(snapshot.checked_at * 1000),
-                "last_error": snapshot.error,
+                "last_error": (
+                    "Worker is disabled by server policy" if not record.enabled else snapshot.error
+                ),
+                "health_history": _serialize_worker_health_history(cached_record.history)
+                if cached_record is not None
+                else [],
             }
         )
 

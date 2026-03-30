@@ -30,6 +30,12 @@ export interface ManagedWorkerSpec extends WorkerSpec {
   enabled: boolean
 }
 
+export interface WorkerHealthHistoryEntry {
+  checkedAt: number
+  health: WorkerHealth
+  error?: string | null
+}
+
 export interface WorkerCatalogEntry extends WorkerSpec {
   health: WorkerHealth
   source?: 'builtin' | 'notebook' | 'server' | 'referenced'
@@ -39,6 +45,7 @@ export interface WorkerCatalogEntry extends WorkerSpec {
   healthUrl?: string | null
   healthCheckedAt?: number | null
   lastError?: string | null
+  healthHistory?: WorkerHealthHistoryEntry[]
 }
 
 export interface CellAnnotations {

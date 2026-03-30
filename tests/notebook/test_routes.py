@@ -434,6 +434,66 @@ def test_list_notebook_workers_refresh_bypasses_health_cache(monkeypatch):
     assert calls == [False, True]
 
 
+def test_list_notebook_workers_includes_health_history(monkeypatch):
+    """Notebook worker catalog responses should include recent health probes."""
+    import strata.notebook.routes as notebook_routes
+
+    async def _fake_build_worker_catalog_with_health(notebook_state, *, force_refresh=False):
+        del notebook_state, force_refresh
+        return [
+            {
+                "name": "gpu-http",
+                "backend": "executor",
+                "runtime_id": None,
+                "config": {"url": "https://executor.internal/v1/execute"},
+                "source": "server",
+                "health": "unavailable",
+                "allowed": True,
+                "enabled": True,
+                "transport": "direct",
+                "health_url": "https://executor.internal/health",
+                "health_checked_at": 123,
+                "last_error": "Health endpoint returned 503",
+                "health_history": [
+                    {
+                        "checked_at": 123,
+                        "health": "unavailable",
+                        "error": "Health endpoint returned 503",
+                    }
+                ],
+            }
+        ]
+
+    monkeypatch.setattr(
+        notebook_routes,
+        "build_worker_catalog_with_health",
+        _fake_build_worker_catalog_with_health,
+    )
+
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Worker History Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.get(f"/v1/notebooks/{session_id}/workers")
+        assert response.status_code == 200
+        worker = response.json()["workers"][0]
+        assert worker["name"] == "gpu-http"
+        assert worker["health_history"] == [
+            {
+                "checked_at": 123,
+                "health": "unavailable",
+                "error": "Health endpoint returned 503",
+            }
+        ]
+
+
 def test_list_notebook_workers_in_service_mode(service_mode_worker_state):
     """Service mode should expose a server-managed worker registry."""
     service_mode_worker_state()

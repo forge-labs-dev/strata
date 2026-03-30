@@ -16,6 +16,7 @@ import type {
   ManagedWorkerSpec,
   WorkerCatalogEntry,
   WorkerHealth,
+  WorkerHealthHistoryEntry,
   WorkerSpec,
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
@@ -265,6 +266,25 @@ function parseWorkerTransport(raw: unknown): WorkerCatalogEntry['transport'] | u
 
 function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
   const transport = parseWorkerTransport(raw?.transport)
+  const healthHistory: WorkerHealthHistoryEntry[] = Array.isArray(raw?.health_history)
+    ? raw.health_history
+        .map(
+          (entry: Record<string, unknown>): WorkerHealthHistoryEntry => ({
+            checkedAt:
+              typeof entry?.checked_at === 'number' && Number.isFinite(entry.checked_at)
+                ? entry.checked_at
+                : 0,
+            health:
+              entry?.health === 'healthy' || entry?.health === 'unavailable'
+                ? entry.health
+                : 'unknown',
+            error:
+              typeof entry?.error === 'string' && entry.error.trim() ? String(entry.error) : null,
+          }),
+        )
+        .filter((entry: WorkerHealthHistoryEntry) => entry.checkedAt > 0)
+    : []
+
   return {
     ...parseWorkerSpec(raw),
     health: raw?.health === 'healthy' || raw?.health === 'unavailable' ? raw.health : 'unknown',
@@ -284,6 +304,7 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
         ? raw.health_checked_at
         : null,
     lastError: typeof raw?.last_error === 'string' && raw.last_error.trim() ? raw.last_error : null,
+    healthHistory,
   }
 }
 
@@ -316,10 +337,14 @@ function applySerializedExecutionMetadata(cell: Cell, raw: Record<string, any>) 
       ? raw.execution_method
       : undefined
   cell.remoteWorkerName =
-    typeof raw.remote_worker === 'string' && raw.remote_worker.trim() ? raw.remote_worker : undefined
+    typeof raw.remote_worker === 'string' && raw.remote_worker.trim()
+      ? raw.remote_worker
+      : undefined
   cell.remoteTransport = parseWorkerTransport(raw.remote_transport) ?? null
   cell.remoteBuildId =
-    typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim() ? raw.remote_build_id : null
+    typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim()
+      ? raw.remote_build_id
+      : null
 }
 
 function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
@@ -693,9 +718,7 @@ async function openNotebook(path: string): Promise<void> {
       typeof c.remote_worker === 'string' && c.remote_worker.trim() ? c.remote_worker : undefined,
     remoteTransport: parseWorkerTransport(c.remote_transport) ?? null,
     remoteBuildId:
-      typeof c.remote_build_id === 'string' && c.remote_build_id.trim()
-        ? c.remote_build_id
-        : null,
+      typeof c.remote_build_id === 'string' && c.remote_build_id.trim() ? c.remote_build_id : null,
   }))
   notebook.cells.sort((a, b) => a.order - b.order)
   if (data.dag) {

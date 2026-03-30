@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useNotebook } from '../stores/notebook'
+import type { WorkerHealthHistoryEntry } from '../types/notebook'
 import { workerTransportLabel } from '../utils/notebookWorkers'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import WorkerListEditor from './WorkerListEditor.vue'
@@ -52,6 +53,14 @@ function workerCheckedLabel(rawCheckedAt: number | null | undefined): string {
     minute: '2-digit',
     second: '2-digit',
   })
+}
+
+function workerHistoryLabel(entry: WorkerHealthHistoryEntry): string {
+  return `${workerCheckedLabel(entry.checkedAt)} ${entry.health}`
+}
+
+function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
+  return entry.error ? `${workerHistoryLabel(entry)}\n${entry.error}` : workerHistoryLabel(entry)
 }
 </script>
 
@@ -179,6 +188,24 @@ function workerCheckedLabel(rawCheckedAt: number | null | undefined): string {
             </span>
             <span v-if="worker.healthUrl" class="workers-catalog-detail">
               health {{ worker.healthUrl }}
+            </span>
+          </div>
+          <div
+            v-if="worker.healthHistory && worker.healthHistory.length"
+            class="workers-catalog-history"
+          >
+            <span class="workers-catalog-history-label">recent probes</span>
+            <span
+              v-for="entry in worker.healthHistory.slice(0, 4)"
+              :key="`${worker.name}-${entry.checkedAt}-${entry.health}`"
+              class="workers-catalog-history-chip"
+              :class="{
+                unhealthy: entry.health === 'unavailable',
+                unknown: entry.health === 'unknown',
+              }"
+              :title="workerHistoryTitle(entry)"
+            >
+              {{ workerHistoryLabel(entry) }}
             </span>
           </div>
           <div v-if="worker.lastError" class="workers-catalog-error">
@@ -365,5 +392,34 @@ function workerCheckedLabel(rawCheckedAt: number | null | undefined): string {
   font-size: 12px;
   color: #f38ba8;
   line-height: 1.4;
+}
+
+.workers-catalog-history {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.workers-catalog-history-label {
+  font-size: 11px;
+  color: #6c7086;
+}
+
+.workers-catalog-history-chip {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #181825;
+  border: 1px solid #313244;
+  color: #a6adc8;
+  font-size: 10px;
+}
+
+.workers-catalog-history-chip.unhealthy {
+  color: #f38ba8;
+}
+
+.workers-catalog-history-chip.unknown {
+  color: #fab387;
 }
 </style>
