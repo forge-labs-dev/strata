@@ -45,9 +45,7 @@ const lastCheckedLabel = computed(() => {
 
     <div v-if="showPanel" class="workers-content">
       <div class="workers-health-row">
-        <span class="workers-health-text">
-          Last checked: {{ lastCheckedLabel }}
-        </span>
+        <span class="workers-health-text"> Last checked: {{ lastCheckedLabel }} </span>
         <button
           class="workers-refresh"
           :disabled="!connected || workerHealthLoading"
@@ -62,9 +60,7 @@ const lastCheckedLabel = computed(() => {
         <span v-if="registryManagedByServer">
           Worker definitions are managed by the server in service mode.
         </span>
-        <span v-else>
-          Worker definitions are stored with the notebook in personal mode.
-        </span>
+        <span v-else> Worker definitions are stored with the notebook in personal mode. </span>
       </p>
       <WorkerConfigEditor
         :worker="notebook.worker"
@@ -84,26 +80,19 @@ const lastCheckedLabel = computed(() => {
         @save="updateNotebookWorkersAction"
       />
       <div v-else class="workers-copy workers-copy-muted">
-        This notebook can select from the visible server-managed workers below,
-        but it cannot change the worker registry.
+        This notebook can select from the visible server-managed workers below, but it cannot change
+        the worker registry.
       </div>
 
       <div v-if="availableWorkers.length" class="workers-catalog">
         <div class="workers-catalog-title">Visible Workers</div>
-        <div
-          v-for="worker in availableWorkers"
-          :key="worker.name"
-          class="workers-catalog-row"
-        >
+        <div v-for="worker in availableWorkers" :key="worker.name" class="workers-catalog-row">
           <code>{{ worker.name }}</code>
           <span class="workers-catalog-meta">{{ worker.source || 'unknown' }}</span>
           <span class="workers-catalog-meta">{{ worker.backend }}</span>
           <span class="workers-catalog-meta">{{ workerTransportLabel(worker) }}</span>
           <span class="workers-catalog-meta">{{ worker.health }}</span>
-          <span
-            class="workers-catalog-meta"
-            :class="{ disallowed: worker.allowed === false }"
-          >
+          <span class="workers-catalog-meta" :class="{ disallowed: worker.allowed === false }">
             {{ worker.allowed === false ? 'not allowed' : 'allowed' }}
           </span>
         </div>

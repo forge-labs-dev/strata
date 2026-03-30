@@ -514,7 +514,7 @@ class TestCircuitBreakerIntegration:
 
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         # Create some circuit breakers

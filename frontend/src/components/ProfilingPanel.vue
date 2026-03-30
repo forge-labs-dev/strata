@@ -58,11 +58,7 @@ function refresh() {
       </div>
 
       <div v-if="profilingSummary.cellProfiles.length" class="cell-profiles">
-        <div
-          v-for="cp in profilingSummary.cellProfiles"
-          :key="cp.cellId"
-          class="cell-profile-row"
-        >
+        <div v-for="cp in profilingSummary.cellProfiles" :key="cp.cellId" class="cell-profile-row">
           <span class="cp-name" :title="cp.cellId">{{ cp.cellName }}</span>
           <span class="cp-status" :class="`cp-${cp.status}`">
             {{ cp.cacheHit ? '&#x26A1;' : '&#x25D0;' }}
@@ -71,9 +67,7 @@ function refresh() {
         </div>
       </div>
     </div>
-    <div v-else class="profiling-empty">
-      No profiling data yet. Run some cells first.
-    </div>
+    <div v-else class="profiling-empty">No profiling data yet. Run some cells first.</div>
   </div>
 </template>
 
@@ -107,7 +101,9 @@ function refresh() {
   padding: 0 4px;
   border-radius: 3px;
 }
-.refresh-btn:hover { color: #89b4fa; }
+.refresh-btn:hover {
+  color: #89b4fa;
+}
 
 .profiling-body {
   padding: 8px;
@@ -126,7 +122,7 @@ function refresh() {
 }
 .stat-value {
   color: #cdd6f4;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .cache-savings {
   color: #a6e3a1;
@@ -146,7 +142,7 @@ function refresh() {
   gap: 6px;
   padding: 2px 4px;
   font-size: 11px;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .cp-name {
   flex: 1;
@@ -155,11 +151,21 @@ function refresh() {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.cp-status { font-size: 10px; }
-.cp-ready { color: #a6e3a1; }
-.cp-stale { color: #f9e2af; }
-.cp-error { color: #f38ba8; }
-.cp-idle { color: #6c7086; }
+.cp-status {
+  font-size: 10px;
+}
+.cp-ready {
+  color: #a6e3a1;
+}
+.cp-stale {
+  color: #f9e2af;
+}
+.cp-error {
+  color: #f38ba8;
+}
+.cp-idle {
+  color: #6c7086;
+}
 .cp-duration {
   color: #6c7086;
   min-width: 36px;

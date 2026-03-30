@@ -11,9 +11,14 @@ import ProfilingPanel from './components/ProfilingPanel.vue'
 import ImpactPreview from './components/ImpactPreview.vue'
 
 const {
-  notebook, orderedCells, connected, connectError,
-  boot, openNotebook: openNotebookApi,
-  addCell, removeCell,
+  notebook,
+  orderedCells,
+  connected,
+  connectError,
+  boot,
+  openNotebook: openNotebookApi,
+  addCell,
+  removeCell,
   executeCellWebSocket,
 } = useNotebook()
 
@@ -57,6 +62,12 @@ async function openNotebook() {
     alert(`Failed to open notebook: ${err.message}`)
   }
 }
+
+async function retryBoot() {
+  booting.value = true
+  await boot()
+  booting.value = false
+}
 </script>
 
 <template>
@@ -90,9 +101,7 @@ async function openNotebook() {
     <!-- Connection error banner -->
     <div v-if="connectError && !booting" class="error-banner">
       Server not reachable: {{ connectError }}
-      <button class="btn btn-secondary" style="margin-left: 12px" @click="booting = true; boot().finally(() => booting = false)">
-        Retry
-      </button>
+      <button class="btn btn-secondary" style="margin-left: 12px" @click="retryBoot">Retry</button>
     </div>
 
     <!-- Main layout -->
@@ -145,16 +154,26 @@ async function openNotebook() {
 </template>
 
 <style>
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
 
 body {
   background: #11111b;
   color: #cdd6f4;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
 
 .header {
   display: flex;
@@ -165,8 +184,16 @@ body {
   border-bottom: 1px solid #2a2a3c;
   flex-shrink: 0;
 }
-.header-left { display: flex; align-items: center; gap: 16px; }
-.header-right { display: flex; align-items: center; gap: 12px; }
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 
 .logo {
   font-weight: 700;
@@ -181,7 +208,9 @@ body {
   padding: 2px 6px;
   border-radius: 4px;
 }
-.notebook-name:hover { background: #313244; }
+.notebook-name:hover {
+  background: #313244;
+}
 .name-input {
   font-size: 14px;
   background: #313244;
@@ -192,8 +221,13 @@ body {
   outline: none;
 }
 
-.connection { font-size: 12px; color: #6c7086; }
-.connection.connected { color: #a6e3a1; }
+.connection {
+  font-size: 12px;
+  color: #6c7086;
+}
+.connection.connected {
+  color: #a6e3a1;
+}
 
 .error-banner {
   background: #45252530;
@@ -215,14 +249,37 @@ body {
   font-weight: 600;
   cursor: pointer;
 }
-.btn:hover { background: #74c7ec; }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-secondary { background: #313244; color: #cdd6f4; }
-.btn-secondary:hover { background: #45475a; }
+.btn:hover {
+  background: #74c7ec;
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-secondary {
+  background: #313244;
+  color: #cdd6f4;
+}
+.btn-secondary:hover {
+  background: #45475a;
+}
 
-.main { display: flex; flex: 1; overflow: hidden; }
-.cells-panel { flex: 1; overflow-y: auto; padding: 16px; }
-.sidebar { width: 200px; flex-shrink: 0; padding: 16px 12px 16px 0; overflow-y: auto; }
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.cells-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+.sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  padding: 16px 12px 16px 0;
+  overflow-y: auto;
+}
 
 .add-cell-btn {
   width: 100%;
@@ -235,8 +292,14 @@ body {
   cursor: pointer;
   margin-top: 4px;
 }
-.add-cell-btn:hover { border-color: #89b4fa; color: #89b4fa; }
-.add-cell-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.add-cell-btn:hover {
+  border-color: #89b4fa;
+  color: #89b4fa;
+}
+.add-cell-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .modal-overlay {
   position: fixed;

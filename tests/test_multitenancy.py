@@ -352,6 +352,7 @@ class TestTenantIdValidation:
         """Empty tenant ID should be invalid."""
         is_valid, error = validate_tenant_id("")
         assert is_valid is False
+        assert error is not None
         assert "cannot be empty" in error
 
     def test_invalid_too_long(self):
@@ -359,24 +360,28 @@ class TestTenantIdValidation:
         tenant_id = "a" * (MAX_TENANT_ID_LENGTH + 1)
         is_valid, error = validate_tenant_id(tenant_id)
         assert is_valid is False
+        assert error is not None
         assert "exceeds maximum length" in error
 
     def test_invalid_starts_with_underscore(self):
         """Tenant ID starting with underscore should be invalid."""
         is_valid, error = validate_tenant_id("_private")
         assert is_valid is False
+        assert error is not None
         assert "start with alphanumeric" in error
 
     def test_invalid_starts_with_hyphen(self):
         """Tenant ID starting with hyphen should be invalid."""
         is_valid, error = validate_tenant_id("-bad")
         assert is_valid is False
+        assert error is not None
         assert "start with alphanumeric" in error
 
     def test_invalid_contains_space(self):
         """Tenant ID with spaces should be invalid."""
         is_valid, error = validate_tenant_id("has spaces")
         assert is_valid is False
+        assert error is not None
         assert "alphanumeric" in error
 
     def test_invalid_contains_special_chars(self):

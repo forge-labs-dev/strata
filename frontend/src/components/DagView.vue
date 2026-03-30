@@ -147,11 +147,16 @@ const svgHeight = computed(() => {
 
 function statusColor(status: Cell['status']): string {
   switch (status) {
-    case 'ready': return '#a6e3a1'
-    case 'running': return '#89b4fa'
-    case 'stale': return '#f9e2af'
-    case 'error': return '#f38ba8'
-    default: return '#6c7086'
+    case 'ready':
+      return '#a6e3a1'
+    case 'running':
+      return '#89b4fa'
+    case 'stale':
+      return '#f9e2af'
+    case 'error':
+      return '#f38ba8'
+    default:
+      return '#6c7086'
   }
 }
 
@@ -169,11 +174,7 @@ function edgePath(from: NodeLayout, to: NodeLayout): string {
 <template>
   <div class="dag-panel">
     <div class="dag-header">Cell DAG</div>
-    <svg
-      :width="svgWidth"
-      :height="svgHeight"
-      class="dag-svg"
-    >
+    <svg :width="svgWidth" :height="svgHeight" class="dag-svg">
       <defs>
         <marker
           id="arrow"
@@ -256,5 +257,7 @@ function edgePath(from: NodeLayout, to: NodeLayout): string {
   letter-spacing: 0.5px;
   border-bottom: 1px solid #2a2a3c;
 }
-.dag-svg { display: block; }
+.dag-svg {
+  display: block;
+}
 </style>

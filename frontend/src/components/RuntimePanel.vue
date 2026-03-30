@@ -4,18 +4,11 @@ import { useNotebook } from '../stores/notebook'
 import EnvVarsEditor from './EnvVarsEditor.vue'
 import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
 
-const {
-  notebook,
-  connected,
-  updateNotebookTimeoutAction,
-  updateNotebookEnvAction,
-} = useNotebook()
+const { notebook, connected, updateNotebookTimeoutAction, updateNotebookEnvAction } = useNotebook()
 
 const showPanel = ref(false)
 const envCount = computed(() => Object.keys(notebook.env).length)
-const timeoutLabel = computed(() =>
-  notebook.timeout == null ? 'default' : `${notebook.timeout}s`,
-)
+const timeoutLabel = computed(() => (notebook.timeout == null ? 'default' : `${notebook.timeout}s`))
 </script>
 
 <template>

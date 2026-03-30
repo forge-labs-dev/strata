@@ -18,9 +18,7 @@ const mountCount = computed(() => notebook.mounts.length)
     </button>
 
     <div v-if="showPanel" class="mounts-content">
-      <p class="mounts-copy">
-        Notebook defaults. Cell overrides can replace these per cell.
-      </p>
+      <p class="mounts-copy">Notebook defaults. Cell overrides can replace these per cell.</p>
       <MountListEditor
         :mounts="notebook.mounts"
         title="Notebook Defaults"

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from strata.notebook.cascade import CascadePlan, CascadePlanner, CascadeStep
+from strata.notebook.cascade import CascadePlan, CascadePlanner, CascadeReason, CascadeStep
 from strata.notebook.parser import parse_notebook
 from strata.notebook.session import NotebookSession
 from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
@@ -213,14 +213,14 @@ def test_cascade_step_initialization():
     step = CascadeStep(
         cell_id="test_cell",
         cell_name="Test Cell",
-        reason="stale",
+        reason=CascadeReason.STALE,
         skip=False,
         estimated_ms=100,
     )
 
     assert step.cell_id == "test_cell"
     assert step.cell_name == "Test Cell"
-    assert step.reason == "stale"
+    assert step.reason == CascadeReason.STALE
     assert step.skip is False
     assert step.estimated_ms == 100
 

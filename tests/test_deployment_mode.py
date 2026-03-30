@@ -9,6 +9,8 @@ These tests verify:
 6. require_writes_enabled dependency blocks writes in service mode
 """
 
+from typing import Any, cast
+
 import pytest
 
 from strata.config import StrataConfig
@@ -37,7 +39,7 @@ class TestDeploymentModeConfig:
         with pytest.raises(ValueError) as exc_info:
             StrataConfig(
                 cache_dir=tmp_path / "cache",
-                deployment_mode="invalid",
+                deployment_mode=cast(Any, "invalid"),
             )
         # Pydantic validation error includes 'service' or 'personal' in message
         error_str = str(exc_info.value)

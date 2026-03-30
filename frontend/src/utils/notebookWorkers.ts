@@ -33,7 +33,9 @@ export function workerTransportLabel(
 ): string {
   if (worker.backend === 'local') return 'local'
   const url = String(worker.config?.url || '')
-  const transport = String(worker.config?.transport || 'direct').trim().toLowerCase()
+  const transport = String(worker.config?.transport || 'direct')
+    .trim()
+    .toLowerCase()
   if (url.startsWith('embedded://')) return 'embedded'
   if (transport === 'signed' || transport === 'manifest' || transport === 'build') {
     return 'signed'
@@ -57,13 +59,13 @@ export function workerWarningForEntry(
 export function isRemoteExecutorLikelyUnreachable(error: string): boolean {
   const normalized = error.toLowerCase()
   return (
-    normalized.includes('remote executor request failed')
-    || normalized.includes('connection refused')
-    || normalized.includes('all connection attempts failed')
-    || normalized.includes('name or service not known')
-    || normalized.includes('temporary failure in name resolution')
-    || normalized.includes('network is unreachable')
-    || normalized.includes('could not connect')
+    normalized.includes('remote executor request failed') ||
+    normalized.includes('connection refused') ||
+    normalized.includes('all connection attempts failed') ||
+    normalized.includes('name or service not known') ||
+    normalized.includes('temporary failure in name resolution') ||
+    normalized.includes('network is unreachable') ||
+    normalized.includes('could not connect')
   )
 }
 

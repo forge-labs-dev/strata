@@ -21,7 +21,7 @@ from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.schema import Schema
 from pyiceberg.types import DoubleType, LongType, NestedField, StringType
 
-from strata.cache import CACHE_FILE_EXTENSION, CACHE_VERSION, CachedFetcher
+from strata.cache import CACHE_FILE_EXTENSION, CACHE_VERSION, CachedFetcher, DiskCache
 from strata.client import StrataClient
 from strata.config import StrataConfig
 from strata.planner import ReadPlanner
@@ -242,6 +242,7 @@ class TestCorruptedCacheSelfHealing:
         meta_files[0].write_text("{ invalid json }")
 
         # Getting stats should handle corrupted metadata gracefully
+        assert isinstance(fetcher.cache, DiskCache)
         stats = fetcher.cache.get_stats()
         # Should still return stats (corrupted entries are skipped)
         assert stats.total_entries >= 0
@@ -1530,5 +1531,6 @@ class TestCacheVersioning:
         assert (old_version_dir / "fake_old_cache.arrowstream").exists()
 
         # Stats should only count current version
+        assert isinstance(fetcher2.cache, DiskCache)
         stats = fetcher2.cache.get_stats()
         assert stats.total_entries == len(plan.tasks)

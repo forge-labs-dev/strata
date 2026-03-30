@@ -1,14 +1,16 @@
 import { onMounted, onBeforeUnmount, ref, type Ref } from 'vue'
 import { EditorState } from '@codemirror/state'
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+} from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
-import {
-  syntaxHighlighting,
-  defaultHighlightStyle,
-  bracketMatching,
-} from '@codemirror/language'
+import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
 import { closeBrackets } from '@codemirror/autocomplete'
 import type { CellLanguage } from '../types/notebook'
 
@@ -61,7 +63,10 @@ export function useCodemirror(
         updateListener,
         EditorView.theme({
           '&': { fontSize: '13px' },
-          '.cm-content': { fontFamily: '"JetBrains Mono", "Fira Code", monospace', padding: '8px 0' },
+          '.cm-content': {
+            fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+            padding: '8px 0',
+          },
           '.cm-gutters': { backgroundColor: '#1e1e2e', border: 'none' },
           '.cm-scroller': { overflow: 'auto' },
         }),

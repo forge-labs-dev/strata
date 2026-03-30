@@ -142,7 +142,7 @@ class TestCacheWarmerIntegration:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         # Initialize cache warmer
@@ -204,7 +204,7 @@ class TestCacheWarmerIntegration:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -253,7 +253,7 @@ class TestCacheWarmerIntegration:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -288,7 +288,7 @@ class TestCacheWarmerIntegration:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -419,7 +419,7 @@ class TestCacheWarmingRealTables:
         reset_metrics()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -476,7 +476,7 @@ class TestCacheWarmingRealTables:
         reset_metrics()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -548,7 +548,7 @@ class TestCacheWarmingRealTables:
         reset_metrics()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,
@@ -642,7 +642,7 @@ class TestCacheWarmingRealTables:
         reset_metrics()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
         server_module._state._cache_warmer = CacheWarmer(
             planner=server_module._state.planner,

@@ -273,6 +273,7 @@ class TestChainedArtifacts:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", derived_uri)
+            assert match is not None
             derived_id, derived_ver = match.group(1), int(match.group(2))
 
             lineage = client.get_lineage(derived_id, derived_ver)
@@ -319,6 +320,7 @@ class TestChainedArtifacts:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", agg_uri)
+            assert match is not None
             agg_id, agg_ver = match.group(1), int(match.group(2))
 
             lineage = client.get_lineage(agg_id, agg_ver)
@@ -375,6 +377,7 @@ class TestLineageTraversal:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", joined_uri)
+            assert match is not None
             joined_id, joined_ver = match.group(1), int(match.group(2))
 
             lineage = client.get_lineage(joined_id, joined_ver)
@@ -410,6 +413,7 @@ class TestLineageTraversal:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", prev_uri)
+            assert match is not None
             art_id, art_ver = match.group(1), int(match.group(2))
 
             # Full lineage
@@ -452,6 +456,7 @@ class TestDependentsTracking:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", base_uri)
+            assert match is not None
             base_id, base_ver = match.group(1), int(match.group(2))
 
             dependents = client.get_dependents(base_id, base_ver)
@@ -490,6 +495,7 @@ class TestDependentsTracking:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", base_uri)
+            assert match is not None
             base_id, base_ver = match.group(1), int(match.group(2))
 
             dependents = client.get_dependents(base_id, base_ver)
@@ -520,6 +526,7 @@ class TestDependentsTracking:
             import re
 
             match = re.match(r"strata://artifact/([^@]+)@v=(\d+)", artifact_uri)
+            assert match is not None
             art_id, art_ver = match.group(1), int(match.group(2))
 
             dependents = client.get_dependents(art_id, art_ver)

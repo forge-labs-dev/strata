@@ -60,9 +60,7 @@ async function removePackage(name: string) {
       </div>
 
       <!-- Dependency list -->
-      <div v-if="dependencies.length === 0" class="dep-empty">
-        No packages installed
-      </div>
+      <div v-if="dependencies.length === 0" class="dep-empty">No packages installed</div>
       <ul v-else class="dep-list">
         <li v-for="dep in dependencies" :key="dep.name" class="dep-item">
           <span class="dep-name">{{ dep.name }}</span>
@@ -72,7 +70,9 @@ async function removePackage(name: string) {
             title="Remove"
             :disabled="dependencyLoading"
             @click="removePackage(dep.name)"
-          >x</button>
+          >
+            x
+          </button>
         </li>
       </ul>
     </div>
@@ -101,7 +101,9 @@ async function removePackage(name: string) {
   cursor: pointer;
   padding: 4px 0;
 }
-.env-toggle:hover { color: #cdd6f4; }
+.env-toggle:hover {
+  color: #cdd6f4;
+}
 
 .dep-count {
   background: #313244;
@@ -141,7 +143,9 @@ async function removePackage(name: string) {
   outline: none;
   border-color: #89b4fa;
 }
-.dep-input::placeholder { color: #585b70; }
+.dep-input::placeholder {
+  color: #585b70;
+}
 
 .btn-add {
   background: #89b4fa;
@@ -154,8 +158,13 @@ async function removePackage(name: string) {
   cursor: pointer;
   flex-shrink: 0;
 }
-.btn-add:hover { background: #74c7ec; }
-.btn-add:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-add:hover {
+  background: #74c7ec;
+}
+.btn-add:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 
 .dep-error {
   color: #f38ba8;
@@ -212,6 +221,12 @@ async function removePackage(name: string) {
   flex-shrink: 0;
   border-radius: 2px;
 }
-.btn-remove:hover { color: #f38ba8; background: #45252530; }
-.btn-remove:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-remove:hover {
+  color: #f38ba8;
+  background: #45252530;
+}
+.btn-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
 </style>

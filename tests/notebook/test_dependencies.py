@@ -111,6 +111,7 @@ class TestAddDependency:
         ):
             result = add_dependency(tmp_path, "requests")
             assert result.success is False
+            assert result.error is not None
             assert "uv not found" in result.error
 
 

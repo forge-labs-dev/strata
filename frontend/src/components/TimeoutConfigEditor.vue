@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
-const props = withDefaults(defineProps<{
-  timeout: number | null
-  title?: string
-  compact?: boolean
-  readOnly?: boolean
-}>(), {
-  title: 'Timeout',
-  compact: false,
-  readOnly: false,
-})
+const props = withDefaults(
+  defineProps<{
+    timeout: number | null
+    title?: string
+    compact?: boolean
+    readOnly?: boolean
+  }>(),
+  {
+    title: 'Timeout',
+    compact: false,
+    readOnly: false,
+  },
+)
 
 const emit = defineEmits<{
   save: [timeout: number | null]
@@ -47,9 +50,7 @@ function save() {
       />
       <button v-if="!readOnly" class="timeout-save" @click="save">Save</button>
     </div>
-    <div class="timeout-hint">
-      Empty means use the inherited/default executor timeout.
-    </div>
+    <div class="timeout-hint">Empty means use the inherited/default executor timeout.</div>
   </div>
 </template>
 

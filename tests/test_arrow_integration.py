@@ -304,6 +304,7 @@ class TestIntegrationWithOtherLibraries:
             conn.register("events", table)
 
             result = conn.execute("SELECT COUNT(*) FROM events").fetchone()
+            assert result is not None
             assert result[0] == 500
 
             conn.close()

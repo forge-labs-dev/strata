@@ -15,6 +15,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 # Python 3.10 compatibility: UTC is in timezone module
 try:
@@ -205,7 +206,7 @@ def run_server(config: StrataConfig, reset_caches: bool = False) -> Iterator[str
 def run_server_with_context(
     cache_dir,
     artifact_dir=None,
-    deployment_mode: str = "personal",
+    deployment_mode: Literal["personal", "service"] = "personal",
 ) -> Iterator[ServerContext]:
     """Run a server with full context including graceful shutdown.
 

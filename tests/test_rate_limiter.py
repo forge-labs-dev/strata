@@ -323,7 +323,7 @@ class TestRateLimiterIntegration:
         reset_rate_limiter()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         # Initialize rate limiter manually for test
@@ -363,7 +363,7 @@ class TestRateLimiterIntegration:
         reset_rate_limiter()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
         init_rate_limiter(RateLimitConfig())
 
@@ -402,7 +402,7 @@ class TestRateLimiterIntegration:
         reset_rate_limiter()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         # Very restrictive config

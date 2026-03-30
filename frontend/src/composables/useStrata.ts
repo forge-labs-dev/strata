@@ -79,7 +79,11 @@ async function throwApiError(resp: Response, fallback: string): Promise<never> {
   try {
     const payload = await resp.json()
     if (payload && typeof payload === 'object') {
-      detail = String((payload as Record<string, unknown>).detail || (payload as Record<string, unknown>).error || '')
+      detail = String(
+        (payload as Record<string, unknown>).detail ||
+          (payload as Record<string, unknown>).error ||
+          '',
+      )
     }
   } catch {
     try {
@@ -148,7 +152,7 @@ async function createNotebook(parentPath: string, name: string): Promise<any> {
 async function updateCellSource(
   notebookId: string,
   cellId: string,
-  source: string
+  source: string,
 ): Promise<{ cell: any; dag: any; cells?: any[] }> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}`, {
     method: 'PUT',
@@ -229,7 +233,11 @@ async function updateNotebookWorker(notebookId: string, worker: string | null): 
   return resp.json()
 }
 
-async function updateCellWorker(notebookId: string, cellId: string, worker: string | null): Promise<any> {
+async function updateCellWorker(
+  notebookId: string,
+  cellId: string,
+  worker: string | null,
+): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/worker`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -253,7 +261,11 @@ async function updateNotebookTimeout(notebookId: string, timeout: number | null)
   return resp.json()
 }
 
-async function updateCellTimeout(notebookId: string, cellId: string, timeout: number | null): Promise<any> {
+async function updateCellTimeout(
+  notebookId: string,
+  cellId: string,
+  timeout: number | null,
+): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/timeout`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -277,7 +289,11 @@ async function updateNotebookEnv(notebookId: string, env: Record<string, string>
   return resp.json()
 }
 
-async function updateCellEnv(notebookId: string, cellId: string, env: Record<string, string>): Promise<any> {
+async function updateCellEnv(
+  notebookId: string,
+  cellId: string,
+  env: Record<string, string>,
+): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/env`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -335,9 +351,12 @@ async function addDependency(notebookId: string, pkg: string): Promise<any> {
 }
 
 async function removeDependency(notebookId: string, pkg: string): Promise<any> {
-  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies/${encodeURIComponent(pkg)}`, {
-    method: 'DELETE',
-  })
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies/${encodeURIComponent(pkg)}`,
+    {
+      method: 'DELETE',
+    },
+  )
   if (!resp.ok) {
     throw new Error(`Failed to remove dependency: ${resp.status}`)
   }

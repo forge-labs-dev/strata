@@ -11,9 +11,16 @@
 import { ref, shallowRef } from 'vue'
 import type { WsMessage, WsClientMessageType, WsServerMessageType } from '../types/notebook'
 
-const STRATA_WS_URL = ((import.meta as any).env?.VITE_STRATA_URL ?? 'http://localhost:8765').replace('http', 'ws')
+const STRATA_WS_URL = (
+  (import.meta as any).env?.VITE_STRATA_URL ?? 'http://localhost:8765'
+).replace('http', 'ws')
 
-export type WsConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'error'
+export type WsConnectionState =
+  | 'disconnected'
+  | 'connecting'
+  | 'connected'
+  | 'reconnecting'
+  | 'error'
 
 interface MessageHandler {
   (msg: WsMessage): void
@@ -119,10 +126,12 @@ export function useWebSocket(notebookId: string) {
     reconnectAttempts.value++
 
     // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
-    const delay = Math.min(reconnectDelay.value * (2 ** (reconnectAttempts.value - 1)), 30000)
+    const delay = Math.min(reconnectDelay.value * 2 ** (reconnectAttempts.value - 1), 30000)
     reconnectDelay.value = delay
 
-    console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.value}/${maxReconnectAttempts})`)
+    console.log(
+      `[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.value}/${maxReconnectAttempts})`,
+    )
 
     setTimeout(() => {
       connect()
@@ -303,9 +312,15 @@ export function useWebSocket(notebookId: string) {
       }, timeoutMs)
       // Clear the timeout if we resolve/reject before it fires
       const origResolve = _connectResolve
-      _connectResolve = () => { clearTimeout(timer); origResolve?.() }
+      _connectResolve = () => {
+        clearTimeout(timer)
+        origResolve?.()
+      }
       const origReject = _connectReject
-      _connectReject = (err) => { clearTimeout(timer); origReject?.(err) }
+      _connectReject = (err) => {
+        clearTimeout(timer)
+        origReject?.(err)
+      }
     })
   }
 

@@ -98,6 +98,7 @@ class TestScanTransform:
             FilterSpec(column="name", op="=", value="test"),
         ]
         params = ScanParams(filters=filters)
+        assert params.filters is not None
         assert len(params.filters) == 2
         assert params.filters[0].op == ">"
 

@@ -86,7 +86,7 @@ class TestTimeoutEndpointIntegration:
         reset_eviction_tracker()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         try:
@@ -150,7 +150,7 @@ class TestTimeoutEndpointIntegration:
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
         config = StrataConfig(
-            cache_dir=str(cache_dir),
+            cache_dir=cache_dir,
             plan_timeout_seconds=45.0,
             scan_timeout_seconds=120.0,
             fetch_timeout_seconds=90.0,

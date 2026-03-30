@@ -1,7 +1,20 @@
 import { reactive, computed, ref } from 'vue'
 import type {
-  Cell, CellId, CellOutput, CellStatus, DagEdge, DependencyInfo, Notebook, WsMessage,
-  ImpactPreview, ProfilingSummary, MountSpec, CellAnnotations, WorkerCatalogEntry, WorkerHealth, WorkerSpec,
+  Cell,
+  CellId,
+  CellOutput,
+  CellStatus,
+  DagEdge,
+  DependencyInfo,
+  Notebook,
+  WsMessage,
+  ImpactPreview,
+  ProfilingSummary,
+  MountSpec,
+  CellAnnotations,
+  WorkerCatalogEntry,
+  WorkerHealth,
+  WorkerSpec,
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
 import { useWebSocket } from '../composables/useWebSocket'
@@ -45,9 +58,7 @@ const cellMap = computed(() => {
   return m
 })
 
-const orderedCells = computed(() =>
-  [...notebook.cells].sort((a, b) => a.order - b.order),
-)
+const orderedCells = computed(() => [...notebook.cells].sort((a, b) => a.order - b.order))
 
 /** Build DAG edges from the variable define/reference relationships */
 const dagEdges = computed<DagEdge[]>(() => {
@@ -94,8 +105,15 @@ async function addCell(afterId?: CellId) {
       env: parseEnvMap(data.env),
       envOverrides: parseEnvMap(data.env_overrides),
       mounts: Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : [...notebook.mounts],
-      mountOverrides: Array.isArray(data.mount_overrides) ? data.mount_overrides.map(parseMountSpec) : [],
-      annotations: parseBackendAnnotations(data.annotations) || { worker: null, timeout: null, env: {}, mounts: [] },
+      mountOverrides: Array.isArray(data.mount_overrides)
+        ? data.mount_overrides.map(parseMountSpec)
+        : [],
+      annotations: parseBackendAnnotations(data.annotations) || {
+        worker: null,
+        timeout: null,
+        env: {},
+        mounts: [],
+      },
       upstreamIds: [],
       downstreamIds: [],
       defines: [],
@@ -118,15 +136,18 @@ function removeCell(id: CellId) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
-  strata.removeCell(sid, id).then(() => {
-    const idx = notebook.cells.findIndex((c) => c.id === id)
-    if (idx >= 0) {
-      notebook.cells.splice(idx, 1)
-      notebook.updatedAt = Date.now()
-    }
-  }).catch((err) => {
-    console.error('Failed to remove cell:', err)
-  })
+  strata
+    .removeCell(sid, id)
+    .then(() => {
+      const idx = notebook.cells.findIndex((c) => c.id === id)
+      if (idx >= 0) {
+        notebook.cells.splice(idx, 1)
+        notebook.updatedAt = Date.now()
+      }
+    })
+    .catch((err) => {
+      console.error('Failed to remove cell:', err)
+    })
 }
 
 async function updateSource(id: CellId, source: string) {
@@ -226,15 +247,12 @@ function parseWorkerSpec(raw: any): WorkerSpec {
 function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
   return {
     ...parseWorkerSpec(raw),
-    health:
-      raw?.health === 'healthy' || raw?.health === 'unavailable'
-        ? raw.health
-        : 'unknown',
+    health: raw?.health === 'healthy' || raw?.health === 'unavailable' ? raw.health : 'unknown',
     source:
-      raw?.source === 'builtin'
-        || raw?.source === 'notebook'
-        || raw?.source === 'server'
-        || raw?.source === 'referenced'
+      raw?.source === 'builtin' ||
+      raw?.source === 'notebook' ||
+      raw?.source === 'server' ||
+      raw?.source === 'referenced'
         ? raw.source
         : undefined,
     allowed: raw?.allowed !== false,
@@ -253,9 +271,7 @@ function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
 
 function parseEnvMap(raw: any): Record<string, string> {
   if (!raw || typeof raw !== 'object') return {}
-  return Object.fromEntries(
-    Object.entries(raw).map(([key, value]) => [key, String(value)]),
-  )
+  return Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, String(value)]))
 }
 
 function applyBackendCellState(localCell: Cell, serverCell: any) {
@@ -271,17 +287,12 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.timeoutOverride = serverCell.timeout_override ?? null
   localCell.env = parseEnvMap(serverCell.env)
   localCell.envOverrides = parseEnvMap(serverCell.env_overrides)
-  localCell.mounts = Array.isArray(serverCell.mounts)
-    ? serverCell.mounts.map(parseMountSpec)
-    : []
+  localCell.mounts = Array.isArray(serverCell.mounts) ? serverCell.mounts.map(parseMountSpec) : []
   localCell.mountOverrides = Array.isArray(serverCell.mount_overrides)
     ? serverCell.mount_overrides.map(parseMountSpec)
     : []
   localCell.annotations = parseBackendAnnotations(serverCell.annotations)
-  localCell.stalenessReasons =
-    serverCell.staleness_reasons ||
-    serverCell.staleness?.reasons ||
-    []
+  localCell.stalenessReasons = serverCell.staleness_reasons || serverCell.staleness?.reasons || []
   localCell.causality = parseBackendCausality(serverCell.causality)
 }
 
@@ -294,15 +305,11 @@ function syncCellsFromBackend(serverCells: any[]) {
 }
 
 function syncNotebookMountsFromBackend(serverMounts: any[]) {
-  notebook.mounts = Array.isArray(serverMounts)
-    ? serverMounts.map(parseMountSpec)
-    : []
+  notebook.mounts = Array.isArray(serverMounts) ? serverMounts.map(parseMountSpec) : []
 }
 
 function syncNotebookWorkerFromBackend(serverWorker: any) {
-  notebook.worker = typeof serverWorker === 'string' && serverWorker.trim()
-    ? serverWorker
-    : null
+  notebook.worker = typeof serverWorker === 'string' && serverWorker.trim() ? serverWorker : null
 }
 
 function syncNotebookWorkersFromBackend(serverWorkers: any[]) {
@@ -424,12 +431,53 @@ function extractDefines(source: string): string[] {
 function extractReferences(source: string, localDefs: string[]): string[] {
   const refs: string[] = []
   const keywords = new Set([
-    'and', 'as', 'assert', 'async', 'await', 'break', 'class', 'continue',
-    'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from',
-    'global', 'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not',
-    'or', 'pass', 'raise', 'return', 'try', 'while', 'with', 'yield',
-    'True', 'False', 'None', 'print', 'len', 'range', 'int', 'str',
-    'float', 'list', 'dict', 'set', 'tuple', 'type', 'isinstance',
+    'and',
+    'as',
+    'assert',
+    'async',
+    'await',
+    'break',
+    'class',
+    'continue',
+    'def',
+    'del',
+    'elif',
+    'else',
+    'except',
+    'finally',
+    'for',
+    'from',
+    'global',
+    'if',
+    'import',
+    'in',
+    'is',
+    'lambda',
+    'nonlocal',
+    'not',
+    'or',
+    'pass',
+    'raise',
+    'return',
+    'try',
+    'while',
+    'with',
+    'yield',
+    'True',
+    'False',
+    'None',
+    'print',
+    'len',
+    'range',
+    'int',
+    'str',
+    'float',
+    'list',
+    'dict',
+    'set',
+    'tuple',
+    'type',
+    'isinstance',
   ])
   const re = /\b([a-zA-Z_]\w*)\b/g
   let m: RegExpExecArray | null
@@ -471,28 +519,30 @@ async function boot(): Promise<void> {
 
     // New notebook starts with 0 cells — add one empty cell
     const cellData = await strata.addCell(data.session_id)
-    notebook.cells = [{
-      id: cellData.id,
-      source: '',
-      language: cellData.language || 'python',
-      order: 0,
-      status: 'idle' as CellStatus,
-      worker: notebook.worker,
-      workerOverride: null,
-      timeout: notebook.timeout,
-      timeoutOverride: null,
-      env: { ...notebook.env },
-      envOverrides: {},
-      mounts: [...notebook.mounts],
-      mountOverrides: [],
-      annotations: { worker: null, timeout: null, env: {}, mounts: [] },
-      upstreamIds: [],
-      downstreamIds: [],
-      defines: [],
-      references: [],
-      inputs: [],
-      isLeaf: false,
-    }]
+    notebook.cells = [
+      {
+        id: cellData.id,
+        source: '',
+        language: cellData.language || 'python',
+        order: 0,
+        status: 'idle' as CellStatus,
+        worker: notebook.worker,
+        workerOverride: null,
+        timeout: notebook.timeout,
+        timeoutOverride: null,
+        env: { ...notebook.env },
+        envOverrides: {},
+        mounts: [...notebook.mounts],
+        mountOverrides: [],
+        annotations: { worker: null, timeout: null, env: {}, mounts: [] },
+        upstreamIds: [],
+        downstreamIds: [],
+        defines: [],
+        references: [],
+        inputs: [],
+        isLeaf: false,
+      },
+    ]
 
     // Connect WebSocket and wait for it
     initializeWebSocket()
@@ -672,7 +722,9 @@ function initializeWebSocket() {
             if (Array.isArray(preview) && output.columns) {
               output.rows = preview.map((row: unknown[]) => {
                 const obj: Record<string, unknown> = {}
-                output.columns!.forEach((col, i) => { obj[col] = row[i] })
+                output.columns!.forEach((col, i) => {
+                  obj[col] = row[i]
+                })
                 return obj
               })
             }
@@ -741,7 +793,11 @@ function initializeWebSocket() {
             scalar: { console: '' },
           }
         }
-        if (cell.output.scalar && typeof cell.output.scalar === 'object' && 'console' in cell.output.scalar) {
+        if (
+          cell.output.scalar &&
+          typeof cell.output.scalar === 'object' &&
+          'console' in cell.output.scalar
+        ) {
           ;(cell.output.scalar as Record<string, any>).console += text
         } else {
           cell.output.scalar = { console: text }

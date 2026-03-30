@@ -29,33 +29,29 @@ function runAnyway() {
         <!-- Upstream cells that need to run -->
         <div v-if="currentImpactPreview.upstream.length > 0" class="impact-section">
           <div class="section-label">
-            &#x2191; Will re-run {{ currentImpactPreview.upstream.length }} upstream cell{{ currentImpactPreview.upstream.length > 1 ? 's' : '' }}:
+            &#x2191; Will re-run {{ currentImpactPreview.upstream.length }} upstream cell{{
+              currentImpactPreview.upstream.length > 1 ? 's' : ''
+            }}:
           </div>
-          <div
-            v-for="step in currentImpactPreview.upstream"
-            :key="step.cellId"
-            class="impact-row"
-          >
+          <div v-for="step in currentImpactPreview.upstream" :key="step.cellId" class="impact-row">
             <span class="impact-cell-name">{{ step.cellName }}</span>
             <span class="impact-reason" :class="`reason-${step.reason}`">{{ step.reason }}</span>
-            <span v-if="step.estimatedMs" class="impact-est">~{{ formatMs(step.estimatedMs) }}</span>
+            <span v-if="step.estimatedMs" class="impact-est"
+              >~{{ formatMs(step.estimatedMs) }}</span
+            >
           </div>
         </div>
 
         <!-- Downstream cells that will become stale -->
         <div v-if="currentImpactPreview.downstream.length > 0" class="impact-section">
           <div class="section-label">
-            &#x2193; Will invalidate {{ currentImpactPreview.downstream.length }} downstream cell{{ currentImpactPreview.downstream.length > 1 ? 's' : '' }}:
+            &#x2193; Will invalidate {{ currentImpactPreview.downstream.length }} downstream cell{{
+              currentImpactPreview.downstream.length > 1 ? 's' : ''
+            }}:
           </div>
-          <div
-            v-for="d in currentImpactPreview.downstream"
-            :key="d.cellId"
-            class="impact-row"
-          >
+          <div v-for="d in currentImpactPreview.downstream" :key="d.cellId" class="impact-row">
             <span class="impact-cell-name">{{ d.cellName }}</span>
-            <span class="impact-status-change">
-              {{ d.currentStatus }} &rarr; stale
-            </span>
+            <span class="impact-status-change"> {{ d.currentStatus }} &rarr; stale </span>
           </div>
         </div>
 
@@ -117,7 +113,7 @@ function runAnyway() {
   gap: 8px;
   padding: 4px 8px;
   font-size: 12px;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
   background: #1e1e2e;
   border-radius: 4px;
   margin-bottom: 3px;
@@ -178,10 +174,14 @@ function runAnyway() {
   background: #89b4fa;
   color: #1e1e2e;
 }
-.btn-primary:hover { background: #74c7ec; }
+.btn-primary:hover {
+  background: #74c7ec;
+}
 .btn-secondary {
   background: #313244;
   color: #cdd6f4;
 }
-.btn-secondary:hover { background: #45475a; }
+.btn-secondary:hover {
+  background: #45475a;
+}
 </style>

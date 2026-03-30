@@ -35,20 +35,20 @@ export interface CellAnnotations {
 }
 
 export type CellStatus =
-  | 'idle'        // never executed
-  | 'queued'      // waiting for upstream deps in cascade
-  | 'running'     // executing
-  | 'ready'       // has cached artifact (provenance matches)
-  | 'stale'       // upstream changed, provenance mismatch (coarse — see StalenessReason)
-  | 'error'       // execution failed
+  | 'idle' // never executed
+  | 'queued' // waiting for upstream deps in cascade
+  | 'running' // executing
+  | 'ready' // has cached artifact (provenance matches)
+  | 'stale' // upstream changed, provenance mismatch (coarse — see StalenessReason)
+  | 'error' // execution failed
 
 /** Fine-grained reason why a cell is stale. Multiple reasons can apply;
  *  the server returns all of them, the UI shows the most actionable one. */
 export type StalenessReason =
-  | 'self'        // cell source was edited since last run
-  | 'upstream'    // cell source unchanged, but an upstream input is stale or re-ran
-  | 'env'         // environment (uv.lock runtime deps) changed since last run
-  | 'forced'      // ran with stale inputs ("Run this only") — result exists but suspect
+  | 'self' // cell source was edited since last run
+  | 'upstream' // cell source unchanged, but an upstream input is stale or re-ran
+  | 'env' // environment (uv.lock runtime deps) changed since last run
+  | 'forced' // ran with stale inputs ("Run this only") — result exists but suspect
 
 /** State of a single input variable for a cell */
 export type InputState = 'ready' | 'stale' | 'missing' | 'error'
@@ -64,11 +64,11 @@ export interface CellInput {
 
 /** Content type for artifact serialization (three-tier system) */
 export type ArtifactContentType =
-  | 'arrow/ipc'         // Tier 1: DataFrames, Tables, arrays (zero-copy fast path)
-  | 'json/object'       // Tier 2: Dicts, lists, JSON-safe scalars (safe, portable)
-  | 'msgpack/object'    // Tier 2: Dicts with bytes/datetime (safe, portable)
-  | 'pickle/object'     // Tier 3: Models, custom objects (unsafe — see security model)
-  | 'image/png'         // Display-only (plots, charts)
+  | 'arrow/ipc' // Tier 1: DataFrames, Tables, arrays (zero-copy fast path)
+  | 'json/object' // Tier 2: Dicts, lists, JSON-safe scalars (safe, portable)
+  | 'msgpack/object' // Tier 2: Dicts with bytes/datetime (safe, portable)
+  | 'pickle/object' // Tier 3: Models, custom objects (unsafe — see security model)
+  | 'image/png' // Display-only (plots, charts)
 
 export interface CellOutput {
   /** Content type determines how to render */
@@ -337,38 +337,38 @@ export interface CellProfile {
 
 /** WebSocket message types: client → server */
 export type WsClientMessageType =
-  | 'cell_execute'           // Run a cell (with cascade option)
-  | 'cell_execute_cascade'   // User confirmed cascade — execute the plan
-  | 'cell_execute_force'     // "Run this only" — execute with stale inputs
-  | 'cell_cancel'            // Cancel a running cell
-  | 'cell_source_update'     // Cell source changed (debounced)
-  | 'notebook_run_all'       // Run all cells (or just stale ones)
-  | 'notebook_sync'          // Reconnection — request full state
-  | 'inspect_open'           // Open inspect REPL for a cell
-  | 'inspect_eval'           // Evaluate expression in inspect REPL
-  | 'inspect_close'          // Close inspect REPL
+  | 'cell_execute' // Run a cell (with cascade option)
+  | 'cell_execute_cascade' // User confirmed cascade — execute the plan
+  | 'cell_execute_force' // "Run this only" — execute with stale inputs
+  | 'cell_cancel' // Cancel a running cell
+  | 'cell_source_update' // Cell source changed (debounced)
+  | 'notebook_run_all' // Run all cells (or just stale ones)
+  | 'notebook_sync' // Reconnection — request full state
+  | 'inspect_open' // Open inspect REPL for a cell
+  | 'inspect_eval' // Evaluate expression in inspect REPL
+  | 'inspect_close' // Close inspect REPL
   | 'impact_preview_request' // Request impact preview for a cell (v1.1)
-  | 'profiling_request'      // Request profiling summary (v1.1)
-  | 'dependency_add'         // Add a package dependency
-  | 'dependency_remove'      // Remove a package dependency
+  | 'profiling_request' // Request profiling summary (v1.1)
+  | 'dependency_add' // Add a package dependency
+  | 'dependency_remove' // Remove a package dependency
 
 /** WebSocket message types: server → client */
 export type WsServerMessageType =
-  | 'cell_status'            // Cell status changed (includes causality chain)
-  | 'cell_output'            // Cell produced output (artifact data for display)
-  | 'cell_console'           // Incremental console output (stdout/stderr)
-  | 'cell_error'             // Cell execution failed
-  | 'cell_assertions'        // Assertion results from cell execution
-  | 'dag_update'             // Authoritative DAG from backend AST analysis
-  | 'cascade_prompt'         // "This cell needs N upstream cells to run first"
-  | 'cascade_progress'       // During cascade, reports which cell is running
-  | 'impact_preview'         // Run impact preview (upstream + downstream effects)
-  | 'profiling_summary'      // Notebook profiling summary (v1.1)
-  | 'inspect_result'         // Result of an inspect REPL evaluation
-  | 'notebook_status'        // Batch status update (e.g., after open or env change)
-  | 'notebook_state'         // Full state sync (reconnection)
-  | 'dependency_changed'     // Dependency added/removed — updated list
-  | 'error'                  // Protocol-level error (auth, not found, etc.)
+  | 'cell_status' // Cell status changed (includes causality chain)
+  | 'cell_output' // Cell produced output (artifact data for display)
+  | 'cell_console' // Incremental console output (stdout/stderr)
+  | 'cell_error' // Cell execution failed
+  | 'cell_assertions' // Assertion results from cell execution
+  | 'dag_update' // Authoritative DAG from backend AST analysis
+  | 'cascade_prompt' // "This cell needs N upstream cells to run first"
+  | 'cascade_progress' // During cascade, reports which cell is running
+  | 'impact_preview' // Run impact preview (upstream + downstream effects)
+  | 'profiling_summary' // Notebook profiling summary (v1.1)
+  | 'inspect_result' // Result of an inspect REPL evaluation
+  | 'notebook_status' // Batch status update (e.g., after open or env change)
+  | 'notebook_state' // Full state sync (reconnection)
+  | 'dependency_changed' // Dependency added/removed — updated list
+  | 'error' // Protocol-level error (auth, not found, etc.)
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType
 

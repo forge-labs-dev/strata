@@ -249,6 +249,7 @@ class TestReferenceExecutor:
         )
 
         assert result.success is True
+        assert result.output_bytes is not None
         output_table = ipc_bytes_to_table(result.output_bytes)
         assert output_table.num_rows == 2
         assert output_table.column("name").to_pylist() == ["Alice", "Bob"]
@@ -268,6 +269,7 @@ class TestReferenceExecutor:
 
         assert result.success is False
         assert result.error_code == "INVALID_PARAMS"
+        assert result.error_message is not None
         assert "sql" in result.error_message.lower()
 
     def test_duckdb_executor_sql_error(self):
@@ -395,6 +397,7 @@ class TestBaseExecutorInterface:
         )
 
         assert result.success is True
+        assert result.output_bytes is not None
         output = ipc_bytes_to_table(result.output_bytes)
         assert output.column("x").to_pylist() == [42]
 
@@ -645,6 +648,7 @@ class TestExecutorHTTPIntegration:
         data = resp.json()
         assert data["success"] is False
         assert data["error_code"] == "INVALID_PARAMS"
+        assert data["error_message"] is not None
         assert "sql" in data["error_message"].lower()
 
     def test_execute_unsupported_transform(self, executor_server):

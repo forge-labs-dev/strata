@@ -12,18 +12,21 @@ interface WorkerDraft {
   extraConfig: Record<string, unknown>
 }
 
-const props = withDefaults(defineProps<{
-  workers: WorkerSpec[]
-  title?: string
-  compact?: boolean
-  readOnly?: boolean
-  error?: string | null
-}>(), {
-  title: 'Registered Workers',
-  compact: false,
-  readOnly: false,
-  error: null,
-})
+const props = withDefaults(
+  defineProps<{
+    workers: WorkerSpec[]
+    title?: string
+    compact?: boolean
+    readOnly?: boolean
+    error?: string | null
+  }>(),
+  {
+    title: 'Registered Workers',
+    compact: false,
+    readOnly: false,
+    error: null,
+  },
+)
 
 const emit = defineEmits<{
   save: [workers: WorkerSpec[]]
@@ -36,14 +39,14 @@ function toDraft(workers: WorkerSpec[]): WorkerDraft[] {
     name: worker.name,
     backend: worker.backend,
     runtimeId: worker.runtimeId ?? '',
-    executorUrl:
-      typeof worker.config?.url === 'string' ? worker.config.url : '',
+    executorUrl: typeof worker.config?.url === 'string' ? worker.config.url : '',
     transport:
-      String(worker.config?.transport || 'direct').trim().toLowerCase() === 'signed'
+      String(worker.config?.transport || 'direct')
+        .trim()
+        .toLowerCase() === 'signed'
         ? 'signed'
         : 'direct',
-    strataUrl:
-      typeof worker.config?.strata_url === 'string' ? worker.config.strata_url : '',
+    strataUrl: typeof worker.config?.strata_url === 'string' ? worker.config.strata_url : '',
     extraConfig:
       worker.config && typeof worker.config === 'object'
         ? Object.fromEntries(
@@ -119,11 +122,7 @@ function save() {
       {{ readOnly ? 'No notebook workers configured' : 'No workers configured yet' }}
     </div>
 
-    <div
-      v-for="(worker, index) in draft"
-      :key="`${index}-${worker.name}`"
-      class="worker-list-row"
-    >
+    <div v-for="(worker, index) in draft" :key="`${index}-${worker.name}`" class="worker-list-row">
       <input
         v-model="worker.name"
         class="worker-input"
@@ -177,11 +176,10 @@ function save() {
         when the worker cannot reach the default server URL.
       </template>
       <template v-else-if="worker.backend === 'executor'">
-        Direct transport uploads notebook inputs to the executor over HTTP and returns the output bundle directly.
+        Direct transport uploads notebook inputs to the executor over HTTP and returns the output
+        bundle directly.
       </template>
-      <template v-else>
-        Local workers execute in the notebook runtime on this machine.
-      </template>
+      <template v-else> Local workers execute in the notebook runtime on this machine. </template>
     </div>
 
     <div v-if="!readOnly" class="worker-list-actions">

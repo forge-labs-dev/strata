@@ -12,9 +12,7 @@ import {
   workerWarningForEntry,
 } from './notebookWorkers.ts'
 
-function makeWorker(
-  overrides: Partial<WorkerCatalogEntry> = {},
-): WorkerCatalogEntry {
+function makeWorker(overrides: Partial<WorkerCatalogEntry> = {}): WorkerCatalogEntry {
   return {
     name: 'gpu-http',
     backend: 'executor',
@@ -81,10 +79,7 @@ test('effectiveWorkerNameForCell prefers source annotations over persisted worke
 })
 
 test('workerWarningForEntry reports unresolved, blocked, and unreachable workers', () => {
-  assert.equal(
-    workerWarningForEntry(null, 'gpu-missing'),
-    'Worker "gpu-missing" is unresolved',
-  )
+  assert.equal(workerWarningForEntry(null, 'gpu-missing'), 'Worker "gpu-missing" is unresolved')
   assert.equal(
     workerWarningForEntry(makeWorker({ allowed: false }), 'gpu-http'),
     'Worker "gpu-http" is blocked by server policy',

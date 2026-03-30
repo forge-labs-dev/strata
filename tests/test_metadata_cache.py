@@ -349,6 +349,8 @@ class TestManifestCache:
 
         cached1 = cache.get("default", "strata.ns.table", 1)
         cached2 = cache.get("default", "strata.ns.table", 2)
+        assert cached1 is not None
+        assert cached2 is not None
 
         assert cached1.data_files[0].file_path == "/data/v1.parquet"
         assert cached2.data_files[0].file_path == "/data/v2.parquet"

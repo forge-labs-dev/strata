@@ -205,6 +205,7 @@ class TestS3URIParsing:
         warehouse, table_id = PyIcebergCatalog.parse_table_uri(
             "s3://bucket/path/to/warehouse#namespace.table"
         )
+        assert warehouse is not None
         assert warehouse.startswith("s3://")
         assert warehouse == "s3://bucket/path/to/warehouse"
 

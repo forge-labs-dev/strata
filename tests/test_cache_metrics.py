@@ -227,7 +227,7 @@ class TestCacheEvictionIntegration:
         reset_eviction_tracker()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         try:
@@ -267,7 +267,7 @@ class TestCacheEvictionIntegration:
         reset_eviction_tracker()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         # Add some eviction events

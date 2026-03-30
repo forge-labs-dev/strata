@@ -3,20 +3,23 @@ import { computed, ref, watch } from 'vue'
 import type { WorkerCatalogEntry } from '../types/notebook'
 import { workerTransportLabel } from '../utils/notebookWorkers'
 
-const props = withDefaults(defineProps<{
-  worker: string | null
-  options?: WorkerCatalogEntry[]
-  title?: string
-  compact?: boolean
-  readOnly?: boolean
-  error?: string | null
-}>(), {
-  title: 'Worker',
-  compact: false,
-  readOnly: false,
-  options: () => [],
-  error: null,
-})
+const props = withDefaults(
+  defineProps<{
+    worker: string | null
+    options?: WorkerCatalogEntry[]
+    title?: string
+    compact?: boolean
+    readOnly?: boolean
+    error?: string | null
+  }>(),
+  {
+    title: 'Worker',
+    compact: false,
+    readOnly: false,
+    options: () => [],
+    error: null,
+  },
+)
 
 const emit = defineEmits<{
   save: [worker: string | null]
@@ -34,10 +37,7 @@ watch(
 
 const normalizedOptions = computed(() => {
   const options = props.options.filter((option) => option.name !== 'local')
-  if (
-    draft.value &&
-    !options.some((option) => option.name === draft.value)
-  ) {
+  if (draft.value && !options.some((option) => option.name === draft.value)) {
     options.push({
       name: draft.value,
       backend: 'executor',
@@ -51,8 +51,8 @@ const normalizedOptions = computed(() => {
   return options
 })
 
-const selectedOption = computed(() =>
-  normalizedOptions.value.find((option) => option.name === draft.value) ?? null,
+const selectedOption = computed(
+  () => normalizedOptions.value.find((option) => option.name === draft.value) ?? null,
 )
 
 const canSave = computed(() => {
@@ -93,7 +93,6 @@ function sourceLabel(option: WorkerCatalogEntry) {
       return option.backend
   }
 }
-
 </script>
 
 <template>
@@ -103,48 +102,32 @@ function sourceLabel(option: WorkerCatalogEntry) {
     </div>
 
     <div class="worker-row">
-      <select
-        v-model="draft"
-        class="worker-select"
-        :disabled="readOnly"
-      >
+      <select v-model="draft" class="worker-select" :disabled="readOnly">
         <option value="">local</option>
-        <option
-          v-for="option in normalizedOptions"
-          :key="option.name"
-          :value="option.name"
-        >
-          {{ option.name }} · {{ sourceLabel(option) }} · {{ workerTransportLabel(option) }} · {{ healthLabel(option.health) }}{{ option.allowed === false ? ' · blocked' : '' }}
+        <option v-for="option in normalizedOptions" :key="option.name" :value="option.name">
+          {{ option.name }} · {{ sourceLabel(option) }} · {{ workerTransportLabel(option) }} ·
+          {{ healthLabel(option.health) }}{{ option.allowed === false ? ' · blocked' : '' }}
         </option>
       </select>
-      <button
-        v-if="!readOnly"
-        class="worker-save"
-        :disabled="!canSave"
-        @click="save"
-      >
-        Save
-      </button>
+      <button v-if="!readOnly" class="worker-save" :disabled="!canSave" @click="save">Save</button>
     </div>
 
-    <div
-      v-if="draft && selectedOption?.allowed === false"
-      class="worker-hint worker-hint-warning"
-    >
+    <div v-if="draft && selectedOption?.allowed === false" class="worker-hint worker-hint-warning">
       This worker is visible for reference but blocked by the current server policy.
     </div>
     <div
-      v-else-if="draft && selectedOption?.backend === 'executor' && selectedOption?.health === 'unavailable'"
+      v-else-if="
+        draft && selectedOption?.backend === 'executor' && selectedOption?.health === 'unavailable'
+      "
       class="worker-hint worker-hint-warning"
     >
       This executor is currently unreachable. Saving it would likely fail execution immediately.
     </div>
     <div v-else-if="draft" class="worker-hint">
-      Empty means local execution. Worker selection affects runtime identity, transport, and cache lineage.
+      Empty means local execution. Worker selection affects runtime identity, transport, and cache
+      lineage.
     </div>
-    <div v-else class="worker-hint">
-      Empty means local execution.
-    </div>
+    <div v-else class="worker-hint">Empty means local execution.</div>
 
     <div v-if="error" class="worker-error">
       {{ error }}

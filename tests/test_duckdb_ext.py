@@ -68,6 +68,7 @@ class TestRegisterStrataScan:
             )
 
             result = conn.execute("SELECT COUNT(*) FROM events").fetchone()
+            assert result is not None
             assert result[0] > 0
         finally:
             conn.close()
@@ -126,6 +127,8 @@ class TestRegisterStrataScan:
             result2 = conn.execute(
                 "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'events'"
             ).fetchone()
+            assert result1 is not None
+            assert result2 is not None
 
             # Second registration should have fewer columns
             assert result2[0] < result1[0]

@@ -1,6 +1,7 @@
 """Tests for structured logging with correlation IDs."""
 
 import json
+from typing import cast
 
 
 class TestRequestContext:
@@ -120,7 +121,7 @@ class TestStructuredLogger:
 
         # Create a StructuredLogger directly
         logging.setLoggerClass(StructuredLogger)
-        logger = logging.getLogger("test.structured.data")
+        logger = cast(StructuredLogger, logging.getLogger("test.structured.data"))
         logger.handlers = [handler]
         logger.setLevel(logging.INFO)
         logger.propagate = False

@@ -166,6 +166,8 @@ class TestBuildMetricsCollector:
 
         tenant1_stats = collector.get_tenant_stats("tenant1")
         tenant2_stats = collector.get_tenant_stats("tenant2")
+        assert tenant1_stats is not None
+        assert tenant2_stats is not None
 
         assert tenant1_stats["started"] == 2
         assert tenant1_stats["succeeded"] == 2
@@ -343,6 +345,8 @@ class TestBuildStoreLogs:
         build = build_store.get_build("build-456")
         assert build is not None
         assert build.state == "failed"
+        assert build.logs is not None
+        assert build.error_message is not None
         assert "Invalid SQL" in build.logs
         assert build.error_message == "Syntax error"
 

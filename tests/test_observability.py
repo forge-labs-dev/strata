@@ -336,6 +336,7 @@ class TestPoolMetrics:
         # Check while running
         time.sleep(0.01)  # Let tasks start
         stats = tracker.get_pool_stats("test")
+        assert stats is not None
         assert stats.active_workers >= 1
         assert stats.utilization_pct > 0
 
@@ -359,6 +360,7 @@ class TestPoolMetrics:
         # Check queue depth while running
         time.sleep(0.01)
         stats = tracker.get_pool_stats("test")
+        assert stats is not None
         # Queue depth should be at least some (6 tasks - 2 workers = 4 queued)
         # But timing is tricky, so just check it's non-negative
         assert stats.queue_depth >= 0
@@ -617,7 +619,7 @@ class TestDebugEndpoints:
         reset_metrics()
         reset_latency_stats()
 
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         async def run_client():
@@ -640,7 +642,7 @@ class TestDebugEndpoints:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         try:
@@ -670,7 +672,7 @@ class TestDebugEndpoints:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         try:
@@ -699,7 +701,7 @@ class TestDebugEndpoints:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         try:
@@ -740,7 +742,7 @@ class TestDebugEndpoints:
 
         reset_metrics()
         reset_latency_stats()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         # Record some latencies
@@ -778,7 +780,7 @@ class TestDebugEndpoints:
         install_gc_tracker()
         gc.collect()  # Generate some data
 
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         try:
@@ -807,7 +809,7 @@ class TestDebugEndpoints:
         from strata.server import ServerState, app
 
         reset_metrics()
-        config = StrataConfig(cache_dir=str(tmp_path))
+        config = StrataConfig(cache_dir=tmp_path)
         server_module._state = ServerState(config)
 
         try:

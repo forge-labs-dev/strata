@@ -259,7 +259,7 @@ class TestCacheHistogramIntegration:
         reset_cache_histogram()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         try:

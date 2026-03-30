@@ -2,14 +2,8 @@
 import { ref, nextTick, watch, computed } from 'vue'
 import { useNotebook } from '../stores/notebook'
 
-const {
-  inspectCellId,
-  inspectReady,
-  inspectHistory,
-  evalInspect,
-  closeInspect,
-  cellMap,
-} = useNotebook()
+const { inspectCellId, inspectReady, inspectHistory, evalInspect, closeInspect, cellMap } =
+  useNotebook()
 
 const inputExpr = ref('')
 const historyEl = ref<HTMLElement | null>(null)
@@ -65,11 +59,7 @@ function close() {
       <div v-if="!inspectHistory.length && inspectReady" class="inspect-hint">
         Type an expression to inspect cell inputs. Variables from upstream cells are pre-loaded.
       </div>
-      <div
-        v-for="(entry, i) in inspectHistory"
-        :key="i"
-        class="inspect-entry"
-      >
+      <div v-for="(entry, i) in inspectHistory" :key="i" class="inspect-entry">
         <div class="inspect-expr">
           <span class="prompt-marker">&gt;&gt;&gt;</span> {{ entry.expr }}
         </div>
@@ -128,14 +118,18 @@ function close() {
 }
 .inspect-title code {
   color: #cdd6f4;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .inspect-loading {
   color: #f9e2af;
   font-size: 10px;
   animation: pulse 1s infinite;
 }
-@keyframes pulse { 50% { opacity: 0.4; } }
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
 .inspect-close-btn {
   margin-left: auto;
   background: none;
@@ -146,13 +140,15 @@ function close() {
   padding: 0 4px;
   line-height: 1;
 }
-.inspect-close-btn:hover { color: #f38ba8; }
+.inspect-close-btn:hover {
+  color: #f38ba8;
+}
 
 .inspect-history {
   flex: 1;
   overflow-y: auto;
   padding: 8px 12px;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
   min-height: 60px;
   max-height: 260px;
@@ -218,7 +214,7 @@ function close() {
   border: 1px solid #2a2a3c;
   border-radius: 4px;
   color: #cdd6f4;
-  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
   padding: 4px 8px;
   outline: none;

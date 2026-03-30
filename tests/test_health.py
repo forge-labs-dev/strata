@@ -111,6 +111,7 @@ class TestDiskCacheCheck:
         result = check_disk_cache(cache_dir, max_size_bytes=1024 * 1024)
 
         assert result.status == HealthStatus.UNHEALTHY
+        assert result.message is not None
         assert "does not exist" in result.message
 
 
@@ -287,7 +288,7 @@ class TestHealthEndpointIntegration:
         reset_eviction_tracker()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         try:
@@ -334,7 +335,7 @@ class TestHealthEndpointIntegration:
         reset_rate_limiter()
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir()
-        config = StrataConfig(cache_dir=str(cache_dir))
+        config = StrataConfig(cache_dir=cache_dir)
         server_module._state = ServerState(config)
 
         try:

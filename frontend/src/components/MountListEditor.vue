@@ -2,16 +2,19 @@
 import { ref, watch } from 'vue'
 import type { MountSpec } from '../types/notebook'
 
-const props = withDefaults(defineProps<{
-  mounts: MountSpec[]
-  title?: string
-  compact?: boolean
-  readOnly?: boolean
-}>(), {
-  title: 'Mounts',
-  compact: false,
-  readOnly: false,
-})
+const props = withDefaults(
+  defineProps<{
+    mounts: MountSpec[]
+    title?: string
+    compact?: boolean
+    readOnly?: boolean
+  }>(),
+  {
+    title: 'Mounts',
+    compact: false,
+    readOnly: false,
+  },
+)
 
 const emit = defineEmits<{
   save: [mounts: MountSpec[]]

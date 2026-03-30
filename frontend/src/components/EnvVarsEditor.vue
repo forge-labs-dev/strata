@@ -6,16 +6,19 @@ interface EnvRow {
   value: string
 }
 
-const props = withDefaults(defineProps<{
-  env: Record<string, string>
-  title?: string
-  compact?: boolean
-  readOnly?: boolean
-}>(), {
-  title: 'Environment Variables',
-  compact: false,
-  readOnly: false,
-})
+const props = withDefaults(
+  defineProps<{
+    env: Record<string, string>
+    title?: string
+    compact?: boolean
+    readOnly?: boolean
+  }>(),
+  {
+    title: 'Environment Variables',
+    compact: false,
+    readOnly: false,
+  },
+)
 
 const emit = defineEmits<{
   save: [env: Record<string, string>]
@@ -41,9 +44,7 @@ function removeRow(index: number) {
 
 function save() {
   const env = Object.fromEntries(
-    draft.value
-      .map((row) => [row.key.trim(), row.value] as const)
-      .filter(([key]) => key),
+    draft.value.map((row) => [row.key.trim(), row.value] as const).filter(([key]) => key),
   )
   emit('save', env)
 }
