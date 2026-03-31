@@ -5,11 +5,29 @@
 Two features that together turn Strata Notebook into a distributed compute notebook:
 
 1. **File Mounts** — Declarative read/write access to local and remote filesystems from cells
-2. **Remote Workers** — Route individual cells to different compute backends (local, SSH, K8s, custom)
+2. **Remote Workers** — Route individual cells to either the local runtime or an executor-backed remote runtime
 
 These features are deeply linked: remote workers need file mounts to access data, and file mounts need to work identically regardless of where the cell executes.
 
 **UI mockup**: See `docs/mockup-mounts-workers.html` for the sidebar panels (Mounts, Workers) and per-cell infrastructure toolbar (worker dropdown + mount pills).
+
+## Current Status (March 2026)
+
+The design below started as a forward-looking plan. The codebase has now implemented most of the core notebook worker stack:
+
+- notebook-level and cell-level persisted mounts, workers, timeouts, and env vars in `notebook.toml`
+- source annotation parsing **and authoring UI** for `# @mount`, `# @worker`, `# @timeout`, and `# @env`
+- local execution, named local workers, embedded executor workers, direct HTTP executor workers, and signed/build-backed HTTP executor workers
+- service-mode server-managed worker policy, health probing, health history, and admin CRUD APIs
+- frontend controls for notebook defaults, cell overrides, worker catalogs, and service-mode admin editing
+- structured remote execution metadata persisted in notebook cell state (`remote_worker`, `remote_transport`, `remote_build_id`, `remote_build_state`, `remote_error_code`)
+- notebook integration, WS coverage, and service-mode notebook E2E coverage for admin-managed remote workers
+
+The main things that are still intentionally incomplete are:
+
+- a broader production worker fleet/orchestration layer beyond the reference notebook executor
+- richer long-term worker operations data beyond the current short health history
+- stronger RW mount semantics if we ever want side-effecting cells to become cacheable
 
 ## Part 1: File Mounts (Remote I/O)
 
@@ -342,103 +360,55 @@ If an annotation overrides the persisted worker selection, the cell toolbar shou
 │ Cell Executor (notebook)                            │
 │                                                     │
 │  ① Materialize upstreams (via artifact store)       │
-│  ② Resolve worker + runtime identity               │
-│  ③ Compute provenance (includes worker fingerprint)│
-│  ④ Cache check                                     │
-│  ⑤ Dispatch:                                       │
-│     local?  → spawn harness directly (zero overhead)│
-│     remote? → submit as notebook_cell@v1 transform  │
-│  ⑥ Store outputs (via artifact store)              │
+│  ② Resolve worker + runtime identity                │
+│  ③ Compute provenance (includes worker fingerprint) │
+│  ④ Cache check                                      │
+│  ⑤ Dispatch:                                        │
+│     local     → spawn harness directly              │
+│     embedded  → run bundle path in-process          │
+│     direct    → POST notebook bundle request        │
+│     signed    → create build + signed manifest      │
+│  ⑥ Store outputs (via artifact store)               │
 └─────────────────────────────────────────────────────┘
-        │ (remote path only)
+        │ (HTTP / signed path only)
         ▼
 ┌─────────────────────────────────────────────────────┐
-│ Strata BuildRunner (existing)                       │
-│  - TransformRegistry lookup: notebook_cell@v1       │
-│  - Lease-based claiming, QoS, timeout, retry        │
-│  - Executor protocol v2 (pull model):               │
-│      BuildManifest with signed input/output URLs    │
+│ Notebook Remote Executor                             │
+│  - GET /health                                      │
+│  - POST /v1/execute         (direct multipart path) │
+│  - POST /v1/execute-manifest (signed path)          │
+│  - POST /v1/notebook-execute (compat alias)         │
 └─────────────────────────────────────────────────────┘
-        │
+        │ (signed transport only)
         ▼
 ┌─────────────────────────────────────────────────────┐
-│ Remote Executor (runs on SSH host / K8s pod / VM)   │
-│  - Downloads inputs from signed URLs                │
-│  - Resolves mounts locally (S3/GCS native access)   │
-│  - Runs harness.py                                  │
-│  - Uploads outputs to signed URLs                   │
-│  - POSTs to finalize_url                            │
+│ Core Build / Signed-URL Services                     │
+│  - build record + status                            │
+│  - signed download/upload URLs                      │
+│  - finalize notebook bundle build                   │
 └─────────────────────────────────────────────────────┘
 ```
 
-Two execution paths, chosen per cell:
+Current execution paths, chosen per cell:
 
-1. **Local** (default): Current behavior — spawn harness subprocess directly. No executor protocol overhead. This is the fast path for data exploration, cleaning, and lightweight compute.
+1. **Local**: Spawn the harness subprocess directly. This is still the fast path for exploration and lightweight compute.
+2. **Embedded executor**: Use the executor-style bundle path locally for named executor workers that resolve to `embedded://...`.
+3. **Direct HTTP executor**: Send the notebook execution request and input files straight to a remote notebook executor over HTTP.
+4. **Signed HTTP executor**: Create a build-backed manifest with signed URLs, let the remote executor download inputs and upload the bundle, then finalize through core build services.
 
-2. **Remote**: The cell becomes a `notebook_cell@v1` transform submitted through Strata's existing `BuildRunner`. The remote machine runs a Strata executor endpoint that implements the v2 pull model. The notebook coordinator never touches input/output data — everything flows through signed URLs.
+The signed path is the most production-like remote path today, but the codebase intentionally still supports the simpler direct HTTP path for development and local deployments.
 
 ### Executor Protocol Bridge
 
-The bridge between the notebook and Strata's transform system works as follows:
+The implementation today uses a narrower bridge than the original plan:
 
-**1. Transform registration.** Each remote worker registers a transform in the `TransformRegistry`:
+1. Notebook remote execution is expressed as `notebook_cell@v1` metadata carried to the remote executor.
+2. For **direct** workers, the notebook server POSTs source, serialized inputs, and metadata directly to `/v1/execute`.
+3. For **signed** workers, the notebook server creates a build record plus signed input/output URLs, then POSTs that manifest to `/v1/execute-manifest`.
+4. The remote executor resolves mounts locally, runs `harness.py`, emits one `notebook-output-bundle@v1`, and either returns it directly (direct path) or uploads/finalizes it (signed path).
+5. The notebook executor always fans the resulting bundle back out into canonical per-variable notebook artifacts on the notebook side.
 
-```python
-registry.register(TransformDefinition(
-    executor="notebook_cell@v1",
-    executor_url="https://gpu-node-1.internal:8766/v1/execute",
-    timeout_seconds=3600,
-    max_output_bytes=10 * 1024**3,  # 10 GB
-    protocol="v2",  # pull model
-))
-```
-
-**2. Build submission.** When the executor dispatches to a remote worker, it creates an artifact build via the existing `BuildRunner`:
-
-```python
-# In CellExecutor._dispatch_remote()
-build = artifact_store.create_build(
-    artifact_id=bundle_artifact_id,  # transport bundle, not the final per-var artifact id
-    version=bundle_version,
-    transform_spec=TransformSpec(
-        executor="notebook_cell@v1",
-        params={
-            "source": cell_source,
-            "source_hash": source_hash,
-            "mounts": [m.model_dump() for m in cell_mounts],
-        },
-        inputs={var_name: upstream_artifact_uri for ...},
-    ),
-    provenance_hash=provenance_hash,
-)
-```
-
-**3. Pull-model execution.** The `BuildRunner` sends a `BuildManifest` to the executor URL:
-
-```json
-{
-    "build_id": "b-abc123",
-    "transform": {
-        "executor": "notebook_cell@v1",
-        "params": {"source": "model = ...", "mounts": [...]},
-    },
-    "inputs": [
-        {"name": "features", "url": "https://strata:8765/v1/signed/dl/..."},
-        {"name": "labels",   "url": "https://strata:8765/v1/signed/dl/..."}
-    ],
-    "output": {
-        "url": "https://strata:8765/v1/signed/ul/...",
-        "format": "notebook-output-bundle@v1"
-    },
-    "finalize_url": "https://strata:8765/v1/builds/b-abc123/finalize"
-}
-```
-
-**4. Remote executor.** The executor endpoint on the remote machine downloads inputs, resolves mounts using its own credentials/environment, runs `harness.py`, uploads a single output bundle, and POSTs to `finalize_url`. This is exactly the existing executor protocol v2 — the only new thing is that the executor knows how to interpret `notebook_cell@v1` params (run the harness with the given source and mounts).
-
-**5. Completion.** The `BuildRunner` detects finalization, the build artifact transitions to `ready`, and the notebook's `CellExecutor` picks up the result bundle and fans it back out into per-variable notebook artifacts.
-
-This means: **SSH machines and K8s clusters don't need custom backends in the notebook.** They just need to run a Strata executor endpoint. For SSH, that's a lightweight Python process. For K8s, it's a container image with the executor. The notebook coordinator doesn't know or care what infrastructure the executor runs on.
+So the notebook system already shares the core signed-URL/build lifecycle, but it does **not** yet submit notebook cells to the generic transform registry / `BuildRunner` in the same way as regular server transforms. That remains future hardening work if we want a fully unified remote execution plane.
 
 ### Multi-Output Cell Bundling
 
@@ -604,54 +574,74 @@ The notebook frontend never talks to executor URLs directly. The notebook server
 
 - which workers are visible to the current principal
 - whether the current notebook is allowed to assign a given worker
-- cached health status for each worker
+- cached health status and short probe history for each worker
 
-API shape:
+Current API shape:
 
 ```text
-GET  /v1/notebooks/{id}/workers
-PUT  /v1/notebooks/{id}/cells/{cell_id}/worker
-PUT  /v1/notebooks/{id}/workers         # personal/dev mode only
+GET    /v1/notebooks/{id}/workers?refresh=true|false
+PUT    /v1/notebooks/{id}/workers                  # personal/dev mode only
+PUT    /v1/notebooks/{id}/worker                   # notebook default worker
+PUT    /v1/notebooks/{id}/cells/{cell_id}/worker   # cell override
+
+GET    /v1/admin/notebook-workers
+PUT    /v1/admin/notebook-workers
+POST   /v1/admin/notebook-workers
+PUT    /v1/admin/notebook-workers/{worker_name}
+PATCH  /v1/admin/notebook-workers/{worker_name}    # enable/disable
+DELETE /v1/admin/notebook-workers/{worker_name}
+POST   /v1/admin/notebook-workers/{worker_name}/refresh
 ```
 
 `GET /v1/notebooks/{id}/workers` response shape:
 
 ```json
-[
-  {
-    "name": "gpu-cluster",
-    "backend": "executor",
-    "description": "gpu-node-1.internal — 4× A100",
-    "allowed": true,
-    "health": {
-      "status": "healthy",
-      "last_checked_at": "2026-03-29T20:14:12Z",
-      "latency_ms": 42,
-      "message": null
+{
+  "workers": [
+    {
+      "name": "gpu-cluster",
+      "backend": "executor",
+      "runtime_id": "gpu-a100-4x",
+      "config": {"url": "https://gpu-node-1.internal:8766/v1/execute"},
+      "source": "server",
+      "allowed": true,
+      "enabled": true,
+      "transport": "direct",
+      "health": "healthy",
+      "health_url": "https://gpu-node-1.internal:8766/health",
+      "health_checked_at": 1774815252000,
+      "last_error": null,
+      "health_history": [
+        {"checked_at": 1774815252000, "health": "healthy", "error": null}
+      ]
     }
-  }
-]
+  ],
+  "definitions_editable": false,
+  "health_checked_at": 1774815252000
+}
 ```
 
 Authorization rules:
 
 - In personal/dev mode, notebook-scoped worker definitions may be created and edited through `PUT /v1/notebooks/{id}/workers`
-- In service/multi-tenant mode, that endpoint is disabled or admin-only; workers come from a server-managed registry
+- In service/multi-tenant mode, notebook-scoped worker definition editing is disabled; workers come from a server-managed registry
+- In service mode, authorized operators manage the registry through `/v1/admin/notebook-workers*`
 - Saving a cell worker assignment and executing a cell both revalidate against the same allowlist/policy
-- If a notebook references a worker that is no longer allowed, the UI shows it as unavailable and execution is rejected with `403`
+- If a notebook references a worker that is renamed, deleted, or disabled, the notebook catalog exposes it as `source = "referenced"` or `enabled = false`, the UI shows it as unavailable, and execution is rejected
 
 Health rules:
 
-- Health is probed server-side on a background interval and cached with a short TTL
+- Health is probed server-side on demand and cached with a short TTL
 - The probe is backend-aware: local workers check local readiness; executor workers probe the configured executor endpoint
-- The browser only consumes the cached health summary from notebook APIs
+- The browser only consumes the cached health summary and recent probe trail from notebook APIs
 
 ### Cancellation and Cleanup
 
-The `BuildRunner` already handles cancellation for transforms: lease expiry, orphan recovery, and timeout enforcement. For notebook cells:
+For notebook cells:
 
 - Local dispatch: the existing `asyncio.CancelledError` handler kills the harness subprocess
-- Remote dispatch: the `BuildRunner` expires the lease, the executor detects this and stops. Partial outputs are never finalized as `ready`
+- Direct remote dispatch: request failures surface back as notebook cell errors and mark the worker unavailable in the notebook UI
+- Signed remote dispatch: cancellation and transport/finalize failures fail the build cleanly; malformed bundles are rejected and do not finalize as `ready`
 - RW mount sync-back only happens after successful local execution. Remote executors resolve mounts locally and do not sync back through the notebook coordinator.
 
 ### Frontend UI
@@ -660,13 +650,14 @@ Two new UI components, shown in the mockup (`docs/mockup-mounts-workers.html`):
 
 **Sidebar panels** (right side, alongside DAG view):
 - **Mounts panel**: Lists notebook-level mounts with scheme icon, name, URI (truncated), and ro/rw badge. "+ Add mount" button opens a form for name, URI, mode.
-- **Workers panel**: Lists registered workers with health status dot, name, description, and backend type badge. In personal/dev mode it includes "+ Add worker". In service/multi-tenant mode it is read-only. Health is computed server-side by probing configured workers/executor endpoints and exposed through notebook APIs; the browser does not talk to executor URLs directly.
+- **Workers panel**: Lists registered workers with health status dot, transport, last check time, recent health history, and inline last-error details. In personal/dev mode it edits notebook-scoped definitions. In service/multi-tenant mode it can either show the server-managed catalog read-only or expose admin CRUD when the caller is authorized.
 
 **Cell infrastructure toolbar** (per cell, between editor and metadata bar):
 - **Worker dropdown**: Shows assigned worker name with health dot. Defaults to `local`. Dropdown lists all registered workers with their health.
 - **Mount pills**: Compact color-coded badges for each mount this cell uses. Peach for S3, green for local, blue for GCS. Each pill shows mount name and ro/rw mode. "+" button to add a cell-level override. Cells without overrides show "inherits notebook defaults".
+- **Source override badges**: Cells with active `# @...` directives surface that in the header and infra panel rather than hiding it in source.
 
-Mount changes persist to `notebook.toml` via notebook APIs. Worker assignment persists via `PUT /v1/notebooks/{id}/cells/{cell_id}/worker`. Worker definition CRUD is only available in personal/dev mode; service mode uses a server-managed worker registry.
+Mount, worker, timeout, and env changes persist to `notebook.toml` via notebook APIs. Worker assignment persists via `PUT /v1/notebooks/{id}/worker` and `PUT /v1/notebooks/{id}/cells/{cell_id}/worker`. Source annotations can now also be authored from the UI and rewrite the leading `# @...` block in the cell source.
 
 ### Annotation Parser (Fallback)
 
@@ -751,323 +742,138 @@ class NotebookToml(BaseModel):
 
 ---
 
-## Implementation Order
+## Implementation Status
 
-### Phase 1: File Mounts (this PR)
+### Landed in the Codebase
 
-1. **Models**: `MountSpec`, `MountMode` in `models.py`; extend `NotebookToml` and `CellMeta`
-2. **Parser**: Parse `[[mounts]]` from `notebook.toml`, cell-level `[[cells.mounts]]`
-3. **Mount resolver**: `mounts.py` with `MountResolver` — local-only first, then fsspec
-4. **Executor integration**: Pass resolved mounts in manifest, inject as `Path` in harness namespace
-5. **Fingerprinting**: `MountFingerprinter` for local dirs (mtime-based), then S3 (ETag-based)
-6. **Provenance integration**: Include mount fingerprints in provenance hash; RW mounts skip cache
-7. **Annotation parser**: Extract `# @mount` from cell source (fallback)
-8. **Frontend — sidebar Mounts panel**: CRUD for notebook-level mounts
-9. **Frontend — cell mount pills**: Show inherited + overridden mounts per cell, "+" to add
-10. **REST API**: `PUT /v1/notebooks/{id}/mounts` for notebook-level, cell-meta mount overrides via existing cell update endpoint
-11. **Tests**: Local mounts, S3 mounts (moto), fingerprint invalidation, provenance interaction
+**File mounts**
 
-### Phase 2: Remote Workers (next PR)
+- `src/strata/notebook/models.py`, `parser.py`, and `writer.py` persist notebook-level mounts plus cell-level overrides in `notebook.toml`
+- `src/strata/notebook/mounts.py` handles local paths, remote object-store materialization, RO fingerprinting, RW staging, and sync-back
+- `src/strata/notebook/executor.py` includes mount fingerprints in provenance and treats any `rw` mount as non-cacheable
+- `src/strata/notebook/harness.py` receives only local paths in the manifest
+- the frontend has a notebook-level mounts panel plus cell-level override editing
 
-1. **Models**: `WorkerSpec`, `WorkerBackendType` (local | executor); extend `NotebookToml`
-2. **Local dispatch**: Refactor current harness spawn into a clean `_dispatch_local()` path (zero overhead)
-3. **Remote dispatch**: `_dispatch_remote()` creates an artifact build with `notebook_cell@v1` transform, submits through `BuildRunner`, waits for finalization
-4. **`notebook_cell@v1` executor**: Standalone endpoint (can run on any machine) that accepts the build manifest, runs `harness.py`, uploads outputs. Ships as a lightweight package or container.
-5. **Runtime provenance**: Worker fingerprint (backend + executor URL + runtime_id) in cache identity
-6. **Frontend — sidebar Workers panel**: List workers with health status, "+ Add worker"
-7. **Frontend — cell worker dropdown**: Per-cell worker selection with health dot
-8. **REST API**: `PUT /v1/notebooks/{id}/workers`, `PUT /v1/notebooks/{id}/cells/{cell_id}/worker`
-9. **Annotation parser**: `# @worker` extraction (fallback)
-10. **Worker health**: Server-side probes of executor endpoints, surface status in UI
-11. **Validation**: Reject remote cells with effective `file://` mounts before dispatch
+**Runtime metadata and source annotations**
 
-### Phase 3: Sophisticated Env Management (future)
+- `src/strata/notebook/annotations.py` parses `# @mount`, `# @worker`, `# @timeout`, and `# @env`
+- the frontend can now author those annotations directly by rewriting the leading source annotation block
+- persisted precedence is: source annotations > persisted cell metadata > notebook defaults
 
-- Rich per-worker environment specs beyond the phase-2 runtime fingerprint
-- Cell-level `# @env` annotations for environment variables
-- Worker-specific dependency resolution and environment construction
-- Stronger remote mount semantics (snapshots/versioned RW outputs) if we want cacheable side-effecting cells
+**Workers**
 
----
+- `src/strata/notebook/workers.py` implements effective worker resolution, service-mode policy gating, health probing, health history, transport labeling, and server-managed registry helpers
+- `src/strata/notebook/executor.py` supports:
+  - local workers
+  - named local workers
+  - embedded executor workers
+  - direct HTTP executor workers
+  - signed/build-backed HTTP executor workers
+- `src/strata/notebook/remote_bundle.py` and `src/strata/notebook/remote_executor.py` implement the bundle wire format and the reference notebook executor app
+- `src/strata/notebook/session.py`, `routes.py`, and `ws.py` persist remote execution metadata into notebook cell state
 
-## Implementation Map
+**Service-mode worker administration**
 
-This section turns the phase plan into the concrete module-by-module landing order.
+- notebook-scoped worker definitions are editable only in personal/dev mode
+- service mode uses a server-managed registry exposed from `src/strata/server.py`
+- the frontend notebook worker panel can switch between notebook-local editing and service-mode admin CRUD when authorized
 
-### New Files
+### Current API Surface
 
-Create these modules rather than spreading the logic ad hoc:
+Notebook APIs:
+
+```text
+POST /v1/notebooks/open
+
+PUT  /v1/notebooks/{id}/mounts
+PUT  /v1/notebooks/{id}/cells/{cell_id}/mounts
+
+GET  /v1/notebooks/{id}/workers
+PUT  /v1/notebooks/{id}/workers                  # personal/dev mode only
+PUT  /v1/notebooks/{id}/worker
+PUT  /v1/notebooks/{id}/cells/{cell_id}/worker
+
+PUT  /v1/notebooks/{id}/timeout
+PUT  /v1/notebooks/{id}/cells/{cell_id}/timeout
+PUT  /v1/notebooks/{id}/env
+PUT  /v1/notebooks/{id}/cells/{cell_id}/env
+```
+
+Service-mode worker admin APIs:
+
+```text
+GET    /v1/admin/notebook-workers
+PUT    /v1/admin/notebook-workers
+POST   /v1/admin/notebook-workers
+PUT    /v1/admin/notebook-workers/{worker_name}
+PATCH  /v1/admin/notebook-workers/{worker_name}
+DELETE /v1/admin/notebook-workers/{worker_name}
+POST   /v1/admin/notebook-workers/{worker_name}/refresh
+```
+
+Remote executor APIs:
+
+```text
+GET  /health
+POST /v1/execute
+POST /v1/notebook-execute      # compatibility alias
+POST /v1/execute-manifest
+```
+
+### Current Module Map
 
 - `src/strata/notebook/mounts.py`
-  - `MountResolver`
-  - `MountFingerprinter`
-  - `resolve_cell_mounts(...)`
-- `src/strata/notebook/annotations.py`
-  - `CellAnnotations`
-  - `parse_annotations(...)`
-- `src/strata/notebook/workers.py`
-  - `WorkerResolver`
-  - `WorkerHealthService`
-  - worker allowlist / policy helpers
-- `src/strata/notebook/remote_bundle.py`
-  - `pack_notebook_output_bundle(...)`
-  - `unpack_notebook_output_bundle(...)`
-  - manifest schema validation for `notebook-output-bundle@v1`
-
-### Existing Files to Extend
-
-- `src/strata/notebook/models.py`
-  - add `MountMode`, `MountSpec`, `WorkerBackendType`, `WorkerSpec`
-  - extend `CellMeta`, `NotebookToml`, and API-facing cell serialization with mount/worker fields
-- `src/strata/notebook/parser.py`
-  - parse `[[mounts]]`, `[[workers]]`, and cell-level persisted metadata
-  - merge notebook defaults with cell metadata before runtime annotation overlay
-- `src/strata/notebook/executor.py`
-  - phase 1: mount preparation, fingerprinting, manifest injection, RW cache skip, sync-back
-  - phase 2: split into `_dispatch_local()` and `_dispatch_remote()`
-  - phase 2: add worker runtime fingerprint into provenance
-  - phase 2: reject remote `file://` mounts before build submission
-- `src/strata/notebook/harness.py`
-  - phase 1: mount path injection stays local-path-only
-  - phase 2: keep output manifest stable so local and remote execution share the same result semantics
-- `src/strata/notebook/session.py`
-  - surface notebook-scoped mounts/workers in serialized state
-  - hold any server-side worker health cache handles needed by notebook APIs
-- `src/strata/notebook/routes.py`
-  - add REST endpoints for mounts/workers CRUD and worker listing
-  - validate personal/dev vs service-mode behavior
-- `src/strata/notebook/ws.py`
-  - broadcast worker-health and cell infrastructure changes only if needed by the UI
-  - no executor probing from the browser
-- `src/strata/notebook/writer.py`
-  - persist notebook-level mounts/workers and cell-level mount/worker metadata to `notebook.toml`
-
-### Frontend Files to Extend
-
-- `frontend/src/types/notebook.ts`
-  - add mount, worker, and worker-health types
-- `frontend/src/stores/notebook.ts`
-  - fetch and persist mounts/workers
-  - apply server-owned worker health
-  - store cell-level worker assignment and cell mount overrides
-- `frontend/src/components/CellEditor.vue`
-  - add the cell infrastructure toolbar hooks
-- `frontend/src/components/DagView.vue`
-  - no core logic change required; only consume richer cell state if needed
-- new UI components if desired:
-  - `frontend/src/components/notebook/MountsPanel.vue`
-  - `frontend/src/components/notebook/WorkersPanel.vue`
-  - `frontend/src/components/notebook/CellInfraBar.vue`
-
-### Phase 1: Exact Backend Landing Order
-
-1. Update `models.py`, `parser.py`, and `writer.py` so mounts round-trip cleanly through `notebook.toml`.
-2. Add `annotations.py` for `# @mount` parsing.
-3. Add `mounts.py` with local mount resolution and local fingerprinting first.
-4. Integrate mounts into `executor.py` and `harness.py`.
-5. Make `session.py` / `routes.py` serialize mount-aware cell state.
-6. Add notebook-level mount REST endpoints.
-7. Add cell-level mount override REST endpoints.
-8. Add remote mount support in `mounts.py` using `fsspec`.
-9. Add RW cache-skip behavior and sync-back in `executor.py`.
-10. Add frontend sidebar panel and cell pills against the new endpoints.
-
-### Phase 1: REST API Contract
-
-These endpoints should exist before frontend implementation:
-
-```text
-GET    /v1/notebooks/{id}/mounts
-PUT    /v1/notebooks/{id}/mounts
-PUT    /v1/notebooks/{id}/cells/{cell_id}/mounts
-DELETE /v1/notebooks/{id}/cells/{cell_id}/mounts/{mount_name}
-```
-
-Suggested request/response shapes:
-
-```json
-// PUT /v1/notebooks/{id}/mounts
-{
-  "mounts": [
-    {"name": "raw_data", "uri": "s3://acme-ml/datasets/v3", "mode": "ro"}
-  ]
-}
-```
-
-```json
-// PUT /v1/notebooks/{id}/cells/{cell_id}/mounts
-{
-  "mounts": [
-    {"name": "checkpoints", "uri": "s3://acme-ml/checkpoints/run-042", "mode": "rw"}
-  ]
-}
-```
-
-```json
-// Response shape for all mount endpoints
-{
-  "notebook_id": "nb_123",
-  "mounts": [...],
-  "cells": [...]
-}
-```
-
-### Phase 2: Exact Backend Landing Order
-
-1. Extend `models.py`, `parser.py`, and `writer.py` for persisted worker metadata.
-2. Add `workers.py` with:
-   - effective worker resolution
-   - personal/dev vs service-mode gating
-   - server-side worker health probing and cache
-3. Refactor `executor.py` into:
-   - `_dispatch_local(...)`
-   - `_dispatch_remote(...)`
-4. Add `remote_bundle.py` and make local code able to unpack and canonicalize `notebook-output-bundle@v1`.
-5. Implement remote dispatch in `executor.py` using `BuildRunner` / build-store APIs.
-6. Add the `notebook_cell@v1` executor implementation on the remote side.
-7. Add remote worker runtime fingerprinting into notebook provenance.
-8. Add remote mount validation, especially rejection of effective `file://` mounts.
-9. Add worker APIs in `routes.py`.
-10. Add frontend worker sidebar and cell worker dropdown against those APIs.
-
-### Phase 2: REST API Contract
-
-```text
-GET    /v1/notebooks/{id}/workers
-PUT    /v1/notebooks/{id}/workers              # personal/dev mode only
-PUT    /v1/notebooks/{id}/cells/{cell_id}/worker
-```
-
-Suggested request/response shapes:
-
-```json
-// PUT /v1/notebooks/{id}/workers
-{
-  "workers": [
-    {
-      "name": "gpu-cluster",
-      "backend": "executor",
-      "runtime_id": "gpu-a100-4x",
-      "config": {
-        "url": "https://gpu-node-1.internal:8766/v1/execute",
-        "description": "gpu-node-1.internal — 4× A100"
-      }
-    }
-  ]
-}
-```
-
-```json
-// PUT /v1/notebooks/{id}/cells/{cell_id}/worker
-{
-  "worker": "gpu-cluster",
-  "timeout": 3600
-}
-```
-
-```json
-// GET /v1/notebooks/{id}/workers
-{
-  "notebook_id": "nb_123",
-  "workers": [
-    {
-      "name": "gpu-cluster",
-      "backend": "executor",
-      "description": "gpu-node-1.internal — 4× A100",
-      "allowed": true,
-      "health": {
-        "status": "healthy",
-        "last_checked_at": "2026-03-29T20:14:12Z",
-        "latency_ms": 42,
-        "message": null
-      }
-    }
-  ]
-}
-```
-
-### WebSocket Changes
-
-Remote workers do not require a brand-new WebSocket protocol. Reuse the existing notebook channel and add only targeted messages if the UI needs them:
-
-- `worker_health`
-  - optional push update when cached health changes materially
-- `cell_status`
-  - continue to be the canonical execution-state message
-- `cell_console`
-  - continue streaming remote or local stdout/stderr
-
-If health is polled only on page load and manual refresh, a new WebSocket message may not be necessary at all.
-
-### Remote Executor Scope: `notebook_cell@v1`
-
-The remote executor implementation should be minimal and deliberately narrow:
-
-- input: existing build manifest plus `notebook_cell@v1` params
-- actions:
-  - download signed input URLs
-  - materialize remote mounts
-  - run `harness.py`
-  - build `notebook-output-bundle@v1`
-  - upload bundle and finalize
-- explicit non-goals for first version:
-  - remote `file://` mount sync
-  - ad hoc package installation
-  - alternate execution languages
-
-### Test Plan by Layer
-
-Backend unit tests:
-
-- `tests/notebook/test_annotations.py`
-  - `@mount`, `@worker`, `@timeout` parsing and precedence
-- `tests/notebook/test_mounts.py`
-  - local path resolution
-  - remote fingerprinting
+  - mount materialization
+  - mount fingerprinting
   - RW sync-back
-  - remote `file://` rejection
-- `tests/notebook/test_remote_bundle.py`
-  - success bundle pack/unpack
-  - failure bundle pack/unpack
-  - manifest validation
-- `tests/notebook/test_workers.py`
-  - worker resolution
-  - service-mode restrictions
-  - health cache behavior
+- `src/strata/notebook/annotations.py`
+  - source annotation parsing
+- `src/strata/notebook/workers.py`
+  - worker policy
+  - worker transport classification
+  - worker health probing + history
+  - service-mode registry helpers
+- `src/strata/notebook/remote_bundle.py`
+  - `notebook-output-bundle@v1` pack/unpack + validation
+- `src/strata/notebook/remote_executor.py`
+  - reference notebook executor app for direct + signed transport
+- `src/strata/notebook/executor.py`
+  - provenance
+  - local/embedded/direct/signed dispatch
+  - remote metadata propagation
+- `src/strata/notebook/routes.py`
+  - notebook-level mounts/workers/env/timeout endpoints
+- `src/strata/server.py`
+  - service-mode worker admin endpoints
+- `frontend/src/components/MountsPanel.vue`
+  - notebook-level mount editing
+- `frontend/src/components/WorkersPanel.vue`
+  - notebook worker catalog, health display, and service-mode admin UI
+- `frontend/src/components/CellEditor.vue`
+  - cell-level runtime controls and source annotation authoring
 
-Notebook integration tests:
+### Current Test Coverage
 
-- `tests/notebook/test_routes.py`
-  - mount endpoints
-  - worker endpoints
-- `tests/notebook/test_ws.py`
-  - local execution still behaves unchanged
-  - remote execution state surfaces through existing messages
+Representative coverage already in the repo:
+
+- `tests/notebook/test_mounts.py`
 - `tests/notebook/test_executor.py`
-  - provenance changes with mount fingerprints
-  - provenance changes with worker fingerprint
-  - RW mounts skip cache
-  - remote bundle fan-out creates canonical per-variable artifacts
+- `tests/notebook/test_remote_bundle.py`
+- `tests/notebook/test_remote_executor.py`
+- `tests/notebook/test_routes.py`
+- `tests/notebook/test_ws.py`
+- `tests/notebook/test_e2e_remote_workers.py`
+- `tests/test_server_mode_transforms.py`
 
-Frontend tests:
+### Remaining Work
 
-- mount sidebar CRUD
-- cell mount override rendering
-- worker list / health rendering
-- worker assignment persistence
-- unavailable worker state handling
+The design is now mostly implemented. The main remaining gaps are:
 
-### Recommended PR Split
-
-To keep reviewable diffs and avoid half-integrated behavior:
-
-1. PR 1: Mount data model, parser/writer round-trip, local-only resolver, backend tests
-2. PR 2: Mount executor integration, remote object-store mounts, mount UI
-3. PR 3: Worker data model, server-managed health API, worker UI
-4. PR 4: Remote bundle format + notebook-side fan-out
-5. PR 5: `notebook_cell@v1` remote dispatch through `BuildRunner`
-
-That split preserves a working notebook at every step and minimizes protocol drift.
+- unify notebook signed remote execution more deeply with the generic transform/`BuildRunner` plane if we want one production remote execution path instead of the current direct-vs-signed split
+- add richer worker operations data than the current short health-history ring buffer
+- build a broader server-managed worker admin surface beyond the notebook sidebar
+- decide whether remote worker fleet management belongs inside Strata or remains external
+- add stronger mount snapshot/versioning semantics if we want cacheable side-effecting `rw` cells
 
 ---
 
