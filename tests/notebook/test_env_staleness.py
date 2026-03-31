@@ -20,9 +20,10 @@ from strata.notebook.causality import (
     compute_causality_on_staleness,
 )
 from strata.notebook.dependencies import add_dependency
-from strata.notebook.env import compute_lockfile_hash
+from strata.notebook.env import compute_execution_env_hash
 from strata.notebook.provenance import compute_source_hash
 from strata.notebook.session import SessionManager
+from strata.notebook.workers import worker_runtime_identity
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
@@ -85,7 +86,13 @@ class TestComponentHashStorage:
         assert "source_hash" in params
         assert "env_hash" in params
         assert params["source_hash"] == compute_source_hash("x = 42")
-        assert params["env_hash"] == compute_lockfile_hash(session.path)
+        assert params["env_hash"] == compute_execution_env_hash(
+            session.path,
+            runtime_identity=worker_runtime_identity(
+                session.notebook_state,
+                None,
+            ),
+        )
 
 
 class TestCausalityEnvChanged:
@@ -180,7 +187,13 @@ class TestCausalityInspectorWithHashes:
         stored_env = inspector._get_artifact_metadata("c1", "env_hash")
         stored_src = inspector._get_artifact_metadata("c1", "source_hash")
 
-        assert stored_env == compute_lockfile_hash(nb_dir)
+        assert stored_env == compute_execution_env_hash(
+            nb_dir,
+            runtime_identity=worker_runtime_identity(
+                session.notebook_state,
+                None,
+            ),
+        )
         assert stored_src == compute_source_hash("x = 1")
 
     @pytest.mark.asyncio

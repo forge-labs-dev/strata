@@ -226,6 +226,8 @@ def execute_cell_and_wait(
     Returns the final cell_output or cell_error message.
     """
     helper.execute_cell(cell_id)
+    saw_running = False
+    terminal_message: dict[str, Any] | None = None
 
     # Collect messages until we see cell_status(ready) or cell_status(error)
     # for the target cell. Handle cascade_prompt by auto-accepting.
@@ -239,10 +241,14 @@ def execute_cell_and_wait(
 
         if msg["type"] == "cell_status":
             p = msg["payload"]
+            if p.get("cell_id") == cell_id and p.get("status") == "running":
+                saw_running = True
             # "stale" means this cell was skipped because an upstream cell
             # errored mid-cascade. Treat it as a terminal state.
             if p.get("cell_id") == cell_id and p.get("status") in ("ready", "error", "stale"):
-                break
+                terminal_message = msg
+                if saw_running or p.get("status") in ("error", "stale"):
+                    break
 
     # Find the output/error message for this cell
     for m in reversed(helper.messages):
@@ -250,4 +256,4 @@ def execute_cell_and_wait(
             return m
 
     # If no output found, return the last status message
-    return msg
+    return terminal_message or msg

@@ -588,6 +588,8 @@ class CellExecutor:
             )
 
             if cached_artifact is not None:
+                if remote_metadata.get("remote_transport") == "signed":
+                    remote_metadata.setdefault("remote_build_state", "ready")
                 # Cache hit — update cell state and return.
                 duration_ms = (time.time() - start_time) * 1000
                 if cell:
@@ -1232,10 +1234,15 @@ class CellExecutor:
             if response.status_code != 200:
                 detail = self._extract_remote_error(response)
                 build = build_store.get_build(build_id)
+                inferred_error_code = (
+                    "FINALIZE_FAILED"
+                    if "Failed to finalize notebook bundle build" in detail
+                    else "EXECUTOR_HTTP_ERROR"
+                )
                 error_code = (
                     build.error_code
                     if build is not None and build.state == "failed" and build.error_code
-                    else "EXECUTOR_HTTP_ERROR"
+                    else inferred_error_code
                 )
                 error_message = (
                     build.error_message
@@ -1249,9 +1256,12 @@ class CellExecutor:
                     error_message,
                     error_code,
                 )
+                refreshed_build = build_store.get_build(build_id)
                 raise RemoteExecutionError(
                     error_message,
-                    remote_build_state=build.state if build is not None else "failed",
+                    remote_build_state=(
+                        refreshed_build.state if refreshed_build is not None else "failed"
+                    ),
                     remote_error_code=error_code,
                 )
 

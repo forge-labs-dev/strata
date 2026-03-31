@@ -745,7 +745,8 @@ token = os.getenv("NOTEBOOK_TOKEN")
         result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
 
         assert result.success is False
-        assert "Execution failed:" in str(result.error)
+        assert "Remote executor 'gpu-http-signed' returned 502:" in str(result.error)
+        assert "Notebook bundle transfer failed:" in str(result.error)
         assert result.remote_worker == "gpu-http-signed"
         assert result.remote_transport == "signed"
         assert result.remote_build_id is not None
