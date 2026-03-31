@@ -626,14 +626,13 @@ class NotebookSession:
         for cell in self.notebook_state.cells:
             history = self.execution_history.get(cell.id, [])
             last_duration = history[-1].duration_ms if history else 0
-            is_cached = cell.cache_hit
+            is_cached = history[-1].cache_hit if history else cell.cache_hit
 
-            if is_cached:
-                cache_hits += 1
-            elif cell.status == "ready":
-                cache_misses += 1
-
-            total_execution_ms += last_duration
+            total_execution_ms += int(
+                sum(sample.duration_ms for sample in history)
+            )
+            cache_hits += sum(1 for sample in history if sample.cache_hit)
+            cache_misses += sum(1 for sample in history if not sample.cache_hit)
 
             cell_name = cell.defines[0] if cell.defines else cell.id
             cell_profiles.append({
@@ -649,12 +648,14 @@ class NotebookSession:
         # Estimate cache savings: sum of historical durations for cached cells
         cache_savings_ms = 0
         for cell in self.notebook_state.cells:
-            if cell.cache_hit:
-                history = self.execution_history.get(cell.id, [])
-                for sample in reversed(history):
-                    if not sample.cache_hit:
-                        cache_savings_ms += int(sample.duration_ms)
-                        break
+            history = self.execution_history.get(cell.id, [])
+            last_non_cached_duration: int | None = None
+            for sample in history:
+                if sample.cache_hit:
+                    if last_non_cached_duration is not None:
+                        cache_savings_ms += last_non_cached_duration
+                else:
+                    last_non_cached_duration = int(sample.duration_ms)
 
         return {
             "total_execution_ms": int(total_execution_ms),
