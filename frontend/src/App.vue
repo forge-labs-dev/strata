@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { useNotebook } from './stores/notebook'
 import CellEditor from './components/CellEditor.vue'
 import DagView from './components/DagView.vue'
@@ -27,11 +27,46 @@ const nameInput = ref<HTMLInputElement | null>(null)
 const notebookPathInput = ref('')
 const showOpenDialog = ref(false)
 const booting = ref(true)
+const sidebarWidth = ref(340)
+
+let resizePointerId: number | null = null
+let resizeStartX = 0
+let resizeStartWidth = 340
+
+function clampSidebarWidth(width: number): number {
+  return Math.min(560, Math.max(280, width))
+}
 
 // Connect to backend immediately on mount
 onMounted(async () => {
   await boot()
   booting.value = false
+})
+
+function stopSidebarResize() {
+  resizePointerId = null
+  document.body.classList.remove('resizing-sidebar')
+  window.removeEventListener('pointermove', handleSidebarResize)
+  window.removeEventListener('pointerup', stopSidebarResize)
+}
+
+function handleSidebarResize(event: PointerEvent) {
+  if (resizePointerId == null) return
+  sidebarWidth.value = clampSidebarWidth(resizeStartWidth - (event.clientX - resizeStartX))
+}
+
+function startSidebarResize(event: PointerEvent) {
+  if (window.innerWidth <= 980) return
+  resizePointerId = event.pointerId
+  resizeStartX = event.clientX
+  resizeStartWidth = sidebarWidth.value
+  document.body.classList.add('resizing-sidebar')
+  window.addEventListener('pointermove', handleSidebarResize)
+  window.addEventListener('pointerup', stopSidebarResize)
+}
+
+onUnmounted(() => {
+  stopSidebarResize()
 })
 
 function startEditName() {
@@ -105,7 +140,7 @@ async function retryBoot() {
     </div>
 
     <!-- Main layout -->
-    <div class="main">
+    <div class="main" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
       <!-- Cells -->
       <div class="cells-panel">
         <CellEditor
@@ -118,6 +153,14 @@ async function retryBoot() {
         />
         <button class="add-cell-btn" :disabled="!connected" @click="addCell()">+ Add cell</button>
       </div>
+
+      <div
+        class="sidebar-resizer"
+        role="separator"
+        aria-label="Resize sidebar"
+        aria-orientation="vertical"
+        @pointerdown="startSidebarResize"
+      ></div>
 
       <!-- DAG sidebar + profiling -->
       <aside class="sidebar">
@@ -268,16 +311,40 @@ body {
   display: flex;
   flex: 1;
   overflow: hidden;
+  min-height: 0;
 }
 .cells-panel {
   flex: 1;
   overflow-y: auto;
   padding: 16px;
+  min-width: 0;
+}
+.sidebar-resizer {
+  width: 12px;
+  flex-shrink: 0;
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.sidebar-resizer::before {
+  content: '';
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: #2a2a3c;
+}
+.sidebar-resizer:hover::before {
+  background: #89b4fa;
 }
 .sidebar {
-  width: 200px;
+  width: var(--sidebar-width);
   flex-shrink: 0;
-  padding: 16px 12px 16px 0;
+  min-width: 280px;
+  max-width: 560px;
+  padding: 16px 16px 16px 4px;
   overflow-y: auto;
 }
 
@@ -351,5 +418,32 @@ body {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+body.resizing-sidebar {
+  cursor: col-resize;
+  user-select: none;
+}
+
+@media (max-width: 980px) {
+  .main {
+    flex-direction: column;
+  }
+
+  .cells-panel {
+    padding-bottom: 8px;
+  }
+
+  .sidebar-resizer {
+    display: none;
+  }
+
+  .sidebar {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    padding: 12px 16px 16px;
+    border-top: 1px solid #2a2a3c;
+  }
 }
 </style>
