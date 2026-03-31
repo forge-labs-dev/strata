@@ -598,6 +598,113 @@ class TestNotebookWorkerAdminApi:
         assert allowed.status_code == 200
         assert allowed.json()["worker"] == "gpu-a100"
 
+    def test_admin_worker_crud_propagates_into_notebook_catalog_and_assignment(
+        self,
+        server_mode_app,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Create/update/delete should propagate into notebook-visible worker policy."""
+
+        monkeypatch.setattr("strata.notebook.session._uv_sync", lambda path, **kw: True)
+
+        async def _noop_start(self):
+            del self
+
+        monkeypatch.setattr("strata.notebook.pool.WarmProcessPool.start", _noop_start)
+
+        notebook_dir = create_notebook(tmp_path, "Service Notebook Worker CRUD")
+        opened = server_mode_app.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        assert opened.status_code == 200
+        session_id = opened.json()["session_id"]
+
+        created = server_mode_app.post(
+            "/v1/admin/notebook-workers",
+            json={
+                "name": "gpu-http",
+                "backend": "executor",
+                "runtime_id": "cuda-12.4",
+                "config": {"url": "embedded://local"},
+                "enabled": True,
+            },
+        )
+        assert created.status_code == 200
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        created_entry = next(
+            worker for worker in workers.json()["workers"] if worker["name"] == "gpu-http"
+        )
+        assert created_entry["source"] == "server"
+        assert created_entry["allowed"] is True
+
+        assigned_created = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-http"},
+        )
+        assert assigned_created.status_code == 200
+        assert assigned_created.json()["worker"] == "gpu-http"
+
+        updated = server_mode_app.put(
+            "/v1/admin/notebook-workers/gpu-http",
+            json={
+                "name": "gpu-signed",
+                "backend": "executor",
+                "runtime_id": "cuda-12.5",
+                "config": {
+                    "url": "embedded://local",
+                    "transport": "signed",
+                },
+                "enabled": True,
+            },
+        )
+        assert updated.status_code == 200
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        payload = workers.json()["workers"]
+        renamed_entry = next(worker for worker in payload if worker["name"] == "gpu-signed")
+        assert renamed_entry["source"] == "server"
+        assert renamed_entry["allowed"] is True
+        old_entry = next(worker for worker in payload if worker["name"] == "gpu-http")
+        assert old_entry["source"] == "referenced"
+        assert old_entry["allowed"] is False
+
+        blocked_old = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-http"},
+        )
+        assert blocked_old.status_code == 403
+        assert "not allowed in service mode" in blocked_old.json()["detail"]
+
+        assigned_renamed = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-signed"},
+        )
+        assert assigned_renamed.status_code == 200
+        assert assigned_renamed.json()["worker"] == "gpu-signed"
+
+        deleted = server_mode_app.delete("/v1/admin/notebook-workers/gpu-signed")
+        assert deleted.status_code == 200
+
+        workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
+        assert workers.status_code == 200
+        deleted_entry = next(
+            worker for worker in workers.json()["workers"] if worker["name"] == "gpu-signed"
+        )
+        assert deleted_entry["source"] == "referenced"
+        assert deleted_entry["allowed"] is False
+
+        blocked_deleted = server_mode_app.put(
+            f"/v1/notebooks/{session_id}/worker",
+            json={"worker": "gpu-signed"},
+        )
+        assert blocked_deleted.status_code == 403
+        assert "not allowed in service mode" in blocked_deleted.json()["detail"]
+
     def test_notebook_workers_admin_requires_service_mode(self, personal_mode_app):
         """The admin registry should not exist in personal mode."""
         response = personal_mode_app.get("/v1/admin/notebook-workers")
