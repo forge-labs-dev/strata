@@ -3,6 +3,7 @@ import { ref, watch } from 'vue'
 import type { EditableWorkerSpec, WorkerSpec } from '../types/notebook'
 
 interface WorkerDraft {
+  persistedName: string
   name: string
   backend: WorkerSpec['backend']
   enabled: boolean
@@ -19,6 +20,7 @@ const props = withDefaults(
     title?: string
     compact?: boolean
     showEnabled?: boolean
+    rowActions?: boolean
     readOnly?: boolean
     error?: string | null
   }>(),
@@ -26,6 +28,7 @@ const props = withDefaults(
     title: 'Registered Workers',
     compact: false,
     showEnabled: false,
+    rowActions: false,
     readOnly: false,
     error: null,
   },
@@ -33,12 +36,15 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   save: [workers: EditableWorkerSpec[]]
+  saveOne: [worker: EditableWorkerSpec, originalName: string | null]
+  removeOne: [workerName: string]
 }>()
 
 const draft = ref<WorkerDraft[]>([])
 
 function toDraft(workers: EditableWorkerSpec[]): WorkerDraft[] {
   return workers.map((worker) => ({
+    persistedName: worker.name,
     name: worker.name,
     backend: worker.backend,
     enabled: worker.enabled !== false,
@@ -72,6 +78,7 @@ watch(
 
 function addWorker() {
   draft.value.push({
+    persistedName: '',
     name: '',
     backend: 'executor',
     enabled: true,
@@ -83,37 +90,49 @@ function addWorker() {
   })
 }
 
+function serializeWorker(worker: WorkerDraft): EditableWorkerSpec {
+  const config =
+    worker.backend === 'executor'
+      ? {
+          ...worker.extraConfig,
+          ...(worker.executorUrl.trim() ? { url: worker.executorUrl.trim() } : {}),
+          ...(worker.transport === 'signed' ? { transport: 'signed' } : {}),
+          ...(worker.transport === 'signed' && worker.strataUrl.trim()
+            ? { strata_url: worker.strataUrl.trim() }
+            : {}),
+        }
+      : {}
+
+  return {
+    name: worker.name.trim(),
+    backend: worker.backend,
+    ...(props.showEnabled ? { enabled: worker.enabled } : {}),
+    runtimeId: worker.runtimeId.trim() || null,
+    config,
+  }
+}
+
 function removeWorker(index: number) {
+  const worker = draft.value[index]
+  if (props.rowActions && worker.persistedName) {
+    emit('removeOne', worker.persistedName)
+    return
+  }
   draft.value.splice(index, 1)
 }
 
 function save() {
   emit(
     'save',
-    draft.value
-      .map((worker) => {
-        const config =
-          worker.backend === 'executor'
-            ? {
-                ...worker.extraConfig,
-                ...(worker.executorUrl.trim() ? { url: worker.executorUrl.trim() } : {}),
-                ...(worker.transport === 'signed' ? { transport: 'signed' } : {}),
-                ...(worker.transport === 'signed' && worker.strataUrl.trim()
-                  ? { strata_url: worker.strataUrl.trim() }
-                  : {}),
-              }
-            : {}
-
-        return {
-          name: worker.name.trim(),
-          backend: worker.backend,
-          ...(props.showEnabled ? { enabled: worker.enabled } : {}),
-          runtimeId: worker.runtimeId.trim() || null,
-          config,
-        }
-      })
-      .filter((worker) => worker.name),
+    draft.value.map(serializeWorker).filter((worker) => worker.name),
   )
+}
+
+function saveOne(index: number) {
+  const worker = draft.value[index]
+  const serialized = serializeWorker(worker)
+  if (!serialized.name) return
+  emit('saveOne', serialized, worker.persistedName || null)
 }
 </script>
 
@@ -173,7 +192,19 @@ function save() {
         placeholder="strata url (signed only, optional)"
         :disabled="readOnly || worker.backend !== 'executor' || worker.transport !== 'signed'"
       />
-      <button v-if="!readOnly" class="worker-list-remove" @click="removeWorker(index)">×</button>
+      <div class="worker-row-actions">
+        <template v-if="rowActions">
+          <button class="worker-list-save-row" :disabled="readOnly" @click="saveOne(index)">
+            Save
+          </button>
+          <button class="worker-list-remove" :disabled="readOnly" @click="removeWorker(index)">
+            {{ worker.persistedName ? 'Delete' : '×' }}
+          </button>
+        </template>
+        <button v-else-if="!readOnly" class="worker-list-remove" @click="removeWorker(index)">
+          ×
+        </button>
+      </div>
     </div>
 
     <div
@@ -192,7 +223,7 @@ function save() {
       <template v-else> Local workers execute in the notebook runtime on this machine. </template>
     </div>
 
-    <div v-if="!readOnly" class="worker-list-actions">
+    <div v-if="!readOnly && !rowActions" class="worker-list-actions">
       <button class="worker-list-save" @click="save">Save workers</button>
     </div>
 
@@ -230,6 +261,7 @@ function save() {
 
 .worker-list-add,
 .worker-list-save,
+.worker-list-save-row,
 .worker-list-remove {
   background: #313244;
   border: 1px solid #45475a;
@@ -244,11 +276,23 @@ function save() {
   font-size: 12px;
 }
 
+.worker-list-save-row {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
 .worker-list-remove {
-  width: 28px;
   min-width: 28px;
   height: 30px;
-  font-size: 16px;
+  padding: 0 10px;
+  font-size: 14px;
+}
+
+.worker-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .worker-list-row {

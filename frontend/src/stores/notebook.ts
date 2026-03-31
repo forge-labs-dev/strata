@@ -1364,6 +1364,66 @@ async function updateServerWorkerRegistryAction(workers: EditableWorkerSpec[]) {
   }
 }
 
+function serializeEditableWorker(worker: EditableWorkerSpec) {
+  return {
+    name: worker.name.trim(),
+    backend: worker.backend,
+    runtime_id: worker.runtimeId || null,
+    config: worker.config || {},
+    enabled: worker.enabled !== false,
+  }
+}
+
+async function saveServerWorkerAction(worker: EditableWorkerSpec, originalName: string | null) {
+  const strata = useStrata()
+  const payload = serializeEditableWorker(worker)
+  if (!payload.name) {
+    serverWorkerRegistryError.value = 'Worker name is required'
+    return
+  }
+
+  serverWorkerRegistryError.value = null
+  serverWorkerRegistryLoading.value = true
+  try {
+    const data = originalName
+      ? await strata.replaceAdminNotebookWorker(originalName, payload)
+      : await strata.createAdminNotebookWorker(payload)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncServerManagedWorkersFromBackend(data.configured_workers)
+    }
+    serverWorkerRegistryAvailable.value = true
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    await fetchWorkers(true)
+  } catch (err: any) {
+    serverWorkerRegistryError.value =
+      err.message ||
+      (originalName
+        ? `Failed to update worker "${originalName}"`
+        : `Failed to create worker "${payload.name}"`)
+  } finally {
+    serverWorkerRegistryLoading.value = false
+  }
+}
+
+async function deleteServerWorkerAction(workerName: string) {
+  const strata = useStrata()
+  serverWorkerRegistryError.value = null
+  serverWorkerRegistryLoading.value = true
+  try {
+    const data = await strata.deleteAdminNotebookWorker(workerName)
+    if (data.configured_workers && Array.isArray(data.configured_workers)) {
+      syncServerManagedWorkersFromBackend(data.configured_workers)
+    }
+    serverWorkerRegistryAvailable.value = true
+    syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
+    await fetchWorkers(true)
+  } catch (err: any) {
+    serverWorkerRegistryError.value = err.message || `Failed to delete worker "${workerName}"`
+  } finally {
+    serverWorkerRegistryLoading.value = false
+  }
+}
+
 async function updateServerWorkerEnabledAction(workerName: string, enabled: boolean) {
   const strata = useStrata()
   serverWorkerRegistryError.value = null
@@ -1618,6 +1678,8 @@ export function useNotebook() {
     removeDependencyAction,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
+    saveServerWorkerAction,
+    deleteServerWorkerAction,
     updateServerWorkerEnabledAction,
     refreshServerWorkerAction,
     updateNotebookWorkerAction,

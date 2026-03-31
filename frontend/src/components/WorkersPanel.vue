@@ -23,6 +23,8 @@ const {
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
   updateServerWorkerRegistryAction,
+  saveServerWorkerAction,
+  deleteServerWorkerAction,
   updateServerWorkerEnabledAction,
   refreshServerWorkerAction,
   isServerWorkerActionLoading,
@@ -113,9 +115,12 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
         :workers="serverManagedWorkers"
         title="Server Worker Catalog"
         :show-enabled="true"
+        :row-actions="true"
         :read-only="!connected || serverWorkerRegistryLoading"
         :error="serverWorkerRegistryError"
         @save="updateServerWorkerRegistryAction"
+        @save-one="saveServerWorkerAction"
+        @remove-one="deleteServerWorkerAction"
       />
       <div v-else class="workers-copy workers-copy-muted">
         This notebook can select from the visible server-managed workers below, but it cannot change

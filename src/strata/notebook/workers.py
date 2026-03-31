@@ -167,6 +167,57 @@ def set_server_managed_workers(workers: list[WorkerSpec]) -> list[WorkerSpec]:
     return get_server_managed_workers()
 
 
+def create_server_managed_worker_record(
+    record: ManagedWorkerRecord,
+) -> list[ManagedWorkerRecord]:
+    """Create one service-managed worker entry.
+
+    Raises:
+        ValueError: If a worker with the same name already exists.
+    """
+    records = get_server_managed_worker_records()
+    if any(existing.worker.name == record.worker.name for existing in records):
+        raise ValueError(record.worker.name)
+    return replace_server_managed_worker_records([*records, record])
+
+
+def update_server_managed_worker_record(
+    worker_name: str,
+    record: ManagedWorkerRecord,
+) -> list[ManagedWorkerRecord]:
+    """Replace one service-managed worker entry in place.
+
+    Allows renaming the worker as long as the new name does not collide with
+    another configured worker.
+
+    Raises:
+        KeyError: If the referenced worker does not exist.
+        ValueError: If the requested new worker name would collide.
+    """
+    records = get_server_managed_worker_records()
+    next_records: list[ManagedWorkerRecord] = []
+    updated = False
+
+    for existing in records:
+        if existing.worker.name == worker_name:
+            updated = True
+            continue
+        next_records.append(existing)
+
+    if not updated:
+        raise KeyError(worker_name)
+
+    if any(existing.worker.name == record.worker.name for existing in next_records):
+        raise ValueError(record.worker.name)
+
+    insert_at = next(
+        (index for index, existing in enumerate(records) if existing.worker.name == worker_name),
+        len(next_records),
+    )
+    next_records.insert(insert_at, record)
+    return replace_server_managed_worker_records(next_records)
+
+
 def replace_server_managed_worker_records(
     records: list[ManagedWorkerRecord],
 ) -> list[ManagedWorkerRecord]:
@@ -199,6 +250,17 @@ def set_server_managed_worker_enabled(
     if not updated:
         raise KeyError(worker_name)
 
+    return replace_server_managed_worker_records(next_records)
+
+
+def delete_server_managed_worker_record(worker_name: str) -> list[ManagedWorkerRecord]:
+    """Delete one service-managed worker by name."""
+    records = get_server_managed_worker_records()
+    next_records = [
+        record for record in records if record.worker.name != worker_name
+    ]
+    if len(next_records) == len(records):
+        raise KeyError(worker_name)
     return replace_server_managed_worker_records(next_records)
 
 

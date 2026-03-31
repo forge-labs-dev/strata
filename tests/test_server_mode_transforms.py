@@ -278,6 +278,69 @@ class TestNotebookWorkerAdminApi:
         assert listed.status_code == 200
         assert listed.json()["configured_workers"][0]["name"] == "gpu-a100"
 
+    def test_create_update_delete_notebook_worker_service_mode(self, server_mode_app):
+        """Service mode should support targeted worker CRUD by name."""
+        created = server_mode_app.post(
+            "/v1/admin/notebook-workers",
+            json={
+                "name": "gpu-http",
+                "backend": "executor",
+                "runtime_id": "cuda-12.4",
+                "config": {"url": "https://executor.internal/v1/execute"},
+                "enabled": True,
+            },
+        )
+        assert created.status_code == 200
+        created_payload = created.json()
+        assert created_payload["configured_workers"][0]["name"] == "gpu-http"
+
+        updated = server_mode_app.put(
+            "/v1/admin/notebook-workers/gpu-http",
+            json={
+                "name": "gpu-signed",
+                "backend": "executor",
+                "runtime_id": "cuda-12.5",
+                "config": {
+                    "url": "https://executor.internal/v1/execute",
+                    "transport": "signed",
+                },
+                "enabled": False,
+            },
+        )
+        assert updated.status_code == 200
+        updated_payload = updated.json()
+        assert updated_payload["configured_workers"][0]["name"] == "gpu-signed"
+        assert updated_payload["configured_workers"][0]["enabled"] is False
+
+        deleted = server_mode_app.delete("/v1/admin/notebook-workers/gpu-signed")
+        assert deleted.status_code == 200
+        assert deleted.json()["configured_workers"] == []
+
+    def test_create_notebook_worker_rejects_duplicate_name(self, server_mode_app):
+        """Targeted create should reject an existing worker name."""
+        seeded = server_mode_app.post(
+            "/v1/admin/notebook-workers",
+            json={
+                "name": "gpu-http",
+                "backend": "executor",
+                "config": {"url": "https://executor.internal/v1/execute"},
+                "enabled": True,
+            },
+        )
+        assert seeded.status_code == 200
+
+        duplicate = server_mode_app.post(
+            "/v1/admin/notebook-workers",
+            json={
+                "name": "gpu-http",
+                "backend": "executor",
+                "config": {"url": "https://executor.internal/v1/execute"},
+                "enabled": True,
+            },
+        )
+        assert duplicate.status_code == 409
+        assert "already exists" in duplicate.json()["detail"]
+
     def test_patch_notebook_worker_enabled_state(self, server_mode_app):
         """Service-mode worker admin can disable and re-enable one worker."""
         seeded = server_mode_app.put(
@@ -577,6 +640,47 @@ class TestNotebookWorkerAdminApi:
         )
         assert patched.status_code == 200
         assert patched.json()["configured_workers"][0]["enabled"] is False
+
+        created = server_mode_auth_app.post(
+            "/v1/admin/notebook-workers",
+            headers=_auth_headers(scopes="admin:notebook-workers"),
+            json={
+                "name": "gpu-http",
+                "backend": "executor",
+                "config": {"url": "https://executor.internal/v1/execute"},
+                "enabled": True,
+            },
+        )
+        assert created.status_code == 200
+        assert any(
+            worker["name"] == "gpu-http"
+            for worker in created.json()["configured_workers"]
+        )
+
+        replaced = server_mode_auth_app.put(
+            "/v1/admin/notebook-workers/gpu-http",
+            headers=_auth_headers(scopes="admin:notebook-workers"),
+            json={
+                "name": "gpu-http-renamed",
+                "backend": "executor",
+                "config": {
+                    "url": "https://executor.internal/v1/execute",
+                    "transport": "signed",
+                },
+                "enabled": True,
+            },
+        )
+        assert replaced.status_code == 200
+        assert any(
+            worker["name"] == "gpu-http-renamed"
+            for worker in replaced.json()["configured_workers"]
+        )
+
+        deleted = server_mode_auth_app.delete(
+            "/v1/admin/notebook-workers/gpu-http-renamed",
+            headers=_auth_headers(scopes="admin:notebook-workers"),
+        )
+        assert deleted.status_code == 200
 
 
 class TestTransformValidation:

@@ -49,9 +49,12 @@ from strata.notebook.models import WorkerBackendType, WorkerSpec
 from strata.notebook.workers import (
     ManagedWorkerRecord,
     build_server_worker_catalog_with_health,
+    create_server_managed_worker_record,
+    delete_server_managed_worker_record,
     get_server_managed_worker_records,
     replace_server_managed_worker_records,
     set_server_managed_worker_enabled,
+    update_server_managed_worker_record,
 )
 from strata.planner import ReadPlanner
 from strata.pool_metrics import get_connection_metrics, get_pool_tracker
@@ -1789,6 +1792,50 @@ async def update_admin_notebook_workers(request: AdminNotebookWorkersRequest):
     return await _serialize_admin_notebook_workers(force_refresh=True)
 
 
+@app.post("/v1/admin/notebook-workers")
+async def create_admin_notebook_worker(request: AdminNotebookWorkerEntryRequest):
+    """Create one service-managed notebook worker."""
+    _require_notebook_worker_admin_access()
+    try:
+        create_server_managed_worker_record(
+            ManagedWorkerRecord(
+                worker=request.to_worker_spec(),
+                enabled=request.enabled,
+            )
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Notebook worker already exists: {request.name}",
+        )
+    return await _serialize_admin_notebook_workers(force_refresh=True)
+
+
+@app.put("/v1/admin/notebook-workers/{worker_name}")
+async def replace_admin_notebook_worker(
+    worker_name: str,
+    request: AdminNotebookWorkerEntryRequest,
+):
+    """Replace one service-managed notebook worker definition."""
+    _require_notebook_worker_admin_access()
+    try:
+        update_server_managed_worker_record(
+            worker_name,
+            ManagedWorkerRecord(
+                worker=request.to_worker_spec(),
+                enabled=request.enabled,
+            ),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Notebook worker not found: {worker_name}")
+    except ValueError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Notebook worker already exists: {request.name}",
+        )
+    return await _serialize_admin_notebook_workers(force_refresh=True)
+
+
 @app.patch("/v1/admin/notebook-workers/{worker_name}")
 async def patch_admin_notebook_worker(
     worker_name: str,
@@ -1798,6 +1845,17 @@ async def patch_admin_notebook_worker(
     _require_notebook_worker_admin_access()
     try:
         set_server_managed_worker_enabled(worker_name, request.enabled)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Notebook worker not found: {worker_name}")
+    return await _serialize_admin_notebook_workers(force_refresh=True)
+
+
+@app.delete("/v1/admin/notebook-workers/{worker_name}")
+async def delete_admin_notebook_worker(worker_name: str):
+    """Delete one service-managed notebook worker."""
+    _require_notebook_worker_admin_access()
+    try:
+        delete_server_managed_worker_record(worker_name)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Notebook worker not found: {worker_name}")
     return await _serialize_admin_notebook_workers(force_refresh=True)

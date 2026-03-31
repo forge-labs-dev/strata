@@ -347,6 +347,33 @@ async function updateAdminNotebookWorkers(workers: any[]): Promise<any> {
   return resp.json()
 }
 
+async function createAdminNotebookWorker(worker: any): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/admin/notebook-workers`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(worker),
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to create admin notebook worker')
+  }
+  return resp.json()
+}
+
+async function replaceAdminNotebookWorker(workerName: string, worker: any): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/admin/notebook-workers/${encodeURIComponent(workerName)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(worker),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to replace admin notebook worker')
+  }
+  return resp.json()
+}
+
 async function patchAdminNotebookWorker(workerName: string, enabled: boolean): Promise<any> {
   const resp = await fetch(
     `${STRATA_BASE}/v1/admin/notebook-workers/${encodeURIComponent(workerName)}`,
@@ -358,6 +385,19 @@ async function patchAdminNotebookWorker(workerName: string, enabled: boolean): P
   )
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to update admin notebook worker')
+  }
+  return resp.json()
+}
+
+async function deleteAdminNotebookWorker(workerName: string): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/admin/notebook-workers/${encodeURIComponent(workerName)}`,
+    {
+      method: 'DELETE',
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to delete admin notebook worker')
   }
   return resp.json()
 }
@@ -440,7 +480,10 @@ export function useStrata() {
     updateWorkers,
     listAdminNotebookWorkers,
     updateAdminNotebookWorkers,
+    createAdminNotebookWorker,
+    replaceAdminNotebookWorker,
     patchAdminNotebookWorker,
+    deleteAdminNotebookWorker,
     refreshAdminNotebookWorker,
     listDependencies,
     addDependency,
