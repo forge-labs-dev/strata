@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { useCodemirror } from '../composables/useCodemirror'
 import { useNotebook } from '../stores/notebook'
 import EnvVarsEditor from './EnvVarsEditor.vue'
-import InspectPanel from './InspectPanel.vue'
 import MountListEditor from './MountListEditor.vue'
 import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
@@ -16,6 +15,8 @@ import {
 } from '../utils/notebookWorkers'
 import { applySourceAnnotations } from '../utils/notebookAnnotations'
 import type { CellAnnotations, MountSpec } from '../types/notebook'
+
+const InspectPanel = defineAsyncComponent(() => import('./InspectPanel.vue'))
 
 const props = defineProps<{ cell: Cell }>()
 const emit = defineEmits<{

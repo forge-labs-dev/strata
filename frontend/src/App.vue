@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { defineAsyncComponent, onMounted, onUnmounted, ref } from 'vue'
 import { useNotebook } from './stores/notebook'
 import CellEditor from './components/CellEditor.vue'
-import DagView from './components/DagView.vue'
-import EnvironmentPanel from './components/EnvironmentPanel.vue'
-import MountsPanel from './components/MountsPanel.vue'
-import RuntimePanel from './components/RuntimePanel.vue'
-import WorkersPanel from './components/WorkersPanel.vue'
-import ProfilingPanel from './components/ProfilingPanel.vue'
-import ImpactPreview from './components/ImpactPreview.vue'
+
+const DagView = defineAsyncComponent(() => import('./components/DagView.vue'))
+const EnvironmentPanel = defineAsyncComponent(() => import('./components/EnvironmentPanel.vue'))
+const MountsPanel = defineAsyncComponent(() => import('./components/MountsPanel.vue'))
+const RuntimePanel = defineAsyncComponent(() => import('./components/RuntimePanel.vue'))
+const WorkersPanel = defineAsyncComponent(() => import('./components/WorkersPanel.vue'))
+const ProfilingPanel = defineAsyncComponent(() => import('./components/ProfilingPanel.vue'))
+const ImpactPreview = defineAsyncComponent(() => import('./components/ImpactPreview.vue'))
 
 const {
   notebook,
