@@ -1066,7 +1066,9 @@ class CellExecutor:
         if not (state.config.server_transforms_enabled or state.config.writes_enabled):
             raise RuntimeError(
                 "Signed notebook executor transport requires "
-                "personal-mode writes or server-mode transforms to be enabled"
+                "personal-mode writes or server-mode transforms to be enabled. "
+                "For local testing, restart Strata with "
+                "STRATA_DEPLOYMENT_MODE=personal."
             )
 
         artifact_dir = state.config.artifact_dir

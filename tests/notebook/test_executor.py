@@ -983,6 +983,45 @@ token = os.getenv("NOTEBOOK_TOKEN")
     @pytest.mark.asyncio
     @pytest.mark.integration
     @pytest.mark.warm_pool
+    async def test_warm_execution_injects_mount_paths(self, sample_notebook, tmp_path: Path):
+        """Warm workers should inject prepared mount paths the same way cold execution does."""
+        mount_dir = tmp_path / "mounted-data"
+        mount_dir.mkdir()
+        (mount_dir / "data.txt").write_text("hello mount", encoding="utf-8")
+
+        cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell.mounts = [
+            MountSpec(
+                name="raw_data",
+                uri=f"file://{mount_dir}",
+                mode=MountMode.READ_ONLY,
+            )
+        ]
+
+        sample_notebook.ensure_venv_synced()
+        pool = WarmProcessPool(
+            sample_notebook.path,
+            pool_size=1,
+            python_executable=sample_notebook.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            executor = CellExecutor(sample_notebook, pool)
+            result = await executor.execute_cell(
+                "cell1",
+                'text = (raw_data / "data.txt").read_text()',
+            )
+
+            assert result.success is True
+            assert result.execution_method == "warm"
+            assert result.outputs["text"]["preview"] == "hello mount"
+        finally:
+            await pool.drain()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
     async def test_warm_execution_reports_same_mutation_warnings_as_cold(
         self, sample_notebook
     ):

@@ -145,6 +145,23 @@ def _apply_env_overrides(manifest: dict):
                 os.environ[key] = value
 
 
+def _inject_mounts(manifest: dict, namespace: dict[str, Any]) -> None:
+    """Inject prepared mount paths into the warm worker namespace."""
+    mounts = manifest.get("mounts", {})
+    for mount_name, spec in mounts.items():
+        local_path = Path(spec.get("local_path", ""))
+        if local_path and local_path.exists():
+            namespace[mount_name] = local_path
+        elif spec.get("mode") == "rw":
+            local_path.mkdir(parents=True, exist_ok=True)
+            namespace[mount_name] = local_path
+        else:
+            print(
+                f"Warning: mount '{mount_name}' path does not exist: {local_path}",
+                file=sys.stderr,
+            )
+
+
 def execute_harness(manifest: dict) -> dict:
     """Execute a cell manifest and return the result dict."""
     source = manifest.get("source", "")
@@ -166,6 +183,8 @@ def execute_harness(manifest: dict) -> dict:
             namespace[var_name] = _ser.deserialize_value(content_type, full_path)
         except Exception:
             pass
+
+    _inject_mounts(manifest, namespace)
 
     namespace_before = set(namespace.keys())
     input_identities = {name: id(namespace[name]) for name in namespace_before}

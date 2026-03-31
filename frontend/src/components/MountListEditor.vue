@@ -22,10 +22,23 @@ const emit = defineEmits<{
   save: [mounts: MountSpec[]]
 }>()
 
-const draft = ref<MountSpec[]>([])
+type DraftMount = MountSpec & { _key: string }
 
-function cloneMounts(mounts: MountSpec[]): MountSpec[] {
-  return mounts.map((mount) => ({ ...mount, pin: mount.pin ?? null }))
+const draft = ref<DraftMount[]>([])
+let nextDraftMountKey = 0
+
+function newDraftMount(mount?: MountSpec): DraftMount {
+  return {
+    name: mount?.name ?? '',
+    uri: mount?.uri ?? '',
+    mode: mount?.mode ?? 'ro',
+    pin: mount?.pin ?? null,
+    _key: `mount-${nextDraftMountKey++}`,
+  }
+}
+
+function cloneMounts(mounts: MountSpec[]): DraftMount[] {
+  return mounts.map((mount) => newDraftMount(mount))
 }
 
 watch(
@@ -37,12 +50,7 @@ watch(
 )
 
 function addMount() {
-  draft.value.push({
-    name: '',
-    uri: '',
-    mode: 'ro',
-    pin: null,
-  })
+  draft.value.push(newDraftMount())
 }
 
 function removeMount(index: number) {
@@ -54,9 +62,9 @@ function save() {
     'save',
     draft.value
       .map((mount) => ({
-        ...mount,
         name: mount.name.trim(),
         uri: mount.uri.trim(),
+        mode: mount.mode,
         pin: mount.pin?.trim() || null,
       }))
       .filter((mount) => mount.name && mount.uri),
@@ -77,7 +85,7 @@ function save() {
 
     <div
       v-for="(mount, index) in draft"
-      :key="`${index}-${mount.name}`"
+      :key="mount._key"
       class="mount-row"
       :class="{ 'mount-row-no-pin': !showPin }"
     >
@@ -166,21 +174,46 @@ function save() {
 }
 
 .mount-row {
-  display: grid;
-  grid-template-columns: minmax(90px, 1fr) minmax(220px, 2fr) 72px minmax(120px, 1fr) 28px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
-.mount-row-no-pin {
-  grid-template-columns: minmax(90px, 1fr) minmax(220px, 2fr) 72px 28px;
+.mount-name {
+  flex: 1 1 120px;
 }
 
-.compact .mount-row {
-  grid-template-columns: minmax(80px, 1fr) minmax(160px, 2fr) 64px minmax(100px, 1fr) 28px;
+.mount-uri {
+  flex: 2 1 260px;
 }
 
-.compact .mount-row-no-pin {
-  grid-template-columns: minmax(80px, 1fr) minmax(160px, 2fr) 64px 28px;
+.mount-mode {
+  flex: 0 0 72px;
+}
+
+.mount-pin {
+  flex: 1 1 140px;
+}
+
+.mount-remove {
+  flex: 0 0 28px;
+}
+
+.compact .mount-name {
+  flex-basis: 96px;
+}
+
+.compact .mount-uri {
+  flex-basis: 200px;
+}
+
+.compact .mount-mode {
+  flex-basis: 64px;
+}
+
+.compact .mount-pin {
+  flex-basis: 120px;
 }
 
 .mount-input {
@@ -209,9 +242,13 @@ function save() {
 }
 
 @media (max-width: 920px) {
-  .mount-row,
-  .compact .mount-row {
-    grid-template-columns: 1fr 1fr;
+  .mount-mode,
+  .compact .mount-mode {
+    flex-basis: 96px;
+  }
+
+  .mount-remove {
+    margin-left: auto;
   }
 }
 </style>
