@@ -124,6 +124,7 @@ test('summarizeRemoteExecutionIssue generates user-facing remote execution summa
       'Execution failed: Remote executor request failed for worker "gpu-http": All connection attempts failed',
       worker,
       worker.name,
+      'REQUEST_FAILED',
     ),
     'Could not reach remote worker "gpu-http"',
   )
@@ -132,6 +133,7 @@ test('summarizeRemoteExecutionIssue generates user-facing remote execution summa
       'Execution failed: Failed to finalize notebook bundle build',
       worker,
       worker.name,
+      'FINALIZE_FAILED',
     ),
     'Remote execution finished, but output upload/finalize failed',
   )
@@ -142,6 +144,16 @@ test('summarizeRemoteExecutionIssue generates user-facing remote execution summa
       worker.name,
     ),
     'Worker "gpu-http" is blocked by policy',
+  )
+  assert.equal(
+    summarizeRemoteExecutionIssue(
+      'Execution failed: Notebook build failed',
+      worker,
+      worker.name,
+      null,
+      'failed',
+    ),
+    'Remote build failed on "gpu-http"',
   )
 })
 

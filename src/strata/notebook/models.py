@@ -303,6 +303,14 @@ class CellState(BaseModel):
         default=None,
         description="Signed build id for the last remote execution, when applicable",
     )
+    remote_build_state: str | None = Field(
+        default=None,
+        description="Last observed signed build state for remote execution metadata",
+    )
+    remote_error_code: str | None = Field(
+        default=None,
+        description="Structured remote execution error code for the last run, when available",
+    )
 
 
 class NotebookState(BaseModel):

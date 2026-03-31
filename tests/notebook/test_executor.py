@@ -708,11 +708,15 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert first.remote_worker == "gpu-http-signed"
         assert first.remote_transport == "signed"
         assert first.remote_build_id is not None
+        assert first.remote_build_state == "ready"
+        assert first.remote_error_code is None
         assert first.outputs["x"]["preview"] == 1
 
         assert second.success is True
         assert second.cache_hit is True
         assert second.remote_build_id is None
+        assert second.remote_build_state == "ready"
+        assert second.remote_error_code is None
 
     @pytest.mark.asyncio
     async def test_execute_signed_http_executor_marks_build_failed_on_transport_error(
@@ -745,6 +749,8 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert result.remote_worker == "gpu-http-signed"
         assert result.remote_transport == "signed"
         assert result.remote_build_id is not None
+        assert result.remote_build_state == "failed"
+        assert result.remote_error_code == "EXECUTOR_HTTP_ERROR"
 
         stats = notebook_build_server["build_store"].get_stats()
         assert stats["failed"] == 1

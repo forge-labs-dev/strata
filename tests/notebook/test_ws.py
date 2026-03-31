@@ -208,6 +208,8 @@ def test_notebook_sync_includes_remote_execution_metadata(
         assert root["remote_worker"] == "gpu-http-signed"
         assert root["remote_transport"] == "signed"
         assert isinstance(root["remote_build_id"], str)
+        assert root["remote_build_state"] == "ready"
+        assert root["remote_error_code"] is None
 
 
 def test_cell_execute_no_cascade(client, temp_notebook, app):
@@ -671,6 +673,8 @@ def test_ws_execute_reports_signed_finalize_failure(
         assert output_message["payload"]["remote_worker"] == "gpu-http-signed"
         assert output_message["payload"]["remote_transport"] == "signed"
         assert isinstance(output_message["payload"]["remote_build_id"], str)
+        assert output_message["payload"]["remote_build_state"] == "failed"
+        assert output_message["payload"]["remote_error_code"] == "FINALIZE_FAILED"
         assert terminal_status["payload"]["status"] == "error"
 
 

@@ -187,6 +187,8 @@ def test_list_cells_includes_remote_execution_metadata(
         assert cell_payload["remote_worker"] == "gpu-http-signed"
         assert cell_payload["remote_transport"] == "signed"
         assert isinstance(cell_payload["remote_build_id"], str)
+        assert cell_payload["remote_build_state"] == "ready"
+        assert cell_payload["remote_error_code"] is None
 
 
 def test_open_notebook_not_found():

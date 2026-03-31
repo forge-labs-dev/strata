@@ -155,6 +155,8 @@ const effectiveWorkerTransportLabel = computed(() => {
 const lastRemoteWorkerLabel = computed(() => props.cell.remoteWorkerName || null)
 const lastRemoteTransportLabel = computed(() => props.cell.remoteTransport || null)
 const lastRemoteBuildId = computed(() => props.cell.remoteBuildId || null)
+const lastRemoteBuildState = computed(() => props.cell.remoteBuildState || null)
+const lastRemoteErrorCode = computed(() => props.cell.remoteErrorCode || null)
 const workerWarning = computed(() => {
   return workerWarningForEntry(effectiveWorkerEntry.value, effectiveWorkerLabel.value)
 })
@@ -163,6 +165,8 @@ const remoteExecutionIssueSummary = computed(() => {
     props.cell.output?.error || '',
     effectiveWorkerEntry.value,
     effectiveWorkerLabel.value,
+    lastRemoteErrorCode.value,
+    lastRemoteBuildState.value,
   )
 })
 const effectiveTimeoutLabel = computed(() => {
@@ -331,9 +335,14 @@ function formatScalar(scalar: unknown): string {
         <span
           v-if="lastRemoteBuildId"
           class="remote-build-badge"
-          :title="`Signed remote build: ${lastRemoteBuildId}`"
+          :title="`Signed remote build: ${lastRemoteBuildId}${
+            lastRemoteBuildState ? ` (${lastRemoteBuildState})` : ''
+          }`"
         >
           build {{ lastRemoteBuildId }}
+        </span>
+        <span v-if="lastRemoteBuildState" class="remote-build-badge">
+          {{ lastRemoteBuildState }}
         </span>
         <span
           v-if="effectiveWorkerHealthLabel"
@@ -531,6 +540,12 @@ function formatScalar(scalar: unknown): string {
             </span>
             <span v-if="lastRemoteBuildId" class="remote-error-pill">
               {{ lastRemoteBuildId }}
+            </span>
+            <span v-if="lastRemoteBuildState" class="remote-error-pill">
+              {{ lastRemoteBuildState }}
+            </span>
+            <span v-if="lastRemoteErrorCode" class="remote-error-pill">
+              {{ lastRemoteErrorCode }}
             </span>
             <span v-if="effectiveWorkerHealthLabel" class="remote-error-pill">
               {{ effectiveWorkerHealthLabel }}

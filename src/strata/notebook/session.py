@@ -193,6 +193,8 @@ class NotebookSession:
             cell.remote_worker = previous.remote_worker
             cell.remote_transport = previous.remote_transport
             cell.remote_build_id = previous.remote_build_id
+            cell.remote_build_state = previous.remote_build_state
+            cell.remote_error_code = previous.remote_error_code
             self.causality_map.pop(cell.id, None)
 
     def re_analyze_cell(self, cell_id: str) -> None:
@@ -359,17 +361,34 @@ class NotebookSession:
 
         cell.execution_method = result.execution_method
 
-        if result.remote_worker or result.remote_transport or result.remote_build_id:
+        if (
+            result.remote_worker
+            or result.remote_transport
+            or result.remote_build_id
+            or result.remote_build_state
+            or result.remote_error_code
+        ):
             cell.remote_worker = result.remote_worker
             cell.remote_transport = result.remote_transport
-            if result.remote_build_id is not None:
+            if result.execution_method == "cached":
+                if result.remote_build_id is not None:
+                    cell.remote_build_id = result.remote_build_id
+                if result.remote_build_state is not None:
+                    cell.remote_build_state = result.remote_build_state
+                if result.remote_error_code is not None:
+                    cell.remote_error_code = result.remote_error_code
+            else:
                 cell.remote_build_id = result.remote_build_id
+                cell.remote_build_state = result.remote_build_state
+                cell.remote_error_code = result.remote_error_code
             return
 
         if result.execution_method != "cached":
             cell.remote_worker = None
             cell.remote_transport = None
             cell.remote_build_id = None
+            cell.remote_build_state = None
+            cell.remote_error_code = None
 
     def serialize_cell(self, cell: Any) -> dict[str, Any]:
         """Serialize a cell with causality and flattened staleness reasons."""

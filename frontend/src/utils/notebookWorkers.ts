@@ -77,9 +77,26 @@ export function summarizeRemoteExecutionIssue(
   error: string,
   entry: WorkerCatalogEntry | null,
   workerLabel: string,
+  remoteErrorCode?: string | null,
+  remoteBuildState?: string | null,
 ): string | null {
   if (!error || !entry || entry.backend !== 'executor') return null
 
+  if (remoteErrorCode === 'TIMEOUT') {
+    return `Remote execution timed out on "${entry.name}"`
+  }
+  if (remoteErrorCode === 'FINALIZE_FAILED') {
+    return 'Remote execution finished, but output upload/finalize failed'
+  }
+  if (remoteErrorCode === 'INVALID_NOTEBOOK_BUNDLE') {
+    return 'Remote execution returned an invalid output bundle'
+  }
+  if (remoteErrorCode === 'REQUEST_FAILED') {
+    return `Could not reach remote worker "${entry.name}"`
+  }
+  if (remoteBuildState === 'failed') {
+    return `Remote build failed on "${entry.name}"`
+  }
   if (error.includes('blocked by server policy') || error.includes('not allowed in service mode')) {
     return `Worker "${entry.name}" is blocked by policy`
   }

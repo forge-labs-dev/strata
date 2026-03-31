@@ -141,6 +141,8 @@ class CellExecutionResult:
         remote_worker: str | None = None,
         remote_transport: str | None = None,
         remote_build_id: str | None = None,
+        remote_build_state: str | None = None,
+        remote_error_code: str | None = None,
     ):
         self.cell_id = cell_id
         self.success = success
@@ -157,6 +159,8 @@ class CellExecutionResult:
         self.remote_worker = remote_worker
         self.remote_transport = remote_transport
         self.remote_build_id = remote_build_id
+        self.remote_build_state = remote_build_state
+        self.remote_error_code = remote_error_code
 
     def apply_remote_metadata(
         self,
@@ -164,6 +168,8 @@ class CellExecutionResult:
         remote_worker: str | None = None,
         remote_transport: str | None = None,
         remote_build_id: str | None = None,
+        remote_build_state: str | None = None,
+        remote_error_code: str | None = None,
     ) -> CellExecutionResult:
         """Attach remote execution metadata to this result."""
         if remote_worker:
@@ -172,6 +178,10 @@ class CellExecutionResult:
             self.remote_transport = remote_transport
         if remote_build_id:
             self.remote_build_id = remote_build_id
+        if remote_build_state:
+            self.remote_build_state = remote_build_state
+        if remote_error_code:
+            self.remote_error_code = remote_error_code
         return self
 
     def to_dict(self) -> dict[str, Any]:
@@ -197,7 +207,26 @@ class CellExecutionResult:
             d["remote_transport"] = self.remote_transport
         if self.remote_build_id:
             d["remote_build_id"] = self.remote_build_id
+        if self.remote_build_state:
+            d["remote_build_state"] = self.remote_build_state
+        if self.remote_error_code:
+            d["remote_error_code"] = self.remote_error_code
         return d
+
+
+class RemoteExecutionError(RuntimeError):
+    """Execution failure with structured remote metadata for notebook UX."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        remote_build_state: str | None = None,
+        remote_error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.remote_build_state = remote_build_state
+        self.remote_error_code = remote_error_code
 
 
 class CellExecutor:
@@ -351,6 +380,8 @@ class CellExecutor:
         self,
         worker_spec: Any,
         remote_build_id: str | None = None,
+        remote_build_state: str | None = None,
+        remote_error_code: str | None = None,
     ) -> dict[str, str]:
         """Return UI-facing remote execution metadata for a worker."""
         if worker_spec is None or worker_spec.backend == WorkerBackendType.LOCAL:
@@ -362,6 +393,10 @@ class CellExecutor:
         }
         if remote_build_id:
             metadata["remote_build_id"] = remote_build_id
+        if remote_build_state:
+            metadata["remote_build_state"] = remote_build_state
+        if remote_error_code:
+            metadata["remote_error_code"] = remote_error_code
         return metadata
 
     def _resolve_effective_timeout(
@@ -626,6 +661,8 @@ class CellExecutor:
                     timeout_seconds,
                     remote_build_id=remote_build_id,
                 )
+                if remote_build_id and remote_metadata.get("remote_transport") == "signed":
+                    remote_metadata["remote_build_state"] = "ready"
 
                 duration_ms = (time.time() - start_time) * 1000
                 exec_result = self._parse_result(
@@ -688,6 +725,20 @@ class CellExecutor:
                 self.session.apply_execution_result_metadata(cell_id, exec_result)
                 return exec_result
 
+        except RemoteExecutionError as e:
+            duration_ms = (time.time() - start_time) * 1000
+            error_result = CellExecutionResult(
+                cell_id=cell_id,
+                success=False,
+                duration_ms=duration_ms,
+                error=str(e),
+            ).apply_remote_metadata(
+                **remote_metadata,
+                remote_build_state=e.remote_build_state,
+                remote_error_code=e.remote_error_code,
+            )
+            self.session.apply_execution_result_metadata(cell_id, error_result)
+            return error_result
         except TimeoutError:
             duration_ms = (time.time() - start_time) * 1000
             timeout_result = CellExecutionResult(
@@ -932,32 +983,46 @@ class CellExecutor:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.post(executor_url, files=files, headers=headers)
         except httpx.TimeoutException as exc:
-            raise TimeoutError() from exc
+            raise RemoteExecutionError(
+                f"Cell execution timed out after {timeout_seconds}s",
+                remote_error_code="TIMEOUT",
+            ) from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(
+            raise RemoteExecutionError(
                 f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
+                ,
+                remote_error_code="REQUEST_FAILED",
             ) from exc
 
         if response.status_code == 408:
-            raise TimeoutError()
+            raise RemoteExecutionError(
+                f"Cell execution timed out after {timeout_seconds}s",
+                remote_error_code="TIMEOUT",
+            )
         if response.status_code != 200:
             detail = self._extract_remote_error(response)
-            raise RuntimeError(
+            raise RemoteExecutionError(
                 f"Remote executor '{worker_spec.name}' returned "
                 f"{response.status_code}: {detail}"
+                ,
+                remote_error_code="EXECUTOR_HTTP_ERROR",
             )
 
         protocol = response.headers.get(EXECUTOR_PROTOCOL_HEADER)
         if protocol and protocol != EXECUTOR_PROTOCOL_VERSION:
-            raise RuntimeError(
+            raise RemoteExecutionError(
                 f"Remote executor '{worker_spec.name}' returned unsupported "
                 f"protocol version {protocol!r}"
+                ,
+                remote_error_code="PROTOCOL_ERROR",
             )
         notebook_protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
         if notebook_protocol and notebook_protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
-            raise RuntimeError(
+            raise RemoteExecutionError(
                 f"Remote executor '{worker_spec.name}' returned unsupported "
                 f"notebook protocol version {notebook_protocol!r}"
+                ,
+                remote_error_code="PROTOCOL_ERROR",
             )
 
         bundle_path = output_dir / "notebook-output-bundle.tar.gz"
@@ -1130,44 +1195,104 @@ class CellExecutor:
             _mark_failed("Notebook manifest execution cancelled", "CANCELLED")
             raise
         except httpx.TimeoutException as exc:
-            raise TimeoutError() from exc
+            _mark_failed("Notebook manifest execution timed out", "TIMEOUT")
+            raise RemoteExecutionError(
+                f"Cell execution timed out after {timeout_seconds}s",
+                remote_build_state="failed",
+                remote_error_code="TIMEOUT",
+            ) from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(
+            _mark_failed(
+                f"Remote executor request failed for worker '{worker_spec.name}': {exc}",
+                "REQUEST_FAILED",
+            )
+            raise RemoteExecutionError(
                 f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
+                ,
+                remote_build_state="failed",
+                remote_error_code="REQUEST_FAILED",
             ) from exc
         except Exception as exc:
             _mark_failed(str(exc), "SETUP_FAILED")
-            raise RuntimeError(
+            raise RemoteExecutionError(
                 f"Remote executor setup failed for worker '{worker_spec.name}': {exc}"
+                ,
+                remote_build_state="failed",
+                remote_error_code="SETUP_FAILED",
             ) from exc
 
         try:
             if response.status_code == 408:
-                raise TimeoutError()
+                _mark_failed("Notebook manifest execution timed out", "TIMEOUT")
+                raise RemoteExecutionError(
+                    f"Cell execution timed out after {timeout_seconds}s",
+                    remote_build_state="failed",
+                    remote_error_code="TIMEOUT",
+                )
             if response.status_code != 200:
                 detail = self._extract_remote_error(response)
-                raise RuntimeError(
-                    f"Remote executor '{worker_spec.name}' returned "
-                    f"{response.status_code}: {detail}"
+                build = build_store.get_build(build_id)
+                error_code = (
+                    build.error_code
+                    if build is not None and build.state == "failed" and build.error_code
+                    else "EXECUTOR_HTTP_ERROR"
+                )
+                error_message = (
+                    build.error_message
+                    if build is not None and build.state == "failed" and build.error_message
+                    else (
+                        f"Remote executor '{worker_spec.name}' returned "
+                        f"{response.status_code}: {detail}"
+                    )
+                )
+                _mark_failed(
+                    error_message,
+                    error_code,
+                )
+                raise RemoteExecutionError(
+                    error_message,
+                    remote_build_state=build.state if build is not None else "failed",
+                    remote_error_code=error_code,
                 )
 
             build = build_store.get_build(build_id)
             if build is None or build.state != "ready":
-                raise RuntimeError(
-                    f"Notebook build {build_id} did not complete successfully"
+                build_error_message = (
+                    build.error_message if build is not None else None
+                )
+                build_error_code = (
+                    build.error_code if build is not None and build.error_code else None
+                )
+                raise RemoteExecutionError(
+                    build_error_message
+                    or f"Notebook build {build_id} did not complete successfully",
+                    remote_build_state=build.state if build is not None else "unknown",
+                    remote_error_code=build_error_code or "BUILD_FAILED",
                 )
 
             blob = artifact_store.read_blob(build.artifact_id, build.version)
             if blob is None:
-                raise RuntimeError(
-                    f"Notebook build {build_id} completed without a stored bundle artifact"
+                _mark_failed(
+                    f"Notebook build {build_id} completed without a stored bundle artifact",
+                    "MISSING_OUTPUT_BLOB",
+                )
+                raise RemoteExecutionError(
+                    f"Notebook build {build_id} completed without a stored bundle artifact",
+                    remote_build_state="failed",
+                    remote_error_code="MISSING_OUTPUT_BLOB",
                 )
 
             try:
                 read_notebook_output_bundle_manifest(blob)
             except Exception as exc:
-                raise RuntimeError(
-                    f"Notebook build {build_id} produced an invalid output bundle: {exc}"
+                _mark_failed(
+                    f"Notebook build {build_id} produced an invalid output bundle: {exc}",
+                    "INVALID_NOTEBOOK_BUNDLE",
+                )
+                raise RemoteExecutionError(
+                    f"Notebook build {build_id} produced an invalid output bundle: {exc}",
+                    remote_build_state="failed",
+                    remote_error_code="INVALID_NOTEBOOK_BUNDLE",
                 ) from exc
 
             bundle_path = output_dir / "notebook-output-bundle.tar.gz"
@@ -1180,12 +1305,15 @@ class CellExecutor:
         except asyncio.CancelledError:
             _mark_failed("Notebook manifest execution cancelled", "CANCELLED")
             raise
-        except TimeoutError:
-            _mark_failed("Notebook manifest execution timed out", "TIMEOUT")
+        except RemoteExecutionError:
             raise
         except Exception as exc:
             _mark_failed(str(exc), "EXECUTOR_ERROR")
-            raise
+            raise RemoteExecutionError(
+                str(exc),
+                remote_build_state="failed",
+                remote_error_code="EXECUTOR_ERROR",
+            ) from exc
 
     def _manifest_execute_url(self, executor_url: str) -> str:
         """Map an executor base URL to the notebook manifest execution endpoint."""

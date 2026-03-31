@@ -995,6 +995,16 @@ async def _execute_cell_directly(
                             if result.remote_build_id
                             else {}
                         ),
+                        **(
+                            {"remote_build_state": result.remote_build_state}
+                            if result.remote_build_state
+                            else {}
+                        ),
+                        **(
+                            {"remote_error_code": result.remote_error_code}
+                            if result.remote_error_code
+                            else {}
+                        ),
                     },
                 },
             )
@@ -1023,6 +1033,16 @@ async def _execute_cell_directly(
                         **(
                             {"remote_build_id": result.remote_build_id}
                             if result.remote_build_id
+                            else {}
+                        ),
+                        **(
+                            {"remote_build_state": result.remote_build_state}
+                            if result.remote_build_state
+                            else {}
+                        ),
+                        **(
+                            {"remote_error_code": result.remote_error_code}
+                            if result.remote_error_code
                             else {}
                         ),
                         **({"suggest_install": result.suggest_install}
@@ -1245,6 +1265,16 @@ async def _execute_cascade(
                                     if result.remote_build_id
                                     else {}
                                 ),
+                                **(
+                                    {"remote_build_state": result.remote_build_state}
+                                    if result.remote_build_state
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_error_code": result.remote_error_code}
+                                    if result.remote_error_code
+                                    else {}
+                                ),
                             },
                         },
                     )
@@ -1273,6 +1303,16 @@ async def _execute_cascade(
                                 **(
                                     {"remote_build_id": result.remote_build_id}
                                     if result.remote_build_id
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_build_state": result.remote_build_state}
+                                    if result.remote_build_state
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_error_code": result.remote_error_code}
+                                    if result.remote_error_code
                                     else {}
                                 ),
                                 **({"suggest_install": result.suggest_install}

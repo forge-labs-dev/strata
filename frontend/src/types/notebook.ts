@@ -155,6 +155,10 @@ export interface Cell {
   remoteTransport?: WorkerTransport | null
   /** Build id for the last signed remote execution */
   remoteBuildId?: string | null
+  /** Last observed build state for signed remote execution */
+  remoteBuildState?: string | null
+  /** Structured remote execution error code, when available */
+  remoteErrorCode?: string | null
   /** Effective persisted worker after notebook default + cell override */
   worker: string | null
   /** Persisted cell-level worker override from notebook.toml */

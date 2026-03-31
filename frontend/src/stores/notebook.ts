@@ -316,11 +316,21 @@ function applyRemoteExecutionMetadata(cell: Cell, raw: Record<string, any>) {
     typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim()
       ? raw.remote_build_id
       : null
+  const remoteBuildState =
+    typeof raw.remote_build_state === 'string' && raw.remote_build_state.trim()
+      ? raw.remote_build_state
+      : null
+  const remoteErrorCode =
+    typeof raw.remote_error_code === 'string' && raw.remote_error_code.trim()
+      ? raw.remote_error_code
+      : null
 
-  if (remoteWorker || remoteTransport || remoteBuildId) {
+  if (remoteWorker || remoteTransport || remoteBuildId || remoteBuildState || remoteErrorCode) {
     cell.remoteWorkerName = remoteWorker ?? undefined
     cell.remoteTransport = remoteTransport
     cell.remoteBuildId = remoteBuildId
+    cell.remoteBuildState = remoteBuildState
+    cell.remoteErrorCode = remoteErrorCode
     return
   }
 
@@ -328,6 +338,8 @@ function applyRemoteExecutionMetadata(cell: Cell, raw: Record<string, any>) {
     cell.remoteWorkerName = undefined
     cell.remoteTransport = null
     cell.remoteBuildId = null
+    cell.remoteBuildState = null
+    cell.remoteErrorCode = null
   }
 }
 
@@ -344,6 +356,14 @@ function applySerializedExecutionMetadata(cell: Cell, raw: Record<string, any>) 
   cell.remoteBuildId =
     typeof raw.remote_build_id === 'string' && raw.remote_build_id.trim()
       ? raw.remote_build_id
+      : null
+  cell.remoteBuildState =
+    typeof raw.remote_build_state === 'string' && raw.remote_build_state.trim()
+      ? raw.remote_build_state
+      : null
+  cell.remoteErrorCode =
+    typeof raw.remote_error_code === 'string' && raw.remote_error_code.trim()
+      ? raw.remote_error_code
       : null
 }
 
@@ -719,6 +739,14 @@ async function openNotebook(path: string): Promise<void> {
     remoteTransport: parseWorkerTransport(c.remote_transport) ?? null,
     remoteBuildId:
       typeof c.remote_build_id === 'string' && c.remote_build_id.trim() ? c.remote_build_id : null,
+    remoteBuildState:
+      typeof c.remote_build_state === 'string' && c.remote_build_state.trim()
+        ? c.remote_build_state
+        : null,
+    remoteErrorCode:
+      typeof c.remote_error_code === 'string' && c.remote_error_code.trim()
+        ? c.remote_error_code
+        : null,
   }))
   notebook.cells.sort((a, b) => a.order - b.order)
   if (data.dag) {
