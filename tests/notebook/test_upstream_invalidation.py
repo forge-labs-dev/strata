@@ -200,6 +200,42 @@ class TestUpstreamInvalidation:
         )
 
     @pytest.mark.asyncio
+    async def test_uncached_leaf_reports_upstream_change_after_upstream_rerun(self, tmp_path):
+        """An executed uncached leaf should stay ready until upstream provenance changes."""
+        notebook_dir = create_notebook(tmp_path, "leaf_upstream_change")
+
+        add_cell_to_notebook(notebook_dir, "c1", None)
+        write_cell(notebook_dir, "c1", "x = 1")
+
+        add_cell_to_notebook(notebook_dir, "c2", "c1")
+        write_cell(notebook_dir, "c2", "y = x + 1")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        assert (await executor.execute_cell("c2", "y = x + 1")).success
+        session.mark_executed_ready("c2")
+
+        # Re-running unchanged upstream should not invalidate the leaf.
+        assert (await executor.execute_cell("c1", "x = 1")).success
+        staleness = session.compute_staleness()
+        assert staleness["c2"].status == "ready"
+
+        # Once upstream provenance changes, the leaf should go stale for an upstream reason.
+        write_cell(notebook_dir, "c1", "x = 2")
+        cell1 = next(c for c in session.notebook_state.cells if c.id == "c1")
+        cell1.source = "x = 2"
+        session.re_analyze_cell("c1")
+        assert (await executor.execute_cell("c1", "x = 2")).success
+
+        staleness = session.compute_staleness()
+        assert staleness["c2"].status == "idle"
+        assert session.causality_map["c2"].reason == "upstream"
+        assert any(
+            detail.type == "input_changed" for detail in session.causality_map["c2"].details
+        )
+
+    @pytest.mark.asyncio
     async def test_missing_one_multi_output_artifact_marks_downstream_idle(self, tmp_path):
         """Staleness must validate every consumed output, not just the first one."""
         notebook_dir = create_notebook(tmp_path, "missing_output")

@@ -93,6 +93,10 @@ const durationLabel = computed(() => {
     : `${(props.cell.durationMs / 1000).toFixed(1)}s`
 })
 
+const canExplainStaleness = computed(() =>
+  Boolean(props.cell.causality && (props.cell.status === 'idle' || props.cell.status === 'stale')),
+)
+
 /** v1.1: Execution method label */
 const executionMethodLabel = computed(() => {
   if (!props.cell.executorName) return ''
@@ -129,8 +133,18 @@ const causalityTooltip = computed(() => {
 })
 
 function toggleCausality() {
+  if (!canExplainStaleness.value) {
+    showCausality.value = false
+    return
+  }
   showCausality.value = !showCausality.value
 }
+
+watch(canExplainStaleness, (canExplain) => {
+  if (!canExplain) {
+    showCausality.value = false
+  }
+})
 
 const mountSummary = computed(() =>
   props.cell.mounts.map((mount) => `${mount.name}:${mount.mode}`).join(', '),
@@ -398,7 +412,7 @@ function formatScalar(scalar: unknown): string {
         <span v-if="durationLabel" class="duration">{{ durationLabel }}</span>
         <!-- v1.1: Causality indicator -->
         <button
-          v-if="cell.causality"
+          v-if="canExplainStaleness"
           class="causality-btn"
           :title="causalityTooltip"
           @click="toggleCausality"
@@ -493,7 +507,7 @@ function formatScalar(scalar: unknown): string {
       </div>
 
       <!-- v1.1: Causality chain detail (expanded) -->
-      <div v-if="showCausality && cell.causality" class="causality-panel">
+      <div v-if="showCausality && canExplainStaleness && cell.causality" class="causality-panel">
         <div class="causality-header">
           Stale because: <span class="causality-reason">{{ cell.causality.reason }}</span>
         </div>

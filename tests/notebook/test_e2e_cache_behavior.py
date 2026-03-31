@@ -195,6 +195,9 @@ class TestCascadeCache:
                 assert r["type"] == "cell_output"
                 assert r["payload"].get("cache_hit") is True
 
+                downstream = next(c for c in session.notebook_state.cells if c.id == "c2")
+                assert downstream.status == "ready"
+
     def test_leaf_cell_not_cached(self, setup):
         """A leaf cell (no downstream consumers) is not cached."""
         client, tmp = setup

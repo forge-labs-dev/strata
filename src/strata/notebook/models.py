@@ -311,6 +311,21 @@ class CellState(BaseModel):
         default=None,
         description="Structured remote execution error code for the last run, when available",
     )
+    last_provenance_hash: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Runtime-only provenance hash from the last successful execution",
+    )
+    last_source_hash: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Runtime-only source hash from the last successful execution",
+    )
+    last_env_hash: str | None = Field(
+        default=None,
+        exclude=True,
+        description="Runtime-only environment hash from the last successful execution",
+    )
 
 
 class NotebookState(BaseModel):

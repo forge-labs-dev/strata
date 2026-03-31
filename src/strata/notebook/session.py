@@ -195,6 +195,9 @@ class NotebookSession:
             cell.remote_build_id = previous.remote_build_id
             cell.remote_build_state = previous.remote_build_state
             cell.remote_error_code = previous.remote_error_code
+            cell.last_provenance_hash = previous.last_provenance_hash
+            cell.last_source_hash = previous.last_source_hash
+            cell.last_env_hash = previous.last_env_hash
             self.causality_map.pop(cell.id, None)
 
     def re_analyze_cell(self, cell_id: str) -> None:
@@ -305,9 +308,18 @@ class NotebookSession:
             cached_outputs = self._resolve_cached_outputs(cell_id, provenance_hash)
 
             if cached_outputs is None:
-                # No cached artifact — cell is stale
-                staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
-                stale_cells.add(cell_id)
+                can_preserve_uncached_ready = (
+                    cell.is_leaf
+                    and cell.status == CellStatus.READY
+                    and cell.last_provenance_hash == provenance_hash
+                )
+                if can_preserve_uncached_ready:
+                    staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
+                else:
+                    # No cached artifact — cell is stale/idle unless we can
+                    # prove it still matches the last successful uncached run.
+                    staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
+                    stale_cells.add(cell_id)
             else:
                 # Artifact exists — mark as ready
                 staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
@@ -389,6 +401,21 @@ class NotebookSession:
             cell.remote_build_id = None
             cell.remote_build_state = None
             cell.remote_error_code = None
+
+    def record_successful_execution_provenance(
+        self,
+        cell_id: str,
+        provenance_hash: str,
+        source_hash: str,
+        env_hash: str,
+    ) -> None:
+        """Persist the last successful execution provenance for uncached cells."""
+        cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
+        if cell is None:
+            return
+        cell.last_provenance_hash = provenance_hash
+        cell.last_source_hash = source_hash
+        cell.last_env_hash = env_hash
 
     def serialize_cell(self, cell: Any) -> dict[str, Any]:
         """Serialize a cell with causality and flattened staleness reasons."""

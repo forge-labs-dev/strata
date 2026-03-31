@@ -623,6 +623,12 @@ class CellExecutor:
                     ),
                     execution_method="cached",
                 ).apply_remote_metadata(**remote_metadata)
+                self.session.record_successful_execution_provenance(
+                    cell_id,
+                    provenance_hash,
+                    source_hash,
+                    env_hash,
+                )
                 self.session.apply_execution_result_metadata(cell_id, cached_result)
                 return cached_result
 
@@ -673,6 +679,12 @@ class CellExecutor:
 
                 # ⑤ Store output artifacts for consumed variables.
                 if exec_result.success:
+                    self.session.record_successful_execution_provenance(
+                        cell_id,
+                        provenance_hash,
+                        source_hash,
+                        env_hash,
+                    )
                     stored_ok = self._store_outputs(
                         cell_id,
                         result_output_dir,

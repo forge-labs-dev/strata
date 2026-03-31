@@ -401,6 +401,11 @@ def compute_causality_on_staleness(
             stored_source_hash = _get_stored_hash(session, cell_id, "source_hash")
             stored_env_hash = _get_stored_hash(session, cell_id, "env_hash")
 
+            if stored_source_hash is None:
+                stored_source_hash = cell.last_source_hash
+            if stored_env_hash is None:
+                stored_env_hash = cell.last_env_hash
+
             source_changed = (
                 stored_source_hash is not None
                 and stored_source_hash != source_hash
@@ -417,17 +422,42 @@ def compute_causality_on_staleness(
                         package="notebook env",
                     )
                 )
+            if (
+                not source_changed
+                and not env_changed_flag
+                and cell.last_provenance_hash is not None
+                and cell.last_provenance_hash != provenance_hash
+                and cell.upstream_ids
+            ):
+                upstream_id = cell.upstream_ids[0]
+                upstream = next(
+                    (c for c in session.notebook_state.cells if c.id == upstream_id),
+                    None,
+                )
+                upstream_name = (
+                    upstream.defines[0]
+                    if upstream is not None and upstream.defines
+                    else upstream_id
+                )
+                details.append(
+                    CausalityDetail(
+                        type="input_changed",
+                        cell_id=upstream_id,
+                        cell_name=upstream_name,
+                    )
+                )
             if source_changed or (not env_changed_flag):
                 # If source changed, or if we couldn't determine the cause
                 # (no stored hashes), fall back to source_changed
-                cell_name = cell.defines[0] if cell.defines else cell_id
-                details.append(
-                    CausalityDetail(
-                        type="source_changed",
-                        cell_id=cell_id,
-                        cell_name=cell_name,
+                if not details:
+                    cell_name = cell.defines[0] if cell.defines else cell_id
+                    details.append(
+                        CausalityDetail(
+                            type="source_changed",
+                            cell_id=cell_id,
+                            cell_name=cell_name,
+                        )
                     )
-                )
 
         # Determine primary reason — env takes precedence when it's the
         # *only* change, since source_changed may be a fallback guess.

@@ -229,6 +229,10 @@ function parseBackendCausality(raw: any): Cell['causality'] | undefined {
   }
 }
 
+function supportsStalenessDetail(status: CellStatus | undefined): boolean {
+  return status === 'idle' || status === 'stale'
+}
+
 function parseMountSpec(raw: any): MountSpec {
   return {
     name: raw.name,
@@ -400,8 +404,12 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
     ? serverCell.mount_overrides.map(parseMountSpec)
     : []
   localCell.annotations = parseBackendAnnotations(serverCell.annotations)
-  localCell.stalenessReasons = serverCell.staleness_reasons || serverCell.staleness?.reasons || []
-  localCell.causality = parseBackendCausality(serverCell.causality)
+  localCell.stalenessReasons = supportsStalenessDetail(localCell.status)
+    ? serverCell.staleness_reasons || serverCell.staleness?.reasons || []
+    : []
+  localCell.causality = supportsStalenessDetail(localCell.status)
+    ? parseBackendCausality(serverCell.causality)
+    : undefined
   applySerializedExecutionMetadata(localCell, serverCell)
 }
 
@@ -728,8 +736,10 @@ async function openNotebook(path: string): Promise<void> {
     references: c.references || [],
     inputs: [],
     isLeaf: c.is_leaf || false,
-    stalenessReasons: c.staleness_reasons || c.staleness?.reasons || [],
-    causality: parseBackendCausality(c.causality),
+    stalenessReasons: supportsStalenessDetail(c.status)
+      ? c.staleness_reasons || c.staleness?.reasons || []
+      : [],
+    causality: supportsStalenessDetail(c.status) ? parseBackendCausality(c.causality) : undefined,
     executorName:
       typeof c.execution_method === 'string' && c.execution_method.trim()
         ? c.execution_method
@@ -813,7 +823,7 @@ function initializeWebSocket() {
       setCellStatus(cellId, status)
 
       const cell = cellMap.value.get(cellId)
-      if (cell && p.causality) {
+      if (cell && p.causality && supportsStalenessDetail(status)) {
         const rawCausality = p.causality as Record<string, any>
         cell.causality = {
           reason: rawCausality.reason,
@@ -828,12 +838,14 @@ function initializeWebSocket() {
             toPackageVersion: d.to_package_version,
           })),
         }
-      } else if (cell && status !== 'stale') {
+      } else if (cell) {
         cell.causality = undefined
       }
 
-      if (cell && p.staleness_reasons) {
+      if (cell && supportsStalenessDetail(status) && p.staleness_reasons) {
         cell.stalenessReasons = p.staleness_reasons
+      } else if (cell && !supportsStalenessDetail(status)) {
+        cell.stalenessReasons = []
       }
     })
 
