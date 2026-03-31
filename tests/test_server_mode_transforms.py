@@ -1048,12 +1048,12 @@ class TestAsyncBuildFlow:
 
         assert response.status_code == 404
 
-    def test_build_polling_disabled_in_personal_mode(self, personal_mode_app):
-        """Build polling is disabled in personal mode."""
+    def test_build_polling_nonexistent_build_in_personal_mode(self, personal_mode_app):
+        """Personal mode exposes build polling, but missing builds still return 404."""
         response = personal_mode_app.get("/v1/artifacts/builds/some-id")
 
         assert response.status_code == 404
-        assert "server mode" in response.json()["detail"]
+        assert response.json()["detail"] == "Build not found"
 
 
 class TestProvenanceDeduplication:
