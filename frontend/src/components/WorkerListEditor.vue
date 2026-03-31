@@ -293,31 +293,15 @@ function saveOne(index: number) {
   align-items: center;
   gap: 6px;
   justify-content: flex-end;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
 }
 
 .worker-list-row {
   display: grid;
-  grid-template-columns:
-    110px
-    minmax(100px, 1fr)
-    110px
-    minmax(130px, 1fr)
-    minmax(180px, 2fr)
-    110px
-    minmax(180px, 2fr)
-    28px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 6px;
-}
-
-.worker-list-editor:not(.show-enabled) .worker-list-row {
-  grid-template-columns:
-    minmax(100px, 1fr)
-    110px
-    minmax(130px, 1fr)
-    minmax(180px, 2fr)
-    110px
-    minmax(180px, 2fr)
-    28px;
+  align-items: start;
 }
 
 .worker-enabled-toggle {
@@ -376,7 +360,7 @@ function saveOne(index: number) {
 
 @media (max-width: 920px) {
   .worker-list-row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 }
 </style>
