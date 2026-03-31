@@ -1063,15 +1063,15 @@ class CellExecutor:
         from strata.server import get_state
 
         state = get_state()
-        if not state.config.server_transforms_enabled:
+        if not (state.config.server_transforms_enabled or state.config.writes_enabled):
             raise RuntimeError(
                 "Signed notebook executor transport requires "
-                "server-mode transforms to be enabled"
+                "personal-mode writes or server-mode transforms to be enabled"
             )
 
         artifact_dir = state.config.artifact_dir
         if artifact_dir is None:
-            raise RuntimeError("Artifact store is not configured for server-mode transforms")
+            raise RuntimeError("Artifact store is not configured for signed notebook transport")
 
         artifact_store = get_artifact_store(artifact_dir)
         build_store = get_build_store(artifact_dir / "artifacts.sqlite")

@@ -719,6 +719,43 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert second.remote_error_code is None
 
     @pytest.mark.asyncio
+    async def test_execute_supports_signed_http_executor_worker_in_personal_mode(
+        self,
+        sample_notebook,
+        notebook_executor_server,
+        notebook_personal_server,
+    ):
+        """Signed notebook transport should work in personal mode without server transforms."""
+        sample_notebook.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http-signed",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-signed-a100",
+                config={
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_personal_server["base_url"],
+                },
+            )
+        ]
+        sample_notebook.notebook_state.worker = "gpu-http-signed"
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell1.worker = "gpu-http-signed"
+        cell1.source = "x = 1"
+        sample_notebook.re_analyze_cell("cell1")
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
+
+        assert result.success is True
+        assert result.execution_method == "executor"
+        assert result.remote_worker == "gpu-http-signed"
+        assert result.remote_transport == "signed"
+        assert result.remote_build_id is not None
+        assert result.remote_build_state == "ready"
+        assert result.remote_error_code is None
+        assert result.outputs["x"]["preview"] == 1
+
+    @pytest.mark.asyncio
     async def test_execute_signed_http_executor_marks_build_failed_on_transport_error(
         self,
         sample_notebook,

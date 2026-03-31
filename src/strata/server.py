@@ -4569,6 +4569,24 @@ async def get_artifact_dependents(
 _ACTIVE_BUILD_STATES = ("pending", "building", "running")
 
 
+def _build_transport_available() -> bool:
+    """Whether signed build transport APIs are available in the current mode."""
+    state = get_state()
+    return state.config.writes_enabled or state.config.server_transforms_enabled
+
+
+def _get_runtime_build_store():
+    """Get or initialize the runtime build store for signed build transport APIs."""
+    from strata.transforms.build_store import get_build_store
+
+    state = get_state()
+    artifact_dir = state.config.artifact_dir
+    if artifact_dir is None:
+        return None
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    return get_build_store(artifact_dir / "artifacts.sqlite")
+
+
 @app.get("/v1/artifacts/builds/{build_id}", response_model=BuildStatusResponse)
 async def get_build_status(build_id: str):
     """Get async build status.
@@ -4595,17 +4613,17 @@ async def get_build_status(build_id: str):
 
         return _identity_build_status(stream_state)
 
-    # Build polling is only available when server transforms are enabled
-    if not state.config.server_transforms_enabled:
+    if not _build_transport_available():
         raise HTTPException(
             status_code=404,
-            detail="Build polling is only available in server mode with transforms enabled",
+            detail=(
+                "Build polling is only available when personal-mode writes "
+                "or server-mode transforms are enabled"
+            ),
         )
 
-    from strata.transforms.build_store import get_build_store
-
     # Get build store
-    build_store = get_build_store()
+    build_store = _get_runtime_build_store()
     if build_store is None:
         raise HTTPException(
             status_code=500,
@@ -4670,18 +4688,20 @@ async def get_build_manifest(build_id: str, request: Request):
     Returns:
         BuildManifest with all signed URLs
     """
-    from strata.transforms.build_store import get_build_store
     from strata.transforms.signed_urls import generate_build_manifest
 
     state = get_state()
 
-    if not state.config.server_transforms_enabled:
+    if not _build_transport_available():
         raise HTTPException(
             status_code=404,
-            detail="Build manifest is only available in server mode",
+            detail=(
+                "Build manifest is only available when personal-mode writes "
+                "or server-mode transforms are enabled"
+            ),
         )
 
-    build_store = get_build_store()
+    build_store = _get_runtime_build_store()
     if build_store is None:
         raise HTTPException(status_code=500, detail="Build store not initialized")
 
@@ -4836,7 +4856,6 @@ async def upload_artifact_signed(
     Returns:
         Upload status
     """
-    from strata.transforms.build_store import get_build_store
     from strata.transforms.signed_urls import verify_upload_signature
 
     # Parse and verify signature
@@ -4855,7 +4874,7 @@ async def upload_artifact_signed(
         raise HTTPException(status_code=403, detail="Invalid or expired signature")
 
     # Check build exists and is in correct state
-    build_store = get_build_store()
+    build_store = _get_runtime_build_store()
     if build_store is None:
         raise HTTPException(status_code=500, detail="Build store not initialized")
 
@@ -4913,17 +4932,16 @@ async def finalize_build(
     Returns:
         Finalize status with artifact URI
     """
-    from strata.transforms.build_store import get_build_store
-
-    state = get_state()
-
-    if not state.config.server_transforms_enabled:
+    if not _build_transport_available():
         raise HTTPException(
             status_code=404,
-            detail="Build finalize is only available in server mode",
+            detail=(
+                "Build finalize is only available when personal-mode writes "
+                "or server-mode transforms are enabled"
+            ),
         )
 
-    build_store = get_build_store()
+    build_store = _get_runtime_build_store()
     if build_store is None:
         raise HTTPException(status_code=500, detail="Build store not initialized")
 
