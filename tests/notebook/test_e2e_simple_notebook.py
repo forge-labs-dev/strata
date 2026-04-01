@@ -199,14 +199,14 @@ class TestTwoCellDirect:
             .add_cell(
                 "c1",
                 "class Person:\n"
-                "    def __init__(self, name):\n"
-                "        self.name = name\n"
+                "    name = 'John'\n"
+                "    age = 20\n"
                 "\n"
-                "    def __repr__(self):\n"
-                "        return f'Person({self.name})'\n",
+                "    def __str__(self):\n"
+                "        return f'{self.name}:{self.age}'\n",
             )
-            .add_cell("c2", 'p = Person("Ada")', after="c1")
-            .add_cell("c3", "rendered = repr(p)", after="c2")
+            .add_cell("c2", "p = Person()", after="c1")
+            .add_cell("c3", "rendered = str(p)", after="c2")
         )
 
         with open_notebook_session(client, nb.path) as (sid, session):
@@ -221,7 +221,7 @@ class TestTwoCellDirect:
 
                 result3 = execute_cell_and_wait(ws, "c3")
                 assert result3["type"] == "cell_output"
-                assert result3["payload"]["outputs"]["rendered"]["preview"] == "Person(Ada)"
+                assert result3["payload"]["outputs"]["rendered"]["preview"] == "John:20"
 
 
 class TestNotebookSync:

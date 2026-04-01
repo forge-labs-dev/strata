@@ -534,6 +534,8 @@ def _deserialize_cell_instance(file_path: Path) -> Any:
     setstate = getattr(instance, "__setstate__", None)
     if callable(setstate):
         setstate(state)
+    elif state is None:
+        pass
     elif isinstance(state, dict):
         instance.__dict__.update(state)
     else:
@@ -553,13 +555,11 @@ def _is_cell_module_instance(value: Any) -> bool:
 
 
 def _extract_cell_instance_state(value: Any) -> Any:
-    getstate = getattr(value, "__getstate__", None)
-    if callable(getstate):
-        return getstate()
+    getstate = getattr(type(value), "__getstate__", None)
+    if callable(getstate) and getstate is not object.__getstate__:
+        return value.__getstate__()
 
     if hasattr(value, "__dict__"):
         return dict(value.__dict__)
 
-    raise ValueError(
-        f"Cannot serialize notebook-exported instance of type '{type(value).__name__}'"
-    )
+    return None

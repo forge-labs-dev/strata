@@ -30,6 +30,14 @@ class _PickleTestMyModel:
         return self.name == other.name and self.value == other.value
 
 
+class _SerializerNoStatePerson:
+    name = "John"
+    age = 20
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+
+
 class TestArrowSerialization:
     """Test Arrow IPC serialization."""
 
@@ -230,6 +238,32 @@ class TestPickleSerialization:
 
             loaded = deserialize_value("pickle/object", file_path)
             assert loaded == obj
+
+    def test_roundtrip_cell_instance_without_instance_state(self):
+        """module/cell-instance should restore plain class-var instances with no __dict__ state."""
+        import sys
+
+        person = _SerializerNoStatePerson()
+        module = sys.modules[_SerializerNoStatePerson.__module__]
+        module.__dict__["__strata_cell_module__"] = True
+        module.__dict__[
+            "__strata_cell_module_source__"
+        ] = (
+            "class _SerializerNoStatePerson:\n"
+            "    name = 'John'\n"
+            "    age = 20\n"
+            "\n"
+            "    def __str__(self):\n"
+            "        return f\"{self.name}:{self.age}\"\n"
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(person, tmpdir, "p")
+            assert meta["content_type"] == "module/cell-instance"
+
+            loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
+            assert str(loaded) == "John:20"
 
     def test_serialize_unpicklable_returns_error(self):
         """Test that unpicklable objects return an error result."""

@@ -989,15 +989,15 @@ class Box:
             "cell1",
             """
 class Person:
-    def __init__(self, name):
-        self.name = name
+    name = "John"
+    age = 20
 
-    def __repr__(self):
-        return f"Person({self.name})"
+    def __str__(self):
+        return f"{self.name}:{self.age}"
 """.strip(),
         )
-        write_cell(notebook_dir, "cell2", 'p = Person("Ada")')
-        write_cell(notebook_dir, "cell3", "rendered = repr(p)")
+        write_cell(notebook_dir, "cell2", "p = Person()")
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
 
         session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
         executor = CellExecutor(session)
@@ -1011,7 +1011,7 @@ class Person:
         assert second.success is True
         assert second.outputs["p"]["content_type"] == "module/cell-instance"
         assert third.success is True
-        assert third.outputs["rendered"]["preview"] == "Person(Ada)"
+        assert third.outputs["rendered"]["preview"] == "John:20"
 
     @pytest.mark.asyncio
     async def test_execute_rejects_cross_cell_export_with_top_level_runtime_state(
@@ -1183,15 +1183,15 @@ def add(a, b):
             "cell1",
             """
 class Person:
-    def __init__(self, name):
-        self.name = name
+    name = "John"
+    age = 20
 
-    def __repr__(self):
-        return f"Person({self.name})"
+    def __str__(self):
+        return f"{self.name}:{self.age}"
 """.strip(),
         )
-        write_cell(notebook_dir, "cell2", 'p = Person("Ada")')
-        write_cell(notebook_dir, "cell3", "rendered = repr(p)")
+        write_cell(notebook_dir, "cell2", "p = Person()")
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
 
         session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
         cold_executor = CellExecutor(session)
@@ -1216,7 +1216,7 @@ class Person:
 
             assert third.success is True
             assert third.execution_method == "warm"
-            assert third.outputs["rendered"]["preview"] == "Person(Ada)"
+            assert third.outputs["rendered"]["preview"] == "John:20"
         finally:
             await pool.drain()
 
