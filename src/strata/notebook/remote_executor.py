@@ -67,6 +67,8 @@ def create_notebook_executor_app() -> FastAPI:
             "json/object": ".json",
             "pickle/object": ".pickle",
             "module/import": ".module.json",
+            "module/cell": ".cell_module.json",
+            "module/cell-instance": ".cell_instance.pickle",
         }.get(content_type, ".bin")
 
     def _response_error_detail(response: httpx.Response) -> str:

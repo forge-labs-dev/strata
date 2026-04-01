@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import pickle
 import tempfile
 from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
+import pytest
 
 from strata.notebook.serializer import (
     deserialize_value,
@@ -36,6 +38,62 @@ class _SerializerNoStatePerson:
 
     def __str__(self):
         return f"{self.name}:{self.age}"
+
+
+class _SerializerSlotPerson:
+    __slots__ = ("name", "age")
+
+    def __init__(self, name: str, age: int):
+        self.name = name
+        self.age = age
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+
+
+class _SerializerBaseSlotPerson:
+    __slots__ = ("name",)
+
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _SerializerDerivedSlotPerson(_SerializerBaseSlotPerson):
+    __slots__ = ("age",)
+
+    def __init__(self, name: str, age: int):
+        super().__init__(name)
+        self.age = age
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+
+
+class _SerializerCustomStatePerson:
+    def __init__(self, name: str, age: int):
+        self.name = name
+        self.age = age
+        self.restored = False
+
+    def __getstate__(self):
+        return {"payload": f"{self.name}|{self.age}"}
+
+    def __setstate__(self, state):
+        self.name, age = state["payload"].split("|")
+        self.age = int(age)
+        self.restored = True
+
+    def __str__(self):
+        return f"{self.name}:{self.age}:{self.restored}"
+
+
+def _mark_as_cell_module(cls, module_source: str) -> None:
+    import sys
+
+    module = sys.modules[cls.__module__]
+    module.__dict__["__strata_cell_module__"] = True
+    module.__dict__["__strata_cell_module_source__"] = module_source
+    setattr(cls, "__strata_cell_exported_class__", True)
 
 
 class TestArrowSerialization:
@@ -241,14 +299,9 @@ class TestPickleSerialization:
 
     def test_roundtrip_cell_instance_without_instance_state(self):
         """module/cell-instance should restore plain class-var instances with no __dict__ state."""
-        import sys
-
         person = _SerializerNoStatePerson()
-        module = sys.modules[_SerializerNoStatePerson.__module__]
-        module.__dict__["__strata_cell_module__"] = True
-        module.__dict__[
-            "__strata_cell_module_source__"
-        ] = (
+        _mark_as_cell_module(
+            _SerializerNoStatePerson,
             "class _SerializerNoStatePerson:\n"
             "    name = 'John'\n"
             "    age = 20\n"
@@ -265,6 +318,88 @@ class TestPickleSerialization:
             loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
             assert str(loaded) == "John:20"
 
+    def test_roundtrip_cell_instance_with_slots(self):
+        """module/cell-instance should preserve slot-only instance state."""
+        person = _SerializerSlotPerson("Ada", 10)
+        _mark_as_cell_module(
+            _SerializerSlotPerson,
+            "class _SerializerSlotPerson:\n"
+            "    __slots__ = ('name', 'age')\n"
+            "\n"
+            "    def __init__(self, name, age):\n"
+            "        self.name = name\n"
+            "        self.age = age\n"
+            "\n"
+            "    def __str__(self):\n"
+            "        return f\"{self.name}:{self.age}\"\n",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(person, tmpdir, "p")
+            loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
+
+            assert str(loaded) == "Ada:10"
+
+    def test_roundtrip_cell_instance_with_inherited_slots(self):
+        """module/cell-instance should preserve slots defined across base classes."""
+        person = _SerializerDerivedSlotPerson("Grace", 30)
+        _mark_as_cell_module(
+            _SerializerDerivedSlotPerson,
+            "class _SerializerBaseSlotPerson:\n"
+            "    __slots__ = ('name',)\n"
+            "\n"
+            "    def __init__(self, name):\n"
+            "        self.name = name\n"
+            "\n"
+            "class _SerializerDerivedSlotPerson(_SerializerBaseSlotPerson):\n"
+            "    __slots__ = ('age',)\n"
+            "\n"
+            "    def __init__(self, name, age):\n"
+            "        super().__init__(name)\n"
+            "        self.age = age\n"
+            "\n"
+            "    def __str__(self):\n"
+            "        return f\"{self.name}:{self.age}\"\n",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(person, tmpdir, "p")
+            loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
+
+            assert str(loaded) == "Grace:30"
+
+    def test_roundtrip_cell_instance_with_custom_state_methods(self):
+        """module/cell-instance should respect custom __getstate__/__setstate__."""
+        person = _SerializerCustomStatePerson("Lin", 41)
+        _mark_as_cell_module(
+            _SerializerCustomStatePerson,
+            "class _SerializerCustomStatePerson:\n"
+            "    def __init__(self, name, age):\n"
+            "        self.name = name\n"
+            "        self.age = age\n"
+            "        self.restored = False\n"
+            "\n"
+            "    def __getstate__(self):\n"
+            "        return {'payload': f'{self.name}|{self.age}'}\n"
+            "\n"
+            "    def __setstate__(self, state):\n"
+            "        self.name, age = state['payload'].split('|')\n"
+            "        self.age = int(age)\n"
+            "        self.restored = True\n"
+            "\n"
+            "    def __str__(self):\n"
+            "        return f\"{self.name}:{self.age}:{self.restored}\"\n",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(person, tmpdir, "p")
+            loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
+
+            assert str(loaded) == "Lin:41:True"
+
     def test_serialize_unpicklable_returns_error(self):
         """Test that unpicklable objects return an error result."""
         # Lambdas defined locally can't be pickled
@@ -276,6 +411,77 @@ class TestPickleSerialization:
 
             # Should return error metadata instead of crashing
             assert result.get("error") is not None or result["content_type"] == "pickle/object"
+
+    def test_deserialize_invalid_cell_module_descriptor(self):
+        """Corrupted module/cell descriptors should fail with a clear error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            file_path = tmpdir / "broken.cell_module.json"
+            file_path.write_text(
+                json.dumps({"module_name": "broken", "source": "x = 1"}),
+                encoding="utf-8",
+            )
+
+            with pytest.raises(ValueError, match="Invalid exported notebook module descriptor"):
+                deserialize_value("module/cell", file_path)
+
+    def test_deserialize_missing_cell_module_symbol(self):
+        """Missing exported symbol names should raise a clear error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            file_path = tmpdir / "broken.cell_module.json"
+            file_path.write_text(
+                json.dumps(
+                    {
+                        "module_name": "broken_symbol_module",
+                        "symbol_name": "missing",
+                        "source": "x = 1",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with pytest.raises(ValueError, match="does not define 'missing'"):
+                deserialize_value("module/cell", file_path)
+
+    def test_deserialize_invalid_cell_instance_payload(self):
+        """Corrupted module/cell-instance payloads should fail clearly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            file_path = tmpdir / "broken.cell_instance.pickle"
+            with open(file_path, "wb") as f:
+                pickle.dump({"module_name": "broken"}, f, protocol=5)
+
+            with pytest.raises(ValueError, match="Invalid notebook-exported instance descriptor"):
+                deserialize_value("module/cell-instance", file_path)
+
+    def test_deserialize_invalid_cell_instance_state_payload(self):
+        """Invalid codec-tagged state payloads should fail clearly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            file_path = tmpdir / "broken.cell_instance.pickle"
+            with open(file_path, "wb") as f:
+                pickle.dump(
+                    {
+                        "module_name": "broken_state_module",
+                        "class_name": "_SerializerNoStatePerson",
+                        "source": (
+                            "class _SerializerNoStatePerson:\n"
+                            "    name = 'John'\n"
+                            "    age = 20\n"
+                        ),
+                        "state_codec": 123,
+                        "state_payload": b"broken",
+                    },
+                    f,
+                    protocol=5,
+                )
+
+            with pytest.raises(
+                ValueError,
+                match="Invalid notebook-exported instance state payload",
+            ):
+                deserialize_value("module/cell-instance", file_path)
 
 
 class TestContentTypeDetection:

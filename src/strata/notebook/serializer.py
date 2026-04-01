@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 OBJECT_CODEC_ENV_VAR = "STRATA_NOTEBOOK_OBJECT_CODEC"
 _CODEC_ENVELOPE_TAG = "strata.notebook.object_codec.v1"
+_CELL_INSTANCE_STATE_TAG = "strata.notebook.cell_instance_state.v1"
 
 
 class ObjectCodec(Protocol):
@@ -482,6 +483,9 @@ def _ensure_cell_module(
         exec(compile(module_source, module_name, "exec"), module.__dict__)  # noqa: S102
     module.__dict__["__strata_cell_module_source__"] = module_source
     module.__dict__["__strata_cell_module__"] = True
+    for value in module.__dict__.values():
+        if isinstance(value, type):
+            setattr(value, "__strata_cell_exported_class__", True)
     return module
 
 
@@ -489,9 +493,13 @@ def _deserialize_cell_module(file_path: Path) -> Any:
     with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
 
-    module_name = data["module_name"]
-    symbol_name = data["symbol_name"]
-    module_source = data["source"]
+    module_name = data.get("module_name")
+    symbol_name = data.get("symbol_name")
+    module_source = data.get("source")
+    if not isinstance(module_name, str) or not isinstance(symbol_name, str):
+        raise ValueError("Invalid exported notebook module descriptor")
+    if not isinstance(module_source, str):
+        raise ValueError(f"Exported notebook module '{module_name}' has invalid source")
 
     module = _ensure_cell_module(module_name, module_source, file_path)
 
@@ -507,9 +515,18 @@ def _deserialize_cell_instance(file_path: Path) -> Any:
     with open(file_path, "rb") as f:
         data = pickle.load(f)
 
-    module_name = data["module_name"]
-    class_name = data["class_name"]
-    module_source = data["source"]
+    if not isinstance(data, dict):
+        raise ValueError("Invalid notebook-exported instance payload")
+
+    module_name = data.get("module_name")
+    class_name = data.get("class_name")
+    module_source = data.get("source")
+    if not isinstance(module_name, str) or not isinstance(class_name, str):
+        raise ValueError("Invalid notebook-exported instance descriptor")
+    if not isinstance(module_source, str):
+        raise ValueError(
+            f"Exported notebook instance '{class_name}' has invalid module source"
+        )
 
     module = _ensure_cell_module(module_name, module_source, file_path)
     try:
@@ -534,6 +551,8 @@ def _deserialize_cell_instance(file_path: Path) -> Any:
     setstate = getattr(instance, "__setstate__", None)
     if callable(setstate):
         setstate(state)
+    elif _is_default_cell_instance_state(state):
+        _restore_default_cell_instance_state(instance, state)
     elif state is None:
         pass
     elif isinstance(state, dict):
@@ -551,7 +570,12 @@ def _is_cell_module_instance(value: Any) -> bool:
         return False
 
     module = sys.modules.get(type(value).__module__)
-    return bool(getattr(module, "__strata_cell_module__", False))
+    module_source = getattr(module, "__strata_cell_module_source__", None)
+    return bool(
+        getattr(type(value), "__strata_cell_exported_class__", False)
+        and isinstance(module_source, str)
+        and module_source
+    )
 
 
 def _extract_cell_instance_state(value: Any) -> Any:
@@ -559,7 +583,70 @@ def _extract_cell_instance_state(value: Any) -> Any:
     if callable(getstate) and getstate is not object.__getstate__:
         return value.__getstate__()
 
-    if hasattr(value, "__dict__"):
-        return dict(value.__dict__)
+    return _extract_default_cell_instance_state(value)
 
-    return None
+
+def _extract_default_cell_instance_state(value: Any) -> Any:
+    dict_state = dict(value.__dict__) if hasattr(value, "__dict__") else None
+    slot_state: dict[str, Any] = {}
+    for slot_name in _iter_slot_names(type(value)):
+        try:
+            slot_state[slot_name] = getattr(value, slot_name)
+        except AttributeError:
+            continue
+
+    if dict_state is None and not slot_state:
+        return None
+
+    return {
+        "__strata_cell_instance_state__": _CELL_INSTANCE_STATE_TAG,
+        "dict": dict_state,
+        "slots": slot_state,
+    }
+
+
+def _is_default_cell_instance_state(state: Any) -> bool:
+    return (
+        isinstance(state, dict)
+        and state.get("__strata_cell_instance_state__") == _CELL_INSTANCE_STATE_TAG
+    )
+
+
+def _restore_default_cell_instance_state(instance: Any, state: Any) -> None:
+    if not isinstance(state, dict):
+        raise ValueError("Invalid notebook-exported instance state")
+
+    dict_state = state.get("dict")
+    slot_state = state.get("slots")
+
+    if dict_state is not None:
+        if not isinstance(dict_state, dict):
+            raise ValueError("Invalid notebook-exported instance __dict__ state")
+        instance.__dict__.update(dict_state)
+
+    if slot_state is not None:
+        if not isinstance(slot_state, dict):
+            raise ValueError("Invalid notebook-exported instance __slots__ state")
+        for slot_name, slot_value in slot_state.items():
+            if not isinstance(slot_name, str):
+                raise ValueError("Invalid notebook-exported instance slot name")
+            setattr(instance, slot_name, slot_value)
+
+
+def _iter_slot_names(cls: type[Any]) -> list[str]:
+    slot_names: list[str] = []
+    for klass in cls.__mro__:
+        slots = klass.__dict__.get("__slots__")
+        if slots is None:
+            continue
+        if isinstance(slots, str):
+            slot_values = [slots]
+        else:
+            slot_values = list(slots)
+        for slot_name in slot_values:
+            if slot_name in {"__dict__", "__weakref__"}:
+                continue
+            if slot_name not in slot_names:
+                slot_names.append(slot_name)
+
+    return slot_names

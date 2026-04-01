@@ -657,6 +657,62 @@ token = os.getenv("NOTEBOOK_TOKEN")
         assert second.cache_hit is True
 
     @pytest.mark.asyncio
+    async def test_execute_supports_http_executor_worker_with_class_instances(
+        self,
+        tmp_path,
+        notebook_executor_server,
+    ):
+        """HTTP executor workers should preserve exported class instances across cells."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "http_class_instances")
+        add_cell_to_notebook(notebook_dir, "cell1", None)
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    name = "John"
+    age = 20
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", "p = Person()")
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        session.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-a100",
+                config={"url": notebook_executor_server["execute_url"]},
+            )
+        ]
+        session.notebook_state.worker = "gpu-http"
+        for cell in session.notebook_state.cells:
+            cell.worker = "gpu-http"
+
+        executor = CellExecutor(session)
+        first = await executor.execute_cell("cell1", session.notebook_state.cells[0].source)
+        second = await executor.execute_cell("cell2", session.notebook_state.cells[1].source)
+        third = await executor.execute_cell("cell3", session.notebook_state.cells[2].source)
+
+        assert first.success is True
+        assert first.execution_method == "executor"
+        assert second.success is True
+        assert second.execution_method == "executor"
+        assert second.outputs["p"]["content_type"] == "module/cell-instance"
+        assert third.success is True
+        assert third.execution_method == "executor"
+        assert third.outputs["rendered"]["preview"] == "John:20"
+
+    @pytest.mark.asyncio
     async def test_execute_supports_signed_http_executor_worker(
         self,
         sample_notebook,
@@ -1012,6 +1068,47 @@ class Person:
         assert second.outputs["p"]["content_type"] == "module/cell-instance"
         assert third.success is True
         assert third.outputs["rendered"]["preview"] == "John:20"
+
+    @pytest.mark.asyncio
+    async def test_execute_supports_slot_based_class_instances_across_cells(self, tmp_path):
+        """Slot-based exported instances should round-trip across notebook cells."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "slot_instances")
+        add_cell_to_notebook(notebook_dir, "cell1", None)
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    __slots__ = ("name", "age")
+
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", 'p = Person("Ada", 10)')
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        first = await executor.execute_cell("cell1", session.notebook_state.cells[0].source)
+        second = await executor.execute_cell("cell2", session.notebook_state.cells[1].source)
+        third = await executor.execute_cell("cell3", session.notebook_state.cells[2].source)
+
+        assert first.success is True
+        assert second.success is True
+        assert second.outputs["p"]["content_type"] == "module/cell-instance"
+        assert third.success is True
+        assert third.outputs["rendered"]["preview"] == "Ada:10"
 
     @pytest.mark.asyncio
     async def test_execute_rejects_cross_cell_export_with_top_level_runtime_state(
