@@ -1936,11 +1936,12 @@ class CellExecutor:
 
         export_plan = build_module_export_plan(source)
         exportable_vars = sorted(set(export_plan.exported_symbols) & set(consumed_vars))
-        if not exportable_vars:
+        blocked_vars = sorted(export_plan.unsupported_symbols & set(consumed_vars))
+        if not exportable_vars and not blocked_vars:
             return None
 
         if not export_plan.is_exportable:
-            joined_vars = ", ".join(exportable_vars)
+            joined_vars = ", ".join(sorted(set(exportable_vars) | set(blocked_vars)))
             return (
                 "This cell defines reusable code used downstream "
                 f"({joined_vars}), but it cannot be shared across cells yet: "

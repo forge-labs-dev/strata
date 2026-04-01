@@ -24,6 +24,7 @@ class ModuleExportPlan:
 
     module_source: str
     exported_symbols: dict[str, ExportedSymbol] = field(default_factory=dict)
+    unsupported_symbols: set[str] = field(default_factory=set)
     unsupported_reasons: list[str] = field(default_factory=list)
 
     @property
@@ -54,6 +55,7 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
         )
 
     exported_symbols: dict[str, ExportedSymbol] = {}
+    unsupported_symbols: set[str] = set()
     unsupported_reasons: list[str] = []
 
     for index, node in enumerate(tree.body):
@@ -62,6 +64,12 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
 
         if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
             unsupported_reasons.append("star imports are not supported for cross-cell code export")
+            continue
+
+        unsupported_reason = _unsupported_reason_for_node(node)
+        if unsupported_reason is not None:
+            unsupported_symbols.update(_defined_names_for_node(node))
+            unsupported_reasons.append(unsupported_reason)
             continue
 
         if not isinstance(
@@ -90,6 +98,7 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
     return ModuleExportPlan(
         module_source=module_source,
         exported_symbols=exported_symbols,
+        unsupported_symbols=unsupported_symbols,
         unsupported_reasons=unsupported_reasons,
     )
 
@@ -100,3 +109,71 @@ def _is_module_docstring(node: ast.stmt, index: int) -> bool:
         return False
     value = node.value
     return isinstance(value, ast.Constant) and isinstance(value.value, str)
+
+
+def _unsupported_reason_for_node(node: ast.stmt) -> str | None:
+    """Return a specific user-facing reason for unsupported top-level statements."""
+    if isinstance(node, ast.Assign):
+        if isinstance(node.value, ast.Lambda):
+            return "top-level lambdas are not shareable across cells"
+        return "top-level runtime state (assignments like `x = ...`) is not shareable across cells"
+
+    if isinstance(node, ast.AnnAssign):
+        if isinstance(node.value, ast.Lambda):
+            return "top-level lambdas are not shareable across cells"
+        return "top-level runtime state (annotated assignments) is not shareable across cells"
+
+    if isinstance(node, ast.AugAssign):
+        return "top-level runtime state (augmented assignments) is not shareable across cells"
+
+    if isinstance(node, ast.Expr):
+        if isinstance(node.value, ast.Lambda):
+            return "top-level lambdas are not shareable across cells"
+        return "top-level runtime expressions are not shareable across cells"
+
+    if isinstance(
+        node,
+        (
+            ast.For,
+            ast.AsyncFor,
+            ast.While,
+            ast.If,
+            ast.With,
+            ast.AsyncWith,
+            ast.Try,
+            ast.Match,
+        ),
+    ):
+        return "top-level control flow is not shareable across cells"
+
+    return None
+
+
+def _defined_names_for_node(node: ast.AST) -> set[str]:
+    """Return names defined by an unsupported top-level statement."""
+    defined: set[str] = set()
+
+    for candidate in ast.walk(node):
+        if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(candidate.name)
+        elif isinstance(candidate, ast.Assign):
+            for target in candidate.targets:
+                defined.update(_target_names(target))
+        elif isinstance(candidate, ast.AnnAssign):
+            defined.update(_target_names(candidate.target))
+        elif isinstance(candidate, ast.AugAssign):
+            defined.update(_target_names(candidate.target))
+
+    return defined
+
+
+def _target_names(target: ast.expr) -> set[str]:
+    """Extract assigned names from an assignment target."""
+    if isinstance(target, ast.Name):
+        return {target.id}
+    if isinstance(target, (ast.Tuple, ast.List)):
+        names: set[str] = set()
+        for item in target.elts:
+            names.update(_target_names(item))
+        return names
+    return set()

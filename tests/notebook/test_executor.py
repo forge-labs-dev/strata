@@ -1214,6 +1214,26 @@ def add(y):
         assert result.success is False
         assert result.error is not None
         assert "cannot be shared across cells yet" in result.error
+        assert "top-level runtime state" in result.error
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_cross_cell_export_with_top_level_lambda(
+        self, sample_notebook
+    ):
+        """Top-level lambdas should fail with a targeted exportability error."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = "add = lambda y: y + 1"
+        cell2.source = "result = add(2)"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", cell1.source)
+
+        assert result.success is False
+        assert result.error is not None
+        assert "cannot be shared across cells yet" in result.error
+        assert "top-level lambdas are not shareable across cells" in result.error
 
     @pytest.mark.asyncio
     @pytest.mark.integration

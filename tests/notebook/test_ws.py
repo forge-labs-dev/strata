@@ -345,6 +345,45 @@ def test_cell_execute_surfaces_module_export_error(client, temp_notebook, app):
         error_msg = websocket.receive_json()
         assert error_msg["type"] == "cell_error"
         assert "cannot be shared across cells yet" in error_msg["payload"]["error"]
+        assert "top-level runtime state" in error_msg["payload"]["error"]
+
+        terminal = websocket.receive_json()
+        assert terminal["type"] == "cell_status"
+        assert terminal["payload"]["status"] == "error"
+
+
+def test_cell_execute_surfaces_module_export_lambda_error(client, temp_notebook, app):
+    """The WS path should surface top-level lambda export errors clearly."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(notebook_dir, "root", "add = lambda y: y + 1\n")
+    write_cell(notebook_dir, "middle", "result = add(2)")
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    session.re_analyze_cell("root")
+    session.re_analyze_cell("middle")
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-31T00:00:00Z",
+                "payload": {"cell_id": "root"},
+            }
+        )
+
+        running = websocket.receive_json()
+        assert running["type"] == "cell_status"
+        assert running["payload"]["status"] == "running"
+
+        error_msg = websocket.receive_json()
+        assert error_msg["type"] == "cell_error"
+        assert "cannot be shared across cells yet" in error_msg["payload"]["error"]
+        assert "top-level lambdas are not shareable across cells" in error_msg["payload"]["error"]
 
         terminal = websocket.receive_json()
         assert terminal["type"] == "cell_status"
