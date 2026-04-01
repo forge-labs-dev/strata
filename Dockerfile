@@ -21,7 +21,17 @@
 # syntax=docker/dockerfile:1
 
 # =============================================================================
-# Stage 1: Builder (uv + Rust)
+# Stage 1a: Frontend Builder (Node.js)
+# =============================================================================
+FROM node:25-alpine AS frontend-builder
+WORKDIR /build/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# =============================================================================
+# Stage 1b: Backend Builder (uv + Rust)
 # =============================================================================
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
@@ -56,12 +66,15 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
 COPY --from=builder /build/dist/*.whl /tmp/
 RUN uv pip install --system --no-cache /tmp/*.whl && rm /tmp/*.whl
 
+# Copy the built frontend
+COPY --from=frontend-builder /build/frontend/dist /home/strata/frontend/dist
+
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash strata
 
-# Create directories for cache and data (as root, then chown)
-RUN mkdir -p /home/strata/.strata/cache /data && \
-    chown -R strata:strata /home/strata/.strata /data
+# Create directories for cache, notebook storage, and data (as root, then chown)
+RUN mkdir -p /home/strata/.strata/cache /tmp/strata-notebooks /data && \
+    chown -R strata:strata /home/strata /tmp/strata-notebooks /data
 
 # Switch to non-root user
 USER strata

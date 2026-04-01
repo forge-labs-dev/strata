@@ -36,6 +36,10 @@ tests/
 .coverage
 htmlcov
 
+# Frontend
+frontend/node_modules
+frontend/dist
+
 # Docs
 docs/
 *.md
