@@ -975,6 +975,45 @@ class Box:
         assert second.outputs["value"]["preview"] == 3
 
     @pytest.mark.asyncio
+    async def test_execute_supports_exported_class_instances_across_cells(self, tmp_path):
+        """Instances of exported notebook classes should round-trip to downstream cells."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "class_instances")
+        add_cell_to_notebook(notebook_dir, "cell1", None)
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    def __init__(self, name):
+        self.name = name
+
+    def __repr__(self):
+        return f"Person({self.name})"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", 'p = Person("Ada")')
+        write_cell(notebook_dir, "cell3", "rendered = repr(p)")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        first = await executor.execute_cell("cell1", session.notebook_state.cells[0].source)
+        second = await executor.execute_cell("cell2", session.notebook_state.cells[1].source)
+        third = await executor.execute_cell("cell3", session.notebook_state.cells[2].source)
+
+        assert first.success is True
+        assert first.outputs["Person"]["content_type"] == "module/cell"
+        assert second.success is True
+        assert second.outputs["p"]["content_type"] == "module/cell-instance"
+        assert third.success is True
+        assert third.outputs["rendered"]["preview"] == "Person(Ada)"
+
+    @pytest.mark.asyncio
     async def test_execute_rejects_cross_cell_export_with_top_level_runtime_state(
         self, sample_notebook
     ):
@@ -1124,6 +1163,60 @@ def add(a, b):
             assert second.success is True
             assert second.execution_method == "warm"
             assert second.outputs["result"]["preview"] == 5
+        finally:
+            await pool.drain()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
+    async def test_warm_execution_supports_exported_class_instances(self, tmp_path):
+        """Warm workers should deserialize instances of exported notebook classes."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "warm_class_instances")
+        add_cell_to_notebook(notebook_dir, "cell1", None)
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    def __init__(self, name):
+        self.name = name
+
+    def __repr__(self):
+        return f"Person({self.name})"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", 'p = Person("Ada")')
+        write_cell(notebook_dir, "cell3", "rendered = repr(p)")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        cold_executor = CellExecutor(session)
+
+        first = await cold_executor.execute_cell("cell1", session.notebook_state.cells[0].source)
+        second = await cold_executor.execute_cell("cell2", session.notebook_state.cells[1].source)
+        assert first.success is True
+        assert second.success is True
+        assert second.outputs["p"]["content_type"] == "module/cell-instance"
+
+        session.ensure_venv_synced()
+        pool = WarmProcessPool(
+            session.path,
+            pool_size=1,
+            python_executable=session.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            executor = CellExecutor(session, pool)
+            third = await executor.execute_cell("cell3", session.notebook_state.cells[2].source)
+
+            assert third.success is True
+            assert third.execution_method == "warm"
+            assert third.outputs["rendered"]["preview"] == "Person(Ada)"
         finally:
             await pool.drain()
 

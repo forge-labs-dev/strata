@@ -181,8 +181,8 @@ def execute_harness(manifest: dict) -> dict:
             continue
         try:
             namespace[var_name] = _ser.deserialize_value(content_type, full_path)
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Error deserializing {var_name}: {exc}", file=sys.stderr)
 
     _inject_mounts(manifest, namespace)
 

@@ -191,6 +191,38 @@ class TestTwoCellDirect:
                 assert result2["type"] == "cell_output"
                 assert result2["payload"]["outputs"]["result"]["preview"] == 7
 
+    def test_cross_cell_exported_class_instance(self, setup):
+        """An instance of an exported class can flow through another cell."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell(
+                "c1",
+                "class Person:\n"
+                "    def __init__(self, name):\n"
+                "        self.name = name\n"
+                "\n"
+                "    def __repr__(self):\n"
+                "        return f'Person({self.name})'\n",
+            )
+            .add_cell("c2", 'p = Person("Ada")', after="c1")
+            .add_cell("c3", "rendered = repr(p)", after="c2")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                assert result1["payload"]["outputs"]["Person"]["content_type"] == "module/cell"
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                assert result2["payload"]["outputs"]["p"]["content_type"] == "module/cell-instance"
+
+                result3 = execute_cell_and_wait(ws, "c3")
+                assert result3["type"] == "cell_output"
+                assert result3["payload"]["outputs"]["rendered"]["preview"] == "Person(Ada)"
+
 
 class TestNotebookSync:
     """Test the notebook_sync message for reconnection."""

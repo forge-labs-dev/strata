@@ -1665,6 +1665,7 @@ class CellExecutor:
                         "pickle/object": ".pickle",
                         "module/import": ".module.json",
                         "module/cell": ".cell_module.json",
+                        "module/cell-instance": ".cell_instance.pickle",
                     }
                     ext = ext_map.get(content_type, ".pickle")
                     input_file = output_dir / f"{var_name}{ext}"
@@ -1743,7 +1744,14 @@ class CellExecutor:
 
         for var_name in consumed_vars:
             found = False
-            for ext in [".arrow", ".cell_module.json", ".module.json", ".json", ".pickle"]:
+            for ext in [
+                ".arrow",
+                ".cell_module.json",
+                ".cell_instance.pickle",
+                ".module.json",
+                ".json",
+                ".pickle",
+            ]:
                 output_file = output_dir / f"{var_name}{ext}"
                 if output_file.exists():
                     found = True
@@ -1757,6 +1765,7 @@ class CellExecutor:
                             ".pickle": "pickle/object",
                             ".module.json": "module/import",
                             ".cell_module.json": "module/cell",
+                            ".cell_instance.pickle": "module/cell-instance",
                         }
                         content_type = content_type_map.get(ext, "pickle/object")
 
@@ -1802,7 +1811,10 @@ class CellExecutor:
             if not found:
                 logger.warning(
                     "_store_outputs %s: no output file for consumed var %s "
-                    "(looked for %s.arrow/.json/.pickle/.cell_module.json in %s)",
+                    "("
+                    "looked for %s.arrow/.json/.pickle/"
+                    ".cell_module.json/.cell_instance.pickle in %s"
+                    ")",
                     cell_id,
                     var_name,
                     var_name,

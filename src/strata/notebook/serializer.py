@@ -1,10 +1,11 @@
 """Shared serialization/deserialization for notebook cell values.
 
-Supports four content types:
+Supports five content types:
   arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
   module/import — Python module objects (re-imported by name on read)
   module/cell  — Synthetic module export for top-level defs/classes
+  module/cell-instance — Instance of a synthetic notebook-exported class
   pickle/object — everything else
 
 This module is loaded dynamically by harness.py, pool_worker.py, and
@@ -29,9 +30,88 @@ Loading pattern (used in each subprocess script):
 from __future__ import annotations
 
 import json
+import os
 import pickle
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
+
+OBJECT_CODEC_ENV_VAR = "STRATA_NOTEBOOK_OBJECT_CODEC"
+_CODEC_ENVELOPE_TAG = "strata.notebook.object_codec.v1"
+
+
+class ObjectCodec(Protocol):
+    """Pluggable object serializer backend for notebook runtime values."""
+
+    name: str
+
+    def dumps(self, value: Any) -> bytes:
+        """Serialize *value* to backend-specific bytes."""
+
+    def loads(self, data: bytes) -> Any:
+        """Deserialize backend-specific bytes to a Python object."""
+
+
+class _PickleObjectCodec:
+    name = "pickle"
+
+    def dumps(self, value: Any) -> bytes:
+        return pickle.dumps(value, protocol=5)
+
+    def loads(self, data: bytes) -> Any:
+        return pickle.loads(data)
+
+
+class _CloudPickleObjectCodec:
+    name = "cloudpickle"
+
+    def __init__(self) -> None:
+        try:
+            import cloudpickle  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - optional backend
+            raise ValueError(
+                "Object codec 'cloudpickle' requires the 'cloudpickle' package to be installed"
+            ) from exc
+        self._cloudpickle = cloudpickle
+
+    def dumps(self, value: Any) -> bytes:
+        return self._cloudpickle.dumps(value, protocol=5)
+
+    def loads(self, data: bytes) -> Any:
+        return pickle.loads(data)
+
+
+def _resolve_object_codec(codec_name: str | None = None) -> ObjectCodec:
+    """Return the configured object codec implementation."""
+    selected = (codec_name or os.environ.get(OBJECT_CODEC_ENV_VAR, "pickle")).strip().lower()
+    if selected == "pickle":
+        return _PickleObjectCodec()
+    if selected == "cloudpickle":
+        return _CloudPickleObjectCodec()
+    raise ValueError(
+        f"Unknown notebook object codec '{selected}'. "
+        "Supported codecs: pickle, cloudpickle"
+    )
+
+
+def _wrap_codec_payload(codec_name: str, payload: bytes) -> dict[str, Any]:
+    return {
+        "__strata_object_codec__": _CODEC_ENVELOPE_TAG,
+        "codec": codec_name,
+        "payload": payload,
+    }
+
+
+def _unwrap_codec_payload(obj: Any) -> tuple[str, bytes] | None:
+    if not isinstance(obj, dict):
+        return None
+    if obj.get("__strata_object_codec__") != _CODEC_ENVELOPE_TAG:
+        return None
+    codec_name = obj.get("codec")
+    payload = obj.get("payload")
+    if not isinstance(codec_name, str) or not isinstance(payload, bytes):
+        raise ValueError("Invalid notebook object codec envelope")
+    return codec_name, payload
 
 # ---------------------------------------------------------------------------
 # Content-type detection
@@ -77,6 +157,9 @@ def detect_content_type(value: Any) -> str:
     if isinstance(value, types.ModuleType):
         return "module/import"
 
+    if _is_cell_module_instance(value):
+        return "module/cell-instance"
+
     return "pickle/object"
 
 
@@ -112,6 +195,8 @@ def serialize_value(
         return _serialize_json(value, output_dir, variable_name)
     elif content_type == "module/import":
         return _serialize_module(value, output_dir, variable_name)
+    elif content_type == "module/cell-instance":
+        return _serialize_cell_instance(value, output_dir, variable_name)
     else:
         return _serialize_pickle(value, output_dir, variable_name)
 
@@ -229,6 +314,43 @@ def _serialize_module(
     }
 
 
+def _serialize_cell_instance(
+    value: Any, output_dir: Path, variable_name: str
+) -> dict[str, Any]:
+    module = sys.modules.get(type(value).__module__)
+    module_source = getattr(module, "__strata_cell_module_source__", None)
+    if not isinstance(module_source, str) or not module_source:
+        raise ValueError(
+            f"Cannot serialize notebook-exported instance '{variable_name}' "
+            "because its synthetic module source is unavailable"
+        )
+
+    state = _extract_cell_instance_state(value)
+    codec = _resolve_object_codec()
+    state_bytes = codec.dumps(state)
+    filename = f"{variable_name}.cell_instance.pickle"
+    filepath = output_dir / filename
+    payload = {
+        "module_name": type(value).__module__,
+        "class_name": type(value).__name__,
+        "source": module_source,
+        "state_codec": codec.name,
+        "state_payload": state_bytes,
+    }
+    with open(filepath, "wb") as f:
+        pickle.dump(payload, f, protocol=5)
+
+    type_name = type(value).__name__
+    return {
+        "content_type": "module/cell-instance",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "codec": codec.name,
+        "type": type_name,
+        "preview": f"<{type_name} object>",
+    }
+
+
 def _serialize_pickle(
     value: Any, output_dir: Path, variable_name: str
 ) -> dict[str, Any]:
@@ -236,8 +358,11 @@ def _serialize_pickle(
     filepath = output_dir / filename
     type_name = type(value).__name__
     try:
+        codec = _resolve_object_codec()
+        payload = codec.dumps(value)
+        envelope = _wrap_codec_payload(codec.name, payload)
         with open(filepath, "wb") as f:
-            pickle.dump(value, f, protocol=5)
+            pickle.dump(envelope, f, protocol=5)
     except Exception as e:
         return {
             "content_type": "pickle/object",
@@ -251,6 +376,7 @@ def _serialize_pickle(
         "content_type": "pickle/object",
         "file": filename,
         "bytes": filepath.stat().st_size,
+        "codec": codec.name,
         "type": type_name,
         "preview": f"<{type_name} object>",
     }
@@ -267,6 +393,7 @@ EXT_TO_CONTENT_TYPE: dict[str, str] = {
     ".pickle": "pickle/object",
     ".module.json": "module/import",
     ".cell_module.json": "module/cell",
+    ".cell_instance.pickle": "module/cell-instance",
 }
 
 
@@ -289,6 +416,8 @@ def deserialize_value(
         return _deserialize_module(file_path)
     elif content_type == "module/cell":
         return _deserialize_cell_module(file_path)
+    elif content_type == "module/cell-instance":
+        return _deserialize_cell_instance(file_path)
     else:
         raise ValueError(f"Unknown content type: {content_type!r}")
 
@@ -318,7 +447,16 @@ def _deserialize_json(file_path: Path) -> Any:
 
 def _deserialize_pickle(file_path: Path) -> Any:
     with open(file_path, "rb") as f:
-        return pickle.load(f)
+        data = pickle.load(f)
+
+    codec_payload = _unwrap_codec_payload(data)
+    if codec_payload is None:
+        # Backward compatibility: historical notebook artifacts stored raw pickle payloads.
+        return data
+
+    codec_name, payload = codec_payload
+    codec = _resolve_object_codec(codec_name)
+    return codec.loads(payload)
 
 
 def _deserialize_module(file_path: Path) -> Any:
@@ -329,16 +467,12 @@ def _deserialize_module(file_path: Path) -> Any:
     return importlib.import_module(data["module_name"])
 
 
-def _deserialize_cell_module(file_path: Path) -> Any:
-    import sys
+def _ensure_cell_module(
+    module_name: str,
+    module_source: str,
+    file_path: Path,
+):
     import types
-
-    with open(file_path, encoding="utf-8") as f:
-        data = json.load(f)
-
-    module_name = data["module_name"]
-    symbol_name = data["symbol_name"]
-    module_source = data["source"]
 
     module = sys.modules.get(module_name)
     if module is None:
@@ -346,6 +480,20 @@ def _deserialize_cell_module(file_path: Path) -> Any:
         module.__file__ = str(file_path)
         sys.modules[module_name] = module
         exec(compile(module_source, module_name, "exec"), module.__dict__)  # noqa: S102
+    module.__dict__["__strata_cell_module_source__"] = module_source
+    module.__dict__["__strata_cell_module__"] = True
+    return module
+
+
+def _deserialize_cell_module(file_path: Path) -> Any:
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    module_name = data["module_name"]
+    symbol_name = data["symbol_name"]
+    module_source = data["source"]
+
+    module = _ensure_cell_module(module_name, module_source, file_path)
 
     try:
         return getattr(module, symbol_name)
@@ -353,3 +501,65 @@ def _deserialize_cell_module(file_path: Path) -> Any:
         raise ValueError(
             f"Exported notebook module '{module_name}' does not define '{symbol_name}'"
         ) from exc
+
+
+def _deserialize_cell_instance(file_path: Path) -> Any:
+    with open(file_path, "rb") as f:
+        data = pickle.load(f)
+
+    module_name = data["module_name"]
+    class_name = data["class_name"]
+    module_source = data["source"]
+
+    module = _ensure_cell_module(module_name, module_source, file_path)
+    try:
+        cls = getattr(module, class_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Exported notebook module '{module_name}' does not define class '{class_name}'"
+        ) from exc
+
+    if "state_payload" in data and "state_codec" in data:
+        state_codec = data["state_codec"]
+        state_payload = data["state_payload"]
+        if not isinstance(state_codec, str) or not isinstance(state_payload, bytes):
+            raise ValueError("Invalid notebook-exported instance state payload")
+        state = _resolve_object_codec(state_codec).loads(state_payload)
+    else:
+        # Backward compatibility for the first module/cell-instance format.
+        state_pickle = data["state_pickle"]
+        state = pickle.loads(state_pickle)
+    instance = cls.__new__(cls)
+
+    setstate = getattr(instance, "__setstate__", None)
+    if callable(setstate):
+        setstate(state)
+    elif isinstance(state, dict):
+        instance.__dict__.update(state)
+    else:
+        raise ValueError(
+            f"Cannot restore notebook-exported instance '{class_name}' without __setstate__"
+        )
+
+    return instance
+
+
+def _is_cell_module_instance(value: Any) -> bool:
+    if isinstance(value, type):
+        return False
+
+    module = sys.modules.get(type(value).__module__)
+    return bool(getattr(module, "__strata_cell_module__", False))
+
+
+def _extract_cell_instance_state(value: Any) -> Any:
+    getstate = getattr(value, "__getstate__", None)
+    if callable(getstate):
+        return getstate()
+
+    if hasattr(value, "__dict__"):
+        return dict(value.__dict__)
+
+    raise ValueError(
+        f"Cannot serialize notebook-exported instance of type '{type(value).__name__}'"
+    )

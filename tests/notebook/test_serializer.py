@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pickle
 import tempfile
 from pathlib import Path
 
@@ -184,6 +185,7 @@ class TestPickleSerialization:
             result = serialize_value(obj, Path(tmpdir), "obj")
 
             assert result["content_type"] == "pickle/object"
+            assert result["codec"] == "pickle"
             assert result["type"] == "_PickleTestCustomClass"
             assert result["bytes"] > 0
 
@@ -199,6 +201,35 @@ class TestPickleSerialization:
             obj_loaded = deserialize_value(meta["content_type"], file_path)
 
             assert obj_loaded == obj_orig
+
+    def test_pickle_serialization_uses_codec_envelope(self):
+        """Pickle/object files should store a codec envelope for future backends."""
+        obj = _PickleTestCustomClass(42)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(obj, tmpdir, "obj")
+            file_path = tmpdir / meta["file"]
+
+            with open(file_path, "rb") as f:
+                payload = pickle.load(f)
+
+            assert payload["__strata_object_codec__"] == "strata.notebook.object_codec.v1"
+            assert payload["codec"] == "pickle"
+            assert isinstance(payload["payload"], bytes)
+
+    def test_deserialize_legacy_raw_pickle(self):
+        """Legacy raw-pickle files should remain readable after codec abstraction."""
+        obj = _PickleTestMyModel("legacy", 7)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            file_path = tmpdir / "legacy.pickle"
+            with open(file_path, "wb") as f:
+                pickle.dump(obj, f, protocol=5)
+
+            loaded = deserialize_value("pickle/object", file_path)
+            assert loaded == obj
 
     def test_serialize_unpicklable_returns_error(self):
         """Test that unpicklable objects return an error result."""
