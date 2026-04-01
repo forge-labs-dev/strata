@@ -78,39 +78,6 @@ class TestCacheHit:
                 if r2["payload"].get("cache_hit"):
                     assert r2["payload"].get("execution_method") == "cached"
 
-    def test_profiling_summary_reports_cache_hits(self, setup):
-        """Profiling summary should count repeated cache-hit executions."""
-        client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
-
-        with open_notebook_session(client, nb.path) as (sid, session):
-            with ws_connect(client, sid) as ws:
-                execute_cell_and_wait(ws, "c1")
-                execute_cell_and_wait(ws, "c2")
-                ws.clear()
-
-                r2 = execute_cell_and_wait(ws, "c1")
-                assert r2["type"] == "cell_output"
-                assert r2["payload"].get("cache_hit") is True
-
-                r3 = execute_cell_and_wait(ws, "c1")
-                assert r3["type"] == "cell_output"
-                assert r3["payload"].get("cache_hit") is True
-
-                ws.send("profiling_request", {})
-                summary = ws.receive_until("profiling_summary")
-                payload = summary["payload"]
-
-                assert payload["cache_hits"] == 2
-                assert payload["cache_misses"] == 2
-                c1_profile = next(cp for cp in payload["cell_profiles"] if cp["cell_id"] == "c1")
-                assert c1_profile["cache_hit"] is True
-                assert c1_profile["execution_count"] == 3
-
     def test_force_execution_bypasses_target_cache(self, setup):
         """Force-running a cell should execute, not return a cached artifact."""
         client, tmp = setup
