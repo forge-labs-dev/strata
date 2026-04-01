@@ -590,6 +590,109 @@ def test_ws_execute_supports_signed_http_executor_worker(
         assert second_terminal["payload"]["status"] == "ready"
 
 
+def test_ws_execute_supports_signed_http_executor_worker_with_class_instances(
+    client,
+    app,
+    notebook_executor_server,
+    notebook_build_server,
+):
+    """The live WS path should preserve exported class instances over signed transport."""
+    from strata.notebook.models import WorkerBackendType, WorkerSpec
+    from strata.notebook.routes import get_session_manager
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "signed_class_instances")
+        add_cell_to_notebook(notebook_dir, "cell1")
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    name = "John"
+    age = 20
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", "p = Person()")
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
+
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            }
+        ]
+
+        session_manager = get_session_manager()
+        session = session_manager.open_notebook(notebook_dir)
+        session.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http-signed",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-signed-a100",
+                config={
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            )
+        ]
+        for cell in session.notebook_state.cells:
+            cell.worker = "gpu-http-signed"
+
+        with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+            for cell_id in ("cell1", "cell2", "cell3"):
+                websocket.send_json(
+                    {
+                        "type": "cell_execute",
+                        "seq": 1,
+                        "ts": "2026-03-31T00:00:00Z",
+                        "payload": {"cell_id": cell_id},
+                    }
+                )
+                output_message, terminal_status = _receive_execution_terminal_messages(
+                    websocket, cell_id
+                )
+                assert output_message["type"] == "cell_output"
+                assert output_message["payload"]["execution_method"] == "executor"
+                assert output_message["payload"]["remote_worker"] == "gpu-http-signed"
+                assert output_message["payload"]["remote_transport"] == "signed"
+                assert output_message["payload"]["remote_build_state"] == "ready"
+                assert terminal_status["payload"]["status"] == "ready"
+
+            websocket.send_json(
+                {
+                    "type": "notebook_sync",
+                    "seq": 2,
+                    "ts": "2026-03-31T00:00:01Z",
+                    "payload": {},
+                }
+            )
+            response = websocket.receive_json()
+            assert response["type"] == "notebook_state"
+            state = response["payload"]
+            cell2 = next(cell for cell in state["cells"] if cell["id"] == "cell2")
+            cell3 = next(cell for cell in state["cells"] if cell["id"] == "cell3")
+
+            assert "p" in cell2["artifact_uris"]
+            assert cell2["remote_transport"] == "signed"
+            assert cell2["remote_build_state"] == "ready"
+            assert cell2["status"] == "ready"
+            assert cell3["remote_transport"] == "signed"
+            assert cell3["remote_build_state"] == "ready"
+            assert cell3["status"] == "ready"
+
+
 def test_ws_execute_reports_unavailable_http_executor_worker(
     client, temp_notebook, app
 ):

@@ -1143,30 +1143,28 @@ class CellExecutor:
                         artifact_version,
                     )
 
+        staged_input_specs, input_artifacts = self._stage_signed_transport_inputs(
+            artifact_store=artifact_store,
+            build_id=build_id,
+            input_specs=input_specs,
+            output_dir=output_dir,
+            tenant_id=tenant_id,
+            principal_id=principal_id,
+        )
         input_uris = sorted(
             {
                 str(spec["uri"])
-                for spec in input_specs.values()
+                for spec in staged_input_specs.values()
                 if spec.get("uri")
             }
         )
-        input_artifacts = [
-            self._parse_artifact_uri(input_uri)
-            for input_uri in input_uris
-        ]
 
         build_params = {
             "source": source,
             "timeout_seconds": timeout_seconds,
             "mounts": [mount.model_dump(mode="json") for mount in mount_specs],
             "env": runtime_env,
-            "input_specs": {
-                name: {
-                    "uri": str(spec["uri"]),
-                    "content_type": str(spec.get("content_type", "pickle/object")),
-                }
-                for name, spec in sorted(input_specs.items())
-            },
+            "input_specs": staged_input_specs,
             "output_format": "notebook-output-bundle@v1",
             "_dispatch_mode": "external",
         }
@@ -1175,7 +1173,14 @@ class CellExecutor:
                 {
                     "executor": NOTEBOOK_EXECUTOR_TRANSFORM_REF,
                     "executor_url": executor_url,
-                    "inputs": input_uris,
+                    "inputs": [
+                        {
+                            "name": name,
+                            "uri": str(spec.get("uri", "")),
+                            "content_type": str(spec.get("content_type", "pickle/object")),
+                        }
+                        for name, spec in sorted(input_specs.items())
+                    ],
                     "params": build_params,
                 },
                 sort_keys=True,
@@ -1374,6 +1379,91 @@ class CellExecutor:
         else:
             path = f"{path.rstrip('/')}/v1/execute-manifest"
         return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
+
+    def _stage_signed_transport_inputs(
+        self,
+        *,
+        artifact_store: Any,
+        build_id: str,
+        input_specs: dict[str, dict[str, str]],
+        output_dir: Path,
+        tenant_id: str | None,
+        principal_id: str | None,
+    ) -> tuple[dict[str, dict[str, str]], list[tuple[str, int]]]:
+        """Stage notebook upstream blobs into the service artifact store for signed transport."""
+        staged_specs: dict[str, dict[str, str]] = {}
+        input_artifacts: list[tuple[str, int]] = []
+
+        for var_name, spec in sorted(input_specs.items()):
+            file_name = str(spec.get("file", "")).strip()
+            if not file_name:
+                raise RuntimeError(
+                    "Signed notebook executor transport is missing a local "
+                    f"input file for {var_name}"
+                )
+            input_path = output_dir / file_name
+            if not input_path.exists():
+                raise RuntimeError(
+                    f"Signed notebook executor transport could not find input file {file_name!r}"
+                )
+
+            blob_data = input_path.read_bytes()
+            content_type = str(spec.get("content_type", "pickle/object"))
+            source_uri = str(spec.get("uri", "")).strip()
+            source_token = source_uri or f"local:{file_name}"
+            source_hash = hashlib.sha256(source_token.encode("utf-8")).hexdigest()[:16]
+            artifact_id = (
+                f"nb_remote_input_{self.session.notebook_state.id}_{source_hash}_{var_name}"
+            )
+            provenance_hash = hashlib.sha256(
+                json.dumps(
+                    {
+                        "source": source_token,
+                        "content_type": content_type,
+                        "byte_hash": hashlib.sha256(blob_data).hexdigest(),
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()
+            transform_spec = ArtifactTransformSpec(
+                executor="notebook_input_stage@v1",
+                params={
+                    "content_type": content_type,
+                    "source_uri": source_uri,
+                    "build_id": build_id,
+                },
+                inputs=[source_uri] if source_uri else [],
+            )
+
+            version = artifact_store.create_artifact(
+                artifact_id=artifact_id,
+                provenance_hash=provenance_hash,
+                transform_spec=transform_spec,
+                input_versions={source_uri: source_uri} if source_uri else {},
+                tenant=tenant_id,
+                principal=principal_id,
+            )
+            artifact_store.write_blob(artifact_id, version, blob_data)
+            finalized = artifact_store.finalize_artifact(
+                artifact_id,
+                version,
+                schema_json=json.dumps({"content_type": content_type}),
+                row_count=0,
+                byte_size=len(blob_data),
+            )
+            if finalized is None:
+                raise RuntimeError(
+                    f"Failed to finalize staged notebook input artifact for {var_name}"
+                )
+
+            staged_uri = f"strata://artifact/{finalized.id}@v={finalized.version}"
+            staged_specs[var_name] = {
+                "uri": staged_uri,
+                "content_type": content_type,
+            }
+            input_artifacts.append((finalized.id, finalized.version))
+
+        return staged_specs, input_artifacts
 
     def _parse_artifact_uri(self, input_uri: str) -> tuple[str, int]:
         """Parse a canonical artifact URI into (artifact_id, version)."""

@@ -255,6 +255,79 @@ def test_admin_managed_signed_worker_executes_over_websocket(
         assert cell["remote_build_state"] == "ready"
 
 
+def test_admin_managed_signed_worker_preserves_exported_class_instances(
+    service_mode_notebook_client,
+    notebook_executor_server,
+    notebook_build_server,
+):
+    """A server-managed signed worker should preserve exported class instances across cells."""
+    client, tmp = service_mode_notebook_client
+    notebook = (
+        NotebookBuilder(tmp, "service_remote_signed_class_instances")
+        .add_cell(
+            "c1",
+            """
+class Person:
+    name = "John"
+    age = 20
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+""".strip(),
+        )
+        .add_cell("c2", "p = Person()", after="c1")
+        .add_cell("c3", "rendered = str(p)", after="c2")
+    )
+
+    _create_admin_worker(
+        client,
+        name="gpu-http-signed",
+        runtime_id="gpu-http-signed-a100",
+        config={
+            "url": notebook_executor_server["execute_url"],
+            "transport": "signed",
+            "strata_url": notebook_build_server["base_url"],
+        },
+    )
+
+    session_id = _open_notebook_via_api(client, notebook.path)
+    assigned = client.put(
+        f"/v1/notebooks/{session_id}/worker",
+        json={"worker": "gpu-http-signed"},
+    )
+    assert assigned.status_code == 200
+
+    with ws_connect(client, session_id) as ws:
+        first = execute_cell_and_wait(ws, "c1")
+        second = execute_cell_and_wait(ws, "c2")
+        third = execute_cell_and_wait(ws, "c3")
+
+        assert first["type"] == "cell_output"
+        assert first["payload"]["remote_transport"] == "signed"
+        assert first["payload"]["remote_build_state"] == "ready"
+
+        assert second["type"] == "cell_output"
+        assert second["payload"]["remote_transport"] == "signed"
+        assert second["payload"]["remote_build_state"] == "ready"
+        assert second["payload"]["outputs"]["p"]["content_type"] == "module/cell-instance"
+
+        assert third["type"] == "cell_output"
+        assert third["payload"]["remote_transport"] == "signed"
+        assert third["payload"]["remote_build_state"] == "ready"
+        assert third["payload"]["outputs"]["rendered"]["preview"] == "John:20"
+
+        state = ws.sync()
+        cell2 = next(cell for cell in state["payload"]["cells"] if cell["id"] == "c2")
+        cell3 = next(cell for cell in state["payload"]["cells"] if cell["id"] == "c3")
+        assert "p" in cell2["artifact_uris"]
+        assert cell2["remote_transport"] == "signed"
+        assert cell2["remote_build_state"] == "ready"
+        assert cell2["status"] == "ready"
+        assert cell3["remote_transport"] == "signed"
+        assert cell3["remote_build_state"] == "ready"
+        assert cell3["status"] == "ready"
+
+
 def test_admin_worker_rename_and_delete_drift_propagates_into_existing_notebook(
     service_mode_notebook_client,
     notebook_executor_server,

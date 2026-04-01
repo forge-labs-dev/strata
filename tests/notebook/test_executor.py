@@ -775,6 +775,88 @@ class Person:
         assert second.remote_error_code is None
 
     @pytest.mark.asyncio
+    async def test_execute_supports_signed_http_executor_worker_with_class_instances(
+        self,
+        tmp_path,
+        notebook_executor_server,
+        notebook_build_server,
+    ):
+        """Signed executor workers should preserve exported class instances across cells."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "signed_http_class_instances")
+        add_cell_to_notebook(notebook_dir, "cell1", None)
+        add_cell_to_notebook(notebook_dir, "cell2", "cell1")
+        add_cell_to_notebook(notebook_dir, "cell3", "cell2")
+
+        write_cell(
+            notebook_dir,
+            "cell1",
+            """
+class Person:
+    name = "John"
+    age = 20
+
+    def __str__(self):
+        return f"{self.name}:{self.age}"
+""".strip(),
+        )
+        write_cell(notebook_dir, "cell2", "p = Person()")
+        write_cell(notebook_dir, "cell3", "rendered = str(p)")
+
+        notebook_build_server["config"].transforms_config["notebook_workers"] = [
+            {
+                "name": "gpu-http-signed",
+                "backend": "executor",
+                "runtime_id": "gpu-http-signed-a100",
+                "config": {
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            }
+        ]
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        session.notebook_state.workers = [
+            WorkerSpec(
+                name="gpu-http-signed",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-http-signed-a100",
+                config={
+                    "url": notebook_executor_server["execute_url"],
+                    "transport": "signed",
+                    "strata_url": notebook_build_server["base_url"],
+                },
+            )
+        ]
+        session.notebook_state.worker = "gpu-http-signed"
+        for cell in session.notebook_state.cells:
+            cell.worker = "gpu-http-signed"
+
+        executor = CellExecutor(session)
+        first = await executor.execute_cell("cell1", session.notebook_state.cells[0].source)
+        second = await executor.execute_cell("cell2", session.notebook_state.cells[1].source)
+        third = await executor.execute_cell("cell3", session.notebook_state.cells[2].source)
+
+        assert first.success is True
+        assert first.execution_method == "executor"
+        assert first.remote_transport == "signed"
+        assert first.remote_build_state == "ready"
+
+        assert second.success is True
+        assert second.execution_method == "executor"
+        assert second.remote_transport == "signed"
+        assert second.remote_build_state == "ready"
+        assert second.outputs["p"]["content_type"] == "module/cell-instance"
+
+        assert third.success is True
+        assert third.execution_method == "executor"
+        assert third.remote_transport == "signed"
+        assert third.remote_build_state == "ready"
+        assert third.outputs["rendered"]["preview"] == "John:20"
+
+    @pytest.mark.asyncio
     async def test_execute_supports_signed_http_executor_worker_in_personal_mode(
         self,
         sample_notebook,
