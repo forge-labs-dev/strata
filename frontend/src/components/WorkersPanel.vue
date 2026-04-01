@@ -1,8 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useNotebook } from '../stores/notebook'
-import type { WorkerHealthHistoryEntry } from '../types/notebook'
-import { workerTransportLabel } from '../utils/notebookWorkers'
+import type { WorkerCatalogEntry, WorkerHealthHistoryEntry } from '../types/notebook'
+import {
+  summarizeWorkerCatalog,
+  workerAttentionReason,
+  workerNeedsAttention,
+  workerTransportLabel,
+} from '../utils/notebookWorkers'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import WorkerListEditor from './WorkerListEditor.vue'
 
@@ -77,6 +82,30 @@ function workerHistoryLabel(entry: WorkerHealthHistoryEntry): string {
 function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
   return entry.error ? `${workerHistoryLabel(entry)}\n${entry.error}` : workerHistoryLabel(entry)
 }
+
+const workerSummary = computed(() => summarizeWorkerCatalog(availableWorkers.value))
+
+function workerAttentionSeverity(worker: WorkerCatalogEntry): number {
+  if (worker.enabled === false || worker.allowed === false) return 4
+  if (worker.health === 'unavailable') return 3
+  if ((worker.consecutiveFailures ?? 0) > 0) return 2
+  if (worker.lastError) return 1
+  return 0
+}
+
+const attentionWorkers = computed(() =>
+  [...availableWorkers.value]
+    .filter((worker) => workerNeedsAttention(worker))
+    .sort((left, right) => {
+      const severityDelta = workerAttentionSeverity(right) - workerAttentionSeverity(left)
+      if (severityDelta !== 0) return severityDelta
+      return left.name.localeCompare(right.name)
+    }),
+)
+
+function workerAttentionLabel(worker: WorkerCatalogEntry): string {
+  return workerAttentionReason(worker) || 'Needs attention'
+}
 </script>
 
 <template>
@@ -97,6 +126,28 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
         >
           {{ workerHealthLoading ? 'Refreshing…' : 'Refresh health' }}
         </button>
+      </div>
+
+      <div v-if="availableWorkers.length" class="workers-summary-grid">
+        <div class="workers-summary-card">
+          <span class="workers-summary-label">Visible</span>
+          <strong class="workers-summary-value">{{ workerSummary.total }}</strong>
+          <span class="workers-summary-detail">workers in this notebook view</span>
+        </div>
+        <div class="workers-summary-card">
+          <span class="workers-summary-label">Healthy</span>
+          <strong class="workers-summary-value">{{ workerSummary.healthy }}</strong>
+          <span class="workers-summary-detail">
+            {{ workerSummary.unavailable }} unavailable · {{ workerSummary.unknown }} unknown
+          </span>
+        </div>
+        <div class="workers-summary-card" :class="{ attention: workerSummary.attention > 0 }">
+          <span class="workers-summary-label">Attention</span>
+          <strong class="workers-summary-value">{{ workerSummary.attention }}</strong>
+          <span class="workers-summary-detail">
+            {{ workerSummary.disabled }} disabled · {{ workerSummary.blocked }} blocked
+          </span>
+        </div>
       </div>
 
       <p class="workers-copy">
@@ -141,6 +192,62 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
       </div>
 
       <div v-if="availableWorkers.length" class="workers-catalog">
+        <div v-if="attentionWorkers.length" class="workers-attention">
+          <div class="workers-catalog-title">Attention Needed</div>
+          <div
+            v-for="worker in attentionWorkers"
+            :key="`attention-${worker.name}`"
+            class="workers-attention-card"
+          >
+            <div class="workers-attention-main">
+              <div class="workers-attention-row">
+                <code>{{ worker.name }}</code>
+                <span class="workers-catalog-meta">{{ worker.backend }}</span>
+                <span class="workers-catalog-meta">{{
+                  worker.transport || workerTransportLabel(worker)
+                }}</span>
+                <span
+                  class="workers-catalog-meta"
+                  :class="{
+                    unhealthy: worker.health === 'unavailable',
+                    unknown: worker.health === 'unknown',
+                  }"
+                >
+                  {{ worker.health }}
+                </span>
+              </div>
+              <div class="workers-attention-reason">
+                {{ workerAttentionLabel(worker) }}
+              </div>
+            </div>
+            <div
+              v-if="canEditServerRegistry && worker.source === 'server'"
+              class="workers-catalog-actions"
+            >
+              <button
+                class="workers-action"
+                :disabled="!connected || isServerWorkerActionLoading(worker.name)"
+                @click="refreshServerWorkerAction(worker.name)"
+              >
+                {{ isServerWorkerActionLoading(worker.name) ? 'Refreshing…' : 'Refresh' }}
+              </button>
+              <button
+                class="workers-action"
+                :disabled="!connected || isServerWorkerActionLoading(worker.name)"
+                @click="updateServerWorkerEnabledAction(worker.name, worker.enabled === false)"
+              >
+                {{
+                  isServerWorkerActionLoading(worker.name)
+                    ? 'Saving…'
+                    : worker.enabled === false
+                      ? 'Enable'
+                      : 'Disable'
+                }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="workers-catalog-title">Visible Workers</div>
         <div v-for="worker in availableWorkers" :key="worker.name" class="workers-catalog-card">
           <div class="workers-catalog-row">
@@ -340,10 +447,89 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
   margin-top: -2px;
 }
 
+.workers-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.workers-summary-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid #313244;
+  border-radius: 10px;
+  background: #11111b;
+}
+
+.workers-summary-card.attention {
+  border-color: #f9e2af55;
+  background: #1d1a14;
+}
+
+.workers-summary-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c7086;
+}
+
+.workers-summary-value {
+  font-size: 18px;
+  line-height: 1;
+  color: #cdd6f4;
+}
+
+.workers-summary-detail {
+  font-size: 11px;
+  color: #8a8fa8;
+}
+
 .workers-catalog {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.workers-attention {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workers-attention-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid #f9e2af33;
+  border-radius: 10px;
+  background: #1d1a14;
+}
+
+.workers-attention-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.workers-attention-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #bac2de;
+}
+
+.workers-attention-reason {
+  font-size: 12px;
+  color: #f9e2af;
+  line-height: 1.4;
 }
 
 .workers-catalog-card {
@@ -459,5 +645,15 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
 
 .workers-catalog-history-chip.unknown {
   color: #fab387;
+}
+
+@media (max-width: 900px) {
+  .workers-attention-card {
+    flex-direction: column;
+  }
+
+  .workers-catalog-actions {
+    margin-left: 0;
+  }
 }
 </style>

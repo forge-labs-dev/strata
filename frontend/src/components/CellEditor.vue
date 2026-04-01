@@ -9,6 +9,7 @@ import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import type { Cell } from '../types/notebook'
 import {
   resolveEffectiveWorkerEntry,
+  summarizeRemoteExecutionState,
   summarizeRemoteExecutionIssue,
   workerTransportLabel,
   workerWarningForEntry,
@@ -202,6 +203,28 @@ const remoteExecutionIssueSummary = computed(() => {
     lastRemoteBuildState.value,
   )
 })
+const remoteExecutionSummary = computed(() =>
+  summarizeRemoteExecutionState({
+    executionMethod: props.cell.executorName,
+    remoteWorkerName: lastRemoteWorkerLabel.value,
+    remoteTransport: lastRemoteTransportLabel.value,
+    remoteBuildState: lastRemoteBuildState.value,
+    remoteErrorCode: lastRemoteErrorCode.value,
+    hasError: Boolean(props.cell.output?.error),
+  }),
+)
+const showRemoteExecutionSummary = computed(() =>
+  Boolean(
+    remoteExecutionSummary.value &&
+    (lastRemoteWorkerLabel.value ||
+      lastRemoteTransportLabel.value ||
+      lastRemoteBuildId.value ||
+      lastRemoteBuildState.value ||
+      lastRemoteErrorCode.value ||
+      props.cell.executorName === 'executor' ||
+      props.cell.output?.cacheHit),
+  ),
+)
 const effectiveTimeoutLabel = computed(() => {
   const timeout = props.cell.annotations?.timeout ?? props.cell.timeout
   return timeout == null ? null : `${timeout}s`
@@ -364,25 +387,6 @@ function formatScalar(scalar: unknown): string {
             {{ effectiveWorkerTransportLabel }}
           </span>
           <span
-            v-if="lastRemoteTransportLabel"
-            class="remote-run-badge"
-            :title="`Last remote execution: ${lastRemoteWorkerLabel || effectiveWorkerLabel} via ${lastRemoteTransportLabel}`"
-          >
-            ran via {{ lastRemoteTransportLabel }}
-          </span>
-          <span
-            v-if="lastRemoteBuildId"
-            class="remote-build-badge"
-            :title="`Signed remote build: ${lastRemoteBuildId}${
-              lastRemoteBuildState ? ` (${lastRemoteBuildState})` : ''
-            }`"
-          >
-            build {{ lastRemoteBuildId }}
-          </span>
-          <span v-if="lastRemoteBuildState" class="remote-build-badge">
-            {{ lastRemoteBuildState }}
-          </span>
-          <span
             v-if="effectiveWorkerHealthLabel"
             class="worker-health-badge"
             :class="{ warning: workerWarning }"
@@ -447,6 +451,33 @@ function formatScalar(scalar: unknown): string {
             {{ showInfra ? 'Hide infra' : 'Infra' }}
           </button>
         </div>
+      </div>
+
+      <div
+        v-if="showRemoteExecutionSummary && remoteExecutionSummary"
+        class="remote-execution-summary"
+        :class="`tone-${remoteExecutionSummary.tone}`"
+      >
+        <span class="remote-execution-label">{{ remoteExecutionSummary.label }}</span>
+        <span class="remote-execution-detail">{{ remoteExecutionSummary.detail }}</span>
+        <span v-if="lastRemoteWorkerLabel" class="remote-execution-pill">
+          {{ lastRemoteWorkerLabel }}
+        </span>
+        <span v-if="lastRemoteTransportLabel" class="remote-execution-pill">
+          {{ lastRemoteTransportLabel }}
+        </span>
+        <span v-if="lastRemoteBuildId" class="remote-execution-pill">
+          build {{ lastRemoteBuildId }}
+        </span>
+        <span v-if="lastRemoteBuildState" class="remote-execution-pill">
+          {{ lastRemoteBuildState }}
+        </span>
+        <span v-if="lastRemoteErrorCode" class="remote-execution-pill">
+          {{ lastRemoteErrorCode }}
+        </span>
+        <span v-if="effectiveWorkerHealthLabel" class="remote-execution-pill">
+          {{ effectiveWorkerHealthLabel }}
+        </span>
       </div>
 
       <div v-if="showInfra" class="infra-panel">
@@ -816,20 +847,6 @@ function formatScalar(scalar: unknown): string {
   border-radius: 3px;
   font-size: 10px;
 }
-.remote-run-badge {
-  background: #74c7ec22;
-  color: #74c7ec;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-}
-.remote-build-badge {
-  background: #f5c2e722;
-  color: #f5c2e7;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 10px;
-}
 .worker-health-badge {
   background: #89b4fa22;
   color: #89b4fa;
@@ -887,6 +904,55 @@ function formatScalar(scalar: unknown): string {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.remote-execution-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2a3c;
+  background: #11111b;
+}
+.remote-execution-summary.tone-info {
+  background: #11111b;
+}
+.remote-execution-summary.tone-success {
+  background: #13221b;
+}
+.remote-execution-summary.tone-warning {
+  background: #201b12;
+}
+.remote-execution-summary.tone-error {
+  background: #24161b;
+}
+.remote-execution-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #a6adc8;
+}
+.remote-execution-detail {
+  font-size: 12px;
+  color: #cdd6f4;
+}
+.remote-execution-pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #313244;
+  color: #89b4fa;
+  font-size: 11px;
+  font-weight: 600;
+}
+.remote-execution-summary.tone-success .remote-execution-pill {
+  color: #a6e3a1;
+}
+.remote-execution-summary.tone-warning .remote-execution-pill {
+  color: #f9e2af;
+}
+.remote-execution-summary.tone-error .remote-execution-pill {
+  color: #f38ba8;
 }
 .infra-warning {
   padding: 8px 10px;

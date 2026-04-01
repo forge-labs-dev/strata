@@ -4,6 +4,10 @@ import test from 'node:test'
 import type { WorkerCatalogEntry } from '../types/notebook.ts'
 import {
   applyWorkerHealth,
+  workerAttentionReason,
+  workerNeedsAttention,
+  summarizeRemoteExecutionState,
+  summarizeWorkerCatalog,
   effectiveWorkerNameForCell,
   isRemoteExecutorLikelyUnreachable,
   resolveEffectiveWorkerEntry,
@@ -95,6 +99,40 @@ test('workerWarningForEntry reports unresolved, blocked, and unreachable workers
   assert.equal(workerWarningForEntry(makeWorker(), 'gpu-http'), null)
 })
 
+test('worker attention helpers classify unhealthy or policy-blocked workers', () => {
+  assert.equal(workerNeedsAttention(makeWorker()), false)
+  assert.equal(workerNeedsAttention(makeWorker({ enabled: false })), true)
+  assert.equal(workerNeedsAttention(makeWorker({ health: 'unavailable' })), true)
+  assert.equal(workerNeedsAttention(makeWorker({ consecutiveFailures: 2 })), true)
+  assert.equal(workerAttentionReason(makeWorker({ allowed: false })), 'Blocked by server policy')
+  assert.equal(
+    workerAttentionReason(makeWorker({ health: 'unavailable' })),
+    'Worker is currently unreachable',
+  )
+  assert.equal(
+    workerAttentionReason(makeWorker({ consecutiveFailures: 2 })),
+    '2 consecutive failures',
+  )
+})
+
+test('summarizeWorkerCatalog reports worker totals and attention counts', () => {
+  const summary = summarizeWorkerCatalog([
+    makeWorker({ name: 'healthy', health: 'healthy' }),
+    makeWorker({ name: 'down', health: 'unavailable' }),
+    makeWorker({ name: 'disabled', enabled: false, health: 'unknown' }),
+  ])
+
+  assert.deepEqual(summary, {
+    total: 3,
+    healthy: 1,
+    unavailable: 1,
+    unknown: 1,
+    disabled: 1,
+    blocked: 0,
+    attention: 2,
+  })
+})
+
 test('isRemoteExecutorLikelyUnreachable recognizes transport/connectivity failures', () => {
   assert.equal(
     isRemoteExecutorLikelyUnreachable(
@@ -154,6 +192,51 @@ test('summarizeRemoteExecutionIssue generates user-facing remote execution summa
       'failed',
     ),
     'Remote build failed on "gpu-http"',
+  )
+})
+
+test('summarizeRemoteExecutionState describes successful, cached, and failed remote runs', () => {
+  assert.deepEqual(
+    summarizeRemoteExecutionState({
+      executionMethod: 'executor',
+      remoteWorkerName: 'gpu-http',
+      remoteTransport: 'direct',
+      hasError: false,
+    }),
+    {
+      label: 'Remote run',
+      detail: 'Executed via direct transport',
+      tone: 'info',
+    },
+  )
+  assert.deepEqual(
+    summarizeRemoteExecutionState({
+      executionMethod: 'cached',
+      remoteWorkerName: 'gpu-http',
+      remoteTransport: 'signed',
+      remoteBuildState: 'ready',
+      hasError: false,
+    }),
+    {
+      label: 'Remote cache',
+      detail: 'Loaded from cache for a previous remote execution',
+      tone: 'success',
+    },
+  )
+  assert.deepEqual(
+    summarizeRemoteExecutionState({
+      executionMethod: 'executor',
+      remoteWorkerName: 'gpu-http',
+      remoteTransport: 'signed',
+      remoteBuildState: 'failed',
+      remoteErrorCode: 'FINALIZE_FAILED',
+      hasError: true,
+    }),
+    {
+      label: 'Remote failure',
+      detail: 'Remote execution finished, but output upload or finalize failed',
+      tone: 'error',
+    },
   )
 })
 
