@@ -33,6 +33,7 @@ class WorkerHealthSnapshot:
     checked_at: float
     health: str
     error: str | None = None
+    duration_ms: int | None = None
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,15 @@ class WorkerHealthRecord:
 
     latest: WorkerHealthSnapshot
     history: tuple[WorkerHealthSnapshot, ...]
+    probe_count: int
+    healthy_probe_count: int
+    unavailable_probe_count: int
+    unknown_probe_count: int
+    consecutive_failures: int
+    last_healthy_at: float | None = None
+    last_unavailable_at: float | None = None
+    last_unknown_at: float | None = None
+    last_status_change_at: float | None = None
 
 
 _worker_health_cache: dict[str, WorkerHealthRecord] = {}
@@ -530,9 +540,52 @@ def _record_worker_health_snapshot(
     """Persist one probe result in the short in-memory health history."""
     existing = _worker_health_cache.get(health_url)
     history = (snapshot, *(existing.history if existing is not None else ()))
+    previous_health = existing.latest.health if existing is not None else None
+    probe_count = (existing.probe_count if existing is not None else 0) + 1
+    healthy_probe_count = (
+        (existing.healthy_probe_count if existing is not None else 0)
+        + (1 if snapshot.health == "healthy" else 0)
+    )
+    unavailable_probe_count = (
+        (existing.unavailable_probe_count if existing is not None else 0)
+        + (1 if snapshot.health == "unavailable" else 0)
+    )
+    unknown_probe_count = (
+        (existing.unknown_probe_count if existing is not None else 0)
+        + (1 if snapshot.health == "unknown" else 0)
+    )
     record = WorkerHealthRecord(
         latest=snapshot,
         history=history[:_HEALTH_HISTORY_LIMIT],
+        probe_count=probe_count,
+        healthy_probe_count=healthy_probe_count,
+        unavailable_probe_count=unavailable_probe_count,
+        unknown_probe_count=unknown_probe_count,
+        consecutive_failures=(
+            0
+            if snapshot.health == "healthy"
+            else (existing.consecutive_failures if existing is not None else 0) + 1
+        ),
+        last_healthy_at=(
+            snapshot.checked_at
+            if snapshot.health == "healthy"
+            else (existing.last_healthy_at if existing is not None else None)
+        ),
+        last_unavailable_at=(
+            snapshot.checked_at
+            if snapshot.health == "unavailable"
+            else (existing.last_unavailable_at if existing is not None else None)
+        ),
+        last_unknown_at=(
+            snapshot.checked_at
+            if snapshot.health == "unknown"
+            else (existing.last_unknown_at if existing is not None else None)
+        ),
+        last_status_change_at=(
+            snapshot.checked_at
+            if previous_health is None or previous_health != snapshot.health
+            else (existing.last_status_change_at if existing is not None else None)
+        ),
     )
     _worker_health_cache[health_url] = record
     return record
@@ -547,9 +600,54 @@ def _serialize_worker_health_history(
             "checked_at": int(snapshot.checked_at * 1000),
             "health": snapshot.health,
             "error": snapshot.error,
+            "duration_ms": snapshot.duration_ms,
         }
         for snapshot in history
     ]
+
+
+def _serialize_worker_health_record(
+    record: WorkerHealthRecord | None,
+) -> dict[str, Any]:
+    """Serialize aggregate worker health metadata for API responses."""
+    if record is None:
+        return {
+            "probe_count": 0,
+            "healthy_probe_count": 0,
+            "unavailable_probe_count": 0,
+            "unknown_probe_count": 0,
+            "consecutive_failures": 0,
+            "last_healthy_at": None,
+            "last_unavailable_at": None,
+            "last_unknown_at": None,
+            "last_status_change_at": None,
+            "last_probe_duration_ms": None,
+        }
+
+    return {
+        "probe_count": record.probe_count,
+        "healthy_probe_count": record.healthy_probe_count,
+        "unavailable_probe_count": record.unavailable_probe_count,
+        "unknown_probe_count": record.unknown_probe_count,
+        "consecutive_failures": record.consecutive_failures,
+        "last_healthy_at": (
+            int(record.last_healthy_at * 1000) if record.last_healthy_at is not None else None
+        ),
+        "last_unavailable_at": (
+            int(record.last_unavailable_at * 1000)
+            if record.last_unavailable_at is not None
+            else None
+        ),
+        "last_unknown_at": (
+            int(record.last_unknown_at * 1000) if record.last_unknown_at is not None else None
+        ),
+        "last_status_change_at": (
+            int(record.last_status_change_at * 1000)
+            if record.last_status_change_at is not None
+            else None
+        ),
+        "last_probe_duration_ms": record.latest.duration_ms,
+    }
 
 
 async def probe_worker_health(
@@ -578,13 +676,16 @@ async def probe_worker_health(
         return cached.latest
 
     try:
+        started_at = time.perf_counter()
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.get(health_url)
+        duration_ms = int((time.perf_counter() - started_at) * 1000)
         if response.status_code != 200:
             snapshot = WorkerHealthSnapshot(
                 checked_at=now,
                 health="unavailable",
                 error=f"Health endpoint returned {response.status_code}",
+                duration_ms=duration_ms,
             )
         else:
             payload = response.json()
@@ -596,18 +697,24 @@ async def probe_worker_health(
                 and isinstance(transform_refs, list)
                 and NOTEBOOK_EXECUTOR_TRANSFORM_REF in transform_refs
             ):
-                snapshot = WorkerHealthSnapshot(checked_at=now, health="healthy")
+                snapshot = WorkerHealthSnapshot(
+                    checked_at=now,
+                    health="healthy",
+                    duration_ms=duration_ms,
+                )
             elif status == "healthy":
                 snapshot = WorkerHealthSnapshot(
                     checked_at=now,
                     health="unknown",
                     error="Executor is healthy but does not advertise notebook execution support",
+                    duration_ms=duration_ms,
                 )
             else:
                 snapshot = WorkerHealthSnapshot(
                     checked_at=now,
                     health="unavailable",
                     error=f"Executor reported status {status}",
+                    duration_ms=duration_ms,
                 )
     except Exception as exc:
         snapshot = WorkerHealthSnapshot(
@@ -640,6 +747,7 @@ async def build_worker_catalog_with_health(
             entry["health"] = "healthy"
             entry["health_checked_at"] = int(time.time() * 1000)
             entry["health_history"] = []
+            entry.update(_serialize_worker_health_record(None))
             continue
         policy_error: str | None = None
         if entry.get("allowed") is False:
@@ -651,11 +759,13 @@ async def build_worker_catalog_with_health(
             entry["health"] = "unavailable"
             entry["last_error"] = policy_error
             entry["health_history"] = []
+            entry.update(_serialize_worker_health_record(None))
             continue
 
         worker = worker_by_name.get(name)
         if worker is None:
             entry["health_history"] = []
+            entry.update(_serialize_worker_health_record(None))
             continue
 
         snapshot = await probe_worker_health(
@@ -668,11 +778,13 @@ async def build_worker_catalog_with_health(
         health_url = _health_url_for_worker(worker)
         if health_url is None:
             entry["health_history"] = []
+            entry.update(_serialize_worker_health_record(None))
         else:
             record = _worker_health_cache.get(health_url)
             entry["health_history"] = (
                 _serialize_worker_health_history(record.history) if record is not None else []
             )
+            entry.update(_serialize_worker_health_record(record))
 
     return catalog
 
@@ -697,6 +809,7 @@ async def build_server_worker_catalog_with_health(
             "health_checked_at": int(time.time() * 1000),
             "last_error": None,
             "health_history": [],
+            **_serialize_worker_health_record(None),
         }
     ]
 
@@ -724,6 +837,7 @@ async def build_server_worker_catalog_with_health(
                 "health_history": _serialize_worker_health_history(cached_record.history)
                 if cached_record is not None
                 else [],
+                **_serialize_worker_health_record(cached_record),
             }
         )
 

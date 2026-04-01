@@ -456,11 +456,22 @@ def test_list_notebook_workers_includes_health_history(monkeypatch):
                 "health_url": "https://executor.internal/health",
                 "health_checked_at": 123,
                 "last_error": "Health endpoint returned 503",
+                "probe_count": 4,
+                "healthy_probe_count": 1,
+                "unavailable_probe_count": 2,
+                "unknown_probe_count": 1,
+                "consecutive_failures": 2,
+                "last_healthy_at": 120,
+                "last_unavailable_at": 123,
+                "last_unknown_at": 118,
+                "last_status_change_at": 123,
+                "last_probe_duration_ms": 87,
                 "health_history": [
                     {
                         "checked_at": 123,
                         "health": "unavailable",
                         "error": "Health endpoint returned 503",
+                        "duration_ms": 87,
                     }
                 ],
             }
@@ -492,8 +503,14 @@ def test_list_notebook_workers_includes_health_history(monkeypatch):
                 "checked_at": 123,
                 "health": "unavailable",
                 "error": "Health endpoint returned 503",
+                "duration_ms": 87,
             }
         ]
+        assert worker["probe_count"] == 4
+        assert worker["consecutive_failures"] == 2
+        assert worker["last_healthy_at"] == 120
+        assert worker["last_unavailable_at"] == 123
+        assert worker["last_probe_duration_ms"] == 87
 
 
 def test_list_notebook_workers_in_service_mode(service_mode_worker_state):

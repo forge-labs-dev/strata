@@ -467,6 +467,10 @@ class TestNotebookWorkerAdminApi:
         )
         assert seeded_worker["health"] == "unavailable"
         assert seeded_worker["health_history"][0]["health"] == "unavailable"
+        assert seeded_worker["probe_count"] == 1
+        assert seeded_worker["unavailable_probe_count"] == 1
+        assert seeded_worker["consecutive_failures"] == 1
+        assert seeded_worker["last_unavailable_at"] is not None
 
         refreshed = server_mode_app.post("/v1/admin/notebook-workers/gpu-http/refresh")
         assert refreshed.status_code == 200
@@ -475,6 +479,12 @@ class TestNotebookWorkerAdminApi:
         )
         assert refreshed_worker["health"] == "healthy"
         assert refreshed_worker["last_error"] is None
+        assert refreshed_worker["probe_count"] == 2
+        assert refreshed_worker["healthy_probe_count"] == 1
+        assert refreshed_worker["unavailable_probe_count"] == 1
+        assert refreshed_worker["consecutive_failures"] == 0
+        assert refreshed_worker["last_healthy_at"] is not None
+        assert refreshed_worker["last_status_change_at"] is not None
         assert [entry["health"] for entry in refreshed_worker["health_history"][:2]] == [
             "healthy",
             "unavailable",

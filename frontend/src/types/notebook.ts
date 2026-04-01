@@ -34,6 +34,7 @@ export interface WorkerHealthHistoryEntry {
   checkedAt: number
   health: WorkerHealth
   error?: string | null
+  durationMs?: number | null
 }
 
 export interface WorkerCatalogEntry extends WorkerSpec {
@@ -46,6 +47,16 @@ export interface WorkerCatalogEntry extends WorkerSpec {
   healthCheckedAt?: number | null
   lastError?: string | null
   healthHistory?: WorkerHealthHistoryEntry[]
+  probeCount?: number
+  healthyProbeCount?: number
+  unavailableProbeCount?: number
+  unknownProbeCount?: number
+  consecutiveFailures?: number
+  lastHealthyAt?: number | null
+  lastUnavailableAt?: number | null
+  lastUnknownAt?: number | null
+  lastStatusChangeAt?: number | null
+  lastProbeDurationMs?: number | null
 }
 
 export interface CellAnnotations {

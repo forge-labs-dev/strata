@@ -57,8 +57,21 @@ function workerCheckedLabel(rawCheckedAt: number | null | undefined): string {
   })
 }
 
+function workerProbeLabel(count: number | null | undefined): string {
+  if (!count) return 'no probes yet'
+  return count === 1 ? '1 probe' : `${count} probes`
+}
+
+function workerDurationLabel(rawDuration: number | null | undefined): string {
+  if (typeof rawDuration !== 'number' || !Number.isFinite(rawDuration)) {
+    return 'latency unknown'
+  }
+  return `${rawDuration} ms`
+}
+
 function workerHistoryLabel(entry: WorkerHealthHistoryEntry): string {
-  return `${workerCheckedLabel(entry.checkedAt)} ${entry.health}`
+  const duration = workerDurationLabel(entry.durationMs)
+  return `${workerCheckedLabel(entry.checkedAt)} ${entry.health} · ${duration}`
 }
 
 function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
@@ -191,8 +204,28 @@ function workerHistoryTitle(entry: WorkerHealthHistoryEntry): string {
             <span class="workers-catalog-detail">
               last checked {{ workerCheckedLabel(worker.healthCheckedAt) }}
             </span>
+            <span class="workers-catalog-detail">
+              {{ workerProbeLabel(worker.probeCount) }}
+            </span>
+            <span v-if="worker.consecutiveFailures" class="workers-catalog-detail unhealthy">
+              {{ worker.consecutiveFailures }} consecutive failures
+            </span>
+            <span v-if="worker.lastProbeDurationMs != null" class="workers-catalog-detail">
+              last probe {{ workerDurationLabel(worker.lastProbeDurationMs) }}
+            </span>
             <span v-if="worker.healthUrl" class="workers-catalog-detail">
               health {{ worker.healthUrl }}
+            </span>
+          </div>
+          <div class="workers-catalog-detail-row">
+            <span v-if="worker.lastHealthyAt" class="workers-catalog-detail">
+              last healthy {{ workerCheckedLabel(worker.lastHealthyAt) }}
+            </span>
+            <span v-if="worker.lastUnavailableAt" class="workers-catalog-detail">
+              last unavailable {{ workerCheckedLabel(worker.lastUnavailableAt) }}
+            </span>
+            <span v-if="worker.lastStatusChangeAt" class="workers-catalog-detail">
+              status changed {{ workerCheckedLabel(worker.lastStatusChangeAt) }}
             </span>
           </div>
           <div

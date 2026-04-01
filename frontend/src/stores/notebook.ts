@@ -284,6 +284,10 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
                 : 'unknown',
             error:
               typeof entry?.error === 'string' && entry.error.trim() ? String(entry.error) : null,
+            durationMs:
+              typeof entry?.duration_ms === 'number' && Number.isFinite(entry.duration_ms)
+                ? entry.duration_ms
+                : null,
           }),
         )
         .filter((entry: WorkerHealthHistoryEntry) => entry.checkedAt > 0)
@@ -309,6 +313,47 @@ function parseWorkerCatalogEntry(raw: any): WorkerCatalogEntry {
         : null,
     lastError: typeof raw?.last_error === 'string' && raw.last_error.trim() ? raw.last_error : null,
     healthHistory,
+    probeCount:
+      typeof raw?.probe_count === 'number' && Number.isFinite(raw.probe_count)
+        ? raw.probe_count
+        : 0,
+    healthyProbeCount:
+      typeof raw?.healthy_probe_count === 'number' && Number.isFinite(raw.healthy_probe_count)
+        ? raw.healthy_probe_count
+        : 0,
+    unavailableProbeCount:
+      typeof raw?.unavailable_probe_count === 'number' &&
+      Number.isFinite(raw.unavailable_probe_count)
+        ? raw.unavailable_probe_count
+        : 0,
+    unknownProbeCount:
+      typeof raw?.unknown_probe_count === 'number' && Number.isFinite(raw.unknown_probe_count)
+        ? raw.unknown_probe_count
+        : 0,
+    consecutiveFailures:
+      typeof raw?.consecutive_failures === 'number' && Number.isFinite(raw.consecutive_failures)
+        ? raw.consecutive_failures
+        : 0,
+    lastHealthyAt:
+      typeof raw?.last_healthy_at === 'number' && Number.isFinite(raw.last_healthy_at)
+        ? raw.last_healthy_at
+        : null,
+    lastUnavailableAt:
+      typeof raw?.last_unavailable_at === 'number' && Number.isFinite(raw.last_unavailable_at)
+        ? raw.last_unavailable_at
+        : null,
+    lastUnknownAt:
+      typeof raw?.last_unknown_at === 'number' && Number.isFinite(raw.last_unknown_at)
+        ? raw.last_unknown_at
+        : null,
+    lastStatusChangeAt:
+      typeof raw?.last_status_change_at === 'number' && Number.isFinite(raw.last_status_change_at)
+        ? raw.last_status_change_at
+        : null,
+    lastProbeDurationMs:
+      typeof raw?.last_probe_duration_ms === 'number' && Number.isFinite(raw.last_probe_duration_ms)
+        ? raw.last_probe_duration_ms
+        : null,
   }
 }
 
