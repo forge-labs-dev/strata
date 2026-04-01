@@ -928,6 +928,76 @@ result = add(2, 3)
         assert result.outputs["result"]["preview"] == 5
 
     @pytest.mark.asyncio
+    async def test_execute_supports_cross_cell_function_definition(self, sample_notebook):
+        """Top-level functions should be reusable across cells via module export."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = """
+import math
+
+def area(r):
+    return math.pi * r * r
+"""
+        cell2.source = "result = round(area(2), 5)"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+        first = await executor.execute_cell("cell1", cell1.source)
+        second = await executor.execute_cell("cell2", cell2.source)
+
+        assert first.success is True
+        assert first.outputs["area"]["content_type"] == "module/cell"
+        assert second.success is True
+        assert second.outputs["result"]["preview"] == 12.56637
+
+    @pytest.mark.asyncio
+    async def test_execute_supports_cross_cell_class_definition(self, sample_notebook):
+        """Top-level classes should be reusable across cells via module export."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = """
+class Box:
+    def __init__(self, x):
+        self.x = x
+"""
+        cell2.source = "value = Box(3).x"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        executor = CellExecutor(sample_notebook)
+        first = await executor.execute_cell("cell1", cell1.source)
+        second = await executor.execute_cell("cell2", cell2.source)
+
+        assert first.success is True
+        assert first.outputs["Box"]["content_type"] == "module/cell"
+        assert second.success is True
+        assert second.outputs["value"]["preview"] == 3
+
+    @pytest.mark.asyncio
+    async def test_execute_rejects_cross_cell_export_with_top_level_runtime_state(
+        self, sample_notebook
+    ):
+        """Mixed runtime statements should fail with an explicit exportability error."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = """
+x = 1
+
+def add(y):
+    return x + y
+"""
+        cell2.source = "result = add(2)"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        result = await CellExecutor(sample_notebook).execute_cell("cell1", cell1.source)
+
+        assert result.success is False
+        assert result.error is not None
+        assert "cannot be shared across cells yet" in result.error
+
+    @pytest.mark.asyncio
     @pytest.mark.integration
     @pytest.mark.warm_pool
     async def test_execute_uses_warm_pool_when_available(self, sample_notebook):
@@ -1016,6 +1086,44 @@ token = os.getenv("NOTEBOOK_TOKEN")
             assert result.success is True
             assert result.execution_method == "warm"
             assert result.outputs["text"]["preview"] == "hello mount"
+        finally:
+            await pool.drain()
+
+    @pytest.mark.asyncio
+    @pytest.mark.integration
+    @pytest.mark.warm_pool
+    async def test_warm_execution_supports_cross_cell_function_exports(self, sample_notebook):
+        """Warm workers should receive synthetic module exports as upstream inputs."""
+        cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
+        cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        cell1.source = """
+def add(a, b):
+    return a + b
+"""
+        cell2.source = "result = add(2, 3)"
+        sample_notebook.re_analyze_cell("cell1")
+        sample_notebook.re_analyze_cell("cell2")
+
+        cold_executor = CellExecutor(sample_notebook)
+        first = await cold_executor.execute_cell("cell1", cell1.source)
+        assert first.success is True
+        assert first.outputs["add"]["content_type"] == "module/cell"
+
+        sample_notebook.ensure_venv_synced()
+        pool = WarmProcessPool(
+            sample_notebook.path,
+            pool_size=1,
+            python_executable=sample_notebook.venv_python or Path("python"),
+        )
+        await pool.start()
+
+        try:
+            executor = CellExecutor(sample_notebook, pool)
+            second = await executor.execute_cell("cell2", cell2.source)
+
+            assert second.success is True
+            assert second.execution_method == "warm"
+            assert second.outputs["result"]["preview"] == 5
         finally:
             await pool.drain()
 

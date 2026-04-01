@@ -40,6 +40,7 @@ from strata.artifact_store import get_artifact_store
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.env import compute_execution_env_hash
 from strata.notebook.models import MountSpec, WorkerBackendType
+from strata.notebook.module_export import build_module_export_plan
 from strata.notebook.mounts import (
     MountFingerprinter,
     MountResolver,
@@ -678,6 +679,27 @@ class CellExecutor:
                 ).apply_remote_metadata(**remote_metadata)
 
                 # ⑤ Store output artifacts for consumed variables.
+                if exec_result.success:
+                    module_export_error = self._write_module_export_outputs(
+                        cell_id,
+                        source,
+                        result_output_dir,
+                        provenance_hash,
+                        exec_result.outputs,
+                    )
+                    if module_export_error is not None:
+                        exec_result = CellExecutionResult(
+                            cell_id=cell_id,
+                            success=False,
+                            stdout=exec_result.stdout,
+                            stderr=exec_result.stderr,
+                            outputs=exec_result.outputs,
+                            duration_ms=exec_result.duration_ms,
+                            error=module_export_error,
+                            execution_method=exec_result.execution_method,
+                            mutation_warnings=exec_result.mutation_warnings,
+                        ).apply_remote_metadata(**remote_metadata)
+
                 if exec_result.success:
                     self.session.record_successful_execution_provenance(
                         cell_id,
@@ -1642,6 +1664,7 @@ class CellExecutor:
                         "json/object": ".json",
                         "pickle/object": ".pickle",
                         "module/import": ".module.json",
+                        "module/cell": ".cell_module.json",
                     }
                     ext = ext_map.get(content_type, ".pickle")
                     input_file = output_dir / f"{var_name}{ext}"
@@ -1689,8 +1712,7 @@ class CellExecutor:
     ) -> bool:
         """Persist consumed output variables as artifacts.
 
-        Returns True if every consumed variable was stored, False
-        otherwise.
+        Returns True if every consumed variable was stored, False otherwise.
         """
         cell = next(
             (c for c in self.session.notebook_state.cells if c.id == cell_id),
@@ -1721,7 +1743,7 @@ class CellExecutor:
 
         for var_name in consumed_vars:
             found = False
-            for ext in [".arrow", ".json", ".pickle", ".module.json"]:
+            for ext in [".arrow", ".cell_module.json", ".module.json", ".json", ".pickle"]:
                 output_file = output_dir / f"{var_name}{ext}"
                 if output_file.exists():
                     found = True
@@ -1734,6 +1756,7 @@ class CellExecutor:
                             ".json": "json/object",
                             ".pickle": "pickle/object",
                             ".module.json": "module/import",
+                            ".cell_module.json": "module/cell",
                         }
                         content_type = content_type_map.get(ext, "pickle/object")
 
@@ -1779,7 +1802,7 @@ class CellExecutor:
             if not found:
                 logger.warning(
                     "_store_outputs %s: no output file for consumed var %s "
-                    "(looked for %s.arrow/.json/.pickle in %s)",
+                    "(looked for %s.arrow/.json/.pickle/.cell_module.json in %s)",
                     cell_id,
                     var_name,
                     var_name,
@@ -1788,6 +1811,69 @@ class CellExecutor:
                 all_stored = False
 
         return all_stored
+
+    def _write_module_export_outputs(
+        self,
+        cell_id: str,
+        source: str,
+        output_dir: Path,
+        provenance_hash: str,
+        outputs: dict[str, Any],
+    ) -> str | None:
+        """Write synthetic module artifacts for cross-cell defs/classes.
+
+        Returns an error string when a downstream-consumed definition cannot be
+        exported safely under the current V1 rules.
+        """
+        if self.session.dag is None:
+            return None
+
+        consumed_vars = self.session.dag.consumed_variables.get(cell_id, set())
+        if not consumed_vars:
+            return None
+
+        export_plan = build_module_export_plan(source)
+        exportable_vars = sorted(set(export_plan.exported_symbols) & set(consumed_vars))
+        if not exportable_vars:
+            return None
+
+        if not export_plan.is_exportable:
+            joined_vars = ", ".join(exportable_vars)
+            return (
+                "This cell defines reusable code used downstream "
+                f"({joined_vars}), but it cannot be shared across cells yet: "
+                f"{export_plan.format_error()}"
+            )
+
+        source_hash = compute_source_hash(source)
+        notebook_id = self.session.notebook_state.id
+
+        for var_name in exportable_vars:
+            symbol = export_plan.exported_symbols[var_name]
+            descriptor = {
+                "module_name": (
+                    f"nb_{notebook_id}_{cell_id}_{var_name}_{source_hash[:12]}"
+                ),
+                "symbol_name": var_name,
+                "kind": symbol.kind,
+                "source": export_plan.module_source,
+                "provenance_hash": hashlib.sha256(
+                    f"{provenance_hash}:{var_name}".encode()
+                ).hexdigest(),
+            }
+            output_file = output_dir / f"{var_name}.cell_module.json"
+            with open(output_file, "w", encoding="utf-8") as f:
+                json.dump(descriptor, f)
+
+            outputs[var_name] = {
+                "content_type": "module/cell",
+                "file": output_file.name,
+                "bytes": output_file.stat().st_size,
+                "type": symbol.kind,
+                "preview": f"<{symbol.kind} {var_name}>",
+            }
+
+        return None
 
     # ------------------------------------------------------------------
     # Harness helpers

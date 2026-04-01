@@ -109,6 +109,42 @@ class TestStalenessDetection:
                 assert result["type"] == "cell_output"
                 assert "y" in result["payload"]["outputs"]
 
+    def test_edit_exported_function_invalidates_downstream(self, setup):
+        """Editing a module-exported function should invalidate downstream reuse."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "def add(a, b):\n    return a + b")
+            .add_cell("c2", "result = add(2, 3)", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                execute_cell_and_wait(ws, "c1")
+                first = execute_cell_and_wait(ws, "c2")
+                assert first["type"] == "cell_output"
+                assert first["payload"]["outputs"]["result"]["preview"] == 5
+
+                resp = client.put(
+                    f"/v1/notebooks/{sid}/cells/c1",
+                    json={"source": "def add(a, b):\n    return a * b"},
+                )
+                assert resp.status_code == 200
+
+                data = resp.json()
+                c2_status = next(
+                    cell["status"]
+                    for cell in data["cells"]
+                    if cell["id"] == "c2"
+                )
+                assert c2_status == "idle"
+
+                ws.clear()
+                updated = execute_cell_and_wait(ws, "c2")
+                assert updated["type"] == "cell_output"
+                assert updated["payload"].get("cache_hit") is not True
+                assert updated["payload"]["outputs"]["result"]["preview"] == 6
+
 
 class TestDAGRestructuring:
     """Edits that change the DAG structure."""

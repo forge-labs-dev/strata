@@ -4,6 +4,7 @@ Supports four content types:
   arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
   module/import — Python module objects (re-imported by name on read)
+  module/cell  — Synthetic module export for top-level defs/classes
   pickle/object — everything else
 
 This module is loaded dynamically by harness.py, pool_worker.py, and
@@ -265,6 +266,7 @@ EXT_TO_CONTENT_TYPE: dict[str, str] = {
     ".json": "json/object",
     ".pickle": "pickle/object",
     ".module.json": "module/import",
+    ".cell_module.json": "module/cell",
 }
 
 
@@ -285,6 +287,8 @@ def deserialize_value(
         return _deserialize_pickle(file_path)
     elif content_type == "module/import":
         return _deserialize_module(file_path)
+    elif content_type == "module/cell":
+        return _deserialize_cell_module(file_path)
     else:
         raise ValueError(f"Unknown content type: {content_type!r}")
 
@@ -323,3 +327,29 @@ def _deserialize_module(file_path: Path) -> Any:
     with open(file_path, encoding="utf-8") as f:
         data = json.load(f)
     return importlib.import_module(data["module_name"])
+
+
+def _deserialize_cell_module(file_path: Path) -> Any:
+    import sys
+    import types
+
+    with open(file_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    module_name = data["module_name"]
+    symbol_name = data["symbol_name"]
+    module_source = data["source"]
+
+    module = sys.modules.get(module_name)
+    if module is None:
+        module = types.ModuleType(module_name)
+        module.__file__ = str(file_path)
+        sys.modules[module_name] = module
+        exec(compile(module_source, module_name, "exec"), module.__dict__)  # noqa: S102
+
+    try:
+        return getattr(module, symbol_name)
+    except AttributeError as exc:
+        raise ValueError(
+            f"Exported notebook module '{module_name}' does not define '{symbol_name}'"
+        ) from exc

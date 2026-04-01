@@ -200,6 +200,61 @@ class TestUpstreamInvalidation:
         )
 
     @pytest.mark.asyncio
+    async def test_edit_exported_function_invalidates_downstream(self, tmp_path):
+        """Editing an exported function should invalidate downstream consumers."""
+        notebook_dir = create_notebook(tmp_path, "function_invalidation")
+
+        add_cell_to_notebook(notebook_dir, "c1", None)
+        write_cell(
+            notebook_dir,
+            "c1",
+            "def add(a, b):\n    return a + b",
+        )
+
+        add_cell_to_notebook(notebook_dir, "c2", "c1")
+        write_cell(
+            notebook_dir,
+            "c2",
+            "result = add(2, 3)",
+        )
+
+        add_cell_to_notebook(notebook_dir, "c3", "c2")
+        write_cell(
+            notebook_dir,
+            "c3",
+            "final = result * 10",
+        )
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        first = await executor.execute_cell("c1", "def add(a, b):\n    return a + b")
+        second = await executor.execute_cell("c2", "result = add(2, 3)")
+        third = await executor.execute_cell("c3", "final = result * 10")
+        assert first.success
+        assert second.success
+        assert third.success
+        assert second.outputs["result"]["preview"] == 5
+
+        cached = await executor.execute_cell("c2", "result = add(2, 3)")
+        assert cached.success
+        assert cached.cache_hit is True
+
+        cell1 = next(c for c in session.notebook_state.cells if c.id == "c1")
+        cell1.source = "def add(a, b):\n    return a * b"
+        write_cell(notebook_dir, "c1", cell1.source)
+        session.re_analyze_cell("c1")
+        session.compute_staleness()
+
+        staleness = session.compute_staleness()
+        assert staleness["c2"].status == "idle"
+
+        rerun = await executor.execute_cell("c2", "result = add(2, 3)")
+        assert rerun.success
+        assert rerun.cache_hit is False
+        assert rerun.outputs["result"]["preview"] == 6
+
+    @pytest.mark.asyncio
     async def test_uncached_leaf_reports_upstream_change_after_upstream_rerun(self, tmp_path):
         """An executed uncached leaf should stay ready until upstream provenance changes."""
         notebook_dir = create_notebook(tmp_path, "leaf_upstream_change")

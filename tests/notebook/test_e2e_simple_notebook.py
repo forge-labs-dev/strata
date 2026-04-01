@@ -141,6 +141,56 @@ class TestTwoCellDirect:
                 assert result["type"] == "cell_output"
                 assert "total" in result["payload"]["outputs"]
 
+    def test_cross_cell_function_export(self, setup):
+        """A top-level function in c1 can be reused from c2."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell(
+                "c1",
+                "import math\n\ndef area(r):\n    return math.pi * r * r",
+            )
+            .add_cell("c2", "result = round(area(2), 5)", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                assert result1["payload"]["outputs"]["area"]["content_type"] == "module/cell"
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                assert result2["payload"]["outputs"]["result"]["preview"] == 12.56637
+
+    def test_cross_cell_class_export(self, setup):
+        """A top-level class in c1 can be reused from c2."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell(
+                "c1",
+                "class Box:\n"
+                "    def __init__(self, value):\n"
+                "        self.value = value\n",
+            )
+            .add_cell(
+                "c2",
+                "result = Box(7).value",
+                after="c1",
+            )
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                assert result1["payload"]["outputs"]["Box"]["content_type"] == "module/cell"
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                assert result2["payload"]["outputs"]["result"]["preview"] == 7
+
 
 class TestNotebookSync:
     """Test the notebook_sync message for reconnection."""
