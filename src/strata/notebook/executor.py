@@ -1936,7 +1936,7 @@ class CellExecutor:
 
         export_plan = build_module_export_plan(source)
         exportable_vars = sorted(set(export_plan.exported_symbols) & set(consumed_vars))
-        blocked_vars = sorted(export_plan.unsupported_symbols & set(consumed_vars))
+        blocked_vars = sorted(export_plan.blocking_symbols & set(consumed_vars))
         if not exportable_vars and not blocked_vars:
             return None
 

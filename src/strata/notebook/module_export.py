@@ -25,6 +25,7 @@ class ModuleExportPlan:
     module_source: str
     exported_symbols: dict[str, ExportedSymbol] = field(default_factory=dict)
     unsupported_symbols: set[str] = field(default_factory=set)
+    blocking_symbols: set[str] = field(default_factory=set)
     unsupported_reasons: list[str] = field(default_factory=list)
 
     @property
@@ -56,6 +57,7 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
 
     exported_symbols: dict[str, ExportedSymbol] = {}
     unsupported_symbols: set[str] = set()
+    blocking_symbols: set[str] = set()
     unsupported_reasons: list[str] = []
 
     for index, node in enumerate(tree.body):
@@ -69,6 +71,7 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
         unsupported_reason = _unsupported_reason_for_node(node)
         if unsupported_reason is not None:
             unsupported_symbols.update(_defined_names_for_node(node))
+            blocking_symbols.update(_blocking_names_for_node(node))
             unsupported_reasons.append(unsupported_reason)
             continue
 
@@ -99,6 +102,7 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
         module_source=module_source,
         exported_symbols=exported_symbols,
         unsupported_symbols=unsupported_symbols,
+        blocking_symbols=blocking_symbols,
         unsupported_reasons=unsupported_reasons,
     )
 
@@ -165,6 +169,31 @@ def _defined_names_for_node(node: ast.AST) -> set[str]:
             defined.update(_target_names(candidate.target))
 
     return defined
+
+
+def _blocking_names_for_node(node: ast.AST) -> set[str]:
+    """Return downstream names that should fail source-backed code export.
+
+    Ordinary serializable values like ``x = 1`` should continue through the
+    normal artifact path even though they are not module-exportable. This
+    helper narrows blocking to code-like symbols that users likely expect to
+    be reusable definitions, such as lambda assignments and defs/classes
+    nested inside unsupported control flow.
+    """
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Lambda):
+        names: set[str] = set()
+        for target in node.targets:
+            names.update(_target_names(target))
+        return names
+
+    if isinstance(node, ast.AnnAssign) and isinstance(node.value, ast.Lambda):
+        return _target_names(node.target)
+
+    blocking: set[str] = set()
+    for candidate in ast.walk(node):
+        if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            blocking.add(candidate.name)
+    return blocking
 
 
 def _target_names(target: ast.expr) -> set[str]:
