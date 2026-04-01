@@ -52,6 +52,7 @@ function toggleInspect() {
 const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
 const showInfra = ref(false)
+const showAnnotationEditor = ref(false)
 
 const { view, setDoc } = useCodemirror(editorEl, {
   initialDoc: props.cell.source,
@@ -146,6 +147,23 @@ watch(canExplainStaleness, (canExplain) => {
     showCausality.value = false
   }
 })
+
+watch(
+  () => props.cell.annotations,
+  (annotations) => {
+    const hasOverrides = Boolean(
+      annotations &&
+      (annotations.mounts.length ||
+        annotations.worker ||
+        annotations.timeout != null ||
+        Object.keys(annotations.env).length),
+    )
+    if (!hasOverrides) {
+      showAnnotationEditor.value = false
+    }
+  },
+  { deep: true },
+)
 
 const mountSummary = computed(() =>
   props.cell.mounts.map((mount) => `${mount.name}:${mount.mode}`).join(', '),
@@ -268,6 +286,10 @@ function saveAnnotationMounts(mounts: MountSpec[]) {
   return saveSourceAnnotations({ mounts })
 }
 
+function toggleAnnotationEditor() {
+  showAnnotationEditor.value = !showAnnotationEditor.value
+}
+
 /** Check if scalar is only console output (no display value) */
 function isConsoleOnly(scalar: unknown): boolean {
   if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
@@ -314,115 +336,117 @@ function formatScalar(scalar: unknown): string {
     <!-- Editor + output -->
     <div class="cell-body">
       <div class="cell-meta">
-        <span class="cell-lang">{{ cell.language }}</span>
-        <span
-          v-if="cell.isLeaf"
-          class="leaf-badge"
-          title="This cell is a leaf (no downstream consumers)"
-          >leaf</span
-        >
-        <span v-if="cell.defines.length" class="cell-vars">
-          defines: <code>{{ cell.defines.join(', ') }}</code>
-        </span>
-        <span v-if="cell.upstreamIds.length" class="cell-vars">
-          reads: <code>{{ cell.references.join(', ') }}</code>
-        </span>
-        <span v-if="cell.mounts.length" class="mount-badge" :title="mountSummary">
-          mounts: {{ cell.mounts.length }}
-        </span>
-        <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
-          worker: {{ effectiveWorkerLabel }}
-        </span>
-        <span
-          v-if="effectiveWorkerTransportLabel"
-          class="worker-transport-badge"
-          :title="`Remote worker transport: ${effectiveWorkerTransportLabel}`"
-        >
-          {{ effectiveWorkerTransportLabel }}
-        </span>
-        <span
-          v-if="lastRemoteTransportLabel"
-          class="remote-run-badge"
-          :title="`Last remote execution: ${lastRemoteWorkerLabel || effectiveWorkerLabel} via ${lastRemoteTransportLabel}`"
-        >
-          ran via {{ lastRemoteTransportLabel }}
-        </span>
-        <span
-          v-if="lastRemoteBuildId"
-          class="remote-build-badge"
-          :title="`Signed remote build: ${lastRemoteBuildId}${
-            lastRemoteBuildState ? ` (${lastRemoteBuildState})` : ''
-          }`"
-        >
-          build {{ lastRemoteBuildId }}
-        </span>
-        <span v-if="lastRemoteBuildState" class="remote-build-badge">
-          {{ lastRemoteBuildState }}
-        </span>
-        <span
-          v-if="effectiveWorkerHealthLabel"
-          class="worker-health-badge"
-          :class="{ warning: workerWarning }"
-          :title="workerWarning || `Worker health: ${effectiveWorkerHealthLabel}`"
-        >
-          {{ workerWarning ? 'attention' : effectiveWorkerHealthLabel }}
-        </span>
-        <span
-          v-if="effectiveTimeoutLabel"
-          class="timeout-badge"
-          :title="`Timeout: ${effectiveTimeoutLabel}`"
-        >
-          timeout: {{ effectiveTimeoutLabel }}
-        </span>
-        <span v-if="effectiveEnvCount" class="env-badge" :title="`${effectiveEnvCount} env vars`">
-          env: {{ effectiveEnvCount }}
-        </span>
-        <span
-          v-if="hasAnnotationOverrides"
-          class="annotation-badge"
-          :title="annotationSummaryTitle"
-        >
-          source overrides
-        </span>
-        <span
-          v-for="chip in visibleAnnotationSummaryChips"
-          :key="chip"
-          class="annotation-summary-chip"
-          :title="annotationSummaryTitle"
-        >
-          {{ chip }}
-        </span>
-        <span
-          v-if="hiddenAnnotationSummaryCount"
-          class="annotation-summary-chip"
-          :title="annotationSummaryTitle"
-        >
-          +{{ hiddenAnnotationSummaryCount }}
-        </span>
-        <!-- v1.1: Cache/execution badges -->
-        <span v-if="cell.output?.cacheHit" class="cache-badge" title="Result loaded from cache">
-          &#x26A1; cached
-        </span>
-        <span
-          v-if="executionMethodLabel && !cell.output?.cacheHit"
-          class="exec-method-badge"
-          :title="`Executed via ${executionMethodLabel} process`"
-        >
-          {{ executionMethodLabel }}
-        </span>
-        <span v-if="durationLabel" class="duration">{{ durationLabel }}</span>
-        <!-- v1.1: Causality indicator -->
-        <button
-          v-if="canExplainStaleness"
-          class="causality-btn"
-          :title="causalityTooltip"
-          @click="toggleCausality"
-        >
-          Why stale?
-        </button>
-        <button class="infra-btn" @click="showInfra = !showInfra">
-          {{ showInfra ? 'Hide infra' : 'Infra' }}
-        </button>
+        <div class="cell-meta-main">
+          <span class="cell-lang">{{ cell.language }}</span>
+          <span
+            v-if="cell.isLeaf"
+            class="leaf-badge"
+            title="This cell is a leaf (no downstream consumers)"
+            >leaf</span
+          >
+          <span v-if="cell.defines.length" class="cell-vars">
+            defines: <code>{{ cell.defines.join(', ') }}</code>
+          </span>
+          <span v-if="cell.upstreamIds.length" class="cell-vars">
+            reads: <code>{{ cell.references.join(', ') }}</code>
+          </span>
+          <span v-if="cell.mounts.length" class="mount-badge" :title="mountSummary">
+            mounts: {{ cell.mounts.length }}
+          </span>
+          <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
+            worker: {{ effectiveWorkerLabel }}
+          </span>
+          <span
+            v-if="effectiveWorkerTransportLabel"
+            class="worker-transport-badge"
+            :title="`Remote worker transport: ${effectiveWorkerTransportLabel}`"
+          >
+            {{ effectiveWorkerTransportLabel }}
+          </span>
+          <span
+            v-if="lastRemoteTransportLabel"
+            class="remote-run-badge"
+            :title="`Last remote execution: ${lastRemoteWorkerLabel || effectiveWorkerLabel} via ${lastRemoteTransportLabel}`"
+          >
+            ran via {{ lastRemoteTransportLabel }}
+          </span>
+          <span
+            v-if="lastRemoteBuildId"
+            class="remote-build-badge"
+            :title="`Signed remote build: ${lastRemoteBuildId}${
+              lastRemoteBuildState ? ` (${lastRemoteBuildState})` : ''
+            }`"
+          >
+            build {{ lastRemoteBuildId }}
+          </span>
+          <span v-if="lastRemoteBuildState" class="remote-build-badge">
+            {{ lastRemoteBuildState }}
+          </span>
+          <span
+            v-if="effectiveWorkerHealthLabel"
+            class="worker-health-badge"
+            :class="{ warning: workerWarning }"
+            :title="workerWarning || `Worker health: ${effectiveWorkerHealthLabel}`"
+          >
+            {{ workerWarning ? 'attention' : effectiveWorkerHealthLabel }}
+          </span>
+          <span
+            v-if="effectiveTimeoutLabel"
+            class="timeout-badge"
+            :title="`Timeout: ${effectiveTimeoutLabel}`"
+          >
+            timeout: {{ effectiveTimeoutLabel }}
+          </span>
+          <span v-if="effectiveEnvCount" class="env-badge" :title="`${effectiveEnvCount} env vars`">
+            env: {{ effectiveEnvCount }}
+          </span>
+          <span
+            v-if="hasAnnotationOverrides"
+            class="annotation-badge"
+            :title="annotationSummaryTitle"
+          >
+            source overrides
+          </span>
+          <span
+            v-for="chip in visibleAnnotationSummaryChips"
+            :key="chip"
+            class="annotation-summary-chip"
+            :title="annotationSummaryTitle"
+          >
+            {{ chip }}
+          </span>
+          <span
+            v-if="hiddenAnnotationSummaryCount"
+            class="annotation-summary-chip"
+            :title="annotationSummaryTitle"
+          >
+            +{{ hiddenAnnotationSummaryCount }}
+          </span>
+          <span v-if="cell.output?.cacheHit" class="cache-badge" title="Result loaded from cache">
+            &#x26A1; cached
+          </span>
+          <span
+            v-if="executionMethodLabel && !cell.output?.cacheHit"
+            class="exec-method-badge"
+            :title="`Executed via ${executionMethodLabel} process`"
+          >
+            {{ executionMethodLabel }}
+          </span>
+        </div>
+        <div class="cell-meta-actions">
+          <span v-if="durationLabel" class="duration">{{ durationLabel }}</span>
+          <button
+            v-if="canExplainStaleness"
+            class="causality-btn"
+            :title="causalityTooltip"
+            @click="toggleCausality"
+          >
+            Why stale?
+          </button>
+          <button class="infra-btn" @click="showInfra = !showInfra">
+            {{ showInfra ? 'Hide infra' : 'Infra' }}
+          </button>
+        </div>
       </div>
 
       <div v-if="showInfra" class="infra-panel">
@@ -461,48 +485,82 @@ function formatScalar(scalar: unknown): string {
         />
 
         <div class="annotation-panel">
-          <div class="annotation-title">Source Annotations</div>
-          <div class="annotation-copy">
-            Writes <code># @...</code> directives into the top comment block of this cell. These
-            override saved config when present.
+          <div class="annotation-header">
+            <div>
+              <div class="annotation-title">Source Overrides</div>
+              <div class="annotation-copy">
+                Optional <code># @...</code> directives stored in cell source. These override saved
+                config when present.
+              </div>
+            </div>
+            <button
+              class="annotation-toggle"
+              :disabled="!connected"
+              @click="toggleAnnotationEditor"
+            >
+              {{
+                showAnnotationEditor
+                  ? 'Hide editor'
+                  : hasAnnotationOverrides
+                    ? 'Edit overrides'
+                    : 'Add override'
+              }}
+            </button>
           </div>
 
-          <WorkerConfigEditor
-            :worker="cell.annotations?.worker ?? null"
-            :options="availableWorkers"
-            title="Annotation Worker"
-            compact
-            :read-only="!connected"
-            @save="saveAnnotationWorker"
-          />
+          <div
+            v-if="hasAnnotationOverrides"
+            class="annotation-summary-row"
+            :title="annotationSummaryTitle"
+          >
+            <span class="annotation-summary-label">Active</span>
+            <span
+              v-for="chip in annotationSummaryChips"
+              :key="`panel-${chip}`"
+              class="annotation-summary-chip"
+            >
+              {{ chip }}
+            </span>
+          </div>
 
-          <TimeoutConfigEditor
-            :timeout="cell.annotations?.timeout ?? null"
-            title="Annotation Timeout"
-            compact
-            :read-only="!connected"
-            @save="saveAnnotationTimeout"
-          />
+          <div v-else class="annotation-copy annotation-copy-muted">
+            No source overrides are currently set for this cell.
+          </div>
 
-          <EnvVarsEditor
-            :env="cell.annotations?.env || {}"
-            title="Annotation Env"
-            compact
-            :read-only="!connected"
-            @save="saveAnnotationEnv"
-          />
+          <div v-if="showAnnotationEditor" class="annotation-editor-grid">
+            <WorkerConfigEditor
+              :worker="cell.annotations?.worker ?? null"
+              :options="availableWorkers"
+              title="Annotation Worker"
+              compact
+              :read-only="!connected"
+              @save="saveAnnotationWorker"
+            />
 
-          <MountListEditor
-            :mounts="cell.annotations?.mounts || []"
-            title="Annotation Mounts"
-            compact
-            :read-only="!connected"
-            :show-pin="false"
-            @save="saveAnnotationMounts"
-          />
+            <TimeoutConfigEditor
+              :timeout="cell.annotations?.timeout ?? null"
+              title="Annotation Timeout"
+              compact
+              :read-only="!connected"
+              @save="saveAnnotationTimeout"
+            />
 
-          <div v-if="!hasAnnotationOverrides" class="annotation-copy annotation-copy-muted">
-            No source annotations are currently set for this cell.
+            <EnvVarsEditor
+              :env="cell.annotations?.env || {}"
+              title="Annotation Env"
+              compact
+              :read-only="!connected"
+              @save="saveAnnotationEnv"
+            />
+
+            <MountListEditor
+              :mounts="cell.annotations?.mounts || []"
+              title="Annotation Mounts"
+              compact
+              :read-only="!connected"
+              :show-pin="false"
+              @save="saveAnnotationMounts"
+            />
           </div>
         </div>
       </div>
@@ -706,6 +764,22 @@ function formatScalar(scalar: unknown): string {
   font-size: 11px;
   color: #6c7086;
   border-bottom: 1px solid #2a2a3c;
+  min-width: 0;
+}
+.cell-meta-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.cell-meta-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .cell-lang {
   text-transform: uppercase;
@@ -796,7 +870,7 @@ function formatScalar(scalar: unknown): string {
   font-weight: 600;
 }
 .duration {
-  margin-left: auto;
+  white-space: nowrap;
 }
 .infra-btn {
   background: #313244;
@@ -831,6 +905,12 @@ function formatScalar(scalar: unknown): string {
   flex-direction: column;
   gap: 8px;
 }
+.annotation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
 .annotation-badge {
   background: #f9e2af22;
   color: #f9e2af;
@@ -853,6 +933,20 @@ function formatScalar(scalar: unknown): string {
   text-transform: uppercase;
   color: #f9e2af;
 }
+.annotation-toggle {
+  background: #313244;
+  border: 1px solid #45475a;
+  color: #f9e2af;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.annotation-toggle:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .annotation-copy {
   color: #a6adc8;
   font-size: 12px;
@@ -863,6 +957,26 @@ function formatScalar(scalar: unknown): string {
 }
 .annotation-copy-muted {
   color: #6c7086;
+}
+.annotation-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.annotation-summary-label {
+  color: #f9e2af;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.annotation-editor-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px solid #313244;
 }
 .annotation-item {
   display: flex;
@@ -890,6 +1004,24 @@ function formatScalar(scalar: unknown): string {
 .causality-btn:hover {
   background: #f9e2af33;
   border-color: #f9e2af66;
+}
+
+@media (max-width: 900px) {
+  .cell-meta {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cell-meta-actions {
+    margin-left: 0;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .annotation-header {
+    flex-direction: column;
+    align-items: stretch;
+  }
 }
 
 .causality-panel {

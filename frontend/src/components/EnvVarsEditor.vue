@@ -2,6 +2,7 @@
 import { ref, watch } from 'vue'
 
 interface EnvRow {
+  localId: string
   key: string
   value: string
 }
@@ -25,17 +26,27 @@ const emit = defineEmits<{
 }>()
 
 const draft = ref<EnvRow[]>([])
+let nextEnvRowId = 0
+
+function nextLocalId(): string {
+  nextEnvRowId += 1
+  return `env-row-${nextEnvRowId}`
+}
 
 watch(
   () => props.env,
   (env) => {
-    draft.value = Object.entries(env || {}).map(([key, value]) => ({ key, value }))
+    draft.value = Object.entries(env || {}).map(([key, value], index) => ({
+      localId: draft.value[index]?.localId ?? nextLocalId(),
+      key,
+      value,
+    }))
   },
   { immediate: true, deep: true },
 )
 
 function addRow() {
-  draft.value.push({ key: '', value: '' })
+  draft.value.push({ localId: nextLocalId(), key: '', value: '' })
 }
 
 function removeRow(index: number) {
@@ -61,7 +72,7 @@ function save() {
       {{ readOnly ? 'No annotation env vars' : 'No env vars configured' }}
     </div>
 
-    <div v-for="(row, index) in draft" :key="`${index}-${row.key}`" class="env-row">
+    <div v-for="(row, index) in draft" :key="row.localId" class="env-row">
       <input
         v-model="row.key"
         class="env-input env-key"
