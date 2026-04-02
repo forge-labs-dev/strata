@@ -9,19 +9,23 @@ const {
   dependencyError,
   environmentLoading,
   environmentError,
+  environmentWarnings,
   environmentLastAction,
   addDependencyAction,
   removeDependencyAction,
   syncEnvironmentAction,
   exportRequirementsAction,
   importRequirementsAction,
+  importEnvironmentYamlAction,
   fetchEnvironment,
   connected,
 } = useNotebook()
 
 const newPackage = ref('')
 const showPanel = ref(false)
-const requirementsMode = ref<'import' | 'export' | null>(null)
+const requirementsMode = ref<'requirements-import' | 'requirements-export' | 'yaml-import' | null>(
+  null,
+)
 const requirementsText = ref('')
 
 const syncStateLabel = computed(() => {
@@ -58,7 +62,7 @@ const lastActionLabel = computed(() => {
       : action.action === 'remove'
         ? `Removed ${action.packageName}`
         : action.action === 'import'
-          ? 'Imported requirements.txt'
+          ? 'Imported environment file'
           : 'Synced environment'
   const stale =
     action.staleCellCount > 0
@@ -91,11 +95,17 @@ async function removePackage(name: string) {
 
 async function openRequirementsExport() {
   requirementsText.value = await exportRequirementsAction()
-  requirementsMode.value = 'export'
+  requirementsMode.value = 'requirements-export'
 }
 
 function openRequirementsImport() {
-  requirementsMode.value = 'import'
+  requirementsText.value = ''
+  requirementsMode.value = 'requirements-import'
+}
+
+function openEnvironmentYamlImport() {
+  requirementsText.value = ''
+  requirementsMode.value = 'yaml-import'
 }
 
 function closeRequirementsEditor() {
@@ -103,7 +113,11 @@ function closeRequirementsEditor() {
 }
 
 async function applyRequirementsImport() {
-  await importRequirementsAction(requirementsText.value)
+  if (requirementsMode.value === 'yaml-import') {
+    await importEnvironmentYamlAction(requirementsText.value)
+  } else {
+    await importRequirementsAction(requirementsText.value)
+  }
   if (!environmentError.value) {
     requirementsMode.value = null
   }
@@ -154,7 +168,14 @@ function downloadRequirements() {
             :disabled="!connected || dependencyLoading || environmentLoading"
             @click="openRequirementsImport"
           >
-            Import
+            Import requirements
+          </button>
+          <button
+            class="btn-secondary"
+            :disabled="!connected || dependencyLoading || environmentLoading"
+            @click="openEnvironmentYamlImport"
+          >
+            Import env.yaml
           </button>
         </div>
       </div>
@@ -196,29 +217,48 @@ function downloadRequirements() {
         {{ environmentError || notebook.environment.syncError }}
       </div>
 
+      <div v-if="environmentWarnings.length > 0" class="env-warning">
+        <strong>Import warnings</strong>
+        <ul class="env-warning-list">
+          <li v-for="warning in environmentWarnings" :key="warning">
+            {{ warning }}
+          </li>
+        </ul>
+      </div>
+
       <div v-if="requirementsMode" class="requirements-editor">
         <div class="requirements-header">
           <strong>{{
-            requirementsMode === 'export' ? 'requirements.txt Export' : 'requirements.txt Import'
+            requirementsMode === 'requirements-export'
+              ? 'requirements.txt Export'
+              : requirementsMode === 'yaml-import'
+                ? 'environment.yaml Import'
+                : 'requirements.txt Import'
           }}</strong>
           <button class="btn-link" @click="closeRequirementsEditor">Close</button>
         </div>
         <p class="requirements-help">
           {{
-            requirementsMode === 'export'
+            requirementsMode === 'requirements-export'
               ? 'These are the direct notebook dependencies managed by pyproject.toml and uv.lock.'
-              : 'Paste plain package specifiers, one per line. Comments are allowed; pip flags and nested includes are not.'
+              : requirementsMode === 'yaml-import'
+                ? 'Paste a Conda-style environment.yaml. Channels and python pins are imported best-effort and may be ignored with warnings.'
+                : 'Paste plain package specifiers, one per line. Comments are allowed; pip flags and nested includes are not.'
           }}
         </p>
         <textarea
           v-model="requirementsText"
           class="requirements-textarea"
-          :readonly="requirementsMode === 'export'"
-          :placeholder="'pandas==2.2.3\nnumpy>=2.0'"
+          :readonly="requirementsMode === 'requirements-export'"
+          :placeholder="
+            requirementsMode === 'yaml-import'
+              ? 'name: demo\ndependencies:\n  - python=3.13\n  - pyarrow=18.0.0\n  - pip:\n      - requests==2.32.3'
+              : 'pandas==2.2.3\nnumpy>=2.0'
+          "
         />
         <div class="requirements-actions">
           <button
-            v-if="requirementsMode === 'export'"
+            v-if="requirementsMode === 'requirements-export'"
             class="btn-secondary"
             :disabled="!requirementsText"
             @click="downloadRequirements"
@@ -226,7 +266,7 @@ function downloadRequirements() {
             Download
           </button>
           <button
-            v-if="requirementsMode === 'import'"
+            v-if="requirementsMode !== 'requirements-export'"
             class="btn-sync"
             :disabled="!connected || dependencyLoading || environmentLoading"
             @click="applyRequirementsImport"
@@ -471,6 +511,21 @@ function downloadRequirements() {
   background: rgb(243 139 168 / 10%);
   border: 1px solid rgb(243 139 168 / 18%);
   border-radius: 6px;
+}
+
+.env-warning {
+  color: #f9e2af;
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: rgb(249 226 175 / 10%);
+  border: 1px solid rgb(249 226 175 / 18%);
+  border-radius: 6px;
+}
+
+.env-warning-list {
+  margin-top: 4px;
+  padding-left: 16px;
 }
 
 .requirements-editor {

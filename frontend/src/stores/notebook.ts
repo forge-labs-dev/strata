@@ -800,6 +800,7 @@ async function boot(): Promise<void> {
     connectError.value = null
     dependencyError.value = null
     environmentError.value = null
+    environmentWarnings.value = []
     environmentLastAction.value = null
     notebookWorkerError.value = null
     workerRegistryError.value = null
@@ -870,6 +871,7 @@ async function openNotebook(path: string): Promise<any> {
   cleanupWebSocket()
   dependencyError.value = null
   environmentError.value = null
+  environmentWarnings.value = []
   environmentLastAction.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
@@ -901,6 +903,7 @@ async function openBySessionId(sessionId: string): Promise<any> {
   cleanupWebSocket()
   dependencyError.value = null
   environmentError.value = null
+  environmentWarnings.value = []
   environmentLastAction.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
@@ -936,6 +939,7 @@ const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
 const environmentLoading = ref(false)
 const environmentError = ref<string | null>(null)
+const environmentWarnings = ref<string[]>([])
 const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
@@ -1290,6 +1294,7 @@ function initializeWebSocket() {
       } else {
         dependencyError.value = null
         environmentError.value = null
+        environmentWarnings.value = []
       }
       dependencyLoading.value = false
     })
@@ -1380,6 +1385,7 @@ async function fetchEnvironment() {
       syncNotebookEnvironmentFromBackend(data.environment)
     }
     environmentError.value = null
+    environmentWarnings.value = []
   } catch (err) {
     console.error('Failed to fetch environment:', err)
     environmentError.value = err instanceof Error ? err.message : 'Failed to load environment'
@@ -1456,6 +1462,7 @@ async function addDependencyAction(pkg: string) {
   dependencyLoading.value = true
   dependencyError.value = null
   environmentError.value = null
+  environmentWarnings.value = []
   const strata = useStrata()
   try {
     const data = await strata.addDependency(sid, pkg)
@@ -1491,6 +1498,7 @@ async function removeDependencyAction(pkg: string) {
   dependencyLoading.value = true
   dependencyError.value = null
   environmentError.value = null
+  environmentWarnings.value = []
   const strata = useStrata()
   try {
     const data = await strata.removeDependency(sid, pkg)
@@ -1525,6 +1533,7 @@ async function syncEnvironmentAction() {
   if (!sid) return
   environmentLoading.value = true
   environmentError.value = null
+  environmentWarnings.value = []
   const strata = useStrata()
   try {
     const data = await strata.syncEnvironment(sid)
@@ -1558,6 +1567,7 @@ async function exportRequirementsAction(): Promise<string> {
   if (!sid) return ''
   environmentLoading.value = true
   environmentError.value = null
+  environmentWarnings.value = []
   const strata = useStrata()
   try {
     return await strata.exportRequirements(sid)
@@ -1574,6 +1584,7 @@ async function importRequirementsAction(requirements: string) {
   if (!sid) return
   environmentLoading.value = true
   environmentError.value = null
+  environmentWarnings.value = []
   const strata = useStrata()
   try {
     const data = await strata.importRequirements(sid, requirements)
@@ -1597,6 +1608,43 @@ async function importRequirementsAction(requirements: string) {
     })
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to import requirements.txt'
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
+async function importEnvironmentYamlAction(environmentYaml: string) {
+  const sid = sessionId()
+  if (!sid) return
+  environmentLoading.value = true
+  environmentError.value = null
+  environmentWarnings.value = []
+  const strata = useStrata()
+  try {
+    const data = await strata.importEnvironmentYaml(sid, environmentYaml)
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    if (data.dependencies) {
+      dependencies.value = data.dependencies.map((d: any) => ({
+        name: d.name,
+        version: d.version || '',
+        specifier: d.specifier || '',
+      }))
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
+    environmentWarnings.value = Array.isArray(data.warnings)
+      ? data.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
+      : []
+    setEnvironmentActionSummary({
+      action: 'import',
+      lockfileChanged: data.lockfile_changed === true,
+      staleCellCount: Number(data.stale_cell_count ?? 0),
+    })
+  } catch (err: any) {
+    environmentError.value = err.message || 'Failed to import environment.yaml'
   } finally {
     environmentLoading.value = false
   }
@@ -1995,6 +2043,7 @@ export function useNotebook() {
     dependencyError,
     environmentLoading,
     environmentError,
+    environmentWarnings,
     environmentLastAction,
     availableWorkers,
     workerDefinitionsEditable,
@@ -2017,6 +2066,7 @@ export function useNotebook() {
     syncEnvironmentAction,
     exportRequirementsAction,
     importRequirementsAction,
+    importEnvironmentYamlAction,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
     saveServerWorkerAction,

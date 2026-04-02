@@ -270,6 +270,12 @@ class ImportRequirementsRequest(BaseModel):
     requirements: str = Field(..., max_length=500_000)
 
 
+class ImportEnvironmentYamlRequest(BaseModel):
+    """Request to import dependencies from ``environment.yaml`` text."""
+
+    environment_yaml: str = Field(..., max_length=500_000)
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -401,6 +407,42 @@ async def import_environment_requirements(
     return {
         "success": True,
         "imported_count": result.imported_count,
+        "lockfile_changed": result.lockfile_changed,
+        "dependencies": [
+            {"name": d.name, "version": d.version, "specifier": d.specifier}
+            for d in result.dependencies
+        ],
+        "environment": session.serialize_environment_state(),
+        **_serialize_environment_change(session, outcome.staleness_map),
+        "cells": session.serialize_cells(),
+    }
+
+
+@router.post("/{notebook_id}/environment/environment.yaml")
+async def import_environment_yaml(
+    notebook_id: str, req: ImportEnvironmentYamlRequest
+) -> dict:
+    """Best-effort import of Conda-style ``environment.yaml`` text."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    try:
+        outcome = await session.import_environment_yaml(req.environment_yaml)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    result = outcome.result
+    if not result.success:
+        raise HTTPException(
+            status_code=400,
+            detail=result.error or "Failed to import environment.yaml",
+        )
+
+    return {
+        "success": True,
+        "imported_count": result.imported_count,
+        "warnings": result.warnings,
         "lockfile_changed": result.lockfile_changed,
         "dependencies": [
             {"name": d.name, "version": d.version, "specifier": d.specifier}

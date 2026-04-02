@@ -68,6 +68,7 @@ class RequirementsImportResult:
     lockfile_changed: bool = False
     dependencies: list[DependencyInfo] = field(default_factory=list)
     imported_count: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +192,23 @@ def import_requirements_text(
         dependencies=list_dependencies(notebook_dir),
         imported_count=len(normalized_requirements),
     )
+
+
+def import_environment_yaml_text(
+    notebook_dir: Path,
+    environment_yaml_text: str,
+    *,
+    timeout: int = 180,
+) -> RequirementsImportResult:
+    """Best-effort import of Conda-style ``environment.yaml`` into notebook deps."""
+    requirements, warnings = parse_environment_yaml_text(environment_yaml_text)
+    result = import_requirements_text(
+        notebook_dir,
+        "\n".join(requirements),
+        timeout=timeout,
+    )
+    result.warnings = warnings
+    return result
 
 
 def add_dependency(
@@ -373,6 +391,75 @@ def parse_requirements_text(requirements_text: str) -> list[str]:
     return requirements
 
 
+def parse_environment_yaml_text(environment_yaml_text: str) -> tuple[list[str], list[str]]:
+    """Translate a subset of Conda ``environment.yaml`` into pip requirements."""
+    try:
+        import yaml
+    except ModuleNotFoundError as exc:
+        raise ValueError("PyYAML is required to import environment.yaml") from exc
+
+    try:
+        data = yaml.safe_load(environment_yaml_text) or {}
+    except Exception as exc:
+        raise ValueError(f"Failed to parse environment.yaml: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ValueError("environment.yaml must contain a mapping at the top level")
+
+    dependencies = data.get("dependencies", [])
+    if not isinstance(dependencies, list):
+        raise ValueError("environment.yaml dependencies must be a list")
+
+    warnings: list[str] = []
+    requirements: list[str] = []
+    seen_names: set[str] = set()
+
+    channels = data.get("channels")
+    if isinstance(channels, list) and channels:
+        warnings.append(
+            "Ignored conda channels from environment.yaml; notebook "
+            "environments use pip/uv resolution."
+        )
+
+    def add_requirement(requirement: str) -> None:
+        validated = _validate_requirement_specifier(requirement)
+        requirement_name, _ = _split_requirement(validated)
+        if requirement_name in seen_names:
+            raise ValueError(f"Duplicate requirement: {requirement_name}")
+        seen_names.add(requirement_name)
+        requirements.append(validated)
+
+    for entry in dependencies:
+        if isinstance(entry, str):
+            translated, entry_warning = _translate_conda_dependency(entry)
+            if entry_warning:
+                warnings.append(entry_warning)
+            if translated:
+                add_requirement(translated)
+            continue
+
+        if isinstance(entry, dict):
+            pip_entries = entry.get("pip")
+            if isinstance(pip_entries, list):
+                for pip_entry in pip_entries:
+                    if not isinstance(pip_entry, str):
+                        warnings.append(
+                            "Ignored non-string pip dependency entry in environment.yaml."
+                        )
+                        continue
+                    add_requirement(pip_entry.strip())
+                continue
+
+            warnings.append(
+                "Ignored unsupported mapping entry in environment.yaml dependencies."
+            )
+            continue
+
+        warnings.append("Ignored unsupported dependency entry in environment.yaml.")
+
+    return requirements, warnings
+
+
 def _read_project_dependency_strings(notebook_dir: Path) -> list[str]:
     """Read raw dependency strings from ``pyproject.toml``."""
     # Python 3.10 compat
@@ -417,6 +504,49 @@ def _validate_requirement_specifier(requirement: str) -> str:
     if any(c in normalized for c in ';&|`$(){}"\'\n\r\t'):
         raise ValueError("Requirement specifier contains invalid characters")
     return normalized
+
+
+def _translate_conda_dependency(dependency: str) -> tuple[str | None, str | None]:
+    """Best-effort conversion from a Conda dependency string to a pip requirement."""
+    normalized = dependency.strip()
+    if not normalized:
+        return None, None
+
+    warning: str | None = None
+    if "::" in normalized:
+        _, normalized = normalized.split("::", 1)
+        warning = (
+            "Ignored conda channel prefixes in environment.yaml; using package names only."
+        )
+
+    lowered = normalized.lower()
+    if lowered == "pip":
+        return None, "Ignored explicit pip bootstrap entry from environment.yaml."
+    if lowered.startswith("python"):
+        return (
+            None,
+            "Ignored python version pin from environment.yaml; notebook "
+            "Python is managed separately.",
+        )
+
+    if (
+        "==" not in normalized
+        and "!=" not in normalized
+        and ">=" not in normalized
+        and "<=" not in normalized
+        and "~=" not in normalized
+        and "=" in normalized
+    ):
+        pieces = normalized.split("=")
+        if len(pieces) == 2 and pieces[0] and pieces[1]:
+            normalized = f"{pieces[0]}=={pieces[1]}"
+        else:
+            return (
+                None,
+                f"Ignored unsupported conda dependency entry: {dependency}",
+            )
+
+    return normalized, warning
 
 
 def _restore_dependency_files(

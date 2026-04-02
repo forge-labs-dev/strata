@@ -21,8 +21,10 @@ from strata.notebook.dependencies import (
     DependencyChangeResult,
     add_dependency,
     export_requirements_text,
+    import_environment_yaml_text,
     import_requirements_text,
     list_dependencies,
+    parse_environment_yaml_text,
     parse_requirements_text,
     remove_dependency,
 )
@@ -179,6 +181,52 @@ class TestRequirementsCompatibility:
         with pytest.raises(ValueError, match="Unsupported requirements entry"):
             parse_requirements_text("-r base.txt")
 
+    def test_parse_environment_yaml_text_extracts_pip_compatible_requirements(self):
+        """environment.yaml import should translate a supported subset with warnings."""
+        requirements, warnings = parse_environment_yaml_text(
+            """
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pyarrow=18.0.0
+  - six=1.17.0
+  - pip
+  - pip:
+      - requests==2.32.3
+"""
+        )
+
+        assert requirements == ["pyarrow==18.0.0", "six==1.17.0", "requests==2.32.3"]
+        assert any("channels" in warning for warning in warnings)
+        assert any("python version pin" in warning for warning in warnings)
+
+    def test_import_environment_yaml_text_replaces_direct_dependencies(self, tmp_path: Path):
+        """environment.yaml import should best-effort replace direct dependencies."""
+        nb_dir = create_notebook(tmp_path, "environment_yaml_import")
+        add_dependency(nb_dir, "requests")
+
+        result = import_environment_yaml_text(
+            nb_dir,
+            """
+name: demo
+dependencies:
+  - pyarrow=18.0.0
+  - six=1.17.0
+  - pip:
+      - urllib3==2.5.0
+""",
+        )
+
+        assert result.success is True
+        assert result.imported_count == 3
+        names = [dep.name for dep in result.dependencies]
+        assert "pyarrow" in names
+        assert "six" in names
+        assert "urllib3" in names
+        assert "requests" not in names
+
 
 # ============================================================================
 # REST API tests
@@ -329,6 +377,38 @@ class TestDependencyRESTEndpoints:
             names = [dep["name"] for dep in data["dependencies"]]
             assert "pyarrow" in names
             assert "six" in names
+
+    def test_import_environment_yaml_rest(self, setup):
+        """POST /environment/environment.yaml imports a supported subset with warnings."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            resp = client.post(
+                f"/v1/notebooks/{sid}/environment/environment.yaml",
+                json={
+                    "environment_yaml": """
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pyarrow=18.0.0
+  - six=1.17.0
+  - pip:
+      - requests==2.32.3
+"""
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["imported_count"] == 3
+            assert any("channels" in warning for warning in data["warnings"])
+            names = [dep["name"] for dep in data["dependencies"]]
+            assert "pyarrow" in names
+            assert "six" in names
+            assert "requests" in names
 
     def test_add_bad_package_rest(self, setup):
         """POST /dependencies with invalid package returns 400."""

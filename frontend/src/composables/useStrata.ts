@@ -500,6 +500,21 @@ async function importRequirements(notebookId: string, requirements: string): Pro
   return resp.json()
 }
 
+async function importEnvironmentYaml(notebookId: string, environmentYaml: string): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/environment/environment.yaml`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ environment_yaml: environmentYaml }),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to import environment.yaml')
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
@@ -561,6 +576,7 @@ export function useStrata() {
     syncEnvironment,
     exportRequirements,
     importRequirements,
+    importEnvironmentYaml,
     listSessions,
     getSession,
   }

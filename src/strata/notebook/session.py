@@ -19,6 +19,7 @@ from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
 from strata.notebook.dependencies import (
     DependencyChangeResult,
     RequirementsImportResult,
+    import_environment_yaml_text,
     import_requirements_text,
     list_dependencies,
 )
@@ -870,6 +871,26 @@ class NotebookSession:
             import_requirements_text,
             self.path,
             requirements_text,
+        )
+
+        staleness_map: dict[str, CellStaleness] = {}
+        if getattr(result, "success", False) and getattr(result, "lockfile_changed", False):
+            await self.on_dependencies_changed()
+            staleness_map = self.compute_staleness()
+
+        return RequirementsImportOutcome(
+            result=result,
+            staleness_map=staleness_map,
+        )
+
+    async def import_environment_yaml(
+        self, environment_yaml_text: str
+    ) -> RequirementsImportOutcome:
+        """Best-effort import of Conda-style ``environment.yaml``."""
+        result = await asyncio.to_thread(
+            import_environment_yaml_text,
+            self.path,
+            environment_yaml_text,
         )
 
         staleness_map: dict[str, CellStaleness] = {}
