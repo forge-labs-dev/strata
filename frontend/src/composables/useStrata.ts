@@ -453,6 +453,27 @@ async function removeDependency(notebookId: string, pkg: string): Promise<any> {
 }
 
 // ---------------------------------------------------------------------------
+// Session management
+// ---------------------------------------------------------------------------
+
+async function listSessions(): Promise<any[]> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/sessions`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to list sessions')
+  }
+  const data = await resp.json()
+  return data.sessions ?? []
+}
+
+async function getSession(sessionId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/sessions/${sessionId}`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Session not found')
+  }
+  return resp.json()
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -488,5 +509,7 @@ export function useStrata() {
     listDependencies,
     addDependency,
     removeDependency,
+    listSessions,
+    getSession,
   }
 }

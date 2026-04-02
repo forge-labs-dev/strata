@@ -522,6 +522,61 @@ function syncNotebookEnvFromBackend(serverEnv: any) {
   notebook.env = parseEnvMap(serverEnv)
 }
 
+function parseBackendCellPayload(raw: any): Cell {
+  const cell: Cell = {
+    id: raw.id,
+    source: raw.source || '',
+    language: raw.language || 'python',
+    order: raw.order ?? 0,
+    status: (raw.status || 'idle') as CellStatus,
+    worker: raw.worker ?? null,
+    workerOverride: raw.worker_override ?? null,
+    timeout: raw.timeout ?? null,
+    timeoutOverride: raw.timeout_override ?? null,
+    env: parseEnvMap(raw.env),
+    envOverrides: parseEnvMap(raw.env_overrides),
+    mounts: Array.isArray(raw.mounts) ? raw.mounts.map(parseMountSpec) : [],
+    mountOverrides: Array.isArray(raw.mount_overrides)
+      ? raw.mount_overrides.map(parseMountSpec)
+      : [],
+    annotations: parseBackendAnnotations(raw.annotations),
+    upstreamIds: raw.upstream_ids || [],
+    downstreamIds: raw.downstream_ids || [],
+    defines: raw.defines || [],
+    references: raw.references || [],
+    inputs: [],
+    isLeaf: raw.is_leaf || false,
+    stalenessReasons: supportsStalenessDetail(raw.status)
+      ? raw.staleness_reasons || raw.staleness?.reasons || []
+      : [],
+    causality: supportsStalenessDetail(raw.status)
+      ? parseBackendCausality(raw.causality)
+      : undefined,
+  }
+
+  applySerializedExecutionMetadata(cell, raw)
+  return cell
+}
+
+function loadNotebookStateFromBackend(data: any) {
+  notebook.id = data.id
+  notebook.name = data.name
+  notebook.worker = data.worker ?? null
+  notebook.timeout = data.timeout ?? null
+  notebook.env = parseEnvMap(data.env)
+  notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
+  notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
+  notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
+  notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
+  ;(notebook as any).sessionId = data.session_id
+
+  notebook.cells = (data.cells || []).map(parseBackendCellPayload)
+  notebook.cells.sort((a, b) => a.order - b.order)
+  if (data.dag) {
+    applyBackendDag(data.dag)
+  }
+}
+
 function moveCell(id: CellId, direction: 'up' | 'down') {
   const sorted = orderedCells.value
   const idx = sorted.findIndex((c) => c.id === id)
@@ -738,7 +793,7 @@ async function boot(): Promise<void> {
 /**
  * Open an existing notebook from disk.
  */
-async function openNotebook(path: string): Promise<void> {
+async function openNotebook(path: string): Promise<any> {
   const strata = useStrata()
   // Cleanup existing WebSocket
   cleanupWebSocket()
@@ -749,64 +804,7 @@ async function openNotebook(path: string): Promise<void> {
   clearServerWorkerRegistryState()
 
   const data = await strata.openNotebook(path)
-  notebook.id = data.id
-  notebook.name = data.name
-  notebook.worker = data.worker ?? null
-  notebook.timeout = data.timeout ?? null
-  notebook.env = parseEnvMap(data.env)
-  notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
-  notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
-  notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
-  notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
-  ;(notebook as any).sessionId = data.session_id
-
-  notebook.cells = data.cells.map((c: any) => ({
-    id: c.id,
-    source: c.source || '',
-    language: c.language || 'python',
-    order: c.order ?? 0,
-    status: (c.status || 'idle') as CellStatus,
-    worker: c.worker ?? null,
-    workerOverride: c.worker_override ?? null,
-    timeout: c.timeout ?? null,
-    timeoutOverride: c.timeout_override ?? null,
-    env: parseEnvMap(c.env),
-    envOverrides: parseEnvMap(c.env_overrides),
-    mounts: Array.isArray(c.mounts) ? c.mounts.map(parseMountSpec) : [],
-    mountOverrides: Array.isArray(c.mount_overrides) ? c.mount_overrides.map(parseMountSpec) : [],
-    annotations: parseBackendAnnotations(c.annotations),
-    upstreamIds: c.upstream_ids || [],
-    downstreamIds: c.downstream_ids || [],
-    defines: c.defines || [],
-    references: c.references || [],
-    inputs: [],
-    isLeaf: c.is_leaf || false,
-    stalenessReasons: supportsStalenessDetail(c.status)
-      ? c.staleness_reasons || c.staleness?.reasons || []
-      : [],
-    causality: supportsStalenessDetail(c.status) ? parseBackendCausality(c.causality) : undefined,
-    executorName:
-      typeof c.execution_method === 'string' && c.execution_method.trim()
-        ? c.execution_method
-        : undefined,
-    remoteWorkerName:
-      typeof c.remote_worker === 'string' && c.remote_worker.trim() ? c.remote_worker : undefined,
-    remoteTransport: parseWorkerTransport(c.remote_transport) ?? null,
-    remoteBuildId:
-      typeof c.remote_build_id === 'string' && c.remote_build_id.trim() ? c.remote_build_id : null,
-    remoteBuildState:
-      typeof c.remote_build_state === 'string' && c.remote_build_state.trim()
-        ? c.remote_build_state
-        : null,
-    remoteErrorCode:
-      typeof c.remote_error_code === 'string' && c.remote_error_code.trim()
-        ? c.remote_error_code
-        : null,
-  }))
-  notebook.cells.sort((a, b) => a.order - b.order)
-  if (data.dag) {
-    applyBackendDag(data.dag)
-  }
+  loadNotebookStateFromBackend(data)
 
   initializeWebSocket()
   await waitForWebSocket()
@@ -815,6 +813,38 @@ async function openNotebook(path: string): Promise<void> {
   // Load dependencies after connection is established
   fetchWorkers()
   fetchDependencies()
+
+  return data
+}
+
+/**
+ * Reconnect to an existing session by session ID.
+ * Used when navigating to /notebook/:sessionId (e.g. page refresh).
+ * Returns session data including path/name for recent-notebooks tracking.
+ */
+async function openBySessionId(sessionId: string): Promise<any> {
+  const strata = useStrata()
+  cleanupWebSocket()
+  notebookWorkerError.value = null
+  workerRegistryError.value = null
+  cellWorkerErrors.value = {}
+  workerHealthCheckedAt.value = null
+  clearServerWorkerRegistryState()
+
+  const data = await strata.getSession(sessionId)
+  if (!data.session_id) {
+    data.session_id = sessionId
+  }
+  loadNotebookStateFromBackend(data)
+
+  initializeWebSocket()
+  await waitForWebSocket()
+  connected.value = true
+
+  fetchWorkers()
+  fetchDependencies()
+
+  return data
 }
 
 // --- WebSocket integration -------------------------------------------------
@@ -1713,6 +1743,7 @@ export function useNotebook() {
     // Lifecycle
     boot,
     openNotebook,
+    openBySessionId,
     // Cell operations (always backend-backed)
     addCell,
     removeCell,

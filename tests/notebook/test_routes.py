@@ -64,6 +64,24 @@ def service_mode_worker_state(monkeypatch):
     return _configure
 
 
+@pytest.fixture
+def deployment_mode_state(monkeypatch):
+    """Configure a fake server state with only deployment-mode settings."""
+
+    def _configure(mode: str) -> None:
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode=mode,
+                    transforms_config={},
+                )
+            ),
+        )
+
+    return _configure
+
+
 def test_open_notebook():
     """Test POST /v1/notebooks/open endpoint."""
     client = TestClient(create_test_app())
@@ -217,6 +235,85 @@ def test_create_notebook_endpoint():
         data = response.json()
         assert data["name"] == "New Notebook"
         assert "session_id" in data
+
+
+def test_list_sessions_personal_mode(deployment_mode_state):
+    """Session listing should work in personal mode for reconnect UX."""
+    deployment_mode_state("personal")
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Session Listing Test")
+        open_response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        assert open_response.status_code == 200
+
+        response = client.get("/v1/notebooks/sessions")
+        assert response.status_code == 200
+        sessions = response.json()["sessions"]
+        matching = [
+            session
+            for session in sessions
+            if session["session_id"] == open_response.json()["session_id"]
+        ]
+        assert len(matching) == 1
+        assert matching[0]["name"] == "Session Listing Test"
+        assert Path(matching[0]["path"]).resolve() == notebook_dir.resolve()
+
+
+def test_get_session_personal_mode_includes_execution_metadata(deployment_mode_state):
+    """Session reconnect should preserve the same serialized runtime metadata as open."""
+    deployment_mode_state("personal")
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Session Metadata Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+        write_cell(notebook_dir, "cell-1", "x = 1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        cell = next(c for c in session.notebook_state.cells if c.id == "cell-1")
+        cell.execution_method = "executor"
+        cell.remote_worker = "gpu-http-signed"
+        cell.remote_transport = "signed"
+        cell.remote_build_id = "build-123"
+        cell.remote_build_state = "ready"
+        cell.remote_error_code = None
+
+        response = client.get(f"/v1/notebooks/sessions/{session_id}")
+        assert response.status_code == 200
+        cell_payload = response.json()["cells"][0]
+        assert cell_payload["execution_method"] == "executor"
+        assert cell_payload["remote_worker"] == "gpu-http-signed"
+        assert cell_payload["remote_transport"] == "signed"
+        assert cell_payload["remote_build_id"] == "build-123"
+        assert cell_payload["remote_build_state"] == "ready"
+        assert cell_payload["remote_error_code"] is None
+
+
+def test_session_endpoints_blocked_in_service_mode(deployment_mode_state):
+    """Session discovery/reconnect should not be exposed in service mode."""
+    deployment_mode_state("service")
+    client = TestClient(create_test_app())
+
+    list_response = client.get("/v1/notebooks/sessions")
+    assert list_response.status_code == 403
+    assert "personal mode" in list_response.json()["detail"]
+
+    get_response = client.get("/v1/notebooks/sessions/fake-session")
+    assert get_response.status_code == 403
+    assert "personal mode" in get_response.json()["detail"]
 
 
 def test_list_cells():

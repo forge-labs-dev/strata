@@ -61,6 +61,28 @@ def get_session_manager() -> SessionManager:
     return _session_manager
 
 
+def _require_personal_mode_session_api() -> None:
+    """Restrict session discovery/reconnect APIs to personal mode.
+
+    These endpoints expose in-memory session IDs and notebook filesystem paths.
+    They are intended as a local UX helper for page refresh/reconnect, not as a
+    multi-user service-mode surface.
+    """
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+    except RuntimeError:
+        # Route unit tests may use the notebook router without a full server state.
+        return
+
+    if state.config.deployment_mode != "personal":
+        raise HTTPException(
+            status_code=403,
+            detail="Notebook session APIs are only available in personal mode",
+        )
+
+
 def validate_package_name(package: str) -> str:
     """Validate and sanitize a package specifier.
 
@@ -253,6 +275,7 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
         # Return notebook state with session ID and DAG
         data = session.serialize_notebook_state()
         data["session_id"] = session.id
+        data["path"] = str(session.path)
         data["dag"] = _format_dag(session)
         return data
     except FileNotFoundError as e:
@@ -279,10 +302,68 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
 
         data = session.serialize_notebook_state()
         data["session_id"] = session.id
+        data["path"] = str(session.path)
         return data
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/sessions")
+async def list_sessions() -> dict:
+    """List all active notebook sessions.
+
+    Returns:
+        Dictionary with a ``sessions`` array, each entry containing
+        session_id, notebook name, filesystem path, and timestamps.
+    """
+    _require_personal_mode_session_api()
+    sessions = []
+    for sid in _session_manager.list_sessions():
+        session = _session_manager.get_session(sid)
+        if session is None:
+            continue
+        sessions.append(
+            {
+                "session_id": session.id,
+                "name": session.notebook_state.name,
+                "path": str(session.path),
+                "notebook_id": session.notebook_state.id,
+                "created_at": session.notebook_state.created_at
+                if hasattr(session.notebook_state, "created_at")
+                else None,
+                "updated_at": session.notebook_state.updated_at
+                if hasattr(session.notebook_state, "updated_at")
+                else None,
+            }
+        )
+    return {"sessions": sessions}
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str) -> dict:
+    """Get full state for an existing session.
+
+    This allows the frontend to reconnect to a session after a page
+    refresh without re-opening the notebook from disk.
+
+    Args:
+        session_id: UUID session identifier
+
+    Returns:
+        Notebook state, session ID, and DAG as JSON (same shape as
+        the ``open`` endpoint response).
+    """
+    _require_personal_mode_session_api()
+    session = _session_manager.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    data = session.serialize_notebook_state()
+    data["session_id"] = session.id
+    data["path"] = str(session.path)
+    data["dag"] = _format_dag(session)
+    return data
 
 
 @router.put("/{notebook_id}/cells/reorder")
