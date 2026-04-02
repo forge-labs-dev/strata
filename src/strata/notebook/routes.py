@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from strata.notebook.dependencies import (
+    export_requirements_text,
     list_dependencies,
 )
 from strata.notebook.executor import CellExecutor
@@ -263,6 +264,12 @@ class RemoveDependencyRequest(BaseModel):
         return validate_package_name(v)
 
 
+class ImportRequirementsRequest(BaseModel):
+    """Request to import direct dependencies from requirements text."""
+
+    requirements: str = Field(..., max_length=500_000)
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -352,6 +359,55 @@ async def sync_environment(notebook_id: str) -> dict:
             for d in list_dependencies(session.path)
         ],
         **_serialize_environment_change(session, staleness_map),
+        "cells": session.serialize_cells(),
+    }
+
+
+@router.get("/{notebook_id}/environment/requirements.txt")
+async def export_environment_requirements(notebook_id: str) -> PlainTextResponse:
+    """Export direct notebook dependencies as ``requirements.txt`` text."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    filename = f"{_safe_filename(session.notebook_state.name)}-requirements.txt"
+    return PlainTextResponse(
+        export_requirements_text(session.path),
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/{notebook_id}/environment/requirements.txt")
+async def import_environment_requirements(
+    notebook_id: str, req: ImportRequirementsRequest
+) -> dict:
+    """Replace direct notebook dependencies from ``requirements.txt`` text."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    try:
+        outcome = await session.import_requirements(req.requirements)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    result = outcome.result
+    if not result.success:
+        raise HTTPException(
+            status_code=400,
+            detail=result.error or "Failed to import requirements.txt",
+        )
+
+    return {
+        "success": True,
+        "imported_count": result.imported_count,
+        "lockfile_changed": result.lockfile_changed,
+        "dependencies": [
+            {"name": d.name, "version": d.version, "specifier": d.specifier}
+            for d in result.dependencies
+        ],
+        "environment": session.serialize_environment_state(),
+        **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
     }
 

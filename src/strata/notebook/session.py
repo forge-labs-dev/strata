@@ -16,7 +16,12 @@ from strata.notebook.analyzer import analyze_cell
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
-from strata.notebook.dependencies import DependencyChangeResult, list_dependencies
+from strata.notebook.dependencies import (
+    DependencyChangeResult,
+    RequirementsImportResult,
+    import_requirements_text,
+    list_dependencies,
+)
 from strata.notebook.env import compute_execution_env_hash, compute_lockfile_hash
 from strata.notebook.models import (
     CellStaleness,
@@ -54,6 +59,14 @@ class DependencyMutationOutcome:
     """Result of a notebook dependency mutation."""
 
     result: DependencyChangeResult
+    staleness_map: dict[str, CellStaleness]
+
+
+@dataclass
+class RequirementsImportOutcome:
+    """Result of importing notebook dependencies from requirements text."""
+
+    result: RequirementsImportResult
     staleness_map: dict[str, CellStaleness]
 
 
@@ -845,6 +858,26 @@ class NotebookSession:
             staleness_map = self.compute_staleness()
 
         return DependencyMutationOutcome(
+            result=result,
+            staleness_map=staleness_map,
+        )
+
+    async def import_requirements(
+        self, requirements_text: str
+    ) -> RequirementsImportOutcome:
+        """Replace direct notebook dependencies from requirements text."""
+        result = await asyncio.to_thread(
+            import_requirements_text,
+            self.path,
+            requirements_text,
+        )
+
+        staleness_map: dict[str, CellStaleness] = {}
+        if getattr(result, "success", False) and getattr(result, "lockfile_changed", False):
+            await self.on_dependencies_changed()
+            staleness_map = self.compute_staleness()
+
+        return RequirementsImportOutcome(
             result=result,
             staleness_map=staleness_map,
         )

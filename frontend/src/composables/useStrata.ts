@@ -477,6 +477,29 @@ async function syncEnvironment(notebookId: string): Promise<any> {
   return resp.json()
 }
 
+async function exportRequirements(notebookId: string): Promise<string> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/requirements.txt`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to export requirements.txt')
+  }
+  return resp.text()
+}
+
+async function importRequirements(notebookId: string, requirements: string): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/environment/requirements.txt`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirements }),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to import requirements.txt')
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Session management
 // ---------------------------------------------------------------------------
@@ -536,6 +559,8 @@ export function useStrata() {
     removeDependency,
     getEnvironmentStatus,
     syncEnvironment,
+    exportRequirements,
+    importRequirements,
     listSessions,
     getSession,
   }

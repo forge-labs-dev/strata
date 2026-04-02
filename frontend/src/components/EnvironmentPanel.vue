@@ -13,12 +13,16 @@ const {
   addDependencyAction,
   removeDependencyAction,
   syncEnvironmentAction,
+  exportRequirementsAction,
+  importRequirementsAction,
   fetchEnvironment,
   connected,
 } = useNotebook()
 
 const newPackage = ref('')
 const showPanel = ref(false)
+const requirementsMode = ref<'import' | 'export' | null>(null)
+const requirementsText = ref('')
 
 const syncStateLabel = computed(() => {
   switch (notebook.environment.syncState) {
@@ -53,7 +57,9 @@ const lastActionLabel = computed(() => {
       ? `Added ${action.packageName}`
       : action.action === 'remove'
         ? `Removed ${action.packageName}`
-        : 'Synced environment'
+        : action.action === 'import'
+          ? 'Imported requirements.txt'
+          : 'Synced environment'
   const stale =
     action.staleCellCount > 0
       ? ` · ${action.staleCellCount} cell${action.staleCellCount === 1 ? '' : 's'} affected`
@@ -82,6 +88,36 @@ async function addPackage() {
 async function removePackage(name: string) {
   await removeDependencyAction(name)
 }
+
+async function openRequirementsExport() {
+  requirementsText.value = await exportRequirementsAction()
+  requirementsMode.value = 'export'
+}
+
+function openRequirementsImport() {
+  requirementsMode.value = 'import'
+}
+
+function closeRequirementsEditor() {
+  requirementsMode.value = null
+}
+
+async function applyRequirementsImport() {
+  await importRequirementsAction(requirementsText.value)
+  if (!environmentError.value) {
+    requirementsMode.value = null
+  }
+}
+
+function downloadRequirements() {
+  const blob = new Blob([requirementsText.value], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = 'requirements.txt'
+  link.click()
+  URL.revokeObjectURL(url)
+}
 </script>
 
 <template>
@@ -98,13 +134,29 @@ async function removePackage(name: string) {
           <span class="status-dot" :class="syncStateClass"></span>
           <span>{{ syncStateLabel }}</span>
         </div>
-        <button
-          class="btn-sync"
-          :disabled="!connected || dependencyLoading || environmentLoading"
-          @click="syncEnvironmentAction"
-        >
-          {{ environmentLoading ? 'Syncing…' : 'Sync Environment' }}
-        </button>
+        <div class="env-actions">
+          <button
+            class="btn-sync"
+            :disabled="!connected || dependencyLoading || environmentLoading"
+            @click="syncEnvironmentAction"
+          >
+            {{ environmentLoading ? 'Syncing…' : 'Sync Environment' }}
+          </button>
+          <button
+            class="btn-secondary"
+            :disabled="!connected || dependencyLoading || environmentLoading"
+            @click="openRequirementsExport"
+          >
+            Export
+          </button>
+          <button
+            class="btn-secondary"
+            :disabled="!connected || dependencyLoading || environmentLoading"
+            @click="openRequirementsImport"
+          >
+            Import
+          </button>
+        </div>
       </div>
 
       <div class="env-stats">
@@ -142,6 +194,46 @@ async function removePackage(name: string) {
 
       <div v-if="environmentError || notebook.environment.syncError" class="env-error">
         {{ environmentError || notebook.environment.syncError }}
+      </div>
+
+      <div v-if="requirementsMode" class="requirements-editor">
+        <div class="requirements-header">
+          <strong>{{
+            requirementsMode === 'export' ? 'requirements.txt Export' : 'requirements.txt Import'
+          }}</strong>
+          <button class="btn-link" @click="closeRequirementsEditor">Close</button>
+        </div>
+        <p class="requirements-help">
+          {{
+            requirementsMode === 'export'
+              ? 'These are the direct notebook dependencies managed by pyproject.toml and uv.lock.'
+              : 'Paste plain package specifiers, one per line. Comments are allowed; pip flags and nested includes are not.'
+          }}
+        </p>
+        <textarea
+          v-model="requirementsText"
+          class="requirements-textarea"
+          :readonly="requirementsMode === 'export'"
+          :placeholder="'pandas==2.2.3\nnumpy>=2.0'"
+        />
+        <div class="requirements-actions">
+          <button
+            v-if="requirementsMode === 'export'"
+            class="btn-secondary"
+            :disabled="!requirementsText"
+            @click="downloadRequirements"
+          >
+            Download
+          </button>
+          <button
+            v-if="requirementsMode === 'import'"
+            class="btn-sync"
+            :disabled="!connected || dependencyLoading || environmentLoading"
+            @click="applyRequirementsImport"
+          >
+            {{ environmentLoading ? 'Importing…' : 'Apply Import' }}
+          </button>
+        </div>
       </div>
 
       <div class="add-dep">
@@ -234,7 +326,7 @@ async function removePackage(name: string) {
 
 .env-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
@@ -272,9 +364,26 @@ async function removePackage(name: string) {
   background: #6c7086;
 }
 
+.env-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
 .btn-sync {
   border: 1px solid #45475a;
   background: #1e2030;
+  color: #cdd6f4;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.btn-secondary {
+  border: 1px solid #45475a;
+  background: transparent;
   color: #cdd6f4;
   border-radius: 6px;
   padding: 6px 10px;
@@ -287,7 +396,17 @@ async function removePackage(name: string) {
   color: #89b4fa;
 }
 
+.btn-secondary:hover {
+  border-color: #89b4fa;
+  color: #89b4fa;
+}
+
 .btn-sync:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -352,6 +471,67 @@ async function removePackage(name: string) {
   background: rgb(243 139 168 / 10%);
   border: 1px solid rgb(243 139 168 / 18%);
   border-radius: 6px;
+}
+
+.requirements-editor {
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  background: #151724;
+}
+
+.requirements-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #cdd6f4;
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.requirements-help {
+  color: #a6adc8;
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+
+.requirements-textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #45475a;
+  background: #0f111a;
+  color: #cdd6f4;
+  font: inherit;
+  margin-bottom: 8px;
+}
+
+.requirements-textarea:focus {
+  outline: none;
+  border-color: #89b4fa;
+}
+
+.requirements-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #89b4fa;
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+}
+
+.btn-link:hover {
+  color: #74c7ec;
 }
 
 .add-dep {

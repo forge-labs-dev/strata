@@ -294,7 +294,7 @@ export interface NotebookEnvironment {
 }
 
 export interface EnvironmentActionSummary {
-  action: 'add' | 'remove' | 'sync'
+  action: 'add' | 'remove' | 'sync' | 'import'
   packageName: string | null
   lockfileChanged: boolean
   staleCellCount: number

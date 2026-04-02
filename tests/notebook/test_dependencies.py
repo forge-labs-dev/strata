@@ -20,7 +20,10 @@ from fastapi.testclient import TestClient
 from strata.notebook.dependencies import (
     DependencyChangeResult,
     add_dependency,
+    export_requirements_text,
+    import_requirements_text,
     list_dependencies,
+    parse_requirements_text,
     remove_dependency,
 )
 from strata.notebook.executor import CellExecutor
@@ -140,6 +143,43 @@ class TestRemoveDependency:
         assert result.error is not None
 
 
+class TestRequirementsCompatibility:
+    """requirements.txt export/import helpers."""
+
+    def test_export_requirements_text(self, tmp_path: Path):
+        """Export should preserve direct dependency specifiers."""
+        nb_dir = create_notebook(tmp_path, "requirements_export")
+        add_dependency(nb_dir, "six==1.17.0")
+
+        exported = export_requirements_text(nb_dir)
+
+        assert exported.endswith("\n")
+        assert "pyarrow>=18.0.0" in exported
+        assert "six==1.17.0" in exported
+
+    def test_import_requirements_text_replaces_direct_dependencies(self, tmp_path: Path):
+        """Import should replace the notebook's direct dependency set."""
+        nb_dir = create_notebook(tmp_path, "requirements_import")
+        add_dependency(nb_dir, "requests")
+
+        result = import_requirements_text(
+            nb_dir,
+            "pyarrow>=18.0.0\nsix==1.17.0\n",
+        )
+
+        assert result.success is True
+        assert result.imported_count == 2
+        names = [dep.name for dep in result.dependencies]
+        assert "pyarrow" in names
+        assert "six" in names
+        assert "requests" not in names
+
+    def test_parse_requirements_text_rejects_pip_flags(self):
+        """Unsupported pip-style directives should fail clearly."""
+        with pytest.raises(ValueError, match="Unsupported requirements entry"):
+            parse_requirements_text("-r base.txt")
+
+
 # ============================================================================
 # REST API tests
 # ============================================================================
@@ -254,6 +294,41 @@ class TestDependencyRESTEndpoints:
             deps = resp2.json()["dependencies"]
             names = [d["name"] for d in deps]
             assert "six" not in names
+
+    def test_export_requirements_rest(self, setup):
+        """GET /environment/requirements.txt exports direct dependencies."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            client.post(
+                f"/v1/notebooks/{sid}/dependencies",
+                json={"package": "six==1.17.0"},
+            )
+
+            resp = client.get(f"/v1/notebooks/{sid}/environment/requirements.txt")
+            assert resp.status_code == 200
+            assert "pyarrow>=18.0.0" in resp.text
+            assert "six==1.17.0" in resp.text
+
+    def test_import_requirements_rest(self, setup):
+        """POST /environment/requirements.txt imports a full dependency set."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            resp = client.post(
+                f"/v1/notebooks/{sid}/environment/requirements.txt",
+                json={"requirements": "pyarrow>=18.0.0\nsix==1.17.0\n"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["success"] is True
+            assert data["imported_count"] == 2
+            assert "environment" in data
+            names = [dep["name"] for dep in data["dependencies"]]
+            assert "pyarrow" in names
+            assert "six" in names
 
     def test_add_bad_package_rest(self, setup):
         """POST /dependencies with invalid package returns 400."""

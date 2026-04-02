@@ -13,6 +13,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import tomli_w
+
 logger = logging.getLogger(__name__)
 
 # Serialize concurrent uv add/remove per notebook directory.
@@ -57,6 +59,17 @@ class DependencyChangeResult:
     dependencies: list[DependencyInfo] = field(default_factory=list)
 
 
+@dataclass
+class RequirementsImportResult:
+    """Result of importing notebook dependencies from requirements text."""
+
+    success: bool
+    error: str | None = None
+    lockfile_changed: bool = False
+    dependencies: list[DependencyInfo] = field(default_factory=list)
+    imported_count: int = 0
+
+
 # ---------------------------------------------------------------------------
 # Core operations
 # ---------------------------------------------------------------------------
@@ -67,6 +80,31 @@ def list_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
 
     Parses the ``[project] dependencies`` array.  Does **not** shell out.
     """
+    deps_list = _read_project_dependency_strings(notebook_dir)
+    results: list[DependencyInfo] = []
+    for dep_str in deps_list:
+        name, specifier = _split_requirement(dep_str)
+        results.append(DependencyInfo(name=name.strip(), specifier=specifier))
+
+    return results
+
+
+def export_requirements_text(notebook_dir: Path) -> str:
+    """Export direct notebook dependencies as ``requirements.txt`` text."""
+    deps_list = _read_project_dependency_strings(notebook_dir)
+    if not deps_list:
+        return ""
+    return "\n".join(deps_list) + "\n"
+
+
+def import_requirements_text(
+    notebook_dir: Path,
+    requirements_text: str,
+    *,
+    timeout: int = 180,
+) -> RequirementsImportResult:
+    """Replace direct notebook dependencies from ``requirements.txt`` text."""
+    normalized_requirements = parse_requirements_text(requirements_text)
     # Python 3.10 compat
     try:
         import tomllib
@@ -75,30 +113,84 @@ def list_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
 
     pyproject_path = notebook_dir / "pyproject.toml"
     if not pyproject_path.exists():
-        return []
+        return RequirementsImportResult(
+            success=False,
+            error="pyproject.toml not found",
+        )
 
-    with open(pyproject_path, "rb") as f:
-        data = tomllib.load(f)
+    old_lockfile_hash = _lockfile_hash(notebook_dir)
+    old_pyproject = pyproject_path.read_bytes()
+    lockfile_path = notebook_dir / "uv.lock"
+    old_lockfile = lockfile_path.read_bytes() if lockfile_path.exists() else None
 
-    deps_list: list[str] = data.get("project", {}).get("dependencies", [])
-    results: list[DependencyInfo] = []
-    for dep_str in deps_list:
-        # Simple parse: "requests>=2.0" → name="requests", specifier=">=2.0"
-        # PEP 508 is complex; we handle the common subset.
-        name = dep_str
-        specifier = None
-        for op in (">=", "<=", "!=", "==", "~=", ">", "<"):
-            if op in dep_str:
-                idx = dep_str.index(op)
-                name = dep_str[:idx].strip()
-                specifier = dep_str[idx:].strip()
-                break
-        # Handle extras: "pkg[extra]"
-        if "[" in name:
-            name = name[: name.index("[")]
-        results.append(DependencyInfo(name=name.strip(), specifier=specifier))
+    lock = _get_notebook_lock(notebook_dir)
+    with lock:
+        try:
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception as exc:
+            return RequirementsImportResult(
+                success=False,
+                error=f"Failed to parse pyproject.toml: {exc}",
+            )
 
-    return results
+        project = data.setdefault("project", {})
+        if not isinstance(project, dict):
+            return RequirementsImportResult(
+                success=False,
+                error="pyproject.toml project section is invalid",
+            )
+        project["dependencies"] = normalized_requirements
+
+        try:
+            with open(pyproject_path, "wb") as f:
+                tomli_w.dump(data, f)
+        except Exception as exc:
+            return RequirementsImportResult(
+                success=False,
+                error=f"Failed to write pyproject.toml: {exc}",
+            )
+
+        try:
+            subprocess.run(
+                ["uv", "sync"],
+                cwd=str(notebook_dir),
+                timeout=timeout,
+                capture_output=True,
+                check=True,
+            )
+            logger.info(
+                "Imported %s requirements into %s",
+                len(normalized_requirements),
+                notebook_dir,
+            )
+        except FileNotFoundError:
+            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
+            return RequirementsImportResult(
+                success=False,
+                error="uv not found on PATH",
+            )
+        except subprocess.TimeoutExpired:
+            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
+            return RequirementsImportResult(
+                success=False,
+                error=f"uv sync timed out after {timeout}s",
+            )
+        except subprocess.CalledProcessError as exc:
+            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
+            stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+            return RequirementsImportResult(
+                success=False,
+                error=f"uv sync failed: {stderr}",
+            )
+
+    new_lockfile_hash = _lockfile_hash(notebook_dir)
+    return RequirementsImportResult(
+        success=True,
+        lockfile_changed=old_lockfile_hash != new_lockfile_hash,
+        dependencies=list_dependencies(notebook_dir),
+        imported_count=len(normalized_requirements),
+    )
 
 
 def add_dependency(
@@ -253,3 +345,90 @@ def _lockfile_hash(notebook_dir: Path) -> str:
     from strata.notebook.env import compute_lockfile_hash
 
     return compute_lockfile_hash(notebook_dir)
+
+
+def parse_requirements_text(requirements_text: str) -> list[str]:
+    """Parse a small supported subset of ``requirements.txt`` syntax."""
+    requirements: list[str] = []
+    seen_names: set[str] = set()
+
+    for raw_line in requirements_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("-"):
+            raise ValueError(
+                "Unsupported requirements entry. Use plain package specifiers only."
+            )
+        if " #" in line:
+            line = line.split(" #", 1)[0].strip()
+
+        validated = _validate_requirement_specifier(line)
+        requirement_name, _ = _split_requirement(validated)
+        if requirement_name in seen_names:
+            raise ValueError(f"Duplicate requirement: {requirement_name}")
+        seen_names.add(requirement_name)
+        requirements.append(validated)
+
+    return requirements
+
+
+def _read_project_dependency_strings(notebook_dir: Path) -> list[str]:
+    """Read raw dependency strings from ``pyproject.toml``."""
+    # Python 3.10 compat
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore
+
+    pyproject_path = notebook_dir / "pyproject.toml"
+    if not pyproject_path.exists():
+        return []
+
+    with open(pyproject_path, "rb") as f:
+        data = tomllib.load(f)
+
+    deps_list: list[str] = data.get("project", {}).get("dependencies", [])
+    return [str(dep) for dep in deps_list]
+
+
+def _split_requirement(dep_str: str) -> tuple[str, str | None]:
+    """Split a requirement into package name and version specifier."""
+    name = dep_str
+    specifier = None
+    for op in (">=", "<=", "!=", "==", "~=", ">", "<"):
+        if op in dep_str:
+            idx = dep_str.index(op)
+            name = dep_str[:idx].strip()
+            specifier = dep_str[idx:].strip()
+            break
+    if "[" in name:
+        name = name[: name.index("[")]
+    return name.strip(), specifier
+
+
+def _validate_requirement_specifier(requirement: str) -> str:
+    """Validate a supported requirement line."""
+    normalized = requirement.strip()
+    if not normalized:
+        raise ValueError("Requirement cannot be empty")
+    if len(normalized) > 200:
+        raise ValueError("Requirement specifier too long")
+    if any(c in normalized for c in ';&|`$(){}"\'\n\r\t'):
+        raise ValueError("Requirement specifier contains invalid characters")
+    return normalized
+
+
+def _restore_dependency_files(
+    pyproject_path: Path,
+    old_pyproject: bytes,
+    lockfile_path: Path,
+    old_lockfile: bytes | None,
+) -> None:
+    """Restore dependency files after a failed import attempt."""
+    pyproject_path.write_bytes(old_pyproject)
+    if old_lockfile is None:
+        if lockfile_path.exists():
+            lockfile_path.unlink()
+    else:
+        lockfile_path.write_bytes(old_lockfile)

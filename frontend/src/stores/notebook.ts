@@ -574,7 +574,7 @@ function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
 }
 
 function setEnvironmentActionSummary(raw: {
-  action: 'add' | 'remove' | 'sync'
+  action: 'add' | 'remove' | 'sync' | 'import'
   packageName?: string | null
   lockfileChanged?: boolean
   staleCellCount?: number
@@ -1553,6 +1553,55 @@ async function syncEnvironmentAction() {
   }
 }
 
+async function exportRequirementsAction(): Promise<string> {
+  const sid = sessionId()
+  if (!sid) return ''
+  environmentLoading.value = true
+  environmentError.value = null
+  const strata = useStrata()
+  try {
+    return await strata.exportRequirements(sid)
+  } catch (err: any) {
+    environmentError.value = err.message || 'Failed to export requirements.txt'
+    return ''
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
+async function importRequirementsAction(requirements: string) {
+  const sid = sessionId()
+  if (!sid) return
+  environmentLoading.value = true
+  environmentError.value = null
+  const strata = useStrata()
+  try {
+    const data = await strata.importRequirements(sid, requirements)
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    if (data.dependencies) {
+      dependencies.value = data.dependencies.map((d: any) => ({
+        name: d.name,
+        version: d.version || '',
+        specifier: d.specifier || '',
+      }))
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
+    setEnvironmentActionSummary({
+      action: 'import',
+      lockfileChanged: data.lockfile_changed === true,
+      staleCellCount: Number(data.stale_cell_count ?? 0),
+    })
+  } catch (err: any) {
+    environmentError.value = err.message || 'Failed to import requirements.txt'
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
 async function updateNotebookMountsAction(mounts: MountSpec[]) {
   const sid = sessionId()
   if (!sid) return
@@ -1966,6 +2015,8 @@ export function useNotebook() {
     addDependencyAction,
     removeDependencyAction,
     syncEnvironmentAction,
+    exportRequirementsAction,
+    importRequirementsAction,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
     saveServerWorkerAction,
