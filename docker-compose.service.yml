@@ -16,6 +16,8 @@
 
 services:
   strata:
+    image: strata-service-demo:local
+    pull_policy: never
     build: .
     volumes:
       - strata-service-state:/home/strata/.strata
@@ -38,6 +40,8 @@ services:
         condition: service_healthy
 
   executor:
+    image: strata-service-demo:local
+    pull_policy: never
     build: .
     command:
       [

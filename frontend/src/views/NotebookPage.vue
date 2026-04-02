@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import CellEditor from '../components/CellEditor.vue'
@@ -15,6 +15,7 @@ const ImpactPreview = defineAsyncComponent(() => import('../components/ImpactPre
 
 const props = defineProps<{ sessionId: string }>()
 
+const route = useRoute()
 const router = useRouter()
 const { record, findBySessionId } = useRecentNotebooks()
 
@@ -40,6 +41,14 @@ const recoveryPath = ref<string | null>(null)
 const sidebarWidth = ref(340)
 let skipNextSessionReconnect: string | null = null
 
+function isServiceModeSessionRestriction(message: string | null | undefined): boolean {
+  const normalized = (message || '').toLowerCase()
+  return (
+    normalized.includes('service mode') ||
+    normalized.includes('session apis are only available in personal mode')
+  )
+}
+
 const notebookModeLabel = computed(() =>
   workerDefinitionsEditable.value ? 'Personal mode' : 'Service mode',
 )
@@ -49,7 +58,7 @@ const notebookModeTitle = computed(() =>
     : 'Workers and execution policy are controlled by the shared server.',
 )
 const serviceReconnectBlocked = computed(() =>
-  (reconnectError.value || '').toLowerCase().includes('service mode'),
+  isServiceModeSessionRestriction(reconnectError.value),
 )
 const reconnectHeading = computed(() =>
   serviceReconnectBlocked.value
@@ -64,6 +73,10 @@ const reconnectSummary = computed(() =>
 const reconnectActionLabel = computed(() =>
   serviceReconnectBlocked.value ? 'Reopen From Path' : 'Reopen Notebook',
 )
+const routeNotebookPath = computed(() => {
+  const raw = route.query.path
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null
+})
 
 let resizePointerId: number | null = null
 let resizeStartX = 0
@@ -100,6 +113,27 @@ async function connectToSession(sessionId: string) {
     }
   } catch (e: any) {
     const message = e?.message || 'Failed to reconnect to notebook session'
+    const recoveryCandidate = routeNotebookPath.value || findBySessionId(sessionId)?.path || null
+    if (isServiceModeSessionRestriction(message) && recoveryCandidate) {
+      try {
+        const data = await openNotebook(recoveryCandidate)
+        record(data.name || notebook.name, recoveryCandidate, data.session_id)
+        if (typeof data.session_id === 'string' && data.session_id !== props.sessionId) {
+          skipNextSessionReconnect = data.session_id
+          await router.replace({
+            name: 'notebook',
+            params: { sessionId: data.session_id },
+            query: { path: recoveryCandidate },
+          })
+        }
+        return
+      } catch (reopenError: any) {
+        reconnectError.value = reopenError?.message || message
+        recoveryPath.value = recoveryCandidate
+        return
+      }
+    }
+
     const recentEntry = findBySessionId(sessionId)
     if (recentEntry) {
       reconnectError.value = message
@@ -127,7 +161,11 @@ async function reopenNotebookFromRecent() {
     record(data.name || notebook.name, path, data.session_id)
     if (typeof data.session_id === 'string' && data.session_id !== props.sessionId) {
       skipNextSessionReconnect = data.session_id
-      await router.replace({ name: 'notebook', params: { sessionId: data.session_id } })
+      await router.replace({
+        name: 'notebook',
+        params: { sessionId: data.session_id },
+        query: { path },
+      })
     }
   } catch (e: any) {
     reconnectError.value = e?.message || 'Failed to reopen notebook'

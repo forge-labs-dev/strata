@@ -22,9 +22,15 @@ async function createNotebook() {
   loading.value = true
   error.value = null
   try {
+    const notebookPath = `${newParentPath.value.replace(/\/+$/, '')}/${newName.value}`
     const data = await strata.createNotebook(newParentPath.value, newName.value)
-    record(data.name, data.path || `${newParentPath.value}/${newName.value}`, data.session_id)
-    router.push({ name: 'notebook', params: { sessionId: data.session_id } })
+    const resolvedPath = data.path || notebookPath
+    record(data.name, resolvedPath, data.session_id)
+    router.push({
+      name: 'notebook',
+      params: { sessionId: data.session_id },
+      query: { path: resolvedPath },
+    })
   } catch (e: any) {
     error.value = e.message || 'Failed to create notebook'
   } finally {
@@ -40,7 +46,11 @@ async function openNotebook(path?: string) {
   try {
     const data = await strata.openNotebook(target)
     record(data.name, target, data.session_id)
-    router.push({ name: 'notebook', params: { sessionId: data.session_id } })
+    router.push({
+      name: 'notebook',
+      params: { sessionId: data.session_id },
+      query: { path: target },
+    })
   } catch (e: any) {
     error.value = e.message || 'Failed to open notebook'
     // If opening from recent list failed, offer to remove

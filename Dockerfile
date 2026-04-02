@@ -26,7 +26,7 @@
 FROM node:25-alpine AS frontend-builder
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY frontend/ ./
 RUN npm run build
 
@@ -34,6 +34,7 @@ RUN npm run build
 # Stage 1b: Backend Builder (uv + Rust)
 # =============================================================================
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+ENV UV_PYTHON=3.13
 
 # Install Rust and build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -47,15 +48,20 @@ ARG RUST_VERSION=1.92.0
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Copy source code
+# Copy only the files needed to build the backend wheel. This keeps frontend-
+# only edits from invalidating the Python/Rust build cache.
 WORKDIR /build
-COPY . .
+COPY LICENSE README.md pyproject.toml ./
+COPY src ./src
+COPY rust ./rust
 
 # Build the wheel using uv (with BuildKit cache mounts for faster rebuilds)
+# Pin the build interpreter so maturin emits a cp313 wheel that matches the
+# runtime image instead of whatever newest managed Python uv might download.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
-    uv build --wheel --out-dir dist
+    uv build --wheel --python 3.13 --out-dir dist
 
 # =============================================================================
 # Stage 2: Runtime

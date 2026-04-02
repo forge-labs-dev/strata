@@ -8,7 +8,14 @@
 import { ref } from 'vue'
 import type { CellOutput, MaterializeRequest, MaterializeResponse } from '../types/notebook'
 
-const STRATA_BASE = import.meta.env.VITE_STRATA_URL ?? 'http://localhost:8765'
+function resolveStrataBase(): string {
+  const configured = import.meta.env.VITE_STRATA_URL
+  if (configured) return configured
+  if (typeof window !== 'undefined') return window.location.origin
+  return 'http://localhost:8765'
+}
+
+const STRATA_BASE = resolveStrataBase()
 
 const connected = ref(false)
 
