@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
@@ -23,6 +23,7 @@ const {
   orderedCells,
   connected,
   connectError,
+  workerDefinitionsEditable,
   openBySessionId,
   openNotebook,
   addCell,
@@ -38,6 +39,31 @@ const reconnectError = ref<string | null>(null)
 const recoveryPath = ref<string | null>(null)
 const sidebarWidth = ref(340)
 let skipNextSessionReconnect: string | null = null
+
+const notebookModeLabel = computed(() =>
+  workerDefinitionsEditable.value ? 'Personal mode' : 'Service mode',
+)
+const notebookModeTitle = computed(() =>
+  workerDefinitionsEditable.value
+    ? 'Notebook owns its worker catalog and local write flows.'
+    : 'Workers and execution policy are controlled by the shared server.',
+)
+const serviceReconnectBlocked = computed(() =>
+  (reconnectError.value || '').toLowerCase().includes('service mode'),
+)
+const reconnectHeading = computed(() =>
+  serviceReconnectBlocked.value
+    ? 'Service mode does not restore live sessions by URL'
+    : 'Reconnect unavailable',
+)
+const reconnectSummary = computed(() =>
+  serviceReconnectBlocked.value
+    ? 'This URL points to a live notebook session. In service mode, browsers reopen notebooks by path and start a fresh session instead of reattaching to an existing one.'
+    : reconnectError.value || 'Failed to reconnect to notebook session',
+)
+const reconnectActionLabel = computed(() =>
+  serviceReconnectBlocked.value ? 'Reopen From Path' : 'Reopen Notebook',
+)
 
 let resizePointerId: number | null = null
 let resizeStartX = 0
@@ -181,6 +207,17 @@ function goHome() {
         />
       </div>
       <div class="header-right">
+        <span
+          v-if="!loading && notebook.id"
+          class="mode-badge"
+          :class="{
+            service: !workerDefinitionsEditable,
+            personal: workerDefinitionsEditable,
+          }"
+          :title="notebookModeTitle"
+        >
+          {{ notebookModeLabel }}
+        </span>
         <span class="connection" :class="{ connected: connected }">
           {{ loading ? '◌ Connecting…' : connected ? '● Live' : '○ Not connected' }}
         </span>
@@ -195,15 +232,19 @@ function goHome() {
     </div>
 
     <div v-else-if="reconnectError && !loading" class="reconnect-state">
-      <h2>Reconnect unavailable</h2>
-      <p class="reconnect-message">{{ reconnectError }}</p>
+      <h2>{{ reconnectHeading }}</h2>
+      <p class="reconnect-message">{{ reconnectSummary }}</p>
       <p v-if="recoveryPath" class="reconnect-detail">
-        Reopen the notebook from its last known path:
+        {{
+          serviceReconnectBlocked
+            ? 'Reopen the notebook from its last known path to start a fresh session on the shared server:'
+            : 'Reopen the notebook from its last known path:'
+        }}
         <code>{{ recoveryPath }}</code>
       </p>
       <div class="reconnect-actions">
         <button class="btn" :disabled="loading" @click="reopenNotebookFromRecent">
-          Reopen Notebook
+          {{ reconnectActionLabel }}
         </button>
         <button class="btn btn-secondary" :disabled="loading" @click="goHome">Back Home</button>
       </div>
@@ -249,6 +290,27 @@ function goHome() {
 </template>
 
 <style scoped>
+.mode-badge {
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #cdd6f4;
+  background: #313244;
+}
+
+.mode-badge.service {
+  background: #1e2a3c;
+  color: #89b4fa;
+}
+
+.mode-badge.personal {
+  background: #1e2d24;
+  color: #a6e3a1;
+}
+
 .reconnect-state {
   max-width: 720px;
   margin: 48px auto;

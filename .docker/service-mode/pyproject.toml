@@ -1,0 +1,21 @@
+[tool.strata]
+deployment_mode = "service"
+host = "0.0.0.0"
+port = 8765
+cache_dir = "/home/strata/.strata/cache"
+metadata_db = "/home/strata/.strata/meta.sqlite"
+artifact_dir = "/home/strata/.strata/artifacts"
+
+auth_mode = "trusted_proxy"
+proxy_token = "dev-service-token"
+
+multi_tenant_enabled = true
+require_tenant_header = true
+tenant_header = "X-Tenant-ID"
+
+[tool.strata.transforms]
+enabled = true
+notebook_workers = [
+  { name = "gpu-http", backend = "executor", runtime_id = "gpu-http-dev", enabled = true, config = { url = "http://executor:8766/v1/execute" } },
+  { name = "gpu-http-signed", backend = "executor", runtime_id = "gpu-http-signed-dev", enabled = true, config = { url = "http://executor:8766/v1/execute", transport = "signed", strata_url = "http://strata:8765" } },
+]

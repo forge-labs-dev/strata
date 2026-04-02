@@ -41,6 +41,25 @@ const registryManagedByServer = computed(() => !workerDefinitionsEditable.value)
 const canEditServerRegistry = computed(
   () => registryManagedByServer.value && serverWorkerRegistryAvailable.value,
 )
+const workerModeLabel = computed(() =>
+  registryManagedByServer.value ? 'Service mode' : 'Personal mode',
+)
+const workerModeTitle = computed(() =>
+  registryManagedByServer.value
+    ? 'This notebook selects from a shared server-managed worker catalog.'
+    : 'This notebook owns its worker catalog and stores it beside the notebook.',
+)
+const workerModeDescription = computed(() => {
+  if (!registryManagedByServer.value) {
+    return 'Use this mode for local notebook work, ad hoc executor URLs, and notebook-specific worker definitions.'
+  }
+
+  if (canEditServerRegistry.value) {
+    return 'This browser has notebook-worker admin access, so it can edit the shared catalog as well as choose a notebook default.'
+  }
+
+  return 'This notebook can choose from the shared catalog below, but only an admin can change worker definitions or enable and disable workers.'
+})
 const lastCheckedLabel = computed(() => {
   if (!workerHealthCheckedAt.value) {
     return 'Not checked yet'
@@ -150,13 +169,24 @@ function workerAttentionLabel(worker: WorkerCatalogEntry): string {
         </div>
       </div>
 
-      <p class="workers-copy">
-        Notebook default. Cells can override this individually.
-        <span v-if="registryManagedByServer">
-          Worker definitions are managed by the server in service mode.
-        </span>
-        <span v-else> Worker definitions are stored with the notebook in personal mode. </span>
-      </p>
+      <div
+        class="workers-mode-card"
+        :class="{
+          service: registryManagedByServer,
+          personal: !registryManagedByServer,
+        }"
+      >
+        <div class="workers-mode-header">
+          <span class="workers-mode-eyebrow">Worker policy</span>
+          <span class="workers-mode-badge">{{ workerModeLabel }}</span>
+        </div>
+        <p class="workers-mode-title">{{ workerModeTitle }}</p>
+        <p class="workers-copy">{{ workerModeDescription }}</p>
+        <p class="workers-copy workers-copy-muted">
+          Notebook default applies to new runs, and individual cells can still override it.
+        </p>
+      </div>
+
       <WorkerConfigEditor
         :worker="notebook.worker"
         :options="availableWorkers"
@@ -187,8 +217,8 @@ function workerAttentionLabel(worker: WorkerCatalogEntry): string {
         @remove-one="deleteServerWorkerAction"
       />
       <div v-else class="workers-copy workers-copy-muted">
-        This notebook can select from the visible server-managed workers below, but it cannot change
-        the worker registry.
+        You are viewing the shared server catalog. Notebook runs can pick from these workers, but
+        registry edits require notebook-worker admin access.
       </div>
 
       <div v-if="availableWorkers.length" class="workers-catalog">
@@ -445,6 +475,57 @@ function workerAttentionLabel(worker: WorkerCatalogEntry): string {
 
 .workers-copy-muted {
   margin-top: -2px;
+}
+
+.workers-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #313244;
+  border-radius: 12px;
+  background: #11111b;
+}
+
+.workers-mode-card.service {
+  border-color: #89b4fa33;
+  background: #0f1522;
+}
+
+.workers-mode-card.personal {
+  border-color: #a6e3a133;
+  background: #111a16;
+}
+
+.workers-mode-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.workers-mode-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #6c7086;
+}
+
+.workers-mode-badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #cdd6f4;
+  background: #313244;
+}
+
+.workers-mode-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cdd6f4;
+  line-height: 1.4;
 }
 
 .workers-summary-grid {
