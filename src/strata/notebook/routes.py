@@ -142,6 +142,20 @@ async def _serialize_worker_catalog(
     }
 
 
+def _serialize_environment_change(session: NotebookSession, staleness_map: dict) -> dict:
+    """Summarize environment change impact for sidebar UX."""
+    stale_cell_ids = [
+        cell_id
+        for cell_id, staleness in staleness_map.items()
+        if staleness.status != CellStatus.READY
+    ]
+    return {
+        "stale_cell_count": len(stale_cell_ids),
+        "stale_cell_ids": stale_cell_ids,
+        "warm_pool_reset": session.warm_pool is not None,
+    }
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -307,6 +321,39 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/{notebook_id}/environment")
+async def get_environment_status(notebook_id: str) -> dict:
+    """Get the live notebook environment status."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    return {"environment": session.serialize_environment_state()}
+
+
+@router.post("/{notebook_id}/environment/sync")
+async def sync_environment(notebook_id: str) -> dict:
+    """Re-sync the notebook environment and invalidate stale runtimes."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    old_hash = session.serialize_environment_state()["lockfile_hash"]
+    staleness_map = await session.sync_environment()
+    new_hash = session.serialize_environment_state()["lockfile_hash"]
+
+    return {
+        "environment": session.serialize_environment_state(),
+        "lockfile_changed": old_hash != new_hash,
+        "dependencies": [
+            {"name": d.name, "version": d.version, "specifier": d.specifier}
+            for d in list_dependencies(session.path)
+        ],
+        **_serialize_environment_change(session, staleness_map),
+        "cells": session.serialize_cells(),
+    }
 
 
 @router.get("/sessions")
@@ -859,6 +906,7 @@ async def get_dependencies(notebook_id: str) -> dict:
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in deps
         ],
+        "environment": session.serialize_environment_state(),
     }
 
 
@@ -889,6 +937,8 @@ async def add_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
+        "environment": session.serialize_environment_state(),
+        **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
     }
 
@@ -924,6 +974,8 @@ async def remove_notebook_dependency(
             {"name": d.name, "version": d.version, "specifier": d.specifier}
             for d in result.dependencies
         ],
+        "environment": session.serialize_environment_state(),
+        **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
     }
 

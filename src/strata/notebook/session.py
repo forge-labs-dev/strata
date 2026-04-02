@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import subprocess
 import time as _time
 import uuid
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from strata.notebook.analyzer import analyze_cell
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
-from strata.notebook.dependencies import DependencyChangeResult
+from strata.notebook.dependencies import DependencyChangeResult, list_dependencies
 from strata.notebook.env import compute_execution_env_hash, compute_lockfile_hash
 from strata.notebook.models import (
     CellStaleness,
@@ -100,6 +101,12 @@ class NotebookSession:
 
         # v1.1: Causality chains for stale cells
         self.causality_map: dict[str, CausalityChain] = {}
+
+        # Environment/runtime sync state for the current notebook venv.
+        self.environment_sync_state: str = "unknown"
+        self.environment_sync_error: str | None = None
+        self.environment_last_synced_at: int | None = None
+        self.environment_python_version: str = ""
 
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
@@ -445,7 +452,69 @@ class NotebookSession:
         """Serialize notebook state with enriched cell metadata."""
         data = self.notebook_state.model_dump()
         data["cells"] = self.serialize_cells()
+        data["environment"] = self.serialize_environment_state()
         return data
+
+    def _probe_python_version(self, python_executable: Path) -> str:
+        """Return ``major.minor.micro`` for a Python interpreter when available."""
+        try:
+            result = subprocess.run(
+                [
+                    str(python_executable),
+                    "-c",
+                    (
+                        "import sys; "
+                        "print("
+                        "f'{sys.version_info.major}."
+                        "{sys.version_info.minor}."
+                        "{sys.version_info.micro}'"
+                        ")"
+                    ),
+                ],
+                cwd=str(self.path),
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception:
+            return ""
+
+        return result.stdout.strip()
+
+    def _resolved_package_count(self) -> int:
+        """Count resolved packages from ``uv.lock`` when present."""
+        lockfile = self.path / "uv.lock"
+        if not lockfile.exists():
+            return 0
+
+        try:
+            import tomllib
+
+            with open(lockfile, "rb") as f:
+                data = tomllib.load(f)
+        except Exception:
+            logger.debug("Failed to parse uv.lock for %s", self.path, exc_info=True)
+            return 0
+
+        packages = data.get("package", [])
+        return len(packages) if isinstance(packages, list) else 0
+
+    def serialize_environment_state(self) -> dict[str, Any]:
+        """Serialize the live notebook environment state for the UI."""
+        dependencies = list_dependencies(self.path)
+        return {
+            "python_version": self.environment_python_version,
+            "lockfile_hash": compute_lockfile_hash(self.path),
+            "package_count": len(dependencies),
+            "declared_package_count": len(dependencies),
+            "resolved_package_count": self._resolved_package_count(),
+            "sync_state": self.environment_sync_state,
+            "sync_error": self.environment_sync_error,
+            "last_synced_at": self.environment_last_synced_at,
+            "has_lockfile": (self.path / "uv.lock").exists(),
+            "venv_python": str(self.venv_python) if self.venv_python else None,
+        }
 
     def serialize_worker_catalog(self) -> list[dict[str, Any]]:
         """Serialize the worker catalog visible to this notebook."""
@@ -674,19 +743,64 @@ class NotebookSession:
         ``python`` in PATH) so tests without ``uv`` keep working.
         """
         ok = _uv_sync(self.path)
+        self.environment_last_synced_at = int(_time.time() * 1000)
 
         # Locate python inside the venv created by uv
         venv_python = self.path / ".venv" / "bin" / "python"
         if ok and venv_python.exists():
             self.venv_python = venv_python
+            self.environment_sync_state = "ready"
+            self.environment_sync_error = None
+            self.environment_python_version = self._probe_python_version(venv_python)
         else:
             self.venv_python = Path("python")
             if ok:
+                self.environment_sync_state = "fallback"
+                self.environment_sync_error = (
+                    "uv sync succeeded but the notebook venv interpreter was not "
+                    "found; using python from PATH."
+                )
+                self.environment_python_version = self._probe_python_version(self.venv_python)
                 logger.warning(
                     "uv sync succeeded but .venv/bin/python not found in %s",
                     self.path,
                 )
+            else:
+                self.environment_sync_state = "failed"
+                self.environment_sync_error = (
+                    "uv sync failed or uv is unavailable; notebook execution will "
+                    "fall back to python from PATH."
+                )
+                self.environment_python_version = self._probe_python_version(self.venv_python)
 
+    async def _invalidate_warm_pool_for_environment_change(self) -> None:
+        """Invalidate the warm pool after the runtime environment changes."""
+        if self.warm_pool is None:
+            return
+        try:
+            self.warm_pool.python_executable = str(
+                self.venv_python or Path("python")
+            )
+            await self.warm_pool.invalidate()
+            logger.info("Warm pool invalidated after environment change")
+        except Exception:
+            logger.exception("Failed to invalidate warm pool")
+
+    async def sync_environment(self) -> dict[str, CellStaleness]:
+        """Re-sync the notebook environment and refresh runtime metadata."""
+        old_hash = compute_lockfile_hash(self.path)
+        await asyncio.to_thread(self.ensure_venv_synced)
+        await self._invalidate_warm_pool_for_environment_change()
+
+        try:
+            await asyncio.to_thread(update_environment_metadata, self.path)
+        except Exception:
+            logger.exception("Failed to update environment metadata")
+
+        new_hash = compute_lockfile_hash(self.path)
+        if new_hash != old_hash:
+            return self.compute_staleness()
+        return {}
 
     async def on_dependencies_changed(self) -> None:
         """React to dependency changes (lockfile updated).
@@ -694,27 +808,17 @@ class NotebookSession:
         Re-syncs venv, invalidates warm pool, and recomputes lockfile hash
         for provenance.  Called after ``uv add`` / ``uv remove``.
         """
-        # 1. Re-sync venv so venv_python is up-to-date
+        # 1. Re-sync venv so venv_python is up-to-date and invalidate warm pool.
         await asyncio.to_thread(self.ensure_venv_synced)
+        await self._invalidate_warm_pool_for_environment_change()
 
-        # 2. Invalidate warm process pool (workers have stale env)
-        if self.warm_pool is not None:
-            try:
-                self.warm_pool.python_executable = str(
-                    self.venv_python or Path("python")
-                )
-                await self.warm_pool.invalidate()
-                logger.info("Warm pool invalidated after dependency change")
-            except Exception:
-                logger.exception("Failed to invalidate warm pool")
-
-        # 3. Recompute lockfile hash (triggers cache invalidation on next exec)
+        # 2. Recompute lockfile hash (triggers cache invalidation on next exec)
         new_hash = compute_lockfile_hash(self.path)
         logger.info(
             "Lockfile hash updated to %.12s after dependency change", new_hash
         )
 
-        # 4. Persist environment metadata in notebook.toml
+        # 3. Persist environment metadata in notebook.toml
         try:
             await asyncio.to_thread(update_environment_metadata, self.path)
         except Exception:

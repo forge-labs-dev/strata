@@ -12,8 +12,10 @@ import type {
   ProfilingSummary,
   MountSpec,
   CellAnnotations,
+  EnvironmentActionSummary,
   EditableWorkerSpec,
   ManagedWorkerSpec,
+  NotebookEnvironment,
   WorkerCatalogEntry,
   WorkerHealth,
   WorkerHealthHistoryEntry,
@@ -48,7 +50,18 @@ const notebook = reactive<Notebook>({
   workers: [],
   mounts: [],
   cells: [],
-  environment: { pythonVersion: '', lockfileHash: '', packageCount: 0 },
+  environment: {
+    pythonVersion: '',
+    lockfileHash: '',
+    packageCount: 0,
+    declaredPackageCount: 0,
+    resolvedPackageCount: 0,
+    syncState: 'unknown',
+    syncError: null,
+    lastSyncedAt: null,
+    hasLockfile: false,
+    venvPython: null,
+  },
   createdAt: Date.now(),
   updatedAt: Date.now(),
 })
@@ -239,6 +252,40 @@ function parseMountSpec(raw: any): MountSpec {
     uri: raw.uri,
     mode: raw.mode || 'ro',
     pin: raw.pin ?? null,
+  }
+}
+
+function parseBackendEnvironment(raw: any): NotebookEnvironment {
+  const declaredPackageCount = Number(
+    raw?.declared_package_count ??
+      raw?.declaredPackageCount ??
+      raw?.package_count ??
+      raw?.packageCount ??
+      0,
+  )
+  return {
+    pythonVersion: String(raw?.python_version ?? raw?.pythonVersion ?? ''),
+    lockfileHash: String(raw?.lockfile_hash ?? raw?.lockfileHash ?? ''),
+    packageCount: declaredPackageCount,
+    declaredPackageCount,
+    resolvedPackageCount: Number(raw?.resolved_package_count ?? raw?.resolvedPackageCount ?? 0),
+    syncState: ['ready', 'fallback', 'failed', 'unknown'].includes(raw?.sync_state)
+      ? raw.sync_state
+      : 'unknown',
+    syncError: typeof raw?.sync_error === 'string' ? raw.sync_error : null,
+    lastSyncedAt:
+      typeof raw?.last_synced_at === 'number'
+        ? raw.last_synced_at
+        : typeof raw?.lastSyncedAt === 'number'
+          ? raw.lastSyncedAt
+          : null,
+    hasLockfile: raw?.has_lockfile === true || raw?.hasLockfile === true,
+    venvPython:
+      typeof raw?.venv_python === 'string'
+        ? raw.venv_python
+        : typeof raw?.venvPython === 'string'
+          ? raw.venvPython
+          : null,
   }
 }
 
@@ -522,6 +569,25 @@ function syncNotebookEnvFromBackend(serverEnv: any) {
   notebook.env = parseEnvMap(serverEnv)
 }
 
+function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
+  notebook.environment = parseBackendEnvironment(serverEnvironment)
+}
+
+function setEnvironmentActionSummary(raw: {
+  action: 'add' | 'remove' | 'sync'
+  packageName?: string | null
+  lockfileChanged?: boolean
+  staleCellCount?: number
+}) {
+  environmentLastAction.value = {
+    action: raw.action,
+    packageName: raw.packageName ?? null,
+    lockfileChanged: raw.lockfileChanged === true,
+    staleCellCount: raw.staleCellCount ?? 0,
+    timestamp: Date.now(),
+  }
+}
+
 function parseBackendCellPayload(raw: any): Cell {
   const cell: Cell = {
     id: raw.id,
@@ -566,6 +632,7 @@ function loadNotebookStateFromBackend(data: any) {
   notebook.env = parseEnvMap(data.env)
   notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
   notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
+  syncNotebookEnvironmentFromBackend(data.environment)
   notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
   notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
   ;(notebook as any).sessionId = data.session_id
@@ -731,6 +798,9 @@ async function boot(): Promise<void> {
   const strata = useStrata()
   try {
     connectError.value = null
+    dependencyError.value = null
+    environmentError.value = null
+    environmentLastAction.value = null
     notebookWorkerError.value = null
     workerRegistryError.value = null
     cellWorkerErrors.value = {}
@@ -745,6 +815,7 @@ async function boot(): Promise<void> {
     notebook.env = parseEnvMap(data.env)
     notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
     notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
+    syncNotebookEnvironmentFromBackend(data.environment)
     notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
     notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
     ;(notebook as any).sessionId = data.session_id
@@ -797,6 +868,9 @@ async function openNotebook(path: string): Promise<any> {
   const strata = useStrata()
   // Cleanup existing WebSocket
   cleanupWebSocket()
+  dependencyError.value = null
+  environmentError.value = null
+  environmentLastAction.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -825,6 +899,9 @@ async function openNotebook(path: string): Promise<any> {
 async function openBySessionId(sessionId: string): Promise<any> {
   const strata = useStrata()
   cleanupWebSocket()
+  dependencyError.value = null
+  environmentError.value = null
+  environmentLastAction.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -857,6 +934,9 @@ const profilingSummary = ref<ProfilingSummary | null>(null)
 const dependencies = ref<DependencyInfo[]>([])
 const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
+const environmentLoading = ref(false)
+const environmentError = ref<string | null>(null)
+const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
 const workerHealthLoading = ref(false)
@@ -1194,10 +1274,22 @@ function initializeWebSocket() {
       if (p.cells && Array.isArray(p.cells)) {
         syncCellsFromBackend(p.cells)
       }
+      if (p.environment) {
+        syncNotebookEnvironmentFromBackend(p.environment)
+      }
+      if (p.action === 'add' || p.action === 'remove') {
+        setEnvironmentActionSummary({
+          action: p.action,
+          packageName: typeof p.package === 'string' ? p.package : null,
+          lockfileChanged: p.lockfile_changed === true,
+          staleCellCount: Number(p.stale_cell_count ?? 0),
+        })
+      }
       if (!p.success && p.error) {
         dependencyError.value = p.error
       } else {
         dependencyError.value = null
+        environmentError.value = null
       }
       dependencyLoading.value = false
     })
@@ -1267,8 +1359,32 @@ async function fetchDependencies() {
       version: d.version || '',
       specifier: d.specifier || '',
     }))
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    dependencyError.value = null
   } catch (err) {
     console.error('Failed to fetch dependencies:', err)
+    dependencyError.value = err instanceof Error ? err.message : 'Failed to fetch dependencies'
+  }
+}
+
+async function fetchEnvironment() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  environmentLoading.value = true
+  try {
+    const data = await strata.getEnvironmentStatus(sid)
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    environmentError.value = null
+  } catch (err) {
+    console.error('Failed to fetch environment:', err)
+    environmentError.value = err instanceof Error ? err.message : 'Failed to load environment'
+  } finally {
+    environmentLoading.value = false
   }
 }
 
@@ -1339,6 +1455,7 @@ async function addDependencyAction(pkg: string) {
   if (!sid) return
   dependencyLoading.value = true
   dependencyError.value = null
+  environmentError.value = null
   const strata = useStrata()
   try {
     const data = await strata.addDependency(sid, pkg)
@@ -1352,6 +1469,15 @@ async function addDependencyAction(pkg: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    setEnvironmentActionSummary({
+      action: 'add',
+      packageName: pkg,
+      lockfileChanged: data.lockfile_changed === true,
+      staleCellCount: Number(data.stale_cell_count ?? 0),
+    })
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to add dependency'
   } finally {
@@ -1364,6 +1490,7 @@ async function removeDependencyAction(pkg: string) {
   if (!sid) return
   dependencyLoading.value = true
   dependencyError.value = null
+  environmentError.value = null
   const strata = useStrata()
   try {
     const data = await strata.removeDependency(sid, pkg)
@@ -1377,10 +1504,52 @@ async function removeDependencyAction(pkg: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    setEnvironmentActionSummary({
+      action: 'remove',
+      packageName: pkg,
+      lockfileChanged: data.lockfile_changed === true,
+      staleCellCount: Number(data.stale_cell_count ?? 0),
+    })
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to remove dependency'
   } finally {
     dependencyLoading.value = false
+  }
+}
+
+async function syncEnvironmentAction() {
+  const sid = sessionId()
+  if (!sid) return
+  environmentLoading.value = true
+  environmentError.value = null
+  const strata = useStrata()
+  try {
+    const data = await strata.syncEnvironment(sid)
+    if (data.environment) {
+      syncNotebookEnvironmentFromBackend(data.environment)
+    }
+    if (data.dependencies) {
+      dependencies.value = data.dependencies.map((d: any) => ({
+        name: d.name,
+        version: d.version || '',
+        specifier: d.specifier || '',
+      }))
+    }
+    if (data.cells && Array.isArray(data.cells)) {
+      syncCellsFromBackend(data.cells)
+    }
+    setEnvironmentActionSummary({
+      action: 'sync',
+      lockfileChanged: data.lockfile_changed === true,
+      staleCellCount: Number(data.stale_cell_count ?? 0),
+    })
+  } catch (err: any) {
+    environmentError.value = err.message || 'Failed to sync environment'
+  } finally {
+    environmentLoading.value = false
   }
 }
 
@@ -1775,6 +1944,9 @@ export function useNotebook() {
     dependencies,
     dependencyLoading,
     dependencyError,
+    environmentLoading,
+    environmentError,
+    environmentLastAction,
     availableWorkers,
     workerDefinitionsEditable,
     workerHealthLoading,
@@ -1790,8 +1962,10 @@ export function useNotebook() {
     fetchWorkers,
     fetchServerWorkerRegistry,
     fetchDependencies,
+    fetchEnvironment,
     addDependencyAction,
     removeDependencyAction,
+    syncEnvironmentAction,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
     saveServerWorkerAction,

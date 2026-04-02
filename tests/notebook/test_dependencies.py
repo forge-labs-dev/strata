@@ -166,6 +166,8 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert "dependencies" in data
             assert isinstance(data["dependencies"], list)
+            assert "environment" in data
+            assert "sync_state" in data["environment"]
 
     def test_add_dependency_rest(self, setup):
         """POST /dependencies adds a package."""
@@ -181,6 +183,9 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert data["success"] is True
             assert data["package"] == "six"
+            assert "environment" in data
+            assert "declared_package_count" in data["environment"]
+            assert "stale_cell_count" in data
 
             # Verify via list
             resp2 = client.get(f"/v1/notebooks/{sid}/dependencies")
@@ -241,6 +246,8 @@ class TestDependencyRESTEndpoints:
             assert resp.status_code == 200
             data = resp.json()
             assert data["success"] is True
+            assert "environment" in data
+            assert "stale_cell_ids" in data
 
             # Verify removed
             resp2 = client.get(f"/v1/notebooks/{sid}/dependencies")
@@ -342,6 +349,8 @@ class TestDependencyWebSocket:
                 assert isinstance(deps, list)
                 names = [d["name"] for d in deps]
                 assert "six" in names
+                assert "environment" in msg["payload"]
+                assert "declared_package_count" in msg["payload"]["environment"]
 
     def test_dependency_add_via_ws_broadcasts_cell_status_updates(
         self, setup, monkeypatch
@@ -379,6 +388,8 @@ class TestDependencyWebSocket:
                 assert changed["payload"]["lockfile_changed"] is True
                 assert changed["payload"]["package"] == "six"
                 assert "cells" in changed["payload"]
+                assert changed["payload"]["stale_cell_count"] == 2
+                assert "environment" in changed["payload"]
 
                 status1 = ws.receive_until("cell_status", cell_id="c1")
                 status2 = ws.receive_until("cell_status", cell_id="c2")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -245,13 +246,7 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
     Records lockfile_hash and python_version so that clients can detect
     environment changes without recomputing hashes themselves.
     """
-    import sys
-
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore
-
+    from strata.notebook.dependencies import list_dependencies
     from strata.notebook.env import compute_lockfile_hash
 
     toml_path = notebook_dir / "notebook.toml"
@@ -265,12 +260,53 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
         _logger.debug("Cannot parse notebook.toml for env metadata update")
         return
 
+    python_version = ""
+    venv_python = notebook_dir / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        try:
+            result = subprocess.run(
+                [
+                    str(venv_python),
+                    "-c",
+                    (
+                        "import sys; "
+                        "print("
+                        "f'{sys.version_info.major}."
+                        "{sys.version_info.minor}."
+                        "{sys.version_info.micro}'"
+                        ")"
+                    ),
+                ],
+                cwd=str(notebook_dir),
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=10,
+            )
+            python_version = result.stdout.strip()
+        except Exception:
+            _logger.debug("Failed to probe notebook venv python version", exc_info=True)
+
+    resolved_package_count = 0
+    lock_path = notebook_dir / "uv.lock"
+    if lock_path.exists():
+        try:
+            with open(lock_path, "rb") as f:
+                lock_data = tomllib.load(f)
+            packages = lock_data.get("package", [])
+            resolved_package_count = len(packages) if isinstance(packages, list) else 0
+        except Exception:
+            _logger.debug("Failed to parse uv.lock for env metadata", exc_info=True)
+
+    declared_package_count = len(list_dependencies(notebook_dir))
     data["environment"] = {
         "lockfile_hash": compute_lockfile_hash(notebook_dir),
-        "python_version": (
-            f"{sys.version_info.major}.{sys.version_info.minor}"
-            f".{sys.version_info.micro}"
-        ),
+        "python_version": python_version,
+        "package_count": declared_package_count,
+        "declared_package_count": declared_package_count,
+        "resolved_package_count": resolved_package_count,
+        "has_lockfile": lock_path.exists(),
+        "last_synced_at": int(time.time() * 1000),
     }
 
     with open(toml_path, "wb") as f:

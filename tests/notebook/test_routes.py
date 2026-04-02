@@ -103,6 +103,10 @@ def test_open_notebook():
         assert data["name"] == "Test Notebook"
         assert "session_id" in data
         assert "id" in data
+        assert "environment" in data
+        assert "python_version" in data["environment"]
+        assert "sync_state" in data["environment"]
+        assert "declared_package_count" in data["environment"]
 
 
 def test_open_notebook_rehydrates_cached_status():
@@ -235,6 +239,74 @@ def test_create_notebook_endpoint():
         data = response.json()
         assert data["name"] == "New Notebook"
         assert "session_id" in data
+        assert "environment" in data
+        assert "lockfile_hash" in data["environment"]
+        assert "resolved_package_count" in data["environment"]
+
+
+def test_get_environment_status_endpoint():
+    """Test GET /v1/notebooks/{id}/environment endpoint."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Status Test")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.get(f"/v1/notebooks/{session_id}/environment")
+        assert response.status_code == 200
+        environment = response.json()["environment"]
+        assert "python_version" in environment
+        assert "lockfile_hash" in environment
+        assert "declared_package_count" in environment
+        assert "resolved_package_count" in environment
+        assert "sync_state" in environment
+        assert "last_synced_at" in environment
+
+
+def test_sync_environment_endpoint(monkeypatch):
+    """Test POST /v1/notebooks/{id}/environment/sync endpoint."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Sync Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+        write_cell(notebook_dir, "cell-1", "x = 1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.models import CellStaleness, CellStatus
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+
+        async def _fake_sync_environment():
+            session.environment_sync_state = "ready"
+            session.environment_sync_error = None
+            session.environment_last_synced_at = 1234567890
+            session.environment_python_version = "3.13.2"
+            return {"cell-1": CellStaleness(status=CellStatus.IDLE)}
+
+        monkeypatch.setattr(session, "sync_environment", _fake_sync_environment)
+
+        response = client.post(f"/v1/notebooks/{session_id}/environment/sync")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["environment"]["sync_state"] == "ready"
+        assert data["environment"]["python_version"] == "3.13.2"
+        assert "dependencies" in data
+        assert data["stale_cell_count"] == 1
+        assert data["stale_cell_ids"] == ["cell-1"]
+        assert "cells" in data
 
 
 def test_list_sessions_personal_mode(deployment_mode_state):

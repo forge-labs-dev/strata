@@ -1645,11 +1645,17 @@ async def _handle_dependency_add(
             "success": result.success,
             "error": result.error,
             "lockfile_changed": result.lockfile_changed,
-            "cells": [c.model_dump() for c in session.notebook_state.cells],
+            "cells": session.serialize_cells(),
             "dependencies": [
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
             ],
+            "environment": session.serialize_environment_state(),
+            "stale_cell_count": sum(
+                1
+                for staleness in outcome.staleness_map.values()
+                if staleness.status != CellStatus.READY
+            ),
         },
     }
     await _broadcast_message(notebook_id, msg)
@@ -1712,11 +1718,17 @@ async def _handle_dependency_remove(
             "success": result.success,
             "error": result.error,
             "lockfile_changed": result.lockfile_changed,
-            "cells": [c.model_dump() for c in session.notebook_state.cells],
+            "cells": session.serialize_cells(),
             "dependencies": [
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
             ],
+            "environment": session.serialize_environment_state(),
+            "stale_cell_count": sum(
+                1
+                for staleness in outcome.staleness_map.values()
+                if staleness.status != CellStatus.READY
+            ),
         },
     }
     await _broadcast_message(notebook_id, msg)

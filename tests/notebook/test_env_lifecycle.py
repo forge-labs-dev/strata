@@ -17,7 +17,7 @@ import pytest
 
 from strata.notebook.env import compute_lockfile_hash
 from strata.notebook.session import NotebookSession
-from strata.notebook.writer import _uv_sync, create_notebook
+from strata.notebook.writer import _uv_sync, create_notebook, update_environment_metadata
 
 pytestmark = pytest.mark.integration
 
@@ -103,6 +103,9 @@ class TestSessionVenvPython:
         # Should point to the notebook's venv
         assert session.venv_python.exists()
         assert ".venv" in str(session.venv_python)
+        assert session.environment_sync_state == "ready"
+        assert session.environment_sync_error is None
+        assert session.environment_last_synced_at is not None
 
     def test_venv_python_fallback_when_uv_missing(self, tmp_path: Path):
         """When uv is missing, session.venv_python falls back to 'python'."""
@@ -116,6 +119,30 @@ class TestSessionVenvPython:
             session.ensure_venv_synced()
 
         assert session.venv_python == Path("python")
+        assert session.environment_sync_state == "failed"
+        assert session.environment_sync_error is not None
+
+
+class TestEnvironmentMetadata:
+    """Environment metadata persisted to notebook.toml."""
+
+    def test_update_environment_metadata_records_runtime_fields(self, tmp_path: Path):
+        """Environment metadata should include richer sidebar status fields."""
+        import tomllib
+
+        nb_dir = create_notebook(tmp_path, "env_metadata")
+        update_environment_metadata(nb_dir)
+
+        with open(nb_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        environment = data["environment"]
+        assert "lockfile_hash" in environment
+        assert "python_version" in environment
+        assert "declared_package_count" in environment
+        assert "resolved_package_count" in environment
+        assert "has_lockfile" in environment
+        assert "last_synced_at" in environment
 
 
 class TestLockfileHash:

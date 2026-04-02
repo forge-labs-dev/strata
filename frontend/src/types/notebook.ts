@@ -280,6 +280,27 @@ export interface DependencyInfo {
   specifier: string
 }
 
+export interface NotebookEnvironment {
+  pythonVersion: string
+  lockfileHash: string
+  packageCount: number
+  declaredPackageCount: number
+  resolvedPackageCount: number
+  syncState: 'unknown' | 'ready' | 'fallback' | 'failed'
+  syncError: string | null
+  lastSyncedAt: number | null
+  hasLockfile: boolean
+  venvPython: string | null
+}
+
+export interface EnvironmentActionSummary {
+  action: 'add' | 'remove' | 'sync'
+  packageName: string | null
+  lockfileChanged: boolean
+  staleCellCount: number
+  timestamp: number
+}
+
 export interface Notebook {
   id: string
   name: string
@@ -290,11 +311,7 @@ export interface Notebook {
   mounts: MountSpec[]
   cells: Cell[]
   /** Environment info */
-  environment: {
-    pythonVersion: string
-    lockfileHash: string
-    packageCount: number
-  }
+  environment: NotebookEnvironment
   /** Published outputs exposed as stable endpoints */
   publishedOutputs?: PublishedOutput[]
   /** Global metadata */

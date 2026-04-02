@@ -429,7 +429,7 @@ async function refreshAdminNotebookWorker(workerName: string): Promise<any> {
 async function listDependencies(notebookId: string): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies`)
   if (!resp.ok) {
-    throw new Error(`Failed to list dependencies: ${resp.status}`)
+    await throwApiError(resp, 'Failed to list dependencies')
   }
   return resp.json()
 }
@@ -441,7 +441,7 @@ async function addDependency(notebookId: string, pkg: string): Promise<any> {
     body: JSON.stringify({ package: pkg }),
   })
   if (!resp.ok) {
-    throw new Error(`Failed to add dependency: ${resp.status}`)
+    await throwApiError(resp, 'Failed to add dependency')
   }
   return resp.json()
 }
@@ -454,7 +454,25 @@ async function removeDependency(notebookId: string, pkg: string): Promise<any> {
     },
   )
   if (!resp.ok) {
-    throw new Error(`Failed to remove dependency: ${resp.status}`)
+    await throwApiError(resp, 'Failed to remove dependency')
+  }
+  return resp.json()
+}
+
+async function getEnvironmentStatus(notebookId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to load notebook environment')
+  }
+  return resp.json()
+}
+
+async function syncEnvironment(notebookId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/sync`, {
+    method: 'POST',
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to sync notebook environment')
   }
   return resp.json()
 }
@@ -516,6 +534,8 @@ export function useStrata() {
     listDependencies,
     addDependency,
     removeDependency,
+    getEnvironmentStatus,
+    syncEnvironment,
     listSessions,
     getSession,
   }
