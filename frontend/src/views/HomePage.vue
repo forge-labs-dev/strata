@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStrata } from '../composables/useStrata'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
@@ -8,14 +8,29 @@ const router = useRouter()
 const strata = useStrata()
 const { entries: recentNotebooks, record, remove } = useRecentNotebooks()
 
-const DEFAULT_NOTEBOOK_PARENT_PATH = '/tmp/strata-notebooks'
+const FALLBACK_NOTEBOOK_PARENT_PATH = '/tmp/strata-notebooks'
 const newName = ref('Untitled Notebook')
-const newParentPath = ref(DEFAULT_NOTEBOOK_PARENT_PATH)
+const newParentPath = ref(FALLBACK_NOTEBOOK_PARENT_PATH)
 const showNewForm = ref(false)
 const showOpenForm = ref(false)
 const openPath = ref('')
 const loading = ref(false)
 const error = ref<string | null>(null)
+
+onMounted(async () => {
+  try {
+    const data = await strata.getNotebookRuntimeConfig()
+    const defaultParentPath =
+      typeof data?.default_parent_path === 'string' && data.default_parent_path.trim()
+        ? data.default_parent_path
+        : FALLBACK_NOTEBOOK_PARENT_PATH
+    if (newParentPath.value === FALLBACK_NOTEBOOK_PARENT_PATH) {
+      newParentPath.value = defaultParentPath
+    }
+  } catch (e) {
+    console.warn('Failed to load notebook config, using fallback parent path', e)
+  }
+})
 
 async function createNotebook() {
   if (!newName.value.trim()) return
@@ -118,7 +133,7 @@ function formatTime(ts: number): string {
             v-model="newParentPath"
             type="text"
             class="form-input"
-            :placeholder="DEFAULT_NOTEBOOK_PARENT_PATH"
+            :placeholder="FALLBACK_NOTEBOOK_PARENT_PATH"
           />
         </label>
         <div class="form-actions">

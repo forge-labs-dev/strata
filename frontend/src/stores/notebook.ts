@@ -17,6 +17,7 @@ import type {
   EditableWorkerSpec,
   ManagedWorkerSpec,
   NotebookEnvironment,
+  NotebookRuntimeConfig,
   WorkerCatalogEntry,
   WorkerHealth,
   WorkerHealthHistoryEntry,
@@ -31,6 +32,7 @@ import {
 } from '../utils/notebookWorkers'
 
 let nextOrder = 0
+const FALLBACK_NOTEBOOK_PARENT_PATH = '/tmp/strata-notebooks'
 
 // ---------------------------------------------------------------------------
 // Connection state — visible to the UI
@@ -616,6 +618,16 @@ function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
   notebook.environment = parseBackendEnvironment(serverEnvironment)
 }
 
+function parseBackendNotebookRuntimeConfig(raw: any): NotebookRuntimeConfig {
+  return {
+    deploymentMode: raw?.deployment_mode === 'service' ? 'service' : 'personal',
+    defaultParentPath:
+      typeof raw?.default_parent_path === 'string' && raw.default_parent_path.trim()
+        ? raw.default_parent_path
+        : FALLBACK_NOTEBOOK_PARENT_PATH,
+  }
+}
+
 function setEnvironmentActionSummary(raw: {
   action: 'add' | 'remove' | 'sync' | 'import'
   packageName?: string | null
@@ -850,19 +862,11 @@ async function boot(): Promise<void> {
     cellWorkerErrors.value = {}
     workerHealthCheckedAt.value = null
     clearServerWorkerRegistryState()
+    const runtimeConfig = parseBackendNotebookRuntimeConfig(await strata.getNotebookRuntimeConfig())
+
     // Create a scratch notebook
-    const data = await strata.createNotebook('/tmp/strata-notebooks', 'scratch')
-    notebook.id = data.id
-    notebook.name = data.name
-    notebook.worker = data.worker ?? null
-    notebook.timeout = data.timeout ?? null
-    notebook.env = parseEnvMap(data.env)
-    notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
-    notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
-    syncNotebookEnvironmentFromBackend(data.environment)
-    notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
-    notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
-    ;(notebook as any).sessionId = data.session_id
+    const data = await strata.createNotebook(runtimeConfig.defaultParentPath, 'scratch')
+    loadNotebookStateFromBackend(data)
 
     // New notebook starts with 0 cells — add one empty cell
     const cellData = await strata.addCell(data.session_id)

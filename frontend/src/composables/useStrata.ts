@@ -156,6 +156,14 @@ async function createNotebook(parentPath: string, name: string): Promise<any> {
   return resp.json()
 }
 
+async function getNotebookRuntimeConfig(): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/config`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to load notebook config')
+  }
+  return resp.json()
+}
+
 async function updateCellSource(
   notebookId: string,
   cellId: string,
@@ -581,6 +589,7 @@ export function useStrata() {
     fetchStream,
     openNotebook,
     createNotebook,
+    getNotebookRuntimeConfig,
     updateCellSource,
     addCell,
     removeCell,

@@ -295,6 +295,7 @@ class StrataConfig(BaseSettings):
     deployment_mode: Literal["service", "personal"] = "service"
     allow_remote_clients_in_personal: bool = False
     artifact_dir: Path | None = None
+    notebook_storage_dir: Path = Field(default_factory=lambda: Path("/tmp/strata-notebooks"))
 
     # Artifact blob storage backend configuration
     artifact_blob_backend: Literal["local", "s3", "gcs", "azure"] = "local"
@@ -352,7 +353,13 @@ class StrataConfig(BaseSettings):
     build_qos_bulk_bytes_threshold: Annotated[int, Field(gt=0)] = 100 * 1024 * 1024  # 100MB
     build_qos_bulk_inputs_threshold: Annotated[int, Field(ge=1)] = 5
 
-    @field_validator("cache_dir", "metadata_db", "artifact_dir", mode="before")
+    @field_validator(
+        "cache_dir",
+        "metadata_db",
+        "artifact_dir",
+        "notebook_storage_dir",
+        mode="before",
+    )
     @classmethod
     def convert_str_to_path(cls, v: Any) -> Path | None:
         """Convert string paths to Path objects."""
@@ -390,6 +397,9 @@ class StrataConfig(BaseSettings):
         # Ensure artifact_dir exists in personal mode
         if self.deployment_mode == "personal" and self.artifact_dir is not None:
             self.artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        # Ensure the default notebook storage directory exists.
+        self.notebook_storage_dir.mkdir(parents=True, exist_ok=True)
 
         return self
 

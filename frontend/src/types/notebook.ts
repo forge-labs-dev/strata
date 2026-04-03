@@ -296,6 +296,11 @@ export interface NotebookEnvironment {
   interpreterSource: 'unknown' | 'venv' | 'path'
 }
 
+export interface NotebookRuntimeConfig {
+  deploymentMode: 'personal' | 'service'
+  defaultParentPath: string
+}
+
 export interface EnvironmentActionSummary {
   action: 'add' | 'remove' | 'sync' | 'import'
   packageName: string | null

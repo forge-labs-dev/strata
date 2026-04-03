@@ -103,6 +103,7 @@ def test_open_notebook():
         assert data["name"] == "Test Notebook"
         assert "session_id" in data
         assert "id" in data
+        assert data["default_parent_path"] == "/tmp/strata-notebooks"
         assert "environment" in data
         assert "python_version" in data["environment"]
         assert "sync_state" in data["environment"]
@@ -241,9 +242,33 @@ def test_create_notebook_endpoint():
         data = response.json()
         assert data["name"] == "New Notebook"
         assert "session_id" in data
+        assert data["default_parent_path"] == "/tmp/strata-notebooks"
         assert "environment" in data
         assert "lockfile_hash" in data["environment"]
         assert "resolved_package_count" in data["environment"]
+
+
+def test_get_notebook_runtime_config_endpoint(monkeypatch):
+    """The runtime config endpoint should expose the server default notebook path."""
+    monkeypatch.setattr(
+        "strata.server._state",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                deployment_mode="personal",
+                notebook_storage_dir=Path("/srv/strata-notebooks"),
+                transforms_config={},
+            )
+        ),
+    )
+
+    client = TestClient(create_test_app())
+    response = client.get("/v1/notebooks/config")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "deployment_mode": "personal",
+        "default_parent_path": "/srv/strata-notebooks",
+    }
 
 
 def test_get_environment_status_endpoint():

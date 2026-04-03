@@ -160,6 +160,28 @@ def _serialize_environment_change(session: NotebookSession, staleness_map: dict)
     }
 
 
+def _serialize_notebook_runtime_config() -> dict:
+    """Serialize frontend-relevant notebook runtime defaults."""
+    deployment_mode = "service"
+    default_parent_path = Path("/tmp/strata-notebooks")
+
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+        deployment_mode = getattr(state.config, "deployment_mode", deployment_mode)
+        configured_path = getattr(state.config, "notebook_storage_dir", None)
+        if configured_path is not None:
+            default_parent_path = Path(configured_path)
+    except RuntimeError:
+        pass
+
+    return {
+        "deployment_mode": deployment_mode,
+        "default_parent_path": str(default_parent_path),
+    }
+
+
 def _serialize_dependency_info_list(dependencies: list) -> list[dict]:
     """Serialize dependency metadata for API responses."""
     return [
@@ -351,6 +373,7 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
         data["session_id"] = session.id
         data["path"] = str(session.path)
         data["dag"] = _format_dag(session)
+        data.update(_serialize_notebook_runtime_config())
         return data
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -377,6 +400,7 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
         data = session.serialize_notebook_state()
         data["session_id"] = session.id
         data["path"] = str(session.path)
+        data.update(_serialize_notebook_runtime_config())
         return data
     except Exception:
         logger.exception("Internal server error")
@@ -391,6 +415,12 @@ async def get_environment_status(notebook_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
     return _serialize_environment_payload(session)
+
+
+@router.get("/config")
+async def get_notebook_runtime_config() -> dict:
+    """Return frontend runtime defaults for notebook creation/open flows."""
+    return _serialize_notebook_runtime_config()
 
 
 @router.post("/{notebook_id}/environment/sync")
@@ -583,6 +613,7 @@ async def get_session(session_id: str) -> dict:
     data["session_id"] = session.id
     data["path"] = str(session.path)
     data["dag"] = _format_dag(session)
+    data.update(_serialize_notebook_runtime_config())
     return data
 
 
