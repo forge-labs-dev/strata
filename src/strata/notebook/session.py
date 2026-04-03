@@ -817,6 +817,40 @@ class NotebookSession:
                 self.path,
             )
 
+    def refresh_environment_runtime(self) -> None:
+        """Refresh runtime metadata from an existing notebook venv.
+
+        Dependency mutations already run ``uv add`` / ``uv remove``, which
+        update ``pyproject.toml``, rewrite ``uv.lock``, and sync ``.venv``.
+        Re-running ``uv sync`` immediately afterwards is redundant and can be
+        expensive, so the fast path just reuses the already-updated notebook
+        interpreter and re-probes lightweight runtime metadata.
+
+        If the notebook venv is unexpectedly missing, fall back to the normal
+        ``ensure_venv_synced()`` path so correctness wins over speed.
+        """
+        venv_python = self.path / ".venv" / "bin" / "python"
+        if not venv_python.exists():
+            logger.warning(
+                "Notebook venv missing after dependency change for %s; "
+                "falling back to uv sync",
+                self.path,
+            )
+            self.ensure_venv_synced()
+            return
+
+        started = _time.perf_counter()
+        self.venv_python = venv_python
+        self.environment_interpreter_source = "venv"
+        self.environment_python_version = self._probe_python_version(venv_python)
+        self.environment_sync_state = "ready"
+        self.environment_sync_error = None
+        self.environment_sync_notice = None
+        self.environment_last_synced_at = int(_time.time() * 1000)
+        self.environment_last_sync_duration_ms = int(
+            (_time.perf_counter() - started) * 1000
+        )
+
     async def _invalidate_warm_pool_for_environment_change(self) -> None:
         """Invalidate the warm pool after the runtime environment changes."""
         if self.warm_pool is None:
@@ -849,11 +883,13 @@ class NotebookSession:
     async def on_dependencies_changed(self) -> None:
         """React to dependency changes (lockfile updated).
 
-        Re-syncs venv, invalidates warm pool, and recomputes lockfile hash
-        for provenance.  Called after ``uv add`` / ``uv remove``.
+        Refreshes runtime metadata from the already-updated notebook venv,
+        invalidates the warm pool, and recomputes lockfile hash for
+        provenance. Called after ``uv add`` / ``uv remove``.
         """
-        # 1. Re-sync venv so venv_python is up-to-date and invalidate warm pool.
-        await asyncio.to_thread(self.ensure_venv_synced)
+        # 1. Dependency mutation already synced .venv. Reuse that interpreter
+        #    instead of immediately running a second uv sync.
+        await asyncio.to_thread(self.refresh_environment_runtime)
         await self._invalidate_warm_pool_for_environment_change()
 
         # 2. Recompute lockfile hash (triggers cache invalidation on next exec)

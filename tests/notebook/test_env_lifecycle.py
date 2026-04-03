@@ -150,6 +150,74 @@ class TestSessionVenvPython:
         assert session.environment_sync_notice is None
         assert session.environment_interpreter_source == "path"
 
+    def test_refresh_environment_runtime_reuses_existing_venv(self, tmp_path: Path):
+        """Dependency changes should refresh runtime state without a second uv sync."""
+        nb_dir = create_notebook(tmp_path, "refresh_runtime")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch("strata.notebook.session._uv_sync") as mock_uv_sync:
+            session.refresh_environment_runtime()
+
+        mock_uv_sync.assert_not_called()
+        assert session.venv_python is not None
+        assert session.venv_python.exists()
+        assert ".venv" in str(session.venv_python)
+        assert session.environment_sync_state == "ready"
+        assert session.environment_sync_error is None
+        assert session.environment_sync_notice is None
+        assert session.environment_interpreter_source == "venv"
+
+    def test_refresh_environment_runtime_falls_back_when_venv_missing(
+        self, tmp_path: Path
+    ):
+        """If the notebook venv is missing, refresh should fall back to uv sync."""
+        import shutil
+
+        nb_dir = create_notebook(tmp_path, "refresh_runtime_fallback")
+        shutil.rmtree(nb_dir / ".venv")
+
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch.object(session, "ensure_venv_synced") as mock_sync:
+            session.refresh_environment_runtime()
+
+        mock_sync.assert_called_once()
+
+
+class TestDependencyChangeRefresh:
+    """Dependency mutations should reuse the synced environment when possible."""
+
+    @pytest.mark.asyncio
+    async def test_on_dependencies_changed_uses_runtime_refresh(self, tmp_path: Path):
+        """Post-mutation refresh should not trigger a second uv sync."""
+        nb_dir = create_notebook(tmp_path, "dependency_refresh")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch.object(session, "refresh_environment_runtime") as mock_refresh:
+            with patch.object(session, "ensure_venv_synced") as mock_sync:
+                with patch.object(
+                    session,
+                    "_invalidate_warm_pool_for_environment_change",
+                ) as mock_invalidate:
+                    with patch(
+                        "strata.notebook.session.update_environment_metadata"
+                    ) as mock_update_metadata:
+                        await session.on_dependencies_changed()
+
+        mock_refresh.assert_called_once()
+        mock_sync.assert_not_called()
+        mock_invalidate.assert_awaited_once()
+        mock_update_metadata.assert_called_once_with(nb_dir)
+
 
 class TestEnvironmentMetadata:
     """Environment metadata persisted to notebook.toml."""
