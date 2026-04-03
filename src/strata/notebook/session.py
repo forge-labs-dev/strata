@@ -119,8 +119,11 @@ class NotebookSession:
         # Environment/runtime sync state for the current notebook venv.
         self.environment_sync_state: str = "unknown"
         self.environment_sync_error: str | None = None
+        self.environment_sync_notice: str | None = None
         self.environment_last_synced_at: int | None = None
+        self.environment_last_sync_duration_ms: int | None = None
         self.environment_python_version: str = ""
+        self.environment_interpreter_source: str = "unknown"
 
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
@@ -525,9 +528,12 @@ class NotebookSession:
             "resolved_package_count": self._resolved_package_count(),
             "sync_state": self.environment_sync_state,
             "sync_error": self.environment_sync_error,
+            "sync_notice": self.environment_sync_notice,
             "last_synced_at": self.environment_last_synced_at,
+            "last_sync_duration_ms": self.environment_last_sync_duration_ms,
             "has_lockfile": (self.path / "uv.lock").exists(),
             "venv_python": str(self.venv_python) if self.venv_python else None,
+            "interpreter_source": self.environment_interpreter_source,
         }
 
     def serialize_worker_catalog(self) -> list[dict[str, Any]]:
@@ -756,36 +762,60 @@ class NotebookSession:
         On failure the session still opens (venv_python falls back to
         ``python`` in PATH) so tests without ``uv`` keep working.
         """
+        started = _time.perf_counter()
         ok = _uv_sync(self.path)
         self.environment_last_synced_at = int(_time.time() * 1000)
+        self.environment_last_sync_duration_ms = int(
+            (_time.perf_counter() - started) * 1000
+        )
 
         # Locate python inside the venv created by uv
         venv_python = self.path / ".venv" / "bin" / "python"
-        if ok and venv_python.exists():
+        if venv_python.exists():
             self.venv_python = venv_python
+            self.environment_interpreter_source = "venv"
+            self.environment_python_version = self._probe_python_version(venv_python)
             self.environment_sync_state = "ready"
             self.environment_sync_error = None
-            self.environment_python_version = self._probe_python_version(venv_python)
-        else:
-            self.venv_python = Path("python")
             if ok:
-                self.environment_sync_state = "fallback"
-                self.environment_sync_error = (
-                    "uv sync succeeded but the notebook venv interpreter was not "
-                    "found; using python from PATH."
+                self.environment_sync_notice = None
+            else:
+                self.environment_sync_notice = (
+                    "Environment refresh failed, but the existing notebook venv is "
+                    "still available and will be used."
                 )
-                self.environment_python_version = self._probe_python_version(self.venv_python)
                 logger.warning(
-                    "uv sync succeeded but .venv/bin/python not found in %s",
+                    "uv sync failed for %s, using existing notebook venv",
                     self.path,
                 )
-            else:
-                self.environment_sync_state = "failed"
-                self.environment_sync_error = (
-                    "uv sync failed or uv is unavailable; notebook execution will "
-                    "fall back to python from PATH."
-                )
-                self.environment_python_version = self._probe_python_version(self.venv_python)
+        elif ok:
+            self.venv_python = Path("python")
+            self.environment_interpreter_source = "path"
+            self.environment_sync_state = "fallback"
+            self.environment_sync_error = (
+                "uv sync succeeded but the notebook venv interpreter was not "
+                "found; using python from PATH."
+            )
+            self.environment_sync_notice = None
+            self.environment_python_version = self._probe_python_version(self.venv_python)
+            logger.warning(
+                "uv sync succeeded but .venv/bin/python not found in %s",
+                self.path,
+            )
+        else:
+            self.venv_python = Path("python")
+            self.environment_interpreter_source = "path"
+            self.environment_sync_state = "failed"
+            self.environment_sync_error = (
+                "Environment refresh failed and no notebook venv is available; "
+                "notebook execution will fall back to python from PATH."
+            )
+            self.environment_sync_notice = None
+            self.environment_python_version = self._probe_python_version(self.venv_python)
+            logger.warning(
+                "uv sync failed and no notebook venv is available for %s",
+                self.path,
+            )
 
     async def _invalidate_warm_pool_for_environment_change(self) -> None:
         """Invalidate the warm pool after the runtime environment changes."""

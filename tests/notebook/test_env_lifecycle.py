@@ -105,11 +105,37 @@ class TestSessionVenvPython:
         assert ".venv" in str(session.venv_python)
         assert session.environment_sync_state == "ready"
         assert session.environment_sync_error is None
+        assert session.environment_sync_notice is None
         assert session.environment_last_synced_at is not None
+        assert session.environment_last_sync_duration_ms is not None
+        assert session.environment_interpreter_source == "venv"
 
     def test_venv_python_fallback_when_uv_missing(self, tmp_path: Path):
-        """When uv is missing, session.venv_python falls back to 'python'."""
+        """When uv is missing but .venv exists, keep using the notebook venv."""
         nb_dir = create_notebook(tmp_path, "no_uv_session")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch("strata.notebook.writer.subprocess.run", side_effect=FileNotFoundError):
+            session.ensure_venv_synced()
+
+        assert session.venv_python is not None
+        assert session.venv_python.exists()
+        assert ".venv" in str(session.venv_python)
+        assert session.environment_sync_state == "ready"
+        assert session.environment_sync_error is None
+        assert session.environment_sync_notice is not None
+        assert session.environment_interpreter_source == "venv"
+
+    def test_path_fallback_when_uv_missing_and_no_venv(self, tmp_path: Path):
+        """Without uv and without .venv, the session falls back to PATH python."""
+        import shutil
+
+        nb_dir = create_notebook(tmp_path, "no_uv_no_venv")
+        shutil.rmtree(nb_dir / ".venv")
+
         from strata.notebook.parser import parse_notebook
 
         state = parse_notebook(nb_dir)
@@ -121,6 +147,8 @@ class TestSessionVenvPython:
         assert session.venv_python == Path("python")
         assert session.environment_sync_state == "failed"
         assert session.environment_sync_error is not None
+        assert session.environment_sync_notice is None
+        assert session.environment_interpreter_source == "path"
 
 
 class TestEnvironmentMetadata:
@@ -143,6 +171,20 @@ class TestEnvironmentMetadata:
         assert "resolved_package_count" in environment
         assert "has_lockfile" in environment
         assert "last_synced_at" in environment
+
+    def test_serialize_environment_state_includes_runtime_details(self, tmp_path: Path):
+        """Live environment state should expose runtime source and sync metadata."""
+        nb_dir = create_notebook(tmp_path, "env_state")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+        session.ensure_venv_synced()
+
+        environment = session.serialize_environment_state()
+        assert environment["interpreter_source"] == "venv"
+        assert "sync_notice" in environment
+        assert "last_sync_duration_ms" in environment
 
 
 class TestLockfileHash:

@@ -58,9 +58,12 @@ const notebook = reactive<Notebook>({
     resolvedPackageCount: 0,
     syncState: 'unknown',
     syncError: null,
+    syncNotice: null,
     lastSyncedAt: null,
+    lastSyncDurationMs: null,
     hasLockfile: false,
     venvPython: null,
+    interpreterSource: 'unknown',
   },
   createdAt: Date.now(),
   updatedAt: Date.now(),
@@ -273,11 +276,18 @@ function parseBackendEnvironment(raw: any): NotebookEnvironment {
       ? raw.sync_state
       : 'unknown',
     syncError: typeof raw?.sync_error === 'string' ? raw.sync_error : null,
+    syncNotice: typeof raw?.sync_notice === 'string' ? raw.sync_notice : null,
     lastSyncedAt:
       typeof raw?.last_synced_at === 'number'
         ? raw.last_synced_at
         : typeof raw?.lastSyncedAt === 'number'
           ? raw.lastSyncedAt
+          : null,
+    lastSyncDurationMs:
+      typeof raw?.last_sync_duration_ms === 'number'
+        ? raw.last_sync_duration_ms
+        : typeof raw?.lastSyncDurationMs === 'number'
+          ? raw.lastSyncDurationMs
           : null,
     hasLockfile: raw?.has_lockfile === true || raw?.hasLockfile === true,
     venvPython:
@@ -286,6 +296,12 @@ function parseBackendEnvironment(raw: any): NotebookEnvironment {
         : typeof raw?.venvPython === 'string'
           ? raw.venvPython
           : null,
+    interpreterSource:
+      raw?.interpreter_source === 'venv' || raw?.interpreterSource === 'venv'
+        ? 'venv'
+        : raw?.interpreter_source === 'path' || raw?.interpreterSource === 'path'
+          ? 'path'
+          : 'unknown',
   }
 }
 

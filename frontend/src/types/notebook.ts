@@ -288,9 +288,12 @@ export interface NotebookEnvironment {
   resolvedPackageCount: number
   syncState: 'unknown' | 'ready' | 'fallback' | 'failed'
   syncError: string | null
+  syncNotice: string | null
   lastSyncedAt: number | null
+  lastSyncDurationMs: number | null
   hasLockfile: boolean
   venvPython: string | null
+  interpreterSource: 'unknown' | 'venv' | 'path'
 }
 
 export interface EnvironmentActionSummary {

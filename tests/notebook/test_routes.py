@@ -107,6 +107,8 @@ def test_open_notebook():
         assert "python_version" in data["environment"]
         assert "sync_state" in data["environment"]
         assert "declared_package_count" in data["environment"]
+        assert "interpreter_source" in data["environment"]
+        assert "last_sync_duration_ms" in data["environment"]
 
 
 def test_open_notebook_rehydrates_cached_status():
@@ -266,6 +268,8 @@ def test_get_environment_status_endpoint():
         assert "resolved_package_count" in environment
         assert "sync_state" in environment
         assert "last_synced_at" in environment
+        assert "interpreter_source" in environment
+        assert "last_sync_duration_ms" in environment
 
 
 def test_sync_environment_endpoint(monkeypatch):
@@ -292,8 +296,11 @@ def test_sync_environment_endpoint(monkeypatch):
         async def _fake_sync_environment():
             session.environment_sync_state = "ready"
             session.environment_sync_error = None
+            session.environment_sync_notice = "Using existing notebook venv."
             session.environment_last_synced_at = 1234567890
+            session.environment_last_sync_duration_ms = 42
             session.environment_python_version = "3.13.2"
+            session.environment_interpreter_source = "venv"
             return {"cell-1": CellStaleness(status=CellStatus.IDLE)}
 
         monkeypatch.setattr(session, "sync_environment", _fake_sync_environment)
@@ -303,6 +310,9 @@ def test_sync_environment_endpoint(monkeypatch):
         data = response.json()
         assert data["environment"]["sync_state"] == "ready"
         assert data["environment"]["python_version"] == "3.13.2"
+        assert data["environment"]["sync_notice"] == "Using existing notebook venv."
+        assert data["environment"]["last_sync_duration_ms"] == 42
+        assert data["environment"]["interpreter_source"] == "venv"
         assert "dependencies" in data
         assert data["stale_cell_count"] == 1
         assert data["stale_cell_ids"] == ["cell-1"]

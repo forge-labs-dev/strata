@@ -33,7 +33,7 @@ const syncStateLabel = computed(() => {
     case 'ready':
       return 'Ready'
     case 'fallback':
-      return 'Fallback'
+      return 'PATH Fallback'
     case 'failed':
       return 'Failed'
     default:
@@ -50,6 +50,22 @@ const shortLockfileHash = computed(() =>
 const lastSyncedLabel = computed(() => {
   if (!notebook.environment.lastSyncedAt) return 'Not synced yet'
   return new Date(notebook.environment.lastSyncedAt).toLocaleString()
+})
+
+const lastSyncDurationLabel = computed(() => {
+  if (notebook.environment.lastSyncDurationMs == null) return 'Unknown'
+  return `${notebook.environment.lastSyncDurationMs} ms`
+})
+
+const interpreterSourceLabel = computed(() => {
+  switch (notebook.environment.interpreterSource) {
+    case 'venv':
+      return 'Notebook venv'
+    case 'path':
+      return 'PATH fallback'
+    default:
+      return 'Unknown'
+  }
 })
 
 const lastActionLabel = computed(() => {
@@ -203,6 +219,8 @@ function downloadRequirements() {
 
       <div class="env-meta">
         <div>Last sync: {{ lastSyncedLabel }}</div>
+        <div>Last sync duration: {{ lastSyncDurationLabel }}</div>
+        <div>Runtime source: {{ interpreterSourceLabel }}</div>
         <div v-if="notebook.environment.venvPython">
           Interpreter: <code>{{ notebook.environment.venvPython }}</code>
         </div>
@@ -215,6 +233,10 @@ function downloadRequirements() {
 
       <div v-if="environmentError || notebook.environment.syncError" class="env-error">
         {{ environmentError || notebook.environment.syncError }}
+      </div>
+
+      <div v-if="notebook.environment.syncNotice" class="env-notice">
+        {{ notebook.environment.syncNotice }}
       </div>
 
       <div v-if="environmentWarnings.length > 0" class="env-warning">
@@ -514,6 +536,16 @@ function downloadRequirements() {
 }
 
 .env-warning {
+  color: #f9e2af;
+  font-size: 11px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  background: rgb(249 226 175 / 10%);
+  border: 1px solid rgb(249 226 175 / 18%);
+  border-radius: 6px;
+}
+
+.env-notice {
   color: #f9e2af;
   font-size: 11px;
   margin-bottom: 6px;
