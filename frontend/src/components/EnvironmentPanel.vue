@@ -5,28 +5,37 @@ import { useNotebook } from '../stores/notebook'
 const {
   notebook,
   dependencies,
+  resolvedDependencies,
   dependencyLoading,
   dependencyError,
   environmentLoading,
   environmentError,
   environmentWarnings,
   environmentLastAction,
+  environmentImportPreview,
   addDependencyAction,
   removeDependencyAction,
   syncEnvironmentAction,
   exportRequirementsAction,
+  previewRequirementsImportAction,
   importRequirementsAction,
+  previewEnvironmentYamlImportAction,
   importEnvironmentYamlAction,
+  clearEnvironmentImportPreview,
   fetchEnvironment,
   connected,
 } = useNotebook()
 
 const newPackage = ref('')
 const showPanel = ref(false)
+const packageView = ref<'declared' | 'resolved'>('declared')
+const packageFilter = ref('')
 const requirementsMode = ref<'requirements-import' | 'requirements-export' | 'yaml-import' | null>(
   null,
 )
 const requirementsText = ref('')
+const importFileName = ref('')
+const lastPreviewSignature = ref<string | null>(null)
 
 const syncStateLabel = computed(() => {
   switch (notebook.environment.syncState) {
@@ -42,6 +51,7 @@ const syncStateLabel = computed(() => {
 })
 
 const syncStateClass = computed(() => `state-${notebook.environment.syncState}`)
+const syncButtonLabel = computed(() => (environmentLoading.value ? 'Rebuilding…' : 'Rebuild .venv'))
 
 const shortLockfileHash = computed(() =>
   notebook.environment.lockfileHash ? notebook.environment.lockfileHash.slice(0, 12) : 'none',
@@ -68,6 +78,44 @@ const interpreterSourceLabel = computed(() => {
   }
 })
 
+const filteredDeclaredDependencies = computed(() => {
+  const query = packageFilter.value.trim().toLowerCase()
+  if (!query) return dependencies.value
+  return dependencies.value.filter((dep) =>
+    `${dep.name} ${dep.specifier} ${dep.version}`.toLowerCase().includes(query),
+  )
+})
+
+const filteredResolvedDependencies = computed(() => {
+  const query = packageFilter.value.trim().toLowerCase()
+  if (!query) return resolvedDependencies.value
+  return resolvedDependencies.value.filter((dep) =>
+    `${dep.name} ${dep.version}`.toLowerCase().includes(query),
+  )
+})
+
+const currentPackageList = computed(() =>
+  packageView.value === 'declared'
+    ? filteredDeclaredDependencies.value
+    : filteredResolvedDependencies.value,
+)
+
+const currentImportSignature = computed(() => {
+  if (!requirementsMode.value || requirementsMode.value === 'requirements-export') return null
+  return `${requirementsMode.value}:${requirementsText.value}`
+})
+
+const hasFreshImportPreview = computed(() => {
+  if (!environmentImportPreview.value) return false
+  if (lastPreviewSignature.value !== currentImportSignature.value) return false
+  return (
+    (requirementsMode.value === 'requirements-import' &&
+      environmentImportPreview.value.kind === 'requirements') ||
+    (requirementsMode.value === 'yaml-import' &&
+      environmentImportPreview.value.kind === 'environment_yaml')
+  )
+})
+
 const lastActionLabel = computed(() => {
   const action = environmentLastAction.value
   if (!action) return ''
@@ -79,7 +127,7 @@ const lastActionLabel = computed(() => {
         ? `Removed ${action.packageName}`
         : action.action === 'import'
           ? 'Imported environment file'
-          : 'Synced environment'
+          : 'Rebuilt environment'
   const stale =
     action.staleCellCount > 0
       ? ` · ${action.staleCellCount} cell${action.staleCellCount === 1 ? '' : 's'} affected`
@@ -111,32 +159,69 @@ async function removePackage(name: string) {
 
 async function openRequirementsExport() {
   requirementsText.value = await exportRequirementsAction()
+  importFileName.value = ''
+  lastPreviewSignature.value = null
+  clearEnvironmentImportPreview()
   requirementsMode.value = 'requirements-export'
 }
 
 function openRequirementsImport() {
   requirementsText.value = ''
+  importFileName.value = ''
+  lastPreviewSignature.value = null
+  clearEnvironmentImportPreview()
   requirementsMode.value = 'requirements-import'
 }
 
 function openEnvironmentYamlImport() {
   requirementsText.value = ''
+  importFileName.value = ''
+  lastPreviewSignature.value = null
+  clearEnvironmentImportPreview()
   requirementsMode.value = 'yaml-import'
 }
 
 function closeRequirementsEditor() {
   requirementsMode.value = null
+  importFileName.value = ''
+  lastPreviewSignature.value = null
+  clearEnvironmentImportPreview()
+}
+
+async function previewImport() {
+  if (requirementsMode.value === 'requirements-export') return
+  if (requirementsMode.value === 'yaml-import') {
+    await previewEnvironmentYamlImportAction(requirementsText.value)
+  } else {
+    await previewRequirementsImportAction(requirementsText.value)
+  }
+  if (!environmentError.value) {
+    lastPreviewSignature.value = currentImportSignature.value
+  }
 }
 
 async function applyRequirementsImport() {
+  if (!hasFreshImportPreview.value) return
   if (requirementsMode.value === 'yaml-import') {
     await importEnvironmentYamlAction(requirementsText.value)
   } else {
     await importRequirementsAction(requirementsText.value)
   }
   if (!environmentError.value) {
+    lastPreviewSignature.value = null
     requirementsMode.value = null
   }
+}
+
+async function handleImportFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  requirementsText.value = await file.text()
+  importFileName.value = file.name
+  lastPreviewSignature.value = null
+  clearEnvironmentImportPreview()
+  input.value = ''
 }
 
 function downloadRequirements() {
@@ -153,16 +238,22 @@ function downloadRequirements() {
 <template>
   <div class="env-panel">
     <button class="env-toggle" @click="showPanel = !showPanel">
-      {{ showPanel ? 'Environment' : 'Environment' }}
+      Environment
       <span class="dep-count">{{ notebook.environment.declaredPackageCount }}</span>
       <span class="toggle-icon">{{ showPanel ? '&#9650;' : '&#9660;' }}</span>
     </button>
 
     <div v-if="showPanel" class="env-content">
       <div class="env-header">
-        <div class="env-status">
-          <span class="status-dot" :class="syncStateClass"></span>
-          <span>{{ syncStateLabel }}</span>
+        <div class="env-status-block">
+          <div class="env-status">
+            <span class="status-dot" :class="syncStateClass"></span>
+            <span>{{ syncStateLabel }}</span>
+          </div>
+          <div class="env-status-help">
+            Rebuilds the notebook <code>.venv</code> from <code>pyproject.toml</code> and
+            <code>uv.lock</code>, refreshes runtime metadata, and resets warm execution state.
+          </div>
         </div>
         <div class="env-actions">
           <button
@@ -170,7 +261,7 @@ function downloadRequirements() {
             :disabled="!connected || dependencyLoading || environmentLoading"
             @click="syncEnvironmentAction"
           >
-            {{ environmentLoading ? 'Syncing…' : 'Sync Environment' }}
+            {{ syncButtonLabel }}
           </button>
           <button
             class="btn-secondary"
@@ -264,10 +355,25 @@ function downloadRequirements() {
             requirementsMode === 'requirements-export'
               ? 'These are the direct notebook dependencies managed by pyproject.toml and uv.lock.'
               : requirementsMode === 'yaml-import'
-                ? 'Paste a Conda-style environment.yaml. Channels and python pins are imported best-effort and may be ignored with warnings.'
-                : 'Paste plain package specifiers, one per line. Comments are allowed; pip flags and nested includes are not.'
+                ? 'Paste or upload a Conda-style environment.yaml. Preview first; apply will replace the notebook’s direct dependencies. Channels and python pins are imported best-effort and may be ignored with warnings.'
+                : 'Paste or upload plain package specifiers, one per line. Preview first; apply will replace the notebook’s direct dependencies. Comments are allowed; pip flags and nested includes are not.'
           }}
         </p>
+        <div v-if="requirementsMode !== 'requirements-export'" class="requirements-file-row">
+          <label class="file-picker">
+            <input
+              type="file"
+              :accept="
+                requirementsMode === 'yaml-import'
+                  ? '.yaml,.yml,text/yaml,text/x-yaml'
+                  : '.txt,text/plain'
+              "
+              @change="handleImportFile"
+            />
+            Load file
+          </label>
+          <span v-if="importFileName" class="file-name">{{ importFileName }}</span>
+        </div>
         <textarea
           v-model="requirementsText"
           class="requirements-textarea"
@@ -278,6 +384,40 @@ function downloadRequirements() {
               : 'pandas==2.2.3\nnumpy>=2.0'
           "
         />
+        <div v-if="environmentImportPreview && hasFreshImportPreview" class="import-preview">
+          <div class="import-preview-summary">
+            {{ environmentImportPreview.importedCount }} direct package{{
+              environmentImportPreview.importedCount === 1 ? '' : 's'
+            }}
+            after import · {{ environmentImportPreview.additions.length }} add ·
+            {{ environmentImportPreview.removals.length }} remove ·
+            {{ environmentImportPreview.unchanged.length }} unchanged
+          </div>
+
+          <div v-if="environmentImportPreview.additions.length > 0" class="import-preview-block">
+            <strong>Add</strong>
+            <ul class="import-preview-list">
+              <li
+                v-for="dep in environmentImportPreview.additions"
+                :key="`add-${dep.name}-${dep.specifier}`"
+              >
+                <code>{{ dep.name }}{{ dep.specifier || '' }}</code>
+              </li>
+            </ul>
+          </div>
+
+          <div v-if="environmentImportPreview.removals.length > 0" class="import-preview-block">
+            <strong>Remove</strong>
+            <ul class="import-preview-list">
+              <li
+                v-for="dep in environmentImportPreview.removals"
+                :key="`remove-${dep.name}-${dep.specifier}`"
+              >
+                <code>{{ dep.name }}{{ dep.specifier || '' }}</code>
+              </li>
+            </ul>
+          </div>
+        </div>
         <div class="requirements-actions">
           <button
             v-if="requirementsMode === 'requirements-export'"
@@ -289,13 +429,54 @@ function downloadRequirements() {
           </button>
           <button
             v-if="requirementsMode !== 'requirements-export'"
+            class="btn-secondary"
+            :disabled="
+              !connected || dependencyLoading || environmentLoading || !requirementsText.trim()
+            "
+            @click="previewImport"
+          >
+            {{ environmentLoading ? 'Previewing…' : 'Preview Import' }}
+          </button>
+          <button
+            v-if="requirementsMode !== 'requirements-export'"
             class="btn-sync"
-            :disabled="!connected || dependencyLoading || environmentLoading"
+            :disabled="
+              !connected ||
+              dependencyLoading ||
+              environmentLoading ||
+              !requirementsText.trim() ||
+              !hasFreshImportPreview
+            "
             @click="applyRequirementsImport"
           >
             {{ environmentLoading ? 'Importing…' : 'Apply Import' }}
           </button>
         </div>
+      </div>
+
+      <div class="package-view-bar">
+        <div class="package-view-tabs">
+          <button
+            class="package-view-tab"
+            :class="{ active: packageView === 'declared' }"
+            @click="packageView = 'declared'"
+          >
+            Declared
+          </button>
+          <button
+            class="package-view-tab"
+            :class="{ active: packageView === 'resolved' }"
+            @click="packageView = 'resolved'"
+          >
+            Resolved
+          </button>
+        </div>
+        <input
+          v-model="packageFilter"
+          type="text"
+          class="package-filter"
+          placeholder="Filter packages"
+        />
       </div>
 
       <div class="add-dep">
@@ -320,14 +501,25 @@ function downloadRequirements() {
         {{ dependencyError }}
       </div>
 
-      <div v-if="dependencies.length === 0" class="dep-empty">No declared packages</div>
+      <div v-if="currentPackageList.length === 0" class="dep-empty">
+        {{ packageView === 'declared' ? 'No declared packages' : 'No resolved packages' }}
+      </div>
       <ul v-else class="dep-list">
-        <li v-for="dep in dependencies" :key="dep.name" class="dep-item">
+        <li
+          v-for="dep in currentPackageList"
+          :key="`${packageView}-${dep.name}-${dep.specifier}-${dep.version}`"
+          class="dep-item"
+        >
           <div class="dep-details">
             <span class="dep-name">{{ dep.name }}</span>
-            <span class="dep-version">{{ dep.version || dep.specifier || 'unpinned' }}</span>
+            <span class="dep-version">{{
+              packageView === 'resolved'
+                ? dep.version || 'unknown'
+                : dep.version || dep.specifier || 'unpinned'
+            }}</span>
           </div>
           <button
+            v-if="packageView === 'declared'"
             class="btn-remove"
             title="Remove"
             :disabled="dependencyLoading || environmentLoading"
@@ -394,6 +586,12 @@ function downloadRequirements() {
   margin-bottom: 8px;
 }
 
+.env-status-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .env-status {
   display: inline-flex;
   align-items: center;
@@ -401,6 +599,17 @@ function downloadRequirements() {
   color: #cdd6f4;
   font-size: 12px;
   font-weight: 600;
+}
+
+.env-status-help {
+  color: #a6adc8;
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: 320px;
+}
+
+.env-status-help code {
+  color: #89b4fa;
 }
 
 .status-dot {
@@ -453,21 +662,13 @@ function downloadRequirements() {
   cursor: pointer;
 }
 
-.btn-sync:hover {
-  border-color: #89b4fa;
-  color: #89b4fa;
-}
-
+.btn-sync:hover,
 .btn-secondary:hover {
   border-color: #89b4fa;
   color: #89b4fa;
 }
 
-.btn-sync:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
+.btn-sync:disabled,
 .btn-secondary:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -535,16 +736,7 @@ function downloadRequirements() {
   border-radius: 6px;
 }
 
-.env-warning {
-  color: #f9e2af;
-  font-size: 11px;
-  margin-bottom: 6px;
-  padding: 6px 8px;
-  background: rgb(249 226 175 / 10%);
-  border: 1px solid rgb(249 226 175 / 18%);
-  border-radius: 6px;
-}
-
+.env-warning,
 .env-notice {
   color: #f9e2af;
   font-size: 11px;
@@ -584,6 +776,39 @@ function downloadRequirements() {
   margin-bottom: 8px;
 }
 
+.requirements-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.file-picker {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #45475a;
+  background: transparent;
+  color: #cdd6f4;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.file-picker input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-name {
+  color: #a6adc8;
+  font-size: 11px;
+  word-break: break-all;
+}
+
 .requirements-textarea {
   width: 100%;
   min-height: 120px;
@@ -602,6 +827,32 @@ function downloadRequirements() {
   border-color: #89b4fa;
 }
 
+.import-preview {
+  margin-bottom: 8px;
+  padding: 8px;
+  border: 1px solid #313244;
+  background: #1a1c2a;
+  border-radius: 8px;
+}
+
+.import-preview-summary {
+  color: #cdd6f4;
+  font-size: 11px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.import-preview-block {
+  margin-top: 6px;
+  color: #a6adc8;
+  font-size: 11px;
+}
+
+.import-preview-list {
+  margin: 4px 0 0;
+  padding-left: 16px;
+}
+
 .requirements-actions {
   display: flex;
   justify-content: flex-end;
@@ -618,24 +869,64 @@ function downloadRequirements() {
 }
 
 .btn-link:hover {
-  color: #74c7ec;
+  text-decoration: underline;
+}
+
+.package-view-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.package-view-tabs {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.package-view-tab {
+  border: 1px solid #313244;
+  background: transparent;
+  color: #a6adc8;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.package-view-tab.active {
+  border-color: #89b4fa;
+  color: #89b4fa;
+  background: rgb(137 180 250 / 10%);
+}
+
+.package-filter {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #313244;
+  background: #1a1c2a;
+  color: #cdd6f4;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
 }
 
 .add-dep {
   display: flex;
-  gap: 4px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
 .dep-input {
   flex: 1;
-  padding: 6px 8px;
-  background: #313244;
-  border: 1px solid #45475a;
+  min-width: 0;
+  background: #1a1c2a;
+  border: 1px solid #313244;
   border-radius: 6px;
+  padding: 8px 10px;
   color: #cdd6f4;
   font-size: 12px;
-  min-width: 0;
 }
 
 .dep-input:focus {
@@ -643,42 +934,34 @@ function downloadRequirements() {
   border-color: #89b4fa;
 }
 
-.dep-input::placeholder {
-  color: #585b70;
-}
-
 .btn-add {
-  background: #89b4fa;
-  color: #1e1e2e;
-  border: none;
-  width: 32px;
+  border: 1px solid #45475a;
+  background: #1e2030;
+  color: #cdd6f4;
   border-radius: 6px;
-  font-size: 14px;
-  font-weight: 700;
+  min-width: 36px;
+  padding: 0 10px;
   cursor: pointer;
-  flex-shrink: 0;
-}
-
-.btn-add:hover {
-  background: #74c7ec;
 }
 
 .btn-add:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .dep-empty {
-  color: #585b70;
-  font-size: 12px;
-  text-align: center;
-  padding: 8px 0;
+  color: #6c7086;
+  font-size: 11px;
+  padding: 6px 0;
 }
 
 .dep-list {
   list-style: none;
-  max-height: 220px;
-  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .dep-item {
@@ -686,13 +969,10 @@ function downloadRequirements() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 0;
-  font-size: 12px;
-  border-top: 1px solid rgb(49 50 68 / 70%);
-}
-
-.dep-item:first-child {
-  border-top: none;
+  padding: 8px;
+  border: 1px solid #313244;
+  border-radius: 8px;
+  background: #1a1c2a;
 }
 
 .dep-details {
@@ -700,36 +980,31 @@ function downloadRequirements() {
 }
 
 .dep-name {
-  color: #cdd6f4;
   display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: #cdd6f4;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .dep-version {
-  color: #6c7086;
+  display: block;
+  color: #a6adc8;
   font-size: 11px;
+  word-break: break-all;
 }
 
 .btn-remove {
-  background: none;
   border: 1px solid #45475a;
-  color: #cdd6f4;
-  cursor: pointer;
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: 6px;
-  flex-shrink: 0;
-}
-
-.btn-remove:hover {
+  background: transparent;
   color: #f38ba8;
-  border-color: #f38ba8;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 11px;
+  cursor: pointer;
 }
 
 .btn-remove:disabled {
-  opacity: 0.4;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 </style>

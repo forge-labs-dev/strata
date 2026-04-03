@@ -24,8 +24,11 @@ from strata.notebook.dependencies import (
     import_environment_yaml_text,
     import_requirements_text,
     list_dependencies,
+    list_resolved_dependencies,
     parse_environment_yaml_text,
     parse_requirements_text,
+    preview_environment_yaml_text,
+    preview_requirements_text,
     remove_dependency,
 )
 from strata.notebook.executor import CellExecutor
@@ -227,6 +230,59 @@ dependencies:
         assert "urllib3" in names
         assert "requests" not in names
 
+    def test_list_resolved_dependencies_reads_uv_lock(self, tmp_path: Path):
+        """Resolved dependencies should be listed from uv.lock."""
+        nb_dir = create_notebook(tmp_path, "resolved_list")
+        add_dependency(nb_dir, "six==1.17.0")
+
+        resolved = list_resolved_dependencies(nb_dir)
+
+        names = [dep.name for dep in resolved]
+        assert "pyarrow" in names
+        assert "six" in names
+        six_dep = next(dep for dep in resolved if dep.name == "six")
+        assert six_dep.version == "1.17.0"
+
+    def test_preview_requirements_text_reports_diff(self, tmp_path: Path):
+        """Requirements preview should report additions, removals, and unchanged deps."""
+        nb_dir = create_notebook(tmp_path, "requirements_preview")
+        add_dependency(nb_dir, "requests==2.32.3")
+
+        preview = preview_requirements_text(
+            nb_dir,
+            "pyarrow>=18.0.0\nsix==1.17.0\n",
+        )
+
+        assert preview.imported_count == 2
+        assert [dep.name for dep in preview.additions] == ["six"]
+        assert [dep.name for dep in preview.removals] == ["requests"]
+        assert [dep.name for dep in preview.unchanged] == ["pyarrow"]
+
+    def test_preview_environment_yaml_text_reports_warnings_and_diff(self, tmp_path: Path):
+        """environment.yaml preview should translate, warn, and diff dependencies."""
+        nb_dir = create_notebook(tmp_path, "environment_yaml_preview")
+        add_dependency(nb_dir, "requests==2.32.3")
+
+        preview = preview_environment_yaml_text(
+            nb_dir,
+            """
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pyarrow=18.0.0
+  - six=1.17.0
+""",
+        )
+
+        assert preview.imported_count == 2
+        assert any("channels" in warning for warning in preview.warnings)
+        assert any("python version pin" in warning for warning in preview.warnings)
+        assert [dep.name for dep in preview.additions] == ["pyarrow", "six"]
+        assert [dep.name for dep in preview.removals] == ["pyarrow", "requests"]
+        assert preview.unchanged == []
+
 
 # ============================================================================
 # REST API tests
@@ -254,6 +310,7 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert "dependencies" in data
             assert isinstance(data["dependencies"], list)
+            assert "resolved_dependencies" in data
             assert "environment" in data
             assert "sync_state" in data["environment"]
 
@@ -374,6 +431,7 @@ class TestDependencyRESTEndpoints:
             assert data["success"] is True
             assert data["imported_count"] == 2
             assert "environment" in data
+            assert "resolved_dependencies" in data
             names = [dep["name"] for dep in data["dependencies"]]
             assert "pyarrow" in names
             assert "six" in names
@@ -405,10 +463,67 @@ dependencies:
             assert data["success"] is True
             assert data["imported_count"] == 3
             assert any("channels" in warning for warning in data["warnings"])
+            assert "resolved_dependencies" in data
             names = [dep["name"] for dep in data["dependencies"]]
             assert "pyarrow" in names
             assert "six" in names
             assert "requests" in names
+
+    def test_preview_requirements_rest(self, setup):
+        """POST /environment/requirements.txt/preview returns import diff."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            client.post(
+                f"/v1/notebooks/{sid}/dependencies",
+                json={"package": "requests==2.32.3"},
+            )
+
+            resp = client.post(
+                f"/v1/notebooks/{sid}/environment/requirements.txt/preview",
+                json={"requirements": "pyarrow>=18.0.0\nsix==1.17.0\n"},
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["imported_count"] == 2
+            assert [dep["name"] for dep in data["additions"]] == ["six"]
+            assert [dep["name"] for dep in data["removals"]] == ["requests"]
+            assert [dep["name"] for dep in data["unchanged"]] == ["pyarrow"]
+            assert "resolved_dependencies" in data
+
+    def test_preview_environment_yaml_rest(self, setup):
+        """POST /environment/environment.yaml/preview returns warnings and import diff."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            client.post(
+                f"/v1/notebooks/{sid}/dependencies",
+                json={"package": "requests==2.32.3"},
+            )
+
+            resp = client.post(
+                f"/v1/notebooks/{sid}/environment/environment.yaml/preview",
+                json={
+                    "environment_yaml": """
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pyarrow=18.0.0
+  - six=1.17.0
+"""
+                },
+            )
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["imported_count"] == 2
+            assert any("channels" in warning for warning in data["warnings"])
+            assert [dep["name"] for dep in data["additions"]] == ["pyarrow", "six"]
+            assert [dep["name"] for dep in data["removals"]] == ["pyarrow", "requests"]
+            assert data["unchanged"] == []
 
     def test_add_bad_package_rest(self, setup):
         """POST /dependencies with invalid package returns 400."""
@@ -504,6 +619,7 @@ class TestDependencyWebSocket:
                 assert isinstance(deps, list)
                 names = [d["name"] for d in deps]
                 assert "six" in names
+                assert "resolved_dependencies" in msg["payload"]
                 assert "environment" in msg["payload"]
                 assert "declared_package_count" in msg["payload"]["environment"]
 

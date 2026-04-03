@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from strata.notebook.cascade import CascadePlanner
+from strata.notebook.dependencies import list_resolved_dependencies
 from strata.notebook.executor import CellExecutor
 from strata.notebook.impact import ImpactAnalyzer
 from strata.notebook.inspect_repl import InspectManager
@@ -1650,6 +1651,10 @@ async def _handle_dependency_add(
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
             ],
+            "resolved_dependencies": [
+                {"name": d.name, "version": d.version, "specifier": d.specifier}
+                for d in list_resolved_dependencies(session.path)
+            ],
             "environment": session.serialize_environment_state(),
             "stale_cell_count": sum(
                 1
@@ -1722,6 +1727,10 @@ async def _handle_dependency_remove(
             "dependencies": [
                 {"name": d.name, "version": d.version, "specifier": d.specifier}
                 for d in result.dependencies
+            ],
+            "resolved_dependencies": [
+                {"name": d.name, "version": d.version, "specifier": d.specifier}
+                for d in list_resolved_dependencies(session.path)
             ],
             "environment": session.serialize_environment_state(),
             "stale_cell_count": sum(

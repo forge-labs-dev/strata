@@ -71,6 +71,19 @@ class RequirementsImportResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass
+class RequirementsPreviewResult:
+    """Preview of importing notebook dependencies from external text."""
+
+    dependencies: list[DependencyInfo] = field(default_factory=list)
+    normalized_requirements: list[str] = field(default_factory=list)
+    imported_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+    additions: list[DependencyInfo] = field(default_factory=list)
+    removals: list[DependencyInfo] = field(default_factory=list)
+    unchanged: list[DependencyInfo] = field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Core operations
 # ---------------------------------------------------------------------------
@@ -90,12 +103,76 @@ def list_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
     return results
 
 
+def list_resolved_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
+    """List resolved packages from ``uv.lock`` when present."""
+    # Python 3.10 compat
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore
+
+    lockfile_path = notebook_dir / "uv.lock"
+    if not lockfile_path.exists():
+        return []
+
+    try:
+        with open(lockfile_path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        logger.debug("Failed to parse uv.lock in %s", notebook_dir, exc_info=True)
+        return []
+
+    packages = data.get("package", [])
+    if not isinstance(packages, list):
+        return []
+
+    resolved: list[DependencyInfo] = []
+    for package in packages:
+        if not isinstance(package, dict):
+            continue
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str):
+            continue
+        resolved.append(
+            DependencyInfo(
+                name=name,
+                version=str(version) if version is not None else None,
+                specifier=None,
+            )
+        )
+
+    resolved.sort(key=lambda dep: dep.name.lower())
+    return resolved
+
+
 def export_requirements_text(notebook_dir: Path) -> str:
     """Export direct notebook dependencies as ``requirements.txt`` text."""
     deps_list = _read_project_dependency_strings(notebook_dir)
     if not deps_list:
         return ""
     return "\n".join(deps_list) + "\n"
+
+
+def preview_requirements_text(
+    notebook_dir: Path,
+    requirements_text: str,
+) -> RequirementsPreviewResult:
+    """Preview replacing direct notebook dependencies from requirements text."""
+    normalized_requirements = parse_requirements_text(requirements_text)
+    preview_dependencies = _dependency_info_from_requirement_strings(normalized_requirements)
+    additions, removals, unchanged = _diff_dependency_sets(
+        list_dependencies(notebook_dir),
+        preview_dependencies,
+    )
+    return RequirementsPreviewResult(
+        dependencies=preview_dependencies,
+        normalized_requirements=normalized_requirements,
+        imported_count=len(preview_dependencies),
+        additions=additions,
+        removals=removals,
+        unchanged=unchanged,
+    )
 
 
 def import_requirements_text(
@@ -209,6 +286,28 @@ def import_environment_yaml_text(
     )
     result.warnings = warnings
     return result
+
+
+def preview_environment_yaml_text(
+    notebook_dir: Path,
+    environment_yaml_text: str,
+) -> RequirementsPreviewResult:
+    """Preview best-effort import of Conda-style ``environment.yaml`` text."""
+    normalized_requirements, warnings = parse_environment_yaml_text(environment_yaml_text)
+    preview_dependencies = _dependency_info_from_requirement_strings(normalized_requirements)
+    additions, removals, unchanged = _diff_dependency_sets(
+        list_dependencies(notebook_dir),
+        preview_dependencies,
+    )
+    return RequirementsPreviewResult(
+        dependencies=preview_dependencies,
+        normalized_requirements=normalized_requirements,
+        imported_count=len(preview_dependencies),
+        warnings=warnings,
+        additions=additions,
+        removals=removals,
+        unchanged=unchanged,
+    )
 
 
 def add_dependency(
@@ -479,6 +578,17 @@ def _read_project_dependency_strings(notebook_dir: Path) -> list[str]:
     return [str(dep) for dep in deps_list]
 
 
+def _dependency_info_from_requirement_strings(
+    requirements: list[str],
+) -> list[DependencyInfo]:
+    """Convert normalized requirement strings to dependency metadata."""
+    results: list[DependencyInfo] = []
+    for requirement in requirements:
+        name, specifier = _split_requirement(requirement)
+        results.append(DependencyInfo(name=name.strip(), specifier=specifier))
+    return results
+
+
 def _split_requirement(dep_str: str) -> tuple[str, str | None]:
     """Split a requirement into package name and version specifier."""
     name = dep_str
@@ -492,6 +602,38 @@ def _split_requirement(dep_str: str) -> tuple[str, str | None]:
     if "[" in name:
         name = name[: name.index("[")]
     return name.strip(), specifier
+
+
+def _diff_dependency_sets(
+    current: list[DependencyInfo],
+    target: list[DependencyInfo],
+) -> tuple[list[DependencyInfo], list[DependencyInfo], list[DependencyInfo]]:
+    """Diff dependency sets by package name and specifier."""
+    current_map = {dep.name: dep for dep in current}
+    target_map = {dep.name: dep for dep in target}
+
+    additions: list[DependencyInfo] = []
+    removals: list[DependencyInfo] = []
+    unchanged: list[DependencyInfo] = []
+
+    for name, target_dep in target_map.items():
+        current_dep = current_map.get(name)
+        if current_dep is None:
+            additions.append(target_dep)
+        elif current_dep.specifier == target_dep.specifier:
+            unchanged.append(target_dep)
+        else:
+            additions.append(target_dep)
+            removals.append(current_dep)
+
+    for name, current_dep in current_map.items():
+        if name not in target_map:
+            removals.append(current_dep)
+
+    additions.sort(key=lambda dep: dep.name.lower())
+    removals.sort(key=lambda dep: dep.name.lower())
+    unchanged.sort(key=lambda dep: dep.name.lower())
+    return additions, removals, unchanged
 
 
 def _validate_requirement_specifier(requirement: str) -> str:

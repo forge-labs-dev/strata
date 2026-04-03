@@ -6,6 +6,7 @@ import type {
   CellStatus,
   DagEdge,
   DependencyInfo,
+  EnvironmentImportPreview,
   Notebook,
   WsMessage,
   ImpactPreview,
@@ -302,6 +303,32 @@ function parseBackendEnvironment(raw: any): NotebookEnvironment {
         : raw?.interpreter_source === 'path' || raw?.interpreterSource === 'path'
           ? 'path'
           : 'unknown',
+  }
+}
+
+function parseDependencyInfo(raw: any): DependencyInfo {
+  return {
+    name: String(raw?.name || ''),
+    version: String(raw?.version || ''),
+    specifier: String(raw?.specifier || ''),
+  }
+}
+
+function syncResolvedDependenciesFromBackend(raw: any) {
+  resolvedDependencies.value = Array.isArray(raw)
+    ? raw.map((dep: any) => parseDependencyInfo(dep)).filter((dep) => dep.name)
+    : []
+}
+
+function syncEnvironmentPayloadFromBackend(data: any) {
+  if (data?.environment) {
+    syncNotebookEnvironmentFromBackend(data.environment)
+  }
+  if (Array.isArray(data?.dependencies)) {
+    dependencies.value = data.dependencies.map((dep: any) => parseDependencyInfo(dep))
+  }
+  if (Array.isArray(data?.resolved_dependencies)) {
+    syncResolvedDependenciesFromBackend(data.resolved_dependencies)
   }
 }
 
@@ -951,12 +978,14 @@ const profilingSummary = ref<ProfilingSummary | null>(null)
 
 // Environment / dependency state
 const dependencies = ref<DependencyInfo[]>([])
+const resolvedDependencies = ref<DependencyInfo[]>([])
 const dependencyLoading = ref(false)
 const dependencyError = ref<string | null>(null)
 const environmentLoading = ref(false)
 const environmentError = ref<string | null>(null)
 const environmentWarnings = ref<string[]>([])
 const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
+const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
 const workerHealthLoading = ref(false)
@@ -1284,18 +1313,9 @@ function initializeWebSocket() {
 
     wsInstance.onMessage('dependency_changed', (msg: WsMessage) => {
       const p = msg.payload as Record<string, any>
-      if (p.dependencies && Array.isArray(p.dependencies)) {
-        dependencies.value = p.dependencies.map((d: any) => ({
-          name: d.name,
-          version: d.version || '',
-          specifier: d.specifier || '',
-        }))
-      }
+      syncEnvironmentPayloadFromBackend(p)
       if (p.cells && Array.isArray(p.cells)) {
         syncCellsFromBackend(p.cells)
-      }
-      if (p.environment) {
-        syncNotebookEnvironmentFromBackend(p.environment)
       }
       if (p.action === 'add' || p.action === 'remove') {
         setEnvironmentActionSummary({
@@ -1375,14 +1395,7 @@ async function fetchDependencies() {
   const strata = useStrata()
   try {
     const data = await strata.listDependencies(sid)
-    dependencies.value = (data.dependencies || []).map((d: any) => ({
-      name: d.name,
-      version: d.version || '',
-      specifier: d.specifier || '',
-    }))
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
-    }
+    syncEnvironmentPayloadFromBackend(data)
     dependencyError.value = null
   } catch (err) {
     console.error('Failed to fetch dependencies:', err)
@@ -1397,9 +1410,7 @@ async function fetchEnvironment() {
   environmentLoading.value = true
   try {
     const data = await strata.getEnvironmentStatus(sid)
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
-    }
+    syncEnvironmentPayloadFromBackend(data)
     environmentError.value = null
     environmentWarnings.value = []
   } catch (err) {
@@ -1479,21 +1490,13 @@ async function addDependencyAction(pkg: string) {
   dependencyError.value = null
   environmentError.value = null
   environmentWarnings.value = []
+  environmentImportPreview.value = null
   const strata = useStrata()
   try {
     const data = await strata.addDependency(sid, pkg)
-    if (data.dependencies) {
-      dependencies.value = data.dependencies.map((d: any) => ({
-        name: d.name,
-        version: d.version || '',
-        specifier: d.specifier || '',
-      }))
-    }
+    syncEnvironmentPayloadFromBackend(data)
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
-    }
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
     }
     setEnvironmentActionSummary({
       action: 'add',
@@ -1515,21 +1518,13 @@ async function removeDependencyAction(pkg: string) {
   dependencyError.value = null
   environmentError.value = null
   environmentWarnings.value = []
+  environmentImportPreview.value = null
   const strata = useStrata()
   try {
     const data = await strata.removeDependency(sid, pkg)
-    if (data.dependencies) {
-      dependencies.value = data.dependencies.map((d: any) => ({
-        name: d.name,
-        version: d.version || '',
-        specifier: d.specifier || '',
-      }))
-    }
+    syncEnvironmentPayloadFromBackend(data)
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
-    }
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
     }
     setEnvironmentActionSummary({
       action: 'remove',
@@ -1550,19 +1545,11 @@ async function syncEnvironmentAction() {
   environmentLoading.value = true
   environmentError.value = null
   environmentWarnings.value = []
+  environmentImportPreview.value = null
   const strata = useStrata()
   try {
     const data = await strata.syncEnvironment(sid)
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
-    }
-    if (data.dependencies) {
-      dependencies.value = data.dependencies.map((d: any) => ({
-        name: d.name,
-        version: d.version || '',
-        specifier: d.specifier || '',
-      }))
-    }
+    syncEnvironmentPayloadFromBackend(data)
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
@@ -1595,6 +1582,49 @@ async function exportRequirementsAction(): Promise<string> {
   }
 }
 
+async function previewRequirementsImportAction(requirements: string) {
+  const sid = sessionId()
+  if (!sid) return
+  environmentLoading.value = true
+  environmentError.value = null
+  environmentWarnings.value = []
+  const strata = useStrata()
+  try {
+    const data = await strata.previewRequirementsImport(sid, requirements)
+    syncEnvironmentPayloadFromBackend(data)
+    environmentWarnings.value = Array.isArray(data.warnings)
+      ? data.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
+      : []
+    environmentImportPreview.value = {
+      kind: 'requirements',
+      previewDependencies: Array.isArray(data.preview_dependencies)
+        ? data.preview_dependencies.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      normalizedRequirements: Array.isArray(data.normalized_requirements)
+        ? data.normalized_requirements.filter(
+            (entry: unknown): entry is string => typeof entry === 'string',
+          )
+        : [],
+      importedCount: Number(data.imported_count ?? 0),
+      warnings: environmentWarnings.value,
+      additions: Array.isArray(data.additions)
+        ? data.additions.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      removals: Array.isArray(data.removals)
+        ? data.removals.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      unchanged: Array.isArray(data.unchanged)
+        ? data.unchanged.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+    }
+  } catch (err: any) {
+    environmentImportPreview.value = null
+    environmentError.value = err.message || 'Failed to preview requirements.txt import'
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
 async function importRequirementsAction(requirements: string) {
   const sid = sessionId()
   if (!sid) return
@@ -1604,19 +1634,11 @@ async function importRequirementsAction(requirements: string) {
   const strata = useStrata()
   try {
     const data = await strata.importRequirements(sid, requirements)
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
-    }
-    if (data.dependencies) {
-      dependencies.value = data.dependencies.map((d: any) => ({
-        name: d.name,
-        version: d.version || '',
-        specifier: d.specifier || '',
-      }))
-    }
+    syncEnvironmentPayloadFromBackend(data)
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
+    environmentImportPreview.value = null
     setEnvironmentActionSummary({
       action: 'import',
       lockfileChanged: data.lockfile_changed === true,
@@ -1638,22 +1660,14 @@ async function importEnvironmentYamlAction(environmentYaml: string) {
   const strata = useStrata()
   try {
     const data = await strata.importEnvironmentYaml(sid, environmentYaml)
-    if (data.environment) {
-      syncNotebookEnvironmentFromBackend(data.environment)
-    }
-    if (data.dependencies) {
-      dependencies.value = data.dependencies.map((d: any) => ({
-        name: d.name,
-        version: d.version || '',
-        specifier: d.specifier || '',
-      }))
-    }
+    syncEnvironmentPayloadFromBackend(data)
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
     environmentWarnings.value = Array.isArray(data.warnings)
       ? data.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
       : []
+    environmentImportPreview.value = null
     setEnvironmentActionSummary({
       action: 'import',
       lockfileChanged: data.lockfile_changed === true,
@@ -1664,6 +1678,53 @@ async function importEnvironmentYamlAction(environmentYaml: string) {
   } finally {
     environmentLoading.value = false
   }
+}
+
+async function previewEnvironmentYamlImportAction(environmentYaml: string) {
+  const sid = sessionId()
+  if (!sid) return
+  environmentLoading.value = true
+  environmentError.value = null
+  environmentWarnings.value = []
+  const strata = useStrata()
+  try {
+    const data = await strata.previewEnvironmentYamlImport(sid, environmentYaml)
+    syncEnvironmentPayloadFromBackend(data)
+    environmentWarnings.value = Array.isArray(data.warnings)
+      ? data.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
+      : []
+    environmentImportPreview.value = {
+      kind: 'environment_yaml',
+      previewDependencies: Array.isArray(data.preview_dependencies)
+        ? data.preview_dependencies.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      normalizedRequirements: Array.isArray(data.normalized_requirements)
+        ? data.normalized_requirements.filter(
+            (entry: unknown): entry is string => typeof entry === 'string',
+          )
+        : [],
+      importedCount: Number(data.imported_count ?? 0),
+      warnings: environmentWarnings.value,
+      additions: Array.isArray(data.additions)
+        ? data.additions.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      removals: Array.isArray(data.removals)
+        ? data.removals.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+      unchanged: Array.isArray(data.unchanged)
+        ? data.unchanged.map((dep: any) => parseDependencyInfo(dep))
+        : [],
+    }
+  } catch (err: any) {
+    environmentImportPreview.value = null
+    environmentError.value = err.message || 'Failed to preview environment.yaml import'
+  } finally {
+    environmentLoading.value = false
+  }
+}
+
+function clearEnvironmentImportPreview() {
+  environmentImportPreview.value = null
 }
 
 async function updateNotebookMountsAction(mounts: MountSpec[]) {
@@ -2057,10 +2118,12 @@ export function useNotebook() {
     dependencies,
     dependencyLoading,
     dependencyError,
+    resolvedDependencies,
     environmentLoading,
     environmentError,
     environmentWarnings,
     environmentLastAction,
+    environmentImportPreview,
     availableWorkers,
     workerDefinitionsEditable,
     workerHealthLoading,
@@ -2081,8 +2144,11 @@ export function useNotebook() {
     removeDependencyAction,
     syncEnvironmentAction,
     exportRequirementsAction,
+    previewRequirementsImportAction,
     importRequirementsAction,
+    previewEnvironmentYamlImportAction,
     importEnvironmentYamlAction,
+    clearEnvironmentImportPreview,
     updateNotebookWorkersAction,
     updateServerWorkerRegistryAction,
     saveServerWorkerAction,

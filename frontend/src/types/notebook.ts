@@ -304,6 +304,17 @@ export interface EnvironmentActionSummary {
   timestamp: number
 }
 
+export interface EnvironmentImportPreview {
+  kind: 'requirements' | 'environment_yaml'
+  previewDependencies: DependencyInfo[]
+  normalizedRequirements: string[]
+  importedCount: number
+  warnings: string[]
+  additions: DependencyInfo[]
+  removals: DependencyInfo[]
+  unchanged: DependencyInfo[]
+}
+
 export interface Notebook {
   id: string
   name: string

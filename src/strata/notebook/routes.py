@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field, field_validator
 from strata.notebook.dependencies import (
     export_requirements_text,
     list_dependencies,
+    list_resolved_dependencies,
+    preview_environment_yaml_text,
+    preview_requirements_text,
 )
 from strata.notebook.executor import CellExecutor
 from strata.notebook.models import CellStatus, MountSpec, WorkerSpec
@@ -157,6 +160,38 @@ def _serialize_environment_change(session: NotebookSession, staleness_map: dict)
     }
 
 
+def _serialize_dependency_info_list(dependencies: list) -> list[dict]:
+    """Serialize dependency metadata for API responses."""
+    return [
+        {"name": dep.name, "version": dep.version, "specifier": dep.specifier}
+        for dep in dependencies
+    ]
+
+
+def _serialize_environment_payload(session: NotebookSession) -> dict:
+    """Serialize the current environment plus direct and resolved dependencies."""
+    return {
+        "environment": session.serialize_environment_state(),
+        "dependencies": _serialize_dependency_info_list(list_dependencies(session.path)),
+        "resolved_dependencies": _serialize_dependency_info_list(
+            list_resolved_dependencies(session.path)
+        ),
+    }
+
+
+def _serialize_import_preview(result) -> dict:
+    """Serialize an import preview response."""
+    return {
+        "preview_dependencies": _serialize_dependency_info_list(result.dependencies),
+        "normalized_requirements": result.normalized_requirements,
+        "imported_count": result.imported_count,
+        "warnings": list(result.warnings),
+        "additions": _serialize_dependency_info_list(result.additions),
+        "removals": _serialize_dependency_info_list(result.removals),
+        "unchanged": _serialize_dependency_info_list(result.unchanged),
+    }
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -276,6 +311,18 @@ class ImportEnvironmentYamlRequest(BaseModel):
     environment_yaml: str = Field(..., max_length=500_000)
 
 
+class PreviewRequirementsRequest(BaseModel):
+    """Request to preview direct dependency import from requirements text."""
+
+    requirements: str = Field(..., max_length=500_000)
+
+
+class PreviewEnvironmentYamlRequest(BaseModel):
+    """Request to preview dependency import from ``environment.yaml`` text."""
+
+    environment_yaml: str = Field(..., max_length=500_000)
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -343,7 +390,7 @@ async def get_environment_status(notebook_id: str) -> dict:
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    return {"environment": session.serialize_environment_state()}
+    return _serialize_environment_payload(session)
 
 
 @router.post("/{notebook_id}/environment/sync")
@@ -358,12 +405,8 @@ async def sync_environment(notebook_id: str) -> dict:
     new_hash = session.serialize_environment_state()["lockfile_hash"]
 
     return {
-        "environment": session.serialize_environment_state(),
+        **_serialize_environment_payload(session),
         "lockfile_changed": old_hash != new_hash,
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in list_dependencies(session.path)
-        ],
         **_serialize_environment_change(session, staleness_map),
         "cells": session.serialize_cells(),
     }
@@ -408,13 +451,29 @@ async def import_environment_requirements(
         "success": True,
         "imported_count": result.imported_count,
         "lockfile_changed": result.lockfile_changed,
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in result.dependencies
-        ],
-        "environment": session.serialize_environment_state(),
+        **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
+    }
+
+
+@router.post("/{notebook_id}/environment/requirements.txt/preview")
+async def preview_environment_requirements(
+    notebook_id: str, req: PreviewRequirementsRequest
+) -> dict:
+    """Preview replacing direct notebook dependencies from ``requirements.txt`` text."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    try:
+        result = preview_requirements_text(session.path, req.requirements)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        **_serialize_import_preview(result),
+        **_serialize_environment_payload(session),
     }
 
 
@@ -444,13 +503,29 @@ async def import_environment_yaml(
         "imported_count": result.imported_count,
         "warnings": result.warnings,
         "lockfile_changed": result.lockfile_changed,
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in result.dependencies
-        ],
-        "environment": session.serialize_environment_state(),
+        **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
+    }
+
+
+@router.post("/{notebook_id}/environment/environment.yaml/preview")
+async def preview_environment_yaml(
+    notebook_id: str, req: PreviewEnvironmentYamlRequest
+) -> dict:
+    """Preview best-effort import of Conda-style ``environment.yaml`` text."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    try:
+        result = preview_environment_yaml_text(session.path, req.environment_yaml)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        **_serialize_import_preview(result),
+        **_serialize_environment_payload(session),
     }
 
 
@@ -998,14 +1073,7 @@ async def get_dependencies(notebook_id: str) -> dict:
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    deps = list_dependencies(session.path)
-    return {
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in deps
-        ],
-        "environment": session.serialize_environment_state(),
-    }
+    return _serialize_environment_payload(session)
 
 
 @router.post("/{notebook_id}/dependencies")
@@ -1031,11 +1099,7 @@ async def add_notebook_dependency(
         "success": True,
         "package": result.package,
         "lockfile_changed": result.lockfile_changed,
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in result.dependencies
-        ],
-        "environment": session.serialize_environment_state(),
+        **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
     }
@@ -1068,11 +1132,7 @@ async def remove_notebook_dependency(
         "success": True,
         "package": result.package,
         "lockfile_changed": result.lockfile_changed,
-        "dependencies": [
-            {"name": d.name, "version": d.version, "specifier": d.specifier}
-            for d in result.dependencies
-        ],
-        "environment": session.serialize_environment_state(),
+        **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
     }

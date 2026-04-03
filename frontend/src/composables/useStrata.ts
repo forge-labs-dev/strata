@@ -500,6 +500,21 @@ async function importRequirements(notebookId: string, requirements: string): Pro
   return resp.json()
 }
 
+async function previewRequirementsImport(notebookId: string, requirements: string): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/environment/requirements.txt/preview`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requirements }),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to preview requirements.txt import')
+  }
+  return resp.json()
+}
+
 async function importEnvironmentYaml(notebookId: string, environmentYaml: string): Promise<any> {
   const resp = await fetch(
     `${STRATA_BASE}/v1/notebooks/${notebookId}/environment/environment.yaml`,
@@ -511,6 +526,24 @@ async function importEnvironmentYaml(notebookId: string, environmentYaml: string
   )
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to import environment.yaml')
+  }
+  return resp.json()
+}
+
+async function previewEnvironmentYamlImport(
+  notebookId: string,
+  environmentYaml: string,
+): Promise<any> {
+  const resp = await fetch(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/environment/environment.yaml/preview`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ environment_yaml: environmentYaml }),
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to preview environment.yaml import')
   }
   return resp.json()
 }
@@ -575,7 +608,9 @@ export function useStrata() {
     getEnvironmentStatus,
     syncEnvironment,
     exportRequirements,
+    previewRequirementsImport,
     importRequirements,
+    previewEnvironmentYamlImport,
     importEnvironmentYaml,
     listSessions,
     getSession,
