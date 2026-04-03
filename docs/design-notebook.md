@@ -2699,6 +2699,9 @@ notebook opening does not run `uv sync`. Environment management is designed
 but not yet integrated into the notebook lifecycle. The harness runs in
 whatever Python environment the server uses.
 
+**Future extension:** Named notebook environments and cell-level environment
+selection are designed separately in `docs/design-notebook-environments.md`.
+
 ### Defensive copy / immutability contract
 
 **Design:** Inputs are defensively copied before injection. Arrow IPC gets no
