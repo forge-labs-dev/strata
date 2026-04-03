@@ -12,6 +12,7 @@ const {
   environmentError,
   environmentWarnings,
   environmentLastAction,
+  environmentOperation,
   environmentImportPreview,
   addDependencyAction,
   removeDependencyAction,
@@ -134,6 +135,43 @@ const lastActionLabel = computed(() => {
       : ''
   const lockfile = action.lockfileChanged ? ' · lockfile changed' : ' · lockfile unchanged'
   return `${verb}${lockfile}${stale}`
+})
+
+const operationTitle = computed(() => {
+  if (!environmentOperation.value) return ''
+  switch (environmentOperation.value.action) {
+    case 'add':
+      return 'Package install'
+    case 'remove':
+      return 'Package removal'
+    case 'import':
+      return 'Environment import'
+    case 'sync':
+      return 'Environment rebuild'
+    default:
+      return 'Environment operation'
+  }
+})
+
+const operationStatusLabel = computed(() => {
+  if (!environmentOperation.value) return ''
+  switch (environmentOperation.value.status) {
+    case 'running':
+      return 'Running'
+    case 'failed':
+      return 'Failed'
+    default:
+      return 'Completed'
+  }
+})
+
+const operationStatusClass = computed(() =>
+  environmentOperation.value ? `operation-${environmentOperation.value.status}` : '',
+)
+
+const operationDurationLabel = computed(() => {
+  if (!environmentOperation.value || environmentOperation.value.durationMs == null) return 'Timing…'
+  return `${environmentOperation.value.durationMs} ms`
 })
 
 watch(
@@ -320,6 +358,39 @@ function downloadRequirements() {
 
       <div v-if="lastActionLabel" class="env-action">
         {{ lastActionLabel }}
+      </div>
+
+      <div v-if="environmentOperation" class="env-operation">
+        <div class="env-operation-header">
+          <strong>{{ operationTitle }}</strong>
+          <span class="env-operation-status" :class="operationStatusClass">
+            {{ operationStatusLabel }}
+          </span>
+        </div>
+        <div class="env-operation-command">
+          <code>{{ environmentOperation.command }}</code>
+          <span class="env-operation-duration">{{ operationDurationLabel }}</span>
+        </div>
+        <details
+          v-if="environmentOperation.stdout || environmentOperation.stderr"
+          class="env-operation-log"
+        >
+          <summary>Command output</summary>
+          <div v-if="environmentOperation.stdout" class="env-operation-stream">
+            <strong>stdout</strong>
+            <pre>{{ environmentOperation.stdout }}</pre>
+            <div v-if="environmentOperation.stdoutTruncated" class="env-operation-note">
+              stdout truncated for display
+            </div>
+          </div>
+          <div v-if="environmentOperation.stderr" class="env-operation-stream">
+            <strong>stderr</strong>
+            <pre>{{ environmentOperation.stderr }}</pre>
+            <div v-if="environmentOperation.stderrTruncated" class="env-operation-note">
+              stderr truncated for display
+            </div>
+          </div>
+        </details>
       </div>
 
       <div v-if="environmentError || notebook.environment.syncError" class="env-error">
@@ -723,6 +794,103 @@ function downloadRequirements() {
   background: rgb(166 227 161 / 10%);
   border: 1px solid rgb(166 227 161 / 18%);
   border-radius: 6px;
+}
+
+.env-operation {
+  color: #cdd6f4;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #141724;
+  border: 1px solid #313244;
+  border-radius: 8px;
+}
+
+.env-operation-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.env-operation-status {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+.operation-running {
+  background: rgb(137 180 250 / 14%);
+  color: #89b4fa;
+}
+
+.operation-completed {
+  background: rgb(166 227 161 / 14%);
+  color: #a6e3a1;
+}
+
+.operation-failed {
+  background: rgb(243 139 168 / 14%);
+  color: #f38ba8;
+}
+
+.env-operation-command {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.env-operation-command code {
+  color: #89b4fa;
+  word-break: break-all;
+}
+
+.env-operation-duration {
+  color: #a6adc8;
+}
+
+.env-operation-log {
+  margin-top: 8px;
+  border-top: 1px solid #313244;
+  padding-top: 8px;
+}
+
+.env-operation-log summary {
+  cursor: pointer;
+  color: #a6adc8;
+}
+
+.env-operation-stream {
+  margin-top: 8px;
+}
+
+.env-operation-stream strong {
+  display: block;
+  color: #cdd6f4;
+  margin-bottom: 4px;
+}
+
+.env-operation-stream pre {
+  margin: 0;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 6px;
+  border: 1px solid #313244;
+  background: #0f111a;
+  color: #cdd6f4;
+}
+
+.env-operation-note {
+  margin-top: 4px;
+  color: #f9e2af;
 }
 
 .env-error,

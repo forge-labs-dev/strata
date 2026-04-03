@@ -10,6 +10,7 @@ Validates:
 from __future__ import annotations
 
 import asyncio
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -122,6 +123,27 @@ class TestAddDependency:
             assert result.error is not None
             assert "uv not found" in result.error
 
+    def test_add_records_operation_log(self, tmp_path: Path):
+        """Successful add operations should expose uv command details."""
+        nb_dir = create_notebook(tmp_path, "add_log")
+        with patch(
+            "strata.notebook.dependencies.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["uv", "add", "requests"],
+                returncode=0,
+                stdout="Resolved 1 package\nInstalled requests\n",
+                stderr="Using cached wheels\n",
+            ),
+        ):
+            result = add_dependency(nb_dir, "requests")
+
+        assert result.success is True
+        assert result.operation_log is not None
+        assert result.operation_log.command == "uv add requests"
+        assert "Resolved 1 package" in result.operation_log.stdout
+        assert "Using cached wheels" in result.operation_log.stderr
+        assert result.operation_log.duration_ms is not None
+
 
 class TestRemoveDependency:
     """remove_dependency() calls uv remove."""
@@ -178,6 +200,30 @@ class TestRequirementsCompatibility:
         assert "pyarrow" in names
         assert "six" in names
         assert "requests" not in names
+
+    def test_import_requirements_records_operation_log(self, tmp_path: Path):
+        """requirements.txt imports should preserve the underlying uv sync details."""
+        nb_dir = create_notebook(tmp_path, "requirements_log")
+
+        with patch(
+            "strata.notebook.dependencies.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["uv", "sync"],
+                returncode=0,
+                stdout="Resolved 2 packages\n",
+                stderr="Prepared environment\n",
+            ),
+        ):
+            result = import_requirements_text(
+                nb_dir,
+                "pyarrow>=18.0.0\nsix==1.17.0\n",
+            )
+
+        assert result.success is True
+        assert result.operation_log is not None
+        assert result.operation_log.command == "uv sync"
+        assert "Resolved 2 packages" in result.operation_log.stdout
+        assert "Prepared environment" in result.operation_log.stderr
 
     def test_parse_requirements_text_rejects_pip_flags(self):
         """Unsupported pip-style directives should fail clearly."""
@@ -328,6 +374,7 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert data["success"] is True
             assert data["package"] == "six"
+            assert data["operation_log"]["command"] == "uv add six"
             assert "environment" in data
             assert "declared_package_count" in data["environment"]
             assert "stale_cell_count" in data
@@ -392,6 +439,7 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert data["success"] is True
             assert "environment" in data
+            assert data["operation_log"]["command"] == "uv remove six"
             assert "stale_cell_ids" in data
 
             # Verify removed
@@ -430,6 +478,7 @@ class TestDependencyRESTEndpoints:
             data = resp.json()
             assert data["success"] is True
             assert data["imported_count"] == 2
+            assert data["operation_log"]["command"] == "uv sync"
             assert "environment" in data
             assert "resolved_dependencies" in data
             names = [dep["name"] for dep in data["dependencies"]]
@@ -462,6 +511,7 @@ dependencies:
             data = resp.json()
             assert data["success"] is True
             assert data["imported_count"] == 3
+            assert data["operation_log"]["command"] == "uv sync"
             assert any("channels" in warning for warning in data["warnings"])
             assert "resolved_dependencies" in data
             names = [dep["name"] for dep in data["dependencies"]]
@@ -536,6 +586,10 @@ dependencies:
                 json={"package": "this-pkg-does-not-exist-xyz123"},
             )
             assert resp.status_code == 400
+            detail = resp.json()["detail"]
+            assert "message" in detail
+            assert "operation_log" in detail
+            assert detail["operation_log"]["command"] == "uv add this-pkg-does-not-exist-xyz123"
 
     def test_list_dependencies_404(self, setup):
         """GET /dependencies for unknown notebook returns 404."""

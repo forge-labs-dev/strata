@@ -309,6 +309,19 @@ export interface EnvironmentActionSummary {
   timestamp: number
 }
 
+export interface EnvironmentOperation {
+  action: 'add' | 'remove' | 'sync' | 'import'
+  status: 'running' | 'completed' | 'failed'
+  command: string
+  durationMs: number | null
+  stdout: string
+  stderr: string
+  stdoutTruncated: boolean
+  stderrTruncated: boolean
+  startedAt: number
+  finishedAt: number | null
+}
+
 export interface EnvironmentImportPreview {
   kind: 'requirements' | 'environment_yaml'
   previewDependencies: DependencyInfo[]

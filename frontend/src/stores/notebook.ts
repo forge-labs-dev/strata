@@ -14,6 +14,7 @@ import type {
   MountSpec,
   CellAnnotations,
   EnvironmentActionSummary,
+  EnvironmentOperation,
   EditableWorkerSpec,
   ManagedWorkerSpec,
   NotebookEnvironment,
@@ -643,6 +644,62 @@ function setEnvironmentActionSummary(raw: {
   }
 }
 
+function extractOperationLogPayload(raw: any): any | null {
+  if (raw && typeof raw === 'object') {
+    if (raw.operation_log && typeof raw.operation_log === 'object') {
+      return raw.operation_log
+    }
+    if (raw.detail && typeof raw.detail === 'object') {
+      const nested = (raw.detail as Record<string, unknown>).operation_log
+      if (nested && typeof nested === 'object') {
+        return nested
+      }
+    }
+  }
+  return null
+}
+
+function beginEnvironmentOperation(action: EnvironmentOperation['action'], command: string) {
+  environmentOperation.value = {
+    action,
+    status: 'running',
+    command,
+    durationMs: null,
+    stdout: '',
+    stderr: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    startedAt: Date.now(),
+    finishedAt: null,
+  }
+}
+
+function finishEnvironmentOperation(
+  action: EnvironmentOperation['action'],
+  status: EnvironmentOperation['status'],
+  raw: any,
+  fallbackCommand: string,
+) {
+  const previous = environmentOperation.value
+  environmentOperation.value = {
+    action,
+    status,
+    command: typeof raw?.command === 'string' && raw.command.trim() ? raw.command : fallbackCommand,
+    durationMs:
+      typeof raw?.duration_ms === 'number'
+        ? raw.duration_ms
+        : action === 'sync'
+          ? notebook.environment.lastSyncDurationMs
+          : null,
+    stdout: typeof raw?.stdout === 'string' ? raw.stdout : '',
+    stderr: typeof raw?.stderr === 'string' ? raw.stderr : '',
+    stdoutTruncated: raw?.stdout_truncated === true,
+    stderrTruncated: raw?.stderr_truncated === true,
+    startedAt: previous?.action === action ? previous.startedAt : Date.now(),
+    finishedAt: status === 'running' ? null : Date.now(),
+  }
+}
+
 function parseBackendCellPayload(raw: any): Cell {
   const cell: Cell = {
     id: raw.id,
@@ -857,6 +914,7 @@ async function boot(): Promise<void> {
     environmentError.value = null
     environmentWarnings.value = []
     environmentLastAction.value = null
+    environmentOperation.value = null
     notebookWorkerError.value = null
     workerRegistryError.value = null
     cellWorkerErrors.value = {}
@@ -920,6 +978,7 @@ async function openNotebook(path: string): Promise<any> {
   environmentError.value = null
   environmentWarnings.value = []
   environmentLastAction.value = null
+  environmentOperation.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -952,6 +1011,7 @@ async function openBySessionId(sessionId: string): Promise<any> {
   environmentError.value = null
   environmentWarnings.value = []
   environmentLastAction.value = null
+  environmentOperation.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -989,6 +1049,7 @@ const environmentLoading = ref(false)
 const environmentError = ref<string | null>(null)
 const environmentWarnings = ref<string[]>([])
 const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
+const environmentOperation = ref<EnvironmentOperation | null>(null)
 const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
@@ -1495,6 +1556,7 @@ async function addDependencyAction(pkg: string) {
   environmentError.value = null
   environmentWarnings.value = []
   environmentImportPreview.value = null
+  beginEnvironmentOperation('add', `uv add ${pkg}`)
   const strata = useStrata()
   try {
     const data = await strata.addDependency(sid, pkg)
@@ -1508,8 +1570,20 @@ async function addDependencyAction(pkg: string) {
       lockfileChanged: data.lockfile_changed === true,
       staleCellCount: Number(data.stale_cell_count ?? 0),
     })
+    finishEnvironmentOperation(
+      'add',
+      'completed',
+      extractOperationLogPayload(data),
+      `uv add ${pkg}`,
+    )
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to add dependency'
+    finishEnvironmentOperation(
+      'add',
+      'failed',
+      extractOperationLogPayload(err?.payload),
+      `uv add ${pkg}`,
+    )
   } finally {
     dependencyLoading.value = false
   }
@@ -1523,6 +1597,7 @@ async function removeDependencyAction(pkg: string) {
   environmentError.value = null
   environmentWarnings.value = []
   environmentImportPreview.value = null
+  beginEnvironmentOperation('remove', `uv remove ${pkg}`)
   const strata = useStrata()
   try {
     const data = await strata.removeDependency(sid, pkg)
@@ -1536,8 +1611,20 @@ async function removeDependencyAction(pkg: string) {
       lockfileChanged: data.lockfile_changed === true,
       staleCellCount: Number(data.stale_cell_count ?? 0),
     })
+    finishEnvironmentOperation(
+      'remove',
+      'completed',
+      extractOperationLogPayload(data),
+      `uv remove ${pkg}`,
+    )
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to remove dependency'
+    finishEnvironmentOperation(
+      'remove',
+      'failed',
+      extractOperationLogPayload(err?.payload),
+      `uv remove ${pkg}`,
+    )
   } finally {
     dependencyLoading.value = false
   }
@@ -1550,6 +1637,7 @@ async function syncEnvironmentAction() {
   environmentError.value = null
   environmentWarnings.value = []
   environmentImportPreview.value = null
+  beginEnvironmentOperation('sync', 'uv sync')
   const strata = useStrata()
   try {
     const data = await strata.syncEnvironment(sid)
@@ -1562,8 +1650,15 @@ async function syncEnvironmentAction() {
       lockfileChanged: data.lockfile_changed === true,
       staleCellCount: Number(data.stale_cell_count ?? 0),
     })
+    finishEnvironmentOperation('sync', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to sync environment'
+    finishEnvironmentOperation(
+      'sync',
+      'failed',
+      extractOperationLogPayload(err?.payload),
+      'uv sync',
+    )
   } finally {
     environmentLoading.value = false
   }
@@ -1635,6 +1730,7 @@ async function importRequirementsAction(requirements: string) {
   environmentLoading.value = true
   environmentError.value = null
   environmentWarnings.value = []
+  beginEnvironmentOperation('import', 'uv sync')
   const strata = useStrata()
   try {
     const data = await strata.importRequirements(sid, requirements)
@@ -1648,8 +1744,15 @@ async function importRequirementsAction(requirements: string) {
       lockfileChanged: data.lockfile_changed === true,
       staleCellCount: Number(data.stale_cell_count ?? 0),
     })
+    finishEnvironmentOperation('import', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to import requirements.txt'
+    finishEnvironmentOperation(
+      'import',
+      'failed',
+      extractOperationLogPayload(err?.payload),
+      'uv sync',
+    )
   } finally {
     environmentLoading.value = false
   }
@@ -1661,6 +1764,7 @@ async function importEnvironmentYamlAction(environmentYaml: string) {
   environmentLoading.value = true
   environmentError.value = null
   environmentWarnings.value = []
+  beginEnvironmentOperation('import', 'uv sync')
   const strata = useStrata()
   try {
     const data = await strata.importEnvironmentYaml(sid, environmentYaml)
@@ -1677,8 +1781,15 @@ async function importEnvironmentYamlAction(environmentYaml: string) {
       lockfileChanged: data.lockfile_changed === true,
       staleCellCount: Number(data.stale_cell_count ?? 0),
     })
+    finishEnvironmentOperation('import', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to import environment.yaml'
+    finishEnvironmentOperation(
+      'import',
+      'failed',
+      extractOperationLogPayload(err?.payload),
+      'uv sync',
+    )
   } finally {
     environmentLoading.value = false
   }
@@ -2127,6 +2238,7 @@ export function useNotebook() {
     environmentError,
     environmentWarnings,
     environmentLastAction,
+    environmentOperation,
     environmentImportPreview,
     availableWorkers,
     workerDefinitionsEditable,

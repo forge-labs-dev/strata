@@ -214,6 +214,42 @@ def _serialize_import_preview(result) -> dict:
     }
 
 
+def _serialize_environment_operation_log(raw: object | None) -> dict | None:
+    """Serialize structured uv command details for the UI."""
+    if raw is None:
+        return None
+
+    return {
+        "command": getattr(raw, "command", ""),
+        "duration_ms": getattr(raw, "duration_ms", None),
+        "stdout": getattr(raw, "stdout", ""),
+        "stderr": getattr(raw, "stderr", ""),
+        "stdout_truncated": getattr(raw, "stdout_truncated", False),
+        "stderr_truncated": getattr(raw, "stderr_truncated", False),
+    }
+
+
+def _serialize_result_operation_log(result: object) -> dict:
+    """Serialize operation log details from a dependency/import result."""
+    operation_log = _serialize_environment_operation_log(
+        getattr(result, "operation_log", None)
+    )
+    if operation_log is None:
+        return {}
+    return {"operation_log": operation_log}
+
+
+def _serialize_operation_error_detail(message: str, result: object) -> dict:
+    """Build a structured HTTP error detail payload with optional command logs."""
+    detail: dict[str, object] = {"message": message}
+    operation_log = _serialize_environment_operation_log(
+        getattr(result, "operation_log", None)
+    )
+    if operation_log is not None:
+        detail["operation_log"] = operation_log
+    return detail
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -438,6 +474,14 @@ async def sync_environment(notebook_id: str) -> dict:
         **_serialize_environment_payload(session),
         "lockfile_changed": old_hash != new_hash,
         **_serialize_environment_change(session, staleness_map),
+        "operation_log": {
+            "command": "uv sync",
+            "duration_ms": session.environment_last_sync_duration_ms,
+            "stdout": "",
+            "stderr": session.environment_sync_error or "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        },
         "cells": session.serialize_cells(),
     }
 
@@ -474,13 +518,17 @@ async def import_environment_requirements(
     if not result.success:
         raise HTTPException(
             status_code=400,
-            detail=result.error or "Failed to import requirements.txt",
+            detail=_serialize_operation_error_detail(
+                result.error or "Failed to import requirements.txt",
+                result,
+            ),
         )
 
     return {
         "success": True,
         "imported_count": result.imported_count,
         "lockfile_changed": result.lockfile_changed,
+        **_serialize_result_operation_log(result),
         **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
@@ -525,7 +573,10 @@ async def import_environment_yaml(
     if not result.success:
         raise HTTPException(
             status_code=400,
-            detail=result.error or "Failed to import environment.yaml",
+            detail=_serialize_operation_error_detail(
+                result.error or "Failed to import environment.yaml",
+                result,
+            ),
         )
 
     return {
@@ -533,6 +584,7 @@ async def import_environment_yaml(
         "imported_count": result.imported_count,
         "warnings": result.warnings,
         "lockfile_changed": result.lockfile_changed,
+        **_serialize_result_operation_log(result),
         **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
@@ -1124,12 +1176,19 @@ async def add_notebook_dependency(
     result = outcome.result
 
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error or "Failed to add dependency")
+        raise HTTPException(
+            status_code=400,
+            detail=_serialize_operation_error_detail(
+                result.error or "Failed to add dependency",
+                result,
+            ),
+        )
 
     return {
         "success": True,
         "package": result.package,
         "lockfile_changed": result.lockfile_changed,
+        **_serialize_result_operation_log(result),
         **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),
@@ -1157,12 +1216,19 @@ async def remove_notebook_dependency(
     result = outcome.result
 
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.error or "Failed to remove dependency")
+        raise HTTPException(
+            status_code=400,
+            detail=_serialize_operation_error_detail(
+                result.error or "Failed to remove dependency",
+                result,
+            ),
+        )
 
     return {
         "success": True,
         "package": result.package,
         "lockfile_changed": result.lockfile_changed,
+        **_serialize_result_operation_log(result),
         **_serialize_environment_payload(session),
         **_serialize_environment_change(session, outcome.staleness_map),
         "cells": session.serialize_cells(),

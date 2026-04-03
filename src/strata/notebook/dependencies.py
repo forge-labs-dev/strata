@@ -8,14 +8,17 @@ is re-synced so that ``uv.lock`` and ``.venv/`` stay consistent.
 from __future__ import annotations
 
 import logging
+import shlex
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomli_w
 
 logger = logging.getLogger(__name__)
+_MAX_OPERATION_LOG_CHARS = 12_000
 
 # Serialize concurrent uv add/remove per notebook directory.
 # Without this, two concurrent ``uv add`` calls for the same notebook
@@ -48,6 +51,18 @@ class DependencyInfo:
 
 
 @dataclass
+class EnvironmentOperationLog:
+    """Structured command details for environment/package operations."""
+
+    command: str
+    duration_ms: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+
+@dataclass
 class DependencyChangeResult:
     """Result of adding or removing a dependency."""
 
@@ -57,6 +72,7 @@ class DependencyChangeResult:
     error: str | None = None
     lockfile_changed: bool = False
     dependencies: list[DependencyInfo] = field(default_factory=list)
+    operation_log: EnvironmentOperationLog | None = None
 
 
 @dataclass
@@ -69,6 +85,7 @@ class RequirementsImportResult:
     dependencies: list[DependencyInfo] = field(default_factory=list)
     imported_count: int = 0
     warnings: list[str] = field(default_factory=list)
+    operation_log: EnvironmentOperationLog | None = None
 
 
 @dataclass
@@ -82,6 +99,114 @@ class RequirementsPreviewResult:
     additions: list[DependencyInfo] = field(default_factory=list)
     removals: list[DependencyInfo] = field(default_factory=list)
     unchanged: list[DependencyInfo] = field(default_factory=list)
+
+
+@dataclass
+class _UvCommandResult:
+    """Internal subprocess result wrapper for uv commands."""
+
+    success: bool
+    error: str | None
+    operation_log: EnvironmentOperationLog
+
+
+def _normalize_output_text(value: str | bytes | None) -> str:
+    """Normalize subprocess output into a safe UI string."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode(errors="replace")
+    return value.strip()
+
+
+def _trim_output_for_ui(value: str | bytes | None) -> tuple[str, bool]:
+    """Trim command output so REST payloads stay bounded."""
+    text = _normalize_output_text(value)
+    if len(text) <= _MAX_OPERATION_LOG_CHARS:
+        return text, False
+    return text[:_MAX_OPERATION_LOG_CHARS], True
+
+
+def _format_command_for_ui(command: list[str]) -> str:
+    """Render a subprocess command for UI/debugging."""
+    return " ".join(shlex.quote(part) for part in command)
+
+
+def _run_uv_command(
+    notebook_dir: Path,
+    args: list[str],
+    *,
+    timeout: int,
+    display_name: str,
+) -> _UvCommandResult:
+    """Run a uv command and capture bounded UI logs."""
+    command = ["uv", *args]
+    started = time.perf_counter()
+    formatted_command = _format_command_for_ui(command)
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(notebook_dir),
+            timeout=timeout,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        stdout, stdout_truncated = _trim_output_for_ui(completed.stdout)
+        stderr, stderr_truncated = _trim_output_for_ui(completed.stderr)
+        return _UvCommandResult(
+            success=True,
+            error=None,
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                stdout=stdout,
+                stderr=stderr,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            ),
+        )
+    except FileNotFoundError:
+        return _UvCommandResult(
+            success=False,
+            error="uv not found on PATH",
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            ),
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout, stdout_truncated = _trim_output_for_ui(exc.stdout)
+        stderr, stderr_truncated = _trim_output_for_ui(exc.stderr)
+        return _UvCommandResult(
+            success=False,
+            error=f"{display_name} timed out after {timeout}s",
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                stdout=stdout,
+                stderr=stderr,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            ),
+        )
+    except subprocess.CalledProcessError as exc:
+        stdout, stdout_truncated = _trim_output_for_ui(exc.stdout)
+        stderr, stderr_truncated = _trim_output_for_ui(exc.stderr)
+        error_detail = stderr or stdout or f"{display_name} exited with status {exc.returncode}"
+        return _UvCommandResult(
+            success=False,
+            error=f"{display_name} failed: {error_detail}",
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                stdout=stdout,
+                stderr=stderr,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -229,37 +354,24 @@ def import_requirements_text(
                 error=f"Failed to write pyproject.toml: {exc}",
             )
 
-        try:
-            subprocess.run(
-                ["uv", "sync"],
-                cwd=str(notebook_dir),
-                timeout=timeout,
-                capture_output=True,
-                check=True,
-            )
+        command_result = _run_uv_command(
+            notebook_dir,
+            ["sync"],
+            timeout=timeout,
+            display_name="uv sync",
+        )
+        if command_result.success:
             logger.info(
                 "Imported %s requirements into %s",
                 len(normalized_requirements),
                 notebook_dir,
             )
-        except FileNotFoundError:
+        else:
             _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
             return RequirementsImportResult(
                 success=False,
-                error="uv not found on PATH",
-            )
-        except subprocess.TimeoutExpired:
-            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
-            return RequirementsImportResult(
-                success=False,
-                error=f"uv sync timed out after {timeout}s",
-            )
-        except subprocess.CalledProcessError as exc:
-            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
-            stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-            return RequirementsImportResult(
-                success=False,
-                error=f"uv sync failed: {stderr}",
+                error=command_result.error,
+                operation_log=command_result.operation_log,
             )
 
     new_lockfile_hash = _lockfile_hash(notebook_dir)
@@ -268,6 +380,7 @@ def import_requirements_text(
         lockfile_changed=old_lockfile_hash != new_lockfile_hash,
         dependencies=list_dependencies(notebook_dir),
         imported_count=len(normalized_requirements),
+        operation_log=command_result.operation_log,
     )
 
 
@@ -339,36 +452,21 @@ def _add_dependency_locked(
 ) -> DependencyChangeResult:
     old_lockfile_hash = _lockfile_hash(notebook_dir)
 
-    try:
-        subprocess.run(
-            ["uv", "add", package],
-            cwd=str(notebook_dir),
-            timeout=timeout,
-            capture_output=True,
-            check=True,
-        )
+    command_result = _run_uv_command(
+        notebook_dir,
+        ["add", package],
+        timeout=timeout,
+        display_name="uv add",
+    )
+    if command_result.success:
         logger.info("uv add %s succeeded in %s", package, notebook_dir)
-    except FileNotFoundError:
+    else:
         return DependencyChangeResult(
             success=False,
             package=package,
             action="add",
-            error="uv not found on PATH",
-        )
-    except subprocess.TimeoutExpired:
-        return DependencyChangeResult(
-            success=False,
-            package=package,
-            action="add",
-            error=f"uv add timed out after {timeout}s",
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-        return DependencyChangeResult(
-            success=False,
-            package=package,
-            action="add",
-            error=f"uv add failed: {stderr}",
+            error=command_result.error,
+            operation_log=command_result.operation_log,
         )
 
     new_lockfile_hash = _lockfile_hash(notebook_dir)
@@ -378,6 +476,7 @@ def _add_dependency_locked(
         action="add",
         lockfile_changed=old_lockfile_hash != new_lockfile_hash,
         dependencies=list_dependencies(notebook_dir),
+        operation_log=command_result.operation_log,
     )
 
 
@@ -410,36 +509,21 @@ def _remove_dependency_locked(
 ) -> DependencyChangeResult:
     old_lockfile_hash = _lockfile_hash(notebook_dir)
 
-    try:
-        subprocess.run(
-            ["uv", "remove", package],
-            cwd=str(notebook_dir),
-            timeout=timeout,
-            capture_output=True,
-            check=True,
-        )
+    command_result = _run_uv_command(
+        notebook_dir,
+        ["remove", package],
+        timeout=timeout,
+        display_name="uv remove",
+    )
+    if command_result.success:
         logger.info("uv remove %s succeeded in %s", package, notebook_dir)
-    except FileNotFoundError:
+    else:
         return DependencyChangeResult(
             success=False,
             package=package,
             action="remove",
-            error="uv not found on PATH",
-        )
-    except subprocess.TimeoutExpired:
-        return DependencyChangeResult(
-            success=False,
-            package=package,
-            action="remove",
-            error=f"uv remove timed out after {timeout}s",
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
-        return DependencyChangeResult(
-            success=False,
-            package=package,
-            action="remove",
-            error=f"uv remove failed: {stderr}",
+            error=command_result.error,
+            operation_log=command_result.operation_log,
         )
 
     new_lockfile_hash = _lockfile_hash(notebook_dir)
@@ -449,6 +533,7 @@ def _remove_dependency_locked(
         action="remove",
         lockfile_changed=old_lockfile_hash != new_lockfile_hash,
         dependencies=list_dependencies(notebook_dir),
+        operation_log=command_result.operation_log,
     )
 
 

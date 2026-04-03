@@ -82,15 +82,22 @@ async function fetchStream(streamId: string): Promise<ArrayBuffer> {
 }
 
 async function throwApiError(resp: Response, fallback: string): Promise<never> {
+  let payload: unknown = null
   let detail = ''
   try {
-    const payload = await resp.json()
+    payload = await resp.json()
     if (payload && typeof payload === 'object') {
-      detail = String(
-        (payload as Record<string, unknown>).detail ||
-          (payload as Record<string, unknown>).error ||
-          '',
-      )
+      const rawDetail =
+        (payload as Record<string, unknown>).detail || (payload as Record<string, unknown>).error
+      if (rawDetail && typeof rawDetail === 'object') {
+        detail = String(
+          (rawDetail as Record<string, unknown>).message ||
+            (rawDetail as Record<string, unknown>).error ||
+            '',
+        )
+      } else {
+        detail = String(rawDetail || '')
+      }
     }
   } catch {
     try {
@@ -101,9 +108,13 @@ async function throwApiError(resp: Response, fallback: string): Promise<never> {
   }
 
   if (detail) {
-    throw new Error(detail)
+    const error = new Error(detail)
+    ;(error as any).payload = payload
+    throw error
   }
-  throw new Error(`${fallback}: ${resp.status}`)
+  const error = new Error(`${fallback}: ${resp.status}`)
+  ;(error as any).payload = payload
+  throw error
 }
 
 // ---------------------------------------------------------------------------
