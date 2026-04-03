@@ -9,7 +9,7 @@
 #     strata
 #
 # Volumes:
-#   /home/strata/.strata  - State directory (cache + metadata), use named volume
+#   /home/strata/.strata  - State directory (cache + metadata + uv cache)
 #   /data                 - Mount your Iceberg warehouse here
 #
 # Without the named volume, cache is lost on container restart!
@@ -19,6 +19,8 @@
 # 2. Runtime: minimal image with just the wheel installed
 #
 # syntax=docker/dockerfile:1
+
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.3-python3.13-trixie-slim
 
 # =============================================================================
 # Stage 1a: Frontend Builder (Node.js)
@@ -33,7 +35,7 @@ RUN npm run build
 # =============================================================================
 # Stage 1b: Backend Builder (uv + Rust)
 # =============================================================================
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
+FROM ${UV_IMAGE} AS builder
 ENV UV_PYTHON=3.13
 
 # Install Rust and build dependencies
@@ -51,9 +53,23 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 # Copy only the files needed to build the backend wheel. This keeps frontend-
 # only edits from invalidating the Python/Rust build cache.
 WORKDIR /build
-COPY LICENSE README.md pyproject.toml ./
+COPY LICENSE README.md pyproject.toml uv.lock ./
 COPY src ./src
 COPY rust ./rust
+
+# Export the exact runtime dependency set from uv.lock. The final image installs
+# these first, then installs the built wheel with --no-deps to avoid resolving
+# the project's dependencies again at image build time.
+RUN mkdir -p dist && \
+    uv export \
+      --frozen \
+      --no-dev \
+      --no-emit-project \
+      --no-editable \
+      --no-header \
+      --no-annotate \
+      --format requirements.txt \
+      --output-file dist/runtime-requirements.txt
 
 # Build the wheel using uv (with BuildKit cache mounts for faster rebuilds)
 # Pin the build interpreter so maturin emits a cp313 wheel that matches the
@@ -66,11 +82,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # =============================================================================
 # Stage 2: Runtime
 # =============================================================================
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
+FROM ${UV_IMAGE} AS runtime
+ENV UV_LINK_MODE=copy
 
-# Copy and install the wheel (as root, before switching user)
+# Copy and install the pinned runtime dependency set first, then the wheel.
+# This keeps image installs aligned with uv.lock and avoids re-resolving the
+# wheel's dependencies during the final install step.
+COPY --from=builder /build/dist/runtime-requirements.txt /tmp/
 COPY --from=builder /build/dist/*.whl /tmp/
-RUN uv pip install --system --no-cache /tmp/*.whl && rm /tmp/*.whl
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --system -r /tmp/runtime-requirements.txt && \
+    uv pip install --system --no-deps /tmp/*.whl && \
+    rm /tmp/*.whl /tmp/runtime-requirements.txt
 
 # Copy the built frontend
 COPY --from=frontend-builder /build/frontend/dist /home/strata/frontend/dist
@@ -79,7 +102,7 @@ COPY --from=frontend-builder /build/frontend/dist /home/strata/frontend/dist
 RUN useradd --create-home --shell /bin/bash strata
 
 # Create directories for cache, notebook storage, and data (as root, then chown)
-RUN mkdir -p /home/strata/.strata/cache /tmp/strata-notebooks /data && \
+RUN mkdir -p /home/strata/.strata/cache /home/strata/.strata/uv-cache /tmp/strata-notebooks /data && \
     chown -R strata:strata /home/strata /tmp/strata-notebooks /data
 
 # Switch to non-root user
@@ -87,7 +110,7 @@ USER strata
 WORKDIR /home/strata
 
 # Declare volumes for persistence across container restarts
-# - /home/strata/.strata: State directory (cache + meta.sqlite)
+# - /home/strata/.strata: State directory (cache + meta.sqlite + uv cache)
 # - /data: Mount point for local warehouse data
 VOLUME ["/home/strata/.strata", "/data"]
 
@@ -96,6 +119,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 # Strata configuration defaults (can be overridden)
+ENV UV_CACHE_DIR=/home/strata/.strata/uv-cache
+ENV UV_PYTHON_DOWNLOADS=never
 ENV STRATA_HOST=0.0.0.0
 ENV STRATA_PORT=8765
 ENV STRATA_CACHE_DIR=/home/strata/.strata/cache
