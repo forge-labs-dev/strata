@@ -37,6 +37,7 @@ RUN npm run build
 # =============================================================================
 FROM ${UV_IMAGE} AS builder
 ENV UV_PYTHON=3.13
+ENV CARGO_TARGET_DIR=/root/.cargo-target
 
 # Install Rust and build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -77,6 +78,7 @@ RUN mkdir -p dist && \
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/root/.cargo-target \
     uv build --wheel --python 3.13 --out-dir dist
 
 # =============================================================================
