@@ -35,6 +35,7 @@ What exists today:
 - environment status in the notebook UI
 - dependency add/remove flows
 - explicit environment sync
+- runtime Python version is displayed after sync
 - `requirements.txt` import/export
 - best-effort `environment.yaml` import
 - environment changes participate in notebook provenance and staleness
@@ -43,6 +44,7 @@ What does not exist yet:
 
 - multiple named environments inside one notebook
 - cell-level environment selection
+- user-facing Python version selection
 - cross-environment execution rules
 - per-environment warm pools
 
@@ -141,6 +143,7 @@ environment selection.
 The next implementation phase should be consolidation of the current model:
 
 - make the single notebook environment fully observable
+- let the user choose notebook Python version explicitly
 - ensure the runtime Python version reflects the actual notebook venv
 - tighten sync/rebuild/error reporting
 - make dependency changes clearly explain their notebook impact
@@ -153,6 +156,86 @@ faster than user value.
 ---
 
 ## Proposed Model
+
+### Near-Term Python Version Model
+
+Python version selection belongs to the notebook environment, not to individual
+cells in the current single-environment model.
+
+Near-term product rules:
+
+- the user should choose an initial Python version in the **New Notebook** flow
+- the Environment panel should show the current notebook Python setting after
+  creation
+- the user may later change Python version, but only as a notebook-level
+  environment rebuild operation
+- no per-cell Python/version override exists
+
+This keeps the current single-environment model coherent while still making Python
+an explicit part of notebook setup.
+
+If named environments are implemented later, Python selection becomes
+**environment-scoped** inside the notebook's environment registry. In that future
+model, each named environment owns its own requested/runtime Python pair.
+
+### Requested Python vs Runtime Python
+
+The model should distinguish between:
+
+- **requested Python**: the notebook's configured Python minor version, such as
+  `3.12` or `3.13` in the current single-environment model, or the selected
+  version for a specific named environment in the future
+- **runtime Python**: the actual interpreter version currently backing the synced
+  notebook environment, such as `3.13.2`
+
+The requested version is user intent and should drive environment creation or
+rebuild. The runtime version is probed state and should be displayed for debugging,
+trust, and support.
+
+### Backend-Validated Availability
+
+Python version selection must be constrained by what the backend can actually
+provide.
+
+That means:
+
+- no unrestricted free-form version text box
+- the backend should expose a bounded set of selectable versions, or a single
+  fixed version if the deployment only supports one
+- hosted/container deployments may legitimately expose Python as read-only if the
+  runtime image only provides one interpreter
+
+Strata should never present a Python choice that the current deployment cannot
+honor.
+
+### New Notebook Flow
+
+The first place the user expresses Python intent should be the **New Notebook**
+flow, not a manual edit to `pyproject.toml`.
+
+The creation flow should collect:
+
+- notebook path / name
+- requested Python version
+
+`pyproject.toml` should then be generated from that choice. It is the persisted
+artifact of the selection, not the first place where the user makes it.
+
+### Post-Creation Python Changes
+
+Changing Python version after notebook creation should remain allowed, but only as
+an explicit notebook-level environment mutation.
+
+Changing Python version should:
+
+- update the notebook's requested Python version
+- rebuild the notebook `.venv`
+- invalidate the warm pool
+- recompute environment metadata and notebook staleness
+- block cell execution until the environment operation finishes
+
+This should be treated like any other environment mutation: explicit, observable,
+and disruptive by design.
 
 ### Notebook-Level Environment Registry
 
@@ -242,19 +325,28 @@ default = "default"
 
 [environments.default]
 path = "."
-python_version = "3.13"
+requested_python_version = "3.13"
+runtime_python_version = "3.13.2"
 lockfile_hash = "sha256:abc123..."
 
 [environments.ml]
 path = ".strata/envs/ml"
-python_version = "3.13"
+requested_python_version = "3.13"
+runtime_python_version = "3.13.4"
 lockfile_hash = "sha256:def456..."
 
 [environments.py311-legacy]
 path = ".strata/envs/py311-legacy"
-python_version = "3.11"
+requested_python_version = "3.11"
+runtime_python_version = "3.11.11"
 lockfile_hash = "sha256:789abc..."
 ```
+
+For the current single-environment model, the near-term equivalent is:
+
+- one notebook-level requested Python version
+- one runtime Python version reported from the active `.venv`
+- no secondary named environments yet
 
 ### Future Cell Metadata
 
@@ -286,7 +378,8 @@ Each environment should have live status including:
 
 - name
 - path
-- Python version
+- requested Python version
+- runtime Python version
 - lockfile hash
 - declared package count
 - resolved package count
@@ -307,7 +400,8 @@ For any cell execution, Strata computes:
 
 - effective environment name
 - effective environment path
-- effective Python version
+- effective requested Python version
+- effective runtime Python version
 - effective lockfile hash
 
 That effective environment is part of the execution context alongside:
@@ -348,10 +442,12 @@ Cell provenance must include environment identity. At minimum:
 
 - effective environment name
 - effective environment lockfile hash
-- effective environment Python version
+- effective runtime Python version
 
-The name is useful for explainability; the lockfile hash and Python version are the
-correctness inputs.
+The name is useful for explainability. The correctness inputs are the lockfile hash
+and runtime Python version. Requested Python version may still be recorded in
+metadata for UX/debugging, but it is not sufficient on its own for cache
+correctness.
 
 ### Cache Implications
 
@@ -525,6 +621,22 @@ Changing the notebook default should:
 - affect cells without explicit overrides
 - mark affected cells stale
 
+### Change Python Version
+
+For the current single-environment model, changing Python version should be a
+notebook-level environment operation.
+
+Rules:
+
+- expose only backend-supported versions
+- show the requested version separately from the probed runtime version
+- require an explicit apply/rebuild action
+- block new cell execution while the change is in progress
+- invalidate warm execution state after completion
+
+In deployments with only one supported interpreter, the UI should show Python as
+fixed instead of pretending there is a real choice.
+
 ---
 
 ## Import / Export Compatibility
@@ -533,18 +645,25 @@ Changing the notebook default should:
 
 Supported as:
 
-- import into a chosen named environment
-- export from a chosen named environment
+- import into the current notebook environment today, or into a chosen named
+  environment in the future
+- export from the current notebook environment today, or from a chosen named
+  environment in the future
 
 It is a compatibility format, not the canonical runtime model.
 
 ### `environment.yaml`
 
-Supported only as best-effort import into a chosen named environment.
+Supported only as best-effort import into the current notebook environment today,
+or into a chosen named environment in the future.
 
 Rules:
 
-- convert supported Python dependency information into `pyproject.toml`
+- convert supported package dependency information into `pyproject.toml`
+- do not silently overwrite the target environment's Python selection from an
+  imported `python=...` pin
+- if a Python pin is present, surface it as a suggestion or warning and require an
+  explicit environment-level Python change if the backend supports it
 - warn on unsupported Conda-specific features
 - do not promise exact fidelity for non-Python packages or channel semantics
 
@@ -610,6 +729,8 @@ This keeps migration incremental.
 ### Phase 2: Consolidate the Current Single-Environment Model
 
 - environment status and sync state are complete and trustworthy
+- initial notebook creation includes Python version selection
+- notebook-level Python changes are explicit and safe
 - runtime Python version reflects the actual notebook venv
 - environment sync/rebuild operations are explicit
 - dependency mutations report notebook impact clearly

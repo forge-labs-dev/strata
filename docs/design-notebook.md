@@ -164,7 +164,8 @@ aggregate = "strata://notebooks/nb_a1b2/cells/aggregate@v2"
 # Included in provenance hash for cache invalidation
 [environment]
 lockfile_hash = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-python_version = "3.12"
+requested_python_version = "3.12"
+runtime_python_version = "3.12.9"
 
 # Cache retention policies (optional — sensible defaults if omitted)
 [cache]
@@ -176,6 +177,18 @@ max_notebook_cache_mb = 2000
 [cache.pins]
 # train_model = "v4"
 ```
+
+In the current single-environment model, Python version is a **notebook-level**
+environment setting, not a per-cell one. Users should choose it when creating a
+notebook and may later change it only as an explicit environment rebuild operation.
+The model distinguishes between:
+
+- `requested_python_version`: the notebook's configured Python target
+- `runtime_python_version`: the actual interpreter backing the synced notebook env
+
+If named environments are added later, Python selection becomes environment-level
+inside that registry rather than cell-level. The detailed evolution path for this
+lives in [design-notebook-environments.md](./design-notebook-environments.md).
 
 ### What's stored vs. derived
 
