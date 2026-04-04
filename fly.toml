@@ -16,9 +16,12 @@ primary_region = "sjc"
   STRATA_PORT = "8765"
   STRATA_DEPLOYMENT_MODE = "personal"
   STRATA_ALLOW_REMOTE_CLIENTS_IN_PERSONAL = "true"
+  STRATA_NOTEBOOK_PYTHON_VERSIONS = "3.12,3.13"
   STRATA_CACHE_DIR = "/home/strata/.strata/cache"
   STRATA_METADATA_DB = "/home/strata/.strata/meta.sqlite"
   STRATA_NOTEBOOK_STORAGE_DIR = "/home/strata/.strata/notebooks"
+  UV_CACHE_DIR = "/tmp/uv-cache"
+  UV_PYTHON_DOWNLOADS = "automatic"
 
 [http_service]
   internal_port = 8765
@@ -36,9 +39,13 @@ primary_region = "sjc"
   size = "shared-cpu-1x"
   memory = "512mb"
 
-[mounts]
+[[mounts]]
   source = "strata_data"
   destination = "/home/strata/.strata"
+  initial_size = "5GB"
+  auto_extend_size_threshold = 80
+  auto_extend_size_increment = "2GB"
+  auto_extend_size_limit = "20GB"
 
 [checks]
   [checks.health]

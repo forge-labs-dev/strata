@@ -8,6 +8,13 @@ The current Fly deployment stores notebook state under the mounted volume at:
 
 - `/home/strata/.strata/notebooks`
 
+The hosted deployment is also expected to advertise:
+
+- notebook Python versions: `3.12` and `3.13`
+
+and to keep uv's mutable package cache on ephemeral disk instead of the mounted
+volume, so notebook installs do not consume persistent notebook storage.
+
 This smoke pass is meant to answer three questions quickly:
 
 1. Can I create and reopen notebooks on the hosted app?
@@ -19,6 +26,7 @@ This smoke pass is meant to answer three questions quickly:
 1. Open the app and create a notebook from the home page.
    Expected:
    - the default parent directory is `/home/strata/.strata/notebooks`
+   - the Python selector offers `3.12` and `3.13`
    - the notebook opens directly without a reconnect error
 
 2. Add two cells:
@@ -98,6 +106,21 @@ If package install is slow or fails:
   - duration
   - stdout
   - stderr
+
+If rebuild fails with `No space left on device`:
+
+- the mounted Fly volume is full
+- the current deployment should keep `UV_CACHE_DIR` on `/tmp`, but older
+  deployments may still have a large legacy cache under
+  `/home/strata/.strata/uv-cache`
+- either extend the Fly volume or remove the legacy cache before retrying
+
+If the Python selector only shows one version:
+
+- verify Fly is deploying the current `fly.toml`
+- verify `STRATA_NOTEBOOK_PYTHON_VERSIONS=3.12,3.13`
+- verify `UV_PYTHON_DOWNLOADS=automatic`, otherwise only the image's built-in
+  Python will be available
 
 If notebook data looks missing after a restart:
 
