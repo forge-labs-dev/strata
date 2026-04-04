@@ -1521,9 +1521,21 @@ function initializeWebSocket() {
         })
         dependencyError.value = null
         environmentError.value = null
-        environmentWarnings.value = []
+        environmentWarnings.value = Array.isArray(payload.warnings)
+          ? payload.warnings.filter(
+              (warning: unknown): warning is string => typeof warning === 'string',
+            )
+          : []
+        if (job.action === 'import') {
+          environmentImportPreview.value = null
+        }
       } else {
         const message = job.error || 'Environment update failed'
+        environmentWarnings.value = Array.isArray(payload.warnings)
+          ? payload.warnings.filter(
+              (warning: unknown): warning is string => typeof warning === 'string',
+            )
+          : []
         if (job.action === 'add' || job.action === 'remove') {
           dependencyError.value = message
         } else {
@@ -1868,23 +1880,15 @@ async function importRequirementsAction(requirements: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
-    environmentImportPreview.value = null
-    setEnvironmentActionSummary({
-      action: 'import',
-      lockfileChanged: data.lockfile_changed === true,
-      staleCellCount: Number(data.stale_cell_count ?? 0),
-    })
-    finishEnvironmentOperation('import', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to import requirements.txt'
+    syncEnvironmentPayloadFromBackend(err?.payload)
     finishEnvironmentOperation(
       'import',
       'failed',
       extractOperationLogPayload(err?.payload),
       'uv sync',
     )
-  } finally {
-    environmentLoading.value = false
   }
 }
 
@@ -1902,26 +1906,15 @@ async function importEnvironmentYamlAction(environmentYaml: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
-    environmentWarnings.value = Array.isArray(data.warnings)
-      ? data.warnings.filter((warning: unknown): warning is string => typeof warning === 'string')
-      : []
-    environmentImportPreview.value = null
-    setEnvironmentActionSummary({
-      action: 'import',
-      lockfileChanged: data.lockfile_changed === true,
-      staleCellCount: Number(data.stale_cell_count ?? 0),
-    })
-    finishEnvironmentOperation('import', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to import environment.yaml'
+    syncEnvironmentPayloadFromBackend(err?.payload)
     finishEnvironmentOperation(
       'import',
       'failed',
       extractOperationLogPayload(err?.payload),
       'uv sync',
     )
-  } finally {
-    environmentLoading.value = false
   }
 }
 

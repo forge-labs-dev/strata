@@ -23,7 +23,9 @@ from strata.notebook.dependencies import (
     RequirementsImportResult,
     _get_notebook_lock,
     import_environment_yaml_text,
+    import_environment_yaml_text_streaming,
     import_requirements_text,
+    import_requirements_text_streaming,
     list_dependencies,
     run_uv_command_streaming,
 )
@@ -617,6 +619,8 @@ class NotebookSession:
         """Return the label of the current environment mutation, if any."""
         with self._environment_state_lock:
             if self.environment_job is not None and self.environment_job.status == "running":
+                if self.environment_job.action == "import":
+                    return "environment import"
                 if self.environment_job.package:
                     return f"{self.environment_job.action} {self.environment_job.package}"
                 return self.environment_job.action
@@ -1126,12 +1130,28 @@ class NotebookSession:
         *,
         action: str,
         package: str | None = None,
+        requirements_text: str | None = None,
+        environment_yaml_text: str | None = None,
     ) -> EnvironmentJobSnapshot:
         """Start an asynchronous notebook environment job."""
-        if action not in {"add", "remove", "sync"}:
+        if action not in {"add", "remove", "sync", "import"}:
             raise ValueError(f"Unsupported environment job action: {action}")
 
-        action_label = f"{action} {package}".strip()
+        if action == "import":
+            if (requirements_text is None) == (environment_yaml_text is None):
+                raise ValueError(
+                    "Import environment jobs require exactly one of requirements_text "
+                    "or environment_yaml_text"
+                )
+
+        if action == "import":
+            action_label = (
+                "requirements import"
+                if requirements_text is not None
+                else "environment.yaml import"
+            )
+        else:
+            action_label = f"{action} {package}".strip()
         with self._environment_state_lock:
             self._assert_environment_job_can_start(action_label)
             requested_python = read_requested_python_minor(self.path)
@@ -1140,7 +1160,7 @@ class NotebookSession:
                 command = f"uv add {package}"
             elif action == "remove" and package:
                 command = f"uv remove {package}"
-            elif requested_python:
+            elif action == "sync" and requested_python:
                 command = f"uv sync --python {requested_python}"
 
             job = EnvironmentJobSnapshot(
@@ -1155,17 +1175,36 @@ class NotebookSession:
             self.environment_job = job
 
         await self._broadcast_environment_job_event("environment_job_started", job)
-        task = asyncio.create_task(self._run_environment_job(job))
+        task = asyncio.create_task(
+            self._run_environment_job(
+                job,
+                requirements_text=requirements_text,
+                environment_yaml_text=environment_yaml_text,
+            )
+        )
         with self._environment_state_lock:
             self.environment_job_task = task
         return job
 
-    async def _run_environment_job(self, job: EnvironmentJobSnapshot) -> None:
+    async def _run_environment_job(
+        self,
+        job: EnvironmentJobSnapshot,
+        *,
+        requirements_text: str | None = None,
+        environment_yaml_text: str | None = None,
+    ) -> None:
         """Execute a background environment job and publish updates."""
         stale_cell_ids: list[str] = []
+        import_result: RequirementsImportResult | None = None
         try:
             if job.action == "sync":
                 stale_cell_ids = await self._run_sync_environment_job(job)
+            elif job.action == "import":
+                stale_cell_ids, import_result = await self._run_import_environment_job(
+                    job,
+                    requirements_text=requirements_text,
+                    environment_yaml_text=environment_yaml_text,
+                )
             else:
                 assert job.package is not None
                 stale_cell_ids = await self._run_dependency_environment_job(
@@ -1192,6 +1231,9 @@ class NotebookSession:
                     "stale_cell_ids": stale_cell_ids,
                 },
             }
+            if import_result is not None:
+                payload["warnings"] = list(import_result.warnings)
+                payload["imported_count"] = import_result.imported_count
             if job.status == "completed":
                 payload.update(
                     {
@@ -1284,6 +1326,51 @@ class NotebookSession:
 
         job.lockfile_changed = compute_lockfile_hash(self.path) != old_lockfile_hash
         return await self._finalize_environment_job(job, lockfile_changed=job.lockfile_changed)
+
+    async def _run_import_environment_job(
+        self,
+        job: EnvironmentJobSnapshot,
+        *,
+        requirements_text: str | None,
+        environment_yaml_text: str | None,
+    ) -> tuple[list[str], RequirementsImportResult]:
+        """Run a requirements/environment.yaml import as a background job."""
+        job.phase = "preparing_import"
+        await self._broadcast_environment_job_event("environment_job_progress", job)
+
+        if requirements_text is not None:
+            result = await import_requirements_text_streaming(
+                self.path,
+                requirements_text,
+                on_update=lambda stream, text, truncated: self._update_environment_job_stream(
+                    job,
+                    stream=stream,
+                    text=text,
+                    truncated=truncated,
+                ),
+            )
+        else:
+            assert environment_yaml_text is not None
+            result = await import_environment_yaml_text_streaming(
+                self.path,
+                environment_yaml_text,
+                on_update=lambda stream, text, truncated: self._update_environment_job_stream(
+                    job,
+                    stream=stream,
+                    text=text,
+                    truncated=truncated,
+                ),
+            )
+
+        self._apply_environment_operation_log(job, result.operation_log)
+        if not result.success:
+            raise RuntimeError(result.error or "Environment import failed")
+
+        stale_cell_ids = await self._finalize_environment_job(
+            job,
+            lockfile_changed=result.lockfile_changed,
+        )
+        return stale_cell_ids, result
 
     async def _run_sync_environment_job(
         self,

@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 
-from strata.notebook.dependencies import EnvironmentOperationLog
+from strata.notebook.dependencies import EnvironmentOperationLog, RequirementsImportResult
 from strata.notebook.env import compute_lockfile_hash
 from strata.notebook.python_versions import current_python_minor, format_requires_python
 from strata.notebook.session import NotebookSession
@@ -301,6 +302,99 @@ class TestDependencyChangeRefresh:
         await session.wait_for_environment_job()
         assert session.environment_job is None
         assert session.wait_for_environment_job_task() is None
+
+    @pytest.mark.asyncio
+    async def test_submit_environment_import_job_emits_warnings(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Async environment imports should surface warnings on the finished job payload."""
+        nb_dir = create_notebook(tmp_path, "dependency_import_job")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+        finished_payloads: list[tuple[str, dict[str, Any]]] = []
+        expected_warning = (
+            "Ignored conda channels from environment.yaml; notebook environments "
+            "use pip/uv resolution."
+        )
+
+        async def _noop_event(*args, **kwargs):
+            del args
+            del kwargs
+            return None
+
+        async def _capture_message(event_type: str, payload: dict[str, object]) -> None:
+            finished_payloads.append((event_type, payload))
+
+        async def _fake_import_environment_yaml_text_streaming(
+            notebook_dir: Path,
+            environment_yaml_text: str,
+            *,
+            timeout: int = 180,
+            on_update=None,
+        ):
+            del notebook_dir
+            del environment_yaml_text
+            del timeout
+            if on_update is not None:
+                await on_update("stderr", "Resolving translated environment\n", False)
+            return RequirementsImportResult(
+                success=True,
+                lockfile_changed=True,
+                dependencies=list_dependencies(session.path),
+                imported_count=2,
+                warnings=[expected_warning],
+                operation_log=EnvironmentOperationLog(
+                    command="uv sync",
+                    duration_ms=17,
+                    stdout="",
+                    stderr="Resolving translated environment\n",
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                ),
+            )
+
+        async def _fake_finalize_environment_job(
+            job: EnvironmentJobSnapshot,
+            *,
+            lockfile_changed: bool,
+            refresh_runtime: bool = True,
+        ) -> list[str]:
+            del refresh_runtime
+            job.lockfile_changed = lockfile_changed
+            job.stale_cell_count = 1
+            job.stale_cell_ids = ["cell-1"]
+            return ["cell-1"]
+
+        from strata.notebook.dependencies import list_dependencies
+        from strata.notebook.session import EnvironmentJobSnapshot
+
+        monkeypatch.setattr(session, "_broadcast_environment_job_event", _noop_event)
+        monkeypatch.setattr(session, "_broadcast_environment_job_message", _capture_message)
+        monkeypatch.setattr(
+            "strata.notebook.session.import_environment_yaml_text_streaming",
+            _fake_import_environment_yaml_text_streaming,
+        )
+        monkeypatch.setattr(session, "_finalize_environment_job", _fake_finalize_environment_job)
+
+        job = await session.submit_environment_job(
+            action="import",
+            environment_yaml_text="dependencies:\n  - six=1.17.0\n",
+        )
+        assert job.status == "running"
+        await session.wait_for_environment_job()
+
+        finished = next(
+            payload
+            for event_type, payload in finished_payloads
+            if event_type == "environment_job_finished"
+        )
+        assert finished["warnings"] == [expected_warning]
+        assert finished["imported_count"] == 2
+        environment_job = finished["environment_job"]
+        assert isinstance(environment_job, dict)
+        assert environment_job["action"] == "import"
 
 
 class TestEnvironmentMetadata:

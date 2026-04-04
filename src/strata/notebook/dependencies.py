@@ -517,6 +517,98 @@ def import_requirements_text(
     )
 
 
+async def import_requirements_text_streaming(
+    notebook_dir: Path,
+    requirements_text: str,
+    *,
+    timeout: int = 180,
+    on_update: Callable[[str, str, bool], Awaitable[None] | None] | None = None,
+) -> RequirementsImportResult:
+    """Replace direct notebook dependencies from ``requirements.txt`` with live logs."""
+    normalized_requirements = parse_requirements_text(requirements_text)
+    # Python 3.10 compat
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        import tomli as tomllib  # type: ignore
+
+    pyproject_path = notebook_dir / "pyproject.toml"
+    if not pyproject_path.exists():
+        return RequirementsImportResult(
+            success=False,
+            error="pyproject.toml not found",
+        )
+
+    old_lockfile_hash = _lockfile_hash(notebook_dir)
+    old_pyproject = pyproject_path.read_bytes()
+    lockfile_path = notebook_dir / "uv.lock"
+    old_lockfile = lockfile_path.read_bytes() if lockfile_path.exists() else None
+
+    lock = _get_notebook_lock(notebook_dir)
+    await asyncio.to_thread(lock.acquire)
+    try:
+        try:
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+        except Exception as exc:
+            return RequirementsImportResult(
+                success=False,
+                error=f"Failed to parse pyproject.toml: {exc}",
+            )
+
+        project = data.setdefault("project", {})
+        if not isinstance(project, dict):
+            return RequirementsImportResult(
+                success=False,
+                error="pyproject.toml project section is invalid",
+            )
+        project["dependencies"] = normalized_requirements
+
+        try:
+            with open(pyproject_path, "wb") as f:
+                tomli_w.dump(data, f)
+        except Exception as exc:
+            _restore_dependency_files(
+                pyproject_path, old_pyproject, lockfile_path, old_lockfile
+            )
+            return RequirementsImportResult(
+                success=False,
+                error=f"Failed to write pyproject.toml: {exc}",
+            )
+
+        command_result = await run_uv_command_streaming(
+            notebook_dir,
+            ["sync"],
+            timeout=timeout,
+            display_name="uv sync",
+            on_update=on_update,
+        )
+        if command_result.success:
+            logger.info(
+                "Imported %s requirements into %s",
+                len(normalized_requirements),
+                notebook_dir,
+            )
+        else:
+            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
+            return RequirementsImportResult(
+                success=False,
+                error=command_result.error,
+                operation_log=command_result.operation_log,
+            )
+    finally:
+        lock.release()
+
+    new_lockfile_hash = _lockfile_hash(notebook_dir)
+    return RequirementsImportResult(
+        success=True,
+        lockfile_changed=old_lockfile_hash != new_lockfile_hash,
+        dependencies=list_dependencies(notebook_dir),
+        imported_count=len(normalized_requirements),
+        operation_log=command_result.operation_log,
+    )
+
+
 def import_environment_yaml_text(
     notebook_dir: Path,
     environment_yaml_text: str,
@@ -529,6 +621,25 @@ def import_environment_yaml_text(
         notebook_dir,
         "\n".join(requirements),
         timeout=timeout,
+    )
+    result.warnings = warnings
+    return result
+
+
+async def import_environment_yaml_text_streaming(
+    notebook_dir: Path,
+    environment_yaml_text: str,
+    *,
+    timeout: int = 180,
+    on_update: Callable[[str, str, bool], Awaitable[None] | None] | None = None,
+) -> RequirementsImportResult:
+    """Best-effort ``environment.yaml`` import with live ``uv sync`` output."""
+    requirements, warnings = parse_environment_yaml_text(environment_yaml_text)
+    result = await import_requirements_text_streaming(
+        notebook_dir,
+        "\n".join(requirements),
+        timeout=timeout,
+        on_update=on_update,
     )
     result.warnings = warnings
     return result

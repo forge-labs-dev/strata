@@ -393,12 +393,14 @@ class EnvironmentJobRequest(BaseModel):
 
     action: str = Field(..., max_length=32)
     package: str | None = Field(default=None, max_length=200)
+    requirements: str | None = Field(default=None, max_length=500_000)
+    environment_yaml: str | None = Field(default=None, max_length=500_000)
 
     @field_validator("action")
     @classmethod
     def validate_action_field(cls, value: str) -> str:
         normalized = value.strip().lower()
-        if normalized not in {"add", "remove", "sync"}:
+        if normalized not in {"add", "remove", "sync", "import"}:
             raise ValueError("Unsupported environment job action")
         return normalized
 
@@ -590,14 +592,42 @@ async def submit_environment_job(notebook_id: str, req: EnvironmentJobRequest) -
             status_code=400,
             detail=f"Package is required for {req.action} environment jobs",
         )
-    if req.action == "sync" and req.package is not None:
+    if req.action == "sync" and (
+        req.package is not None
+        or req.requirements is not None
+        or req.environment_yaml is not None
+    ):
         raise HTTPException(
             status_code=400,
-            detail="Sync environment jobs do not accept a package",
+            detail="Sync environment jobs do not accept package or import content",
         )
+    if req.action in {"add", "remove"} and (
+        req.requirements is not None or req.environment_yaml is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{req.action.title()} environment jobs do not accept import content",
+        )
+    if req.action == "import":
+        provided_inputs = sum(
+            value is not None for value in (req.requirements, req.environment_yaml)
+        )
+        if provided_inputs != 1 or req.package is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Import environment jobs require exactly one of requirements or "
+                    "environment_yaml and do not accept a package"
+                ),
+            )
 
     try:
-        await session.submit_environment_job(action=req.action, package=req.package)
+        await session.submit_environment_job(
+            action=req.action,
+            package=req.package,
+            requirements_text=req.requirements,
+            environment_yaml_text=req.environment_yaml,
+        )
     except RuntimeError as exc:
         _raise_environment_busy(session, str(exc))
 

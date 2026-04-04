@@ -403,7 +403,15 @@ def test_submit_environment_job_endpoint(monkeypatch):
         session = get_session_manager().get_session(session_id)
         assert session is not None
 
-        async def _fake_submit_environment_job(*, action: str, package: str | None = None):
+        async def _fake_submit_environment_job(
+            *,
+            action: str,
+            package: str | None = None,
+            requirements_text: str | None = None,
+            environment_yaml_text: str | None = None,
+        ):
+            del requirements_text
+            del environment_yaml_text
             job = EnvironmentJobSnapshot(
                 id="job-123",
                 action=action,
@@ -428,6 +436,92 @@ def test_submit_environment_job_endpoint(monkeypatch):
         assert data["environment_job"]["action"] == "add"
         assert data["environment_job"]["package"] == "six"
         assert data["environment_job"]["status"] == "running"
+
+
+def test_submit_environment_import_job_endpoint(monkeypatch):
+    """POST /environment/jobs should accept async requirements/environment imports."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Import Job Test")
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.routes import get_session_manager
+        from strata.notebook.session import EnvironmentJobSnapshot
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+
+        captured: dict[str, str | None] = {}
+
+        async def _fake_submit_environment_job(
+            *,
+            action: str,
+            package: str | None = None,
+            requirements_text: str | None = None,
+            environment_yaml_text: str | None = None,
+        ):
+            captured["action"] = action
+            captured["package"] = package
+            captured["requirements_text"] = requirements_text
+            captured["environment_yaml_text"] = environment_yaml_text
+            job = EnvironmentJobSnapshot(
+                id="job-456",
+                action=action,
+                package=package,
+                command="uv sync",
+                status="running",
+                phase="preparing_import",
+                started_at=1234567890,
+            )
+            session.environment_job = job
+            return job
+
+        monkeypatch.setattr(session, "submit_environment_job", _fake_submit_environment_job)
+
+        response = client.post(
+            f"/v1/notebooks/{session_id}/environment/jobs",
+            json={"action": "import", "requirements": "pyarrow>=18.0.0\nsix==1.17.0\n"},
+        )
+        assert response.status_code == 202
+        data = response.json()
+        assert data["accepted"] is True
+        assert data["environment_job"]["action"] == "import"
+        assert data["environment_job"]["status"] == "running"
+        assert captured == {
+            "action": "import",
+            "package": None,
+            "requirements_text": "pyarrow>=18.0.0\nsix==1.17.0\n",
+            "environment_yaml_text": None,
+        }
+
+
+def test_submit_environment_import_job_endpoint_rejects_invalid_payload():
+    """Import jobs must provide exactly one import source and no package."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Import Validation Test")
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        response = client.post(
+            f"/v1/notebooks/{session_id}/environment/jobs",
+            json={
+                "action": "import",
+                "requirements": "six==1.17.0\n",
+                "environment_yaml": "dependencies: [six=1.17.0]\n",
+            },
+        )
+        assert response.status_code == 400
+        assert "exactly one" in response.json()["detail"]
 
 
 def test_submit_environment_job_endpoint_conflict_when_execution_running():

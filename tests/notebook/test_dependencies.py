@@ -20,10 +20,13 @@ from fastapi.testclient import TestClient
 
 from strata.notebook.dependencies import (
     DependencyChangeResult,
+    EnvironmentOperationLog,
     add_dependency,
     export_requirements_text,
     import_environment_yaml_text,
+    import_environment_yaml_text_streaming,
     import_requirements_text,
+    import_requirements_text_streaming,
     list_dependencies,
     list_resolved_dependencies,
     parse_environment_yaml_text,
@@ -225,6 +228,59 @@ class TestRequirementsCompatibility:
         assert "Resolved 2 packages" in result.operation_log.stdout
         assert "Prepared environment" in result.operation_log.stderr
 
+    @pytest.mark.asyncio
+    async def test_import_requirements_text_streaming_records_live_output(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Streaming requirements import should preserve command output and success state."""
+        nb_dir = create_notebook(tmp_path, "requirements_streaming")
+
+        async def _fake_run_uv_command_streaming(
+            notebook_dir: Path,
+            args: list[str],
+            *,
+            timeout: int,
+            display_name: str,
+            on_update=None,
+        ):
+            del notebook_dir
+            del timeout
+            del display_name
+            if on_update is not None:
+                await on_update("stdout", "Resolved 2 packages\n", False)
+            return type(
+                "FakeUvResult",
+                (),
+                {
+                    "success": True,
+                    "error": None,
+                    "operation_log": EnvironmentOperationLog(
+                        command=" ".join(["uv", *args]),
+                        duration_ms=11,
+                        stdout="Resolved 2 packages\n",
+                        stderr="Prepared environment\n",
+                        stdout_truncated=False,
+                        stderr_truncated=False,
+                    ),
+                },
+            )()
+
+        monkeypatch.setattr(
+            "strata.notebook.dependencies.run_uv_command_streaming",
+            _fake_run_uv_command_streaming,
+        )
+
+        result = await import_requirements_text_streaming(
+            nb_dir,
+            "pyarrow>=18.0.0\nsix==1.17.0\n",
+        )
+
+        assert result.success is True
+        assert result.operation_log is not None
+        assert result.operation_log.command == "uv sync"
+        assert "Resolved 2 packages" in result.operation_log.stdout
+        assert "Prepared environment" in result.operation_log.stderr
+
     def test_parse_requirements_text_rejects_pip_flags(self):
         """Unsupported pip-style directives should fail clearly."""
         with pytest.raises(ValueError, match="Unsupported requirements entry"):
@@ -275,6 +331,67 @@ dependencies:
         assert "six" in names
         assert "urllib3" in names
         assert "requests" not in names
+
+    @pytest.mark.asyncio
+    async def test_import_environment_yaml_text_streaming_preserves_warnings(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Streaming environment.yaml import should keep best-effort warnings."""
+        nb_dir = create_notebook(tmp_path, "environment_yaml_streaming")
+
+        async def _fake_run_uv_command_streaming(
+            notebook_dir: Path,
+            args: list[str],
+            *,
+            timeout: int,
+            display_name: str,
+            on_update=None,
+        ):
+            del notebook_dir
+            del timeout
+            del display_name
+            if on_update is not None:
+                await on_update("stderr", "Resolving translated environment\n", False)
+            return type(
+                "FakeUvResult",
+                (),
+                {
+                    "success": True,
+                    "error": None,
+                    "operation_log": EnvironmentOperationLog(
+                        command=" ".join(["uv", *args]),
+                        duration_ms=13,
+                        stdout="",
+                        stderr="Resolving translated environment\n",
+                        stdout_truncated=False,
+                        stderr_truncated=False,
+                    ),
+                },
+            )()
+
+        monkeypatch.setattr(
+            "strata.notebook.dependencies.run_uv_command_streaming",
+            _fake_run_uv_command_streaming,
+        )
+
+        result = await import_environment_yaml_text_streaming(
+            nb_dir,
+            """
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pyarrow=18.0.0
+  - six=1.17.0
+""",
+        )
+
+        assert result.success is True
+        assert any("channels" in warning for warning in result.warnings)
+        assert any("python version pin" in warning for warning in result.warnings)
+        assert result.operation_log is not None
+        assert result.operation_log.command == "uv sync"
 
     def test_list_resolved_dependencies_reads_uv_lock(self, tmp_path: Path):
         """Resolved dependencies should be listed from uv.lock."""
