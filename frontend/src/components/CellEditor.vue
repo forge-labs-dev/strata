@@ -29,6 +29,8 @@ const emit = defineEmits<{
 const {
   connected,
   environmentMutationActive,
+  environmentLastAction,
+  environmentOperation,
   updateSource,
   openInspect,
   inspectCellId,
@@ -55,6 +57,7 @@ const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
 const showInfra = ref(false)
 const showAnnotationEditor = ref(false)
+const installRequestedPackage = ref<string | null>(null)
 
 const { view, setDoc } = useCodemirror(editorEl, {
   initialDoc: props.cell.source,
@@ -68,6 +71,15 @@ watch(
   (source) => {
     if (view.value && view.value.state.doc.toString() !== source) {
       setDoc(source)
+    }
+  },
+)
+
+watch(
+  () => props.cell.status,
+  (status) => {
+    if (status === 'running') {
+      installRequestedPackage.value = null
     }
   },
 )
@@ -312,6 +324,40 @@ function saveAnnotationMounts(mounts: MountSpec[]) {
 
 function toggleAnnotationEditor() {
   showAnnotationEditor.value = !showAnnotationEditor.value
+}
+
+function normalizePackageName(pkg: string | null | undefined): string {
+  return (pkg || '').trim().toLowerCase()
+}
+
+const installTargetPackage = computed(
+  () => installRequestedPackage.value || props.cell.suggestInstall || null,
+)
+
+const installInProgress = computed(() => {
+  return (
+    environmentMutationActive.value &&
+    environmentOperation.value?.action === 'add' &&
+    normalizePackageName(environmentOperation.value.packageName) ===
+      normalizePackageName(installTargetPackage.value)
+  )
+})
+
+const installCompleted = computed(() => {
+  return (
+    !!installRequestedPackage.value &&
+    !props.cell.suggestInstall &&
+    environmentLastAction.value?.action === 'add' &&
+    normalizePackageName(environmentLastAction.value.packageName) ===
+      normalizePackageName(installRequestedPackage.value)
+  )
+})
+
+async function installSuggestedPackage() {
+  const pkg = props.cell.suggestInstall
+  if (!pkg || installInProgress.value) return
+  installRequestedPackage.value = pkg
+  await addDependencyAction(pkg)
 }
 
 /** Check if scalar is only console output (no display value) */
@@ -667,8 +713,16 @@ function formatScalar(scalar: unknown): string {
             <span
               >Missing package <code>{{ cell.suggestInstall }}</code></span
             >
-            <button class="btn-install" @click="addDependencyAction(cell.suggestInstall!)">
-              Install {{ cell.suggestInstall }}
+            <button
+              class="btn-install"
+              :disabled="installInProgress || environmentMutationActive"
+              @click="installSuggestedPackage"
+            >
+              {{
+                installInProgress
+                  ? `Installing ${installTargetPackage}`
+                  : `Install ${cell.suggestInstall}`
+              }}
             </button>
           </div>
         </div>
@@ -695,6 +749,11 @@ function formatScalar(scalar: unknown): string {
         >
           <pre>{{ formatScalar(cell.output.scalar) }}</pre>
         </div>
+      </div>
+
+      <div v-if="installCompleted && installTargetPackage" class="install-complete-hint">
+        Installed <code>{{ installTargetPackage }}</code
+        >. Re-run the cell to continue.
       </div>
 
       <!-- Inspect REPL panel -->
@@ -1222,6 +1281,24 @@ function formatScalar(scalar: unknown): string {
 }
 .btn-install:hover {
   background: #74c7ec;
+}
+.btn-install:disabled {
+  background: #6c7086;
+  color: #cdd6f4;
+  cursor: wait;
+}
+.install-complete-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #a6e3a115;
+  border: 1px solid #a6e3a133;
+  border-radius: 6px;
+  color: #a6e3a1;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 13px;
+}
+.install-complete-hint code {
+  color: #cdd6f4;
 }
 .output-table-wrap {
   overflow-x: auto;

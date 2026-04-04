@@ -750,11 +750,15 @@ function extractOperationLogPayload(raw: any): any | null {
   return null
 }
 
-function beginEnvironmentOperation(action: EnvironmentOperation['action'], command: string) {
+function beginEnvironmentOperation(
+  action: EnvironmentOperation['action'],
+  command: string,
+  packageName: string | null = null,
+) {
   environmentOperation.value = {
     id: `${action}-${Date.now()}`,
     action,
-    packageName: null,
+    packageName,
     status: 'running',
     phase: 'starting',
     command,
@@ -1202,6 +1206,13 @@ function initializeWebSocket() {
       setCellStatus(cellId, status)
 
       const cell = cellMap.value.get(cellId)
+      if (cell && status !== 'error' && cell.suggestInstall) {
+        cell.suggestInstall = undefined
+        if (cell.output?.error) {
+          cell.output = undefined
+        }
+      }
+
       if (cell && p.causality && supportsStalenessDetail(status)) {
         const rawCausality = p.causality as Record<string, any>
         cell.causality = {
@@ -1773,7 +1784,7 @@ async function addDependencyAction(pkg: string) {
   environmentError.value = null
   environmentWarnings.value = []
   environmentImportPreview.value = null
-  beginEnvironmentOperation('add', `uv add ${pkg}`)
+  beginEnvironmentOperation('add', `uv add ${pkg}`, pkg)
   const strata = useStrata()
   try {
     const data = await strata.addDependency(sid, pkg)
@@ -1801,7 +1812,7 @@ async function removeDependencyAction(pkg: string) {
   environmentError.value = null
   environmentWarnings.value = []
   environmentImportPreview.value = null
-  beginEnvironmentOperation('remove', `uv remove ${pkg}`)
+  beginEnvironmentOperation('remove', `uv remove ${pkg}`, pkg)
   const strata = useStrata()
   try {
     const data = await strata.removeDependency(sid, pkg)
