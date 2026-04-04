@@ -16,9 +16,14 @@ from strata.config import StrataConfig
 from tests.conftest import find_free_port, wait_for_server
 
 
-def _fake_uv_sync(notebook_dir: Path, *, timeout: int = 60) -> bool:
+def _fake_uv_sync(
+    notebook_dir: Path,
+    *,
+    timeout: int = 60,
+    python_version: str | None = None,
+) -> bool:
     """Create a minimal local env scaffold without invoking ``uv``."""
-    del timeout
+    del timeout, python_version
     notebook_dir = Path(notebook_dir)
 
     lockfile = notebook_dir / "uv.lock"

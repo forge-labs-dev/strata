@@ -32,6 +32,7 @@ from strata.notebook.models import (
 from strata.notebook.mounts import MountFingerprinter, resolve_cell_mounts
 from strata.notebook.parser import parse_notebook
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
+from strata.notebook.python_versions import read_requested_python_minor
 from strata.notebook.workers import (
     build_worker_catalog,
     resolve_worker_spec,
@@ -520,7 +521,10 @@ class NotebookSession:
     def serialize_environment_state(self) -> dict[str, Any]:
         """Serialize the live notebook environment state for the UI."""
         dependencies = list_dependencies(self.path)
+        requested_python_version = read_requested_python_minor(self.path) or ""
         return {
+            "requested_python_version": requested_python_version,
+            "runtime_python_version": self.environment_python_version,
             "python_version": self.environment_python_version,
             "lockfile_hash": compute_lockfile_hash(self.path),
             "package_count": len(dependencies),
@@ -763,7 +767,10 @@ class NotebookSession:
         ``python`` in PATH) so tests without ``uv`` keep working.
         """
         started = _time.perf_counter()
-        ok = _uv_sync(self.path)
+        ok = _uv_sync(
+            self.path,
+            python_version=read_requested_python_minor(self.path),
+        )
         self.environment_last_synced_at = int(_time.time() * 1000)
         self.environment_last_sync_duration_ms = int(
             (_time.perf_counter() - started) * 1000

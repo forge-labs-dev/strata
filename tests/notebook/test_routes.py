@@ -106,6 +106,8 @@ def test_open_notebook():
         assert data["default_parent_path"] == "/tmp/strata-notebooks"
         assert "environment" in data
         assert "python_version" in data["environment"]
+        assert "requested_python_version" in data["environment"]
+        assert "runtime_python_version" in data["environment"]
         assert "sync_state" in data["environment"]
         assert "declared_package_count" in data["environment"]
         assert "interpreter_source" in data["environment"]
@@ -243,9 +245,40 @@ def test_create_notebook_endpoint():
         assert data["name"] == "New Notebook"
         assert "session_id" in data
         assert data["default_parent_path"] == "/tmp/strata-notebooks"
+        assert data["available_python_versions"]
+        assert data["default_python_version"] == data["available_python_versions"][0]
+        assert "python_selection_fixed" in data
         assert "environment" in data
         assert "lockfile_hash" in data["environment"]
+        assert "requested_python_version" in data["environment"]
+        assert "runtime_python_version" in data["environment"]
         assert "resolved_package_count" in data["environment"]
+
+
+def test_create_notebook_endpoint_rejects_unsupported_python_version(monkeypatch):
+    """Notebook creation should validate requested Python versions against server config."""
+    monkeypatch.setattr(
+        "strata.server._state",
+        SimpleNamespace(
+            config=SimpleNamespace(
+                deployment_mode="personal",
+                notebook_storage_dir=Path("/tmp/strata-notebooks"),
+                notebook_python_versions=["3.13"],
+                transforms_config={},
+            )
+        ),
+    )
+
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        response = client.post(
+            "/v1/notebooks/create",
+            json={"parent_path": tmpdir, "name": "New Notebook", "python_version": "3.12"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Python 3.12 is not available for notebook creation"
 
 
 def test_get_notebook_runtime_config_endpoint(monkeypatch):
@@ -256,6 +289,7 @@ def test_get_notebook_runtime_config_endpoint(monkeypatch):
             config=SimpleNamespace(
                 deployment_mode="personal",
                 notebook_storage_dir=Path("/srv/strata-notebooks"),
+                notebook_python_versions=["3.12", "3.13"],
                 transforms_config={},
             )
         ),
@@ -268,6 +302,9 @@ def test_get_notebook_runtime_config_endpoint(monkeypatch):
     assert response.json() == {
         "deployment_mode": "personal",
         "default_parent_path": "/srv/strata-notebooks",
+        "available_python_versions": ["3.12", "3.13"],
+        "default_python_version": "3.12",
+        "python_selection_fixed": False,
     }
 
 
@@ -288,6 +325,8 @@ def test_get_environment_status_endpoint():
         assert response.status_code == 200
         environment = response.json()["environment"]
         assert "python_version" in environment
+        assert "requested_python_version" in environment
+        assert "runtime_python_version" in environment
         assert "lockfile_hash" in environment
         assert "declared_package_count" in environment
         assert "resolved_package_count" in environment
@@ -334,6 +373,8 @@ def test_sync_environment_endpoint(monkeypatch):
         assert response.status_code == 200
         data = response.json()
         assert data["environment"]["sync_state"] == "ready"
+        assert "requested_python_version" in data["environment"]
+        assert data["environment"]["runtime_python_version"] == "3.13.2"
         assert data["environment"]["python_version"] == "3.13.2"
         assert data["environment"]["sync_notice"] == "Using existing notebook venv."
         assert data["environment"]["last_sync_duration_ms"] == 42

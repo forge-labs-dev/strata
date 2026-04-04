@@ -56,6 +56,8 @@ const notebook = reactive<Notebook>({
   cells: [],
   environment: {
     pythonVersion: '',
+    requestedPythonVersion: '',
+    runtimePythonVersion: '',
     lockfileHash: '',
     packageCount: 0,
     declaredPackageCount: 0,
@@ -270,8 +272,20 @@ function parseBackendEnvironment(raw: any): NotebookEnvironment {
       raw?.packageCount ??
       0,
   )
+  const runtimePythonVersion = String(
+    raw?.runtime_python_version ??
+      raw?.runtimePythonVersion ??
+      raw?.python_version ??
+      raw?.pythonVersion ??
+      '',
+  )
+  const requestedPythonVersion = String(
+    raw?.requested_python_version ?? raw?.requestedPythonVersion ?? runtimePythonVersion,
+  )
   return {
-    pythonVersion: String(raw?.python_version ?? raw?.pythonVersion ?? ''),
+    pythonVersion: runtimePythonVersion,
+    requestedPythonVersion,
+    runtimePythonVersion,
     lockfileHash: String(raw?.lockfile_hash ?? raw?.lockfileHash ?? ''),
     packageCount: declaredPackageCount,
     declaredPackageCount,
@@ -620,12 +634,25 @@ function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
 }
 
 function parseBackendNotebookRuntimeConfig(raw: any): NotebookRuntimeConfig {
+  const availablePythonVersions = Array.isArray(raw?.available_python_versions)
+    ? raw.available_python_versions
+        .map((value: unknown) => String(value || '').trim())
+        .filter((value: string) => value.length > 0)
+    : []
+  const defaultPythonVersion =
+    typeof raw?.default_python_version === 'string' && raw.default_python_version.trim()
+      ? raw.default_python_version
+      : availablePythonVersions[0] || ''
   return {
     deploymentMode: raw?.deployment_mode === 'service' ? 'service' : 'personal',
     defaultParentPath:
       typeof raw?.default_parent_path === 'string' && raw.default_parent_path.trim()
         ? raw.default_parent_path
         : FALLBACK_NOTEBOOK_PARENT_PATH,
+    availablePythonVersions,
+    defaultPythonVersion,
+    pythonSelectionFixed:
+      raw?.python_selection_fixed === true || availablePythonVersions.length <= 1,
   }
 }
 

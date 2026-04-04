@@ -11,6 +11,9 @@ const { entries: recentNotebooks, record, remove } = useRecentNotebooks()
 const FALLBACK_NOTEBOOK_PARENT_PATH = '/tmp/strata-notebooks'
 const newName = ref('Untitled Notebook')
 const newParentPath = ref(FALLBACK_NOTEBOOK_PARENT_PATH)
+const availablePythonVersions = ref<string[]>([])
+const selectedPythonVersion = ref('')
+const pythonSelectionFixed = ref(true)
 const showNewForm = ref(false)
 const showOpenForm = ref(false)
 const openPath = ref('')
@@ -24,6 +27,18 @@ onMounted(async () => {
       typeof data?.default_parent_path === 'string' && data.default_parent_path.trim()
         ? data.default_parent_path
         : FALLBACK_NOTEBOOK_PARENT_PATH
+    const configuredPythonVersions = Array.isArray(data?.available_python_versions)
+      ? data.available_python_versions
+          .map((value: unknown) => String(value || '').trim())
+          .filter((value: string) => value.length > 0)
+      : []
+    availablePythonVersions.value = configuredPythonVersions
+    selectedPythonVersion.value =
+      typeof data?.default_python_version === 'string' && data.default_python_version.trim()
+        ? data.default_python_version
+        : configuredPythonVersions[0] || ''
+    pythonSelectionFixed.value =
+      data?.python_selection_fixed === true || configuredPythonVersions.length <= 1
     if (newParentPath.value === FALLBACK_NOTEBOOK_PARENT_PATH) {
       newParentPath.value = defaultParentPath
     }
@@ -38,7 +53,11 @@ async function createNotebook() {
   error.value = null
   try {
     const notebookPath = `${newParentPath.value.replace(/\/+$/, '')}/${newName.value}`
-    const data = await strata.createNotebook(newParentPath.value, newName.value)
+    const data = await strata.createNotebook(
+      newParentPath.value,
+      newName.value,
+      selectedPythonVersion.value || null,
+    )
     const resolvedPath = data.path || notebookPath
     record(data.name, resolvedPath, data.session_id)
     router.push({
@@ -135,6 +154,25 @@ function formatTime(ts: number): string {
             class="form-input"
             :placeholder="FALLBACK_NOTEBOOK_PARENT_PATH"
           />
+        </label>
+        <label class="form-label">
+          Python version
+          <select
+            v-model="selectedPythonVersion"
+            class="form-input"
+            :disabled="pythonSelectionFixed || availablePythonVersions.length === 0"
+          >
+            <option v-for="version in availablePythonVersions" :key="version" :value="version">
+              {{ version }}
+            </option>
+          </select>
+          <span class="form-help">
+            {{
+              pythonSelectionFixed
+                ? 'This deployment currently provides a fixed notebook Python version.'
+                : 'Select the notebook-level Python version before creation.'
+            }}
+          </span>
         </label>
         <div class="form-actions">
           <button class="btn" :disabled="loading" @click="createNotebook">Create</button>
@@ -322,6 +360,13 @@ function formatTime(ts: number): string {
   gap: 8px;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.form-help {
+  display: block;
+  margin-top: 6px;
+  color: #6c7086;
+  font-size: 12px;
 }
 
 .section-title {

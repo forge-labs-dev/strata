@@ -25,6 +25,7 @@ from strata.notebook.dependencies import (
 )
 from strata.notebook.executor import CellExecutor
 from strata.notebook.models import CellStatus, MountSpec, WorkerSpec
+from strata.notebook.python_versions import current_python_minor, normalize_python_minor
 from strata.notebook.session import SessionManager
 from strata.notebook.workers import (
     build_worker_catalog_with_health,
@@ -164,6 +165,7 @@ def _serialize_notebook_runtime_config() -> dict:
     """Serialize frontend-relevant notebook runtime defaults."""
     deployment_mode = "service"
     default_parent_path = Path("/tmp/strata-notebooks")
+    available_python_versions = [current_python_minor()]
 
     try:
         from strata.server import get_state
@@ -173,12 +175,20 @@ def _serialize_notebook_runtime_config() -> dict:
         configured_path = getattr(state.config, "notebook_storage_dir", None)
         if configured_path is not None:
             default_parent_path = Path(configured_path)
+        configured_versions = getattr(state.config, "notebook_python_versions", None)
+        if isinstance(configured_versions, list) and configured_versions:
+            available_python_versions = [
+                normalize_python_minor(str(version)) for version in configured_versions
+            ]
     except RuntimeError:
         pass
 
     return {
         "deployment_mode": deployment_mode,
         "default_parent_path": str(default_parent_path),
+        "available_python_versions": available_python_versions,
+        "default_python_version": available_python_versions[0],
+        "python_selection_fixed": len(available_python_versions) <= 1,
     }
 
 
@@ -266,6 +276,14 @@ class CreateNotebookRequest(BaseModel):
 
     parent_path: str
     name: str
+    python_version: str | None = Field(default=None, max_length=16)
+
+    @field_validator("python_version")
+    @classmethod
+    def validate_python_version_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_python_minor(value)
 
 
 class UpdateCellSourceRequest(BaseModel):
@@ -430,14 +448,33 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
     """
     try:
         parent_path = _validate_notebook_path(req.parent_path, "parent path")
-        notebook_dir = create_notebook(parent_path, req.name)
+        runtime_config = _serialize_notebook_runtime_config()
+        selected_python_version = req.python_version or runtime_config["default_python_version"]
+        allowed_python_versions = runtime_config["available_python_versions"]
+        if selected_python_version not in allowed_python_versions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Python {selected_python_version} is not available for notebook creation"
+                ),
+            )
+
+        notebook_dir = create_notebook(
+            parent_path,
+            req.name,
+            python_version=selected_python_version,
+        )
         session = _session_manager.open_notebook(notebook_dir)
 
         data = session.serialize_notebook_state()
         data["session_id"] = session.id
         data["path"] = str(session.path)
-        data.update(_serialize_notebook_runtime_config())
+        data.update(runtime_config)
         return data
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

@@ -13,6 +13,12 @@ from typing import TYPE_CHECKING
 import tomli_w
 
 from strata.notebook.models import MountSpec, NotebookToml, WorkerSpec
+from strata.notebook.python_versions import (
+    current_python_minor,
+    format_requires_python,
+    normalize_python_minor,
+    read_requested_python_minor,
+)
 
 # Python 3.10 compatibility
 try:
@@ -145,18 +151,24 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         tomli_w.dump(toml_data, f)
 
 
-def create_notebook(parent_dir: Path, name: str) -> Path:
+def create_notebook(parent_dir: Path, name: str, python_version: str | None = None) -> Path:
     """Create a new notebook directory with notebook.toml and pyproject.toml.
 
     Args:
         parent_dir: Parent directory for the notebook
         name: Notebook name (used for folder and notebook name)
+        python_version: Requested notebook Python major.minor version
 
     Returns:
         Path to created notebook directory
     """
     parent_dir = Path(parent_dir)
     parent_dir.mkdir(parents=True, exist_ok=True)
+    requested_python_version = (
+        normalize_python_minor(python_version)
+        if python_version is not None
+        else current_python_minor()
+    )
 
     # Validate notebook name
     if "/" in name or "\\" in name or ".." in name or "\0" in name:
@@ -189,7 +201,7 @@ def create_notebook(parent_dir: Path, name: str) -> Path:
 name = "{name.lower().replace(" ", "-")}"
 version = "0.1.0"
 description = ""
-requires-python = ">=3.12"
+requires-python = "{format_requires_python(requested_python_version)}"
 dependencies = [
     "pyarrow>=18.0.0",
 ]
@@ -201,7 +213,7 @@ dependencies = [
         f.write(pyproject_content)
 
     # Run uv sync to create venv + uv.lock (best-effort)
-    _uv_sync(notebook_dir)
+    _uv_sync(notebook_dir, python_version=requested_python_version)
 
     # Populate environment section with lockfile hash + python version
     _update_environment_metadata(notebook_dir)
@@ -212,14 +224,19 @@ dependencies = [
 _logger = logging.getLogger(__name__)
 
 
-def _uv_sync(notebook_dir: Path, *, timeout: int = 60) -> bool:
+def _uv_sync(
+    notebook_dir: Path, *, timeout: int = 60, python_version: str | None = None
+) -> bool:
     """Run ``uv sync`` in *notebook_dir*.
 
     Returns True on success, False on failure (logged, never raised).
     """
+    command = ["uv", "sync"]
+    if python_version is not None:
+        command.extend(["--python", normalize_python_minor(python_version)])
     try:
         subprocess.run(
-            ["uv", "sync"],
+            command,
             cwd=str(notebook_dir),
             timeout=timeout,
             capture_output=True,
@@ -260,7 +277,8 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
         _logger.debug("Cannot parse notebook.toml for env metadata update")
         return
 
-    python_version = ""
+    requested_python_version = read_requested_python_minor(notebook_dir) or ""
+    runtime_python_version = ""
     venv_python = notebook_dir / ".venv" / "bin" / "python"
     if venv_python.exists():
         try:
@@ -283,7 +301,7 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
                 text=True,
                 timeout=10,
             )
-            python_version = result.stdout.strip()
+            runtime_python_version = result.stdout.strip()
         except Exception:
             _logger.debug("Failed to probe notebook venv python version", exc_info=True)
 
@@ -300,8 +318,10 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
 
     declared_package_count = len(list_dependencies(notebook_dir))
     data["environment"] = {
+        "requested_python_version": requested_python_version,
+        "runtime_python_version": runtime_python_version,
         "lockfile_hash": compute_lockfile_hash(notebook_dir),
-        "python_version": python_version,
+        "python_version": runtime_python_version,
         "package_count": declared_package_count,
         "declared_package_count": declared_package_count,
         "resolved_package_count": resolved_package_count,

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from strata.notebook.env import compute_lockfile_hash
+from strata.notebook.python_versions import current_python_minor, format_requires_python
 from strata.notebook.session import NotebookSession
 from strata.notebook.writer import _uv_sync, create_notebook, update_environment_metadata
 
@@ -31,7 +32,14 @@ class TestCreateNotebookVenv:
         assert (nb_dir / "pyproject.toml").exists()
         content = (nb_dir / "pyproject.toml").read_text()
         assert 'name = "my_nb"' in content
-        assert 'requires-python = ">=3.12"' in content
+        assert f'requires-python = "{format_requires_python(current_python_minor())}"' in content
+
+    def test_pyproject_toml_respects_requested_python_version(self, tmp_path: Path):
+        """Notebook creation should persist the requested Python minor version."""
+        nb_dir = create_notebook(tmp_path, "py312_nb", python_version="3.12")
+        content = (nb_dir / "pyproject.toml").read_text()
+        expected = format_requires_python("3.12")
+        assert f'requires-python = "{expected}"' in content
 
     def test_uv_lock_created(self, tmp_path: Path):
         """uv sync produces uv.lock."""
@@ -61,6 +69,20 @@ class TestUvSyncHelper:
         nb_dir = create_notebook(tmp_path, "sync_ok")
         # Already synced during creation, but calling again is idempotent
         assert _uv_sync(nb_dir) is True
+
+    def test_sync_uses_requested_python_when_provided(self, tmp_path: Path):
+        """Requested Python should be forwarded to uv sync."""
+        with patch("strata.notebook.writer.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["uv", "sync"],
+                returncode=0,
+                stdout=b"",
+                stderr=b"",
+            )
+            assert _uv_sync(tmp_path, python_version="3.12") is True
+
+        command = mock_run.call_args.args[0]
+        assert command == ["uv", "sync", "--python", "3.12"]
 
     def test_returns_false_when_uv_missing(self, tmp_path: Path):
         """Returns False when uv is not available."""
@@ -235,6 +257,8 @@ class TestEnvironmentMetadata:
         environment = data["environment"]
         assert "lockfile_hash" in environment
         assert "python_version" in environment
+        assert "requested_python_version" in environment
+        assert "runtime_python_version" in environment
         assert "declared_package_count" in environment
         assert "resolved_package_count" in environment
         assert "has_lockfile" in environment
@@ -250,6 +274,8 @@ class TestEnvironmentMetadata:
         session.ensure_venv_synced()
 
         environment = session.serialize_environment_state()
+        assert "requested_python_version" in environment
+        assert "runtime_python_version" in environment
         assert environment["interpreter_source"] == "venv"
         assert "sync_notice" in environment
         assert "last_sync_duration_ms" in environment

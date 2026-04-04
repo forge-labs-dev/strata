@@ -282,6 +282,8 @@ export interface DependencyInfo {
 
 export interface NotebookEnvironment {
   pythonVersion: string
+  requestedPythonVersion: string
+  runtimePythonVersion: string
   lockfileHash: string
   packageCount: number
   declaredPackageCount: number
@@ -299,6 +301,9 @@ export interface NotebookEnvironment {
 export interface NotebookRuntimeConfig {
   deploymentMode: 'personal' | 'service'
   defaultParentPath: string
+  availablePythonVersions: string[]
+  defaultPythonVersion: string
+  pythonSelectionFixed: boolean
 }
 
 export interface EnvironmentActionSummary {

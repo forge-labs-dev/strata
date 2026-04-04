@@ -155,14 +155,22 @@ async function openNotebook(path: string): Promise<any> {
   return resp.json()
 }
 
-async function createNotebook(parentPath: string, name: string): Promise<any> {
+async function createNotebook(
+  parentPath: string,
+  name: string,
+  pythonVersion?: string | null,
+): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ parent_path: parentPath, name }),
+    body: JSON.stringify({
+      parent_path: parentPath,
+      name,
+      ...(pythonVersion ? { python_version: pythonVersion } : {}),
+    }),
   })
   if (!resp.ok) {
-    throw new Error(`Failed to create notebook: ${resp.status}`)
+    await throwApiError(resp, 'Failed to create notebook')
   }
   return resp.json()
 }

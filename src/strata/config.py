@@ -21,6 +21,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from strata.notebook.python_versions import current_python_minor, normalize_python_minor
 from strata.types import CacheGranularity
 
 # ---------------------------------------------------------------------------
@@ -296,6 +297,7 @@ class StrataConfig(BaseSettings):
     allow_remote_clients_in_personal: bool = False
     artifact_dir: Path | None = None
     notebook_storage_dir: Path = Field(default_factory=lambda: Path("/tmp/strata-notebooks"))
+    notebook_python_versions: list[str] = Field(default_factory=lambda: [current_python_minor()])
 
     # Artifact blob storage backend configuration
     artifact_blob_backend: Literal["local", "s3", "gcs", "azure"] = "local"
@@ -376,6 +378,42 @@ class StrataConfig(BaseSettings):
         if isinstance(v, str):
             return CacheGranularity(v)
         return v
+
+    @field_validator("notebook_python_versions", mode="before")
+    @classmethod
+    def normalize_notebook_python_versions(cls, v: Any) -> list[str]:
+        """Accept list, JSON array, or comma-separated notebook Python versions."""
+        if v is None:
+            return [current_python_minor()]
+        if isinstance(v, str):
+            stripped = v.strip()
+            if not stripped:
+                return [current_python_minor()]
+            if stripped.startswith("["):
+                import json
+
+                parsed = json.loads(stripped)
+                if not isinstance(parsed, list):
+                    raise ValueError("notebook_python_versions must be a list")
+                v = parsed
+            else:
+                v = [part.strip() for part in stripped.split(",") if part.strip()]
+
+        if not isinstance(v, list):
+            raise ValueError("notebook_python_versions must be a list")
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("notebook_python_versions entries must be strings")
+            python_version = normalize_python_minor(item)
+            if python_version not in seen:
+                normalized.append(python_version)
+                seen.add(python_version)
+        if not normalized:
+            raise ValueError("notebook_python_versions must not be empty")
+        return normalized
 
     @model_validator(mode="after")
     def setup_paths_and_defaults(self) -> StrataConfig:

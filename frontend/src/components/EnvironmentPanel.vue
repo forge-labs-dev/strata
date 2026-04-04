@@ -327,8 +327,18 @@ function downloadRequirements() {
 
       <div class="env-stats">
         <div class="env-stat">
-          <span class="env-stat-label">Python</span>
-          <span class="env-stat-value">{{ notebook.environment.pythonVersion || 'Unknown' }}</span>
+          <span class="env-stat-label">Requested Python</span>
+          <span class="env-stat-value">{{
+            notebook.environment.requestedPythonVersion || 'Unknown'
+          }}</span>
+        </div>
+        <div class="env-stat">
+          <span class="env-stat-label">Runtime Python</span>
+          <span class="env-stat-value">{{
+            notebook.environment.runtimePythonVersion ||
+            notebook.environment.pythonVersion ||
+            'Unknown'
+          }}</span>
         </div>
         <div class="env-stat">
           <span class="env-stat-label">Declared</span>
