@@ -1,6 +1,7 @@
 """Tests for notebook REST routes."""
 
 import asyncio
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -112,6 +113,51 @@ def test_open_notebook():
         assert "declared_package_count" in data["environment"]
         assert "interpreter_source" in data["environment"]
         assert "last_sync_duration_ms" in data["environment"]
+        assert "environment_job_history" in data
+
+
+def test_open_notebook_rehydrates_environment_job_history():
+    """Opening a notebook should expose persisted recent environment jobs."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        notebook_dir = create_notebook(tmpdir_path, "Job History Notebook")
+        history_path = notebook_dir / ".strata" / "environment_jobs.json"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "job-789",
+                        "action": "import",
+                        "command": "uv sync",
+                        "status": "completed",
+                        "phase": "completed",
+                        "started_at": 1234567890,
+                        "finished_at": 1234567990,
+                        "duration_ms": 100,
+                        "stdout": "Resolved 4 packages\n",
+                        "stderr": "",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                        "lockfile_changed": True,
+                        "stale_cell_count": 1,
+                        "stale_cell_ids": ["cell-1"],
+                        "error": None,
+                    }
+                ]
+            )
+        )
+
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["environment_job"]["action"] == "import"
+        assert data["environment_job"]["status"] == "completed"
+        assert len(data["environment_job_history"]) == 1
+        assert data["environment_job_history"][0]["stale_cell_count"] == 1
 
 
 def test_open_notebook_rehydrates_cached_status():

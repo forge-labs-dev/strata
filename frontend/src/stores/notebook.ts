@@ -369,11 +369,24 @@ function parseEnvironmentOperation(raw: any): EnvironmentOperation | null {
 
 function syncEnvironmentOperationFromBackend(raw: any) {
   const parsed = parseEnvironmentOperation(raw)
-  if (!parsed) return
+  if (!parsed) {
+    environmentOperation.value = null
+    return
+  }
   environmentOperation.value = parsed
   const isRunning = parsed.status === 'running'
   dependencyLoading.value = isRunning
   environmentLoading.value = isRunning
+}
+
+function syncEnvironmentJobHistoryFromBackend(raw: any) {
+  environmentJobHistory.value = Array.isArray(raw)
+    ? raw
+        .map((entry: any) => parseEnvironmentOperation(entry))
+        .filter(
+          (entry: EnvironmentOperation | null): entry is EnvironmentOperation => entry !== null,
+        )
+    : []
 }
 
 function syncResolvedDependenciesFromBackend(raw: any) {
@@ -386,8 +399,11 @@ function syncEnvironmentPayloadFromBackend(data: any) {
   if (data?.environment) {
     syncNotebookEnvironmentFromBackend(data.environment)
   }
-  if (data?.environment_job) {
+  if ('environment_job' in (data || {})) {
     syncEnvironmentOperationFromBackend(data.environment_job)
+  }
+  if ('environment_job_history' in (data || {})) {
+    syncEnvironmentJobHistoryFromBackend(data.environment_job_history)
   }
   if (Array.isArray(data?.dependencies)) {
     dependencies.value = data.dependencies.map((dep: any) => parseDependencyInfo(dep))
@@ -1004,6 +1020,7 @@ async function boot(): Promise<void> {
     environmentWarnings.value = []
     environmentLastAction.value = null
     environmentOperation.value = null
+    environmentJobHistory.value = []
     notebookWorkerError.value = null
     workerRegistryError.value = null
     cellWorkerErrors.value = {}
@@ -1068,6 +1085,7 @@ async function openNotebook(path: string): Promise<any> {
   environmentWarnings.value = []
   environmentLastAction.value = null
   environmentOperation.value = null
+  environmentJobHistory.value = []
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -1101,6 +1119,7 @@ async function openBySessionId(sessionId: string): Promise<any> {
   environmentWarnings.value = []
   environmentLastAction.value = null
   environmentOperation.value = null
+  environmentJobHistory.value = []
   notebookWorkerError.value = null
   workerRegistryError.value = null
   cellWorkerErrors.value = {}
@@ -1139,6 +1158,7 @@ const environmentError = ref<string | null>(null)
 const environmentWarnings = ref<string[]>([])
 const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
 const environmentOperation = ref<EnvironmentOperation | null>(null)
+const environmentJobHistory = ref<EnvironmentOperation[]>([])
 const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
 const environmentMutationActive = computed(() => environmentOperation.value?.status === 'running')
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
@@ -2362,6 +2382,7 @@ export function useNotebook() {
     environmentWarnings,
     environmentLastAction,
     environmentOperation,
+    environmentJobHistory,
     environmentMutationActive,
     environmentImportPreview,
     availableWorkers,

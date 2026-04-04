@@ -9,6 +9,7 @@ Validates that:
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -302,6 +303,14 @@ class TestDependencyChangeRefresh:
         await session.wait_for_environment_job()
         assert session.environment_job is None
         assert session.wait_for_environment_job_task() is None
+        history_path = nb_dir / ".strata" / "environment_jobs.json"
+        assert history_path.exists()
+        history_payload = json.loads(history_path.read_text())
+        assert history_payload[0]["action"] == "add"
+        assert history_payload[0]["status"] == "completed"
+        current_job = session.serialize_environment_job_state()
+        assert current_job is not None
+        assert current_job["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_submit_environment_import_job_emits_warnings(
@@ -395,6 +404,47 @@ class TestDependencyChangeRefresh:
         environment_job = finished["environment_job"]
         assert isinstance(environment_job, dict)
         assert environment_job["action"] == "import"
+
+    def test_session_loads_environment_job_history_from_disk(self, tmp_path: Path):
+        """Notebook sessions should rehydrate finished environment jobs on reopen."""
+        nb_dir = create_notebook(tmp_path, "job_history_reload")
+        history_path = nb_dir / ".strata" / "environment_jobs.json"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(
+            json.dumps(
+                [
+                    {
+                        "id": "job-123",
+                        "action": "sync",
+                        "command": "uv sync",
+                        "status": "completed",
+                        "phase": "completed",
+                        "started_at": 1234567890,
+                        "finished_at": 1234567990,
+                        "duration_ms": 100,
+                        "stdout": "Resolved 3 packages\n",
+                        "stderr": "",
+                        "stdout_truncated": False,
+                        "stderr_truncated": False,
+                        "lockfile_changed": True,
+                        "stale_cell_count": 2,
+                        "stale_cell_ids": ["cell-1", "cell-2"],
+                        "error": None,
+                    }
+                ]
+            )
+        )
+
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        assert len(session.serialize_environment_job_history()) == 1
+        current_job = session.serialize_environment_job_state()
+        assert current_job is not None
+        assert current_job["command"] == "uv sync"
+        assert session.serialize_environment_job_history()[0]["stale_cell_count"] == 2
 
 
 class TestEnvironmentMetadata:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import subprocess
 import threading
@@ -11,7 +12,7 @@ import time as _time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from strata.notebook.analyzer import analyze_cell
 from strata.notebook.annotations import parse_annotations
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from strata.notebook.pool import WarmProcessPool
 
 logger = logging.getLogger(__name__)
+_ENVIRONMENT_JOB_HISTORY_LIMIT = 8
 
 
 @dataclass
@@ -122,6 +124,51 @@ class EnvironmentJobSnapshot:
             "error": self.error,
         }
 
+    @classmethod
+    def from_dict(cls, raw: object) -> EnvironmentJobSnapshot | None:
+        """Deserialize a stored environment job snapshot."""
+        if not isinstance(raw, dict):
+            return None
+        raw_dict = cast(dict[str, Any], raw)
+        action = raw_dict.get("action")
+        status = raw_dict.get("status")
+        command = raw_dict.get("command")
+        started_at = raw_dict.get("started_at")
+        if not isinstance(action, str) or not isinstance(status, str):
+            return None
+        if not isinstance(command, str) or not isinstance(started_at, int):
+            return None
+        duration_ms = raw_dict.get("duration_ms")
+        finished_at = raw_dict.get("finished_at")
+        stale_cell_ids = raw_dict.get("stale_cell_ids")
+        return cls(
+            id=str(raw_dict.get("id") or uuid.uuid4()),
+            action=action,
+            package=(
+                str(raw_dict["package"]) if raw_dict.get("package") is not None else None
+            ),
+            command=command,
+            status=status,
+            phase=str(raw_dict["phase"]) if raw_dict.get("phase") is not None else None,
+            duration_ms=int(duration_ms) if isinstance(duration_ms, int) else None,
+            stdout=str(raw_dict.get("stdout") or ""),
+            stderr=str(raw_dict.get("stderr") or ""),
+            stdout_truncated=raw_dict.get("stdout_truncated") is True,
+            stderr_truncated=raw_dict.get("stderr_truncated") is True,
+            started_at=started_at,
+            finished_at=int(finished_at) if isinstance(finished_at, int) else None,
+            lockfile_changed=raw_dict.get("lockfile_changed") is True,
+            stale_cell_count=int(raw_dict.get("stale_cell_count") or 0),
+            stale_cell_ids=[
+                str(value)
+                for value in stale_cell_ids
+                if isinstance(value, str) and value
+            ]
+            if isinstance(stale_cell_ids, list)
+            else None,
+            error=str(raw_dict["error"]) if raw_dict.get("error") is not None else None,
+        )
+
 
 class NotebookSession:
     """Holds state for one open notebook.
@@ -177,9 +224,11 @@ class NotebookSession:
         self.environment_python_version: str = ""
         self.environment_interpreter_source: str = "unknown"
         self.environment_job: EnvironmentJobSnapshot | None = None
+        self.environment_job_history: list[EnvironmentJobSnapshot] = []
         self.environment_job_task: asyncio.Task[None] | None = None
         self._environment_state_lock = threading.RLock()
         self._synchronous_environment_mutation: str | None = None
+        self._load_environment_job_history()
 
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
@@ -527,6 +576,7 @@ class NotebookSession:
         data["cells"] = self.serialize_cells()
         data["environment"] = self.serialize_environment_state()
         data["environment_job"] = self.serialize_environment_job_state()
+        data["environment_job_history"] = self.serialize_environment_job_history()
         return data
 
     def _probe_python_version(self, python_executable: Path) -> str:
@@ -597,11 +647,79 @@ class NotebookSession:
         }
 
     def serialize_environment_job_state(self) -> dict[str, Any] | None:
-        """Serialize the currently active environment job when present."""
+        """Serialize the current or most recent environment job when present."""
         with self._environment_state_lock:
-            if self.environment_job is None or self.environment_job.status != "running":
-                return None
-            return self.environment_job.to_dict()
+            if self.environment_job is not None and self.environment_job.status == "running":
+                return self.environment_job.to_dict()
+            if self.environment_job_history:
+                return self.environment_job_history[0].to_dict()
+            return None
+
+    def serialize_environment_job_history(self) -> list[dict[str, Any]]:
+        """Serialize recent finished environment jobs, newest first."""
+        with self._environment_state_lock:
+            return [job.to_dict() for job in self.environment_job_history]
+
+    def _environment_job_history_path(self) -> Path:
+        """Return the persisted recent-job history path for this notebook."""
+        return self.path / ".strata" / "environment_jobs.json"
+
+    def _load_environment_job_history(self) -> None:
+        """Load recent finished environment jobs from notebook runtime state."""
+        history_path = self._environment_job_history_path()
+        if not history_path.exists():
+            return
+        try:
+            raw = json.loads(history_path.read_text())
+        except Exception:
+            logger.warning(
+                "Failed to read environment job history for %s", self.path, exc_info=True
+            )
+            return
+        if not isinstance(raw, list):
+            return
+        history: list[EnvironmentJobSnapshot] = []
+        for item in raw:
+            snapshot = EnvironmentJobSnapshot.from_dict(item)
+            if snapshot is None:
+                continue
+            if snapshot.status not in {"completed", "failed"}:
+                continue
+            history.append(snapshot)
+        self.environment_job_history = history[:_ENVIRONMENT_JOB_HISTORY_LIMIT]
+
+    def _persist_environment_job_history(self) -> None:
+        """Persist recent finished environment jobs to notebook runtime state."""
+        history_path = self._environment_job_history_path()
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        history_path.write_text(
+            json.dumps(
+                [
+                    job.to_dict()
+                    for job in self.environment_job_history[
+                        :_ENVIRONMENT_JOB_HISTORY_LIMIT
+                    ]
+                ],
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+    def _record_finished_environment_job(self, job: EnvironmentJobSnapshot) -> None:
+        """Add a finished job to recent history and persist it."""
+        with self._environment_state_lock:
+            remaining = [
+                existing
+                for existing in self.environment_job_history
+                if existing.id != job.id
+            ]
+            self.environment_job_history = [job, *remaining][:_ENVIRONMENT_JOB_HISTORY_LIMIT]
+            try:
+                self._persist_environment_job_history()
+            except Exception:
+                logger.warning(
+                    "Failed to persist environment job history for %s", self.path, exc_info=True
+                )
 
     def _has_active_cell_status(self) -> bool:
         """Return whether any notebook cell is currently marked running."""
@@ -1222,8 +1340,10 @@ class NotebookSession:
         finally:
             job.finished_at = int(_time.time() * 1000)
             job.duration_ms = job.finished_at - job.started_at
+            self._record_finished_environment_job(job)
             payload: dict[str, Any] = {
                 "environment_job": job.to_dict(),
+                "environment_job_history": self.serialize_environment_job_history(),
                 "cells": self.serialize_cells(),
                 **{
                     "lockfile_changed": job.lockfile_changed,

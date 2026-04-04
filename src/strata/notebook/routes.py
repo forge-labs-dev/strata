@@ -205,6 +205,7 @@ def _serialize_environment_payload(session: NotebookSession) -> dict:
     return {
         "environment": session.serialize_environment_state(),
         "environment_job": session.serialize_environment_job_state(),
+        "environment_job_history": session.serialize_environment_job_history(),
         "dependencies": _serialize_dependency_info_list(list_dependencies(session.path)),
         "resolved_dependencies": _serialize_dependency_info_list(
             list_resolved_dependencies(session.path)

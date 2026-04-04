@@ -13,6 +13,7 @@ const {
   environmentWarnings,
   environmentLastAction,
   environmentOperation,
+  environmentJobHistory,
   environmentMutationActive,
   environmentImportPreview,
   addDependencyAction,
@@ -187,6 +188,17 @@ const operationDurationLabel = computed(() => {
   if (!environmentOperation.value || environmentOperation.value.durationMs == null) return 'Timing…'
   return `${environmentOperation.value.durationMs} ms`
 })
+
+const recentEnvironmentOperations = computed(() =>
+  environmentJobHistory.value
+    .filter((operation) => operation.id !== environmentOperation.value?.id)
+    .slice(0, 5),
+)
+
+function operationTimestampLabel(timestamp: number | null) {
+  if (timestamp == null) return 'Unknown time'
+  return new Date(timestamp).toLocaleString()
+}
 
 watch(
   showPanel,
@@ -426,6 +438,36 @@ function downloadRequirements() {
             </div>
           </div>
         </details>
+      </div>
+
+      <div v-if="recentEnvironmentOperations.length > 0" class="env-history">
+        <div class="env-history-header">
+          <strong>Recent operations</strong>
+        </div>
+        <ul class="env-history-list">
+          <li
+            v-for="operation in recentEnvironmentOperations"
+            :key="operation.id"
+            class="env-history-item"
+          >
+            <div class="env-history-topline">
+              <code>{{ operation.command }}</code>
+              <span class="env-operation-status" :class="`operation-${operation.status}`">
+                {{ operation.status }}
+              </span>
+            </div>
+            <div class="env-history-meta">
+              <span>{{
+                operationTimestampLabel(operation.finishedAt || operation.startedAt)
+              }}</span>
+              <span v-if="operation.durationMs != null">{{ operation.durationMs }} ms</span>
+              <span v-if="operation.staleCellCount > 0">
+                {{ operation.staleCellCount }} cell{{ operation.staleCellCount === 1 ? '' : 's' }}
+                affected
+              </span>
+            </div>
+          </li>
+        </ul>
       </div>
 
       <div v-if="environmentError || notebook.environment.syncError" class="env-error">
@@ -939,6 +981,59 @@ function downloadRequirements() {
 .env-operation-note {
   margin-top: 4px;
   color: #f9e2af;
+}
+
+.env-history {
+  color: #cdd6f4;
+  font-size: 11px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: #141724;
+  border: 1px solid #313244;
+  border-radius: 8px;
+}
+
+.env-history-header {
+  margin-bottom: 6px;
+}
+
+.env-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.env-history-item {
+  border-top: 1px solid #313244;
+  padding-top: 6px;
+}
+
+.env-history-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.env-history-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.env-history-topline code {
+  color: #89b4fa;
+  word-break: break-all;
+}
+
+.env-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  color: #a6adc8;
 }
 
 .env-error,
