@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
+from strata.notebook.dependencies import EnvironmentOperationLog
 from strata.notebook.env import compute_lockfile_hash
 from strata.notebook.python_versions import current_python_minor, format_requires_python
 from strata.notebook.session import NotebookSession
@@ -239,6 +240,67 @@ class TestDependencyChangeRefresh:
         mock_sync.assert_not_called()
         mock_invalidate.assert_awaited_once()
         mock_update_metadata.assert_called_once_with(nb_dir)
+
+    @pytest.mark.asyncio
+    async def test_submit_environment_job_runs_to_completion(self, tmp_path: Path, monkeypatch):
+        """Background dependency jobs should stream, finalize, and clear active state."""
+        nb_dir = create_notebook(tmp_path, "dependency_job")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        async def fake_run_uv_command_streaming(
+            notebook_dir: Path,
+            args: list[str],
+            *,
+            timeout: int,
+            display_name: str,
+            on_update=None,
+        ):
+            del notebook_dir
+            del timeout
+            del display_name
+            if on_update is not None:
+                await on_update("stdout", "resolving\n", False)
+            return SimpleNamespace(
+                success=True,
+                error=None,
+                operation_log=EnvironmentOperationLog(
+                    command=" ".join(["uv", *args]),
+                    duration_ms=17,
+                    stdout="resolving\n",
+                    stderr="",
+                    stdout_truncated=False,
+                    stderr_truncated=False,
+                ),
+            )
+
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            "strata.notebook.session.run_uv_command_streaming",
+            fake_run_uv_command_streaming,
+        )
+
+        async def _noop_invalidate() -> None:
+            return None
+
+        monkeypatch.setattr(
+            session,
+            "_invalidate_warm_pool_for_environment_change",
+            _noop_invalidate,
+        )
+        monkeypatch.setattr(
+            "strata.notebook.session.update_environment_metadata",
+            lambda path: None,
+        )
+
+        job = await session.submit_environment_job(action="add", package="six")
+        assert job.status == "running"
+        await session.wait_for_environment_job()
+        assert session.environment_job is None
+        assert session.wait_for_environment_job_task() is None
 
 
 class TestEnvironmentMetadata:

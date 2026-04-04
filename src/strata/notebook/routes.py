@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from strata.notebook.dependencies import (
@@ -204,6 +204,7 @@ def _serialize_environment_payload(session: NotebookSession) -> dict:
     """Serialize the current environment plus direct and resolved dependencies."""
     return {
         "environment": session.serialize_environment_state(),
+        "environment_job": session.serialize_environment_job_state(),
         "dependencies": _serialize_dependency_info_list(list_dependencies(session.path)),
         "resolved_dependencies": _serialize_dependency_info_list(
             list_resolved_dependencies(session.path)
@@ -258,6 +259,18 @@ def _serialize_operation_error_detail(message: str, result: object) -> dict:
     if operation_log is not None:
         detail["operation_log"] = operation_log
     return detail
+
+
+def _raise_environment_busy(session: NotebookSession, message: str) -> None:
+    """Raise a structured 409 conflict for competing env/runtime operations."""
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "message": message,
+            "code": "ENVIRONMENT_BUSY",
+            "environment_job": session.serialize_environment_job_state(),
+        },
+    )
 
 
 # ============================================================================
@@ -373,6 +386,28 @@ class RemoveDependencyRequest(BaseModel):
     @classmethod
     def validate_package_field(cls, v: str) -> str:
         return validate_package_name(v)
+
+
+class EnvironmentJobRequest(BaseModel):
+    """Request to submit a background environment job."""
+
+    action: str = Field(..., max_length=32)
+    package: str | None = Field(default=None, max_length=200)
+
+    @field_validator("action")
+    @classmethod
+    def validate_action_field(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"add", "remove", "sync"}:
+            raise ValueError("Unsupported environment job action")
+        return normalized
+
+    @field_validator("package")
+    @classmethod
+    def validate_package_field(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return validate_package_name(value)
 
 
 class ImportRequirementsRequest(BaseModel):
@@ -503,9 +538,17 @@ async def sync_environment(notebook_id: str) -> dict:
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    old_hash = session.serialize_environment_state()["lockfile_hash"]
-    staleness_map = await session.sync_environment()
-    new_hash = session.serialize_environment_state()["lockfile_hash"]
+    try:
+        session._begin_synchronous_environment_mutation("environment sync")
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    try:
+        old_hash = session.serialize_environment_state()["lockfile_hash"]
+        staleness_map = await session.sync_environment()
+        new_hash = session.serialize_environment_state()["lockfile_hash"]
+    finally:
+        session._end_synchronous_environment_mutation()
 
     return {
         **_serialize_environment_payload(session),
@@ -521,6 +564,51 @@ async def sync_environment(notebook_id: str) -> dict:
         },
         "cells": session.serialize_cells(),
     }
+
+
+@router.get("/{notebook_id}/environment/jobs/current")
+async def get_current_environment_job(notebook_id: str) -> dict:
+    """Return the currently active background environment job, if any."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    return {
+        **_serialize_environment_payload(session),
+        "cells": session.serialize_cells(),
+    }
+
+
+@router.post("/{notebook_id}/environment/jobs")
+async def submit_environment_job(notebook_id: str, req: EnvironmentJobRequest) -> JSONResponse:
+    """Submit a background notebook environment job."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    if req.action in {"add", "remove"} and not req.package:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Package is required for {req.action} environment jobs",
+        )
+    if req.action == "sync" and req.package is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Sync environment jobs do not accept a package",
+        )
+
+    try:
+        await session.submit_environment_job(action=req.action, package=req.package)
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    return JSONResponse(
+        status_code=202,
+        content={
+            "accepted": True,
+            **_serialize_environment_payload(session),
+            "cells": session.serialize_cells(),
+        },
+    )
 
 
 @router.get("/{notebook_id}/environment/requirements.txt")
@@ -547,9 +635,17 @@ async def import_environment_requirements(
         raise HTTPException(status_code=404, detail="Notebook not found")
 
     try:
-        outcome = await session.import_requirements(req.requirements)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        session._begin_synchronous_environment_mutation("requirements import")
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    try:
+        try:
+            outcome = await session.import_requirements(req.requirements)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        session._end_synchronous_environment_mutation()
 
     result = outcome.result
     if not result.success:
@@ -602,9 +698,17 @@ async def import_environment_yaml(
         raise HTTPException(status_code=404, detail="Notebook not found")
 
     try:
-        outcome = await session.import_environment_yaml(req.environment_yaml)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        session._begin_synchronous_environment_mutation("environment.yaml import")
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    try:
+        try:
+            outcome = await session.import_environment_yaml(req.environment_yaml)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        session._end_synchronous_environment_mutation()
 
     result = outcome.result
     if not result.success:
@@ -1209,7 +1313,15 @@ async def add_notebook_dependency(
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    outcome = await session.mutate_dependency(req.package, action="add")
+    try:
+        session._begin_synchronous_environment_mutation(f"add {req.package}")
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    try:
+        outcome = await session.mutate_dependency(req.package, action="add")
+    finally:
+        session._end_synchronous_environment_mutation()
     result = outcome.result
 
     if not result.success:
@@ -1249,7 +1361,15 @@ async def remove_notebook_dependency(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    outcome = await session.mutate_dependency(package_name, action="remove")
+    try:
+        session._begin_synchronous_environment_mutation(f"remove {package_name}")
+    except RuntimeError as exc:
+        _raise_environment_busy(session, str(exc))
+
+    try:
+        outcome = await session.mutate_dependency(package_name, action="remove")
+    finally:
+        session._end_synchronous_environment_mutation()
     result = outcome.result
 
     if not result.success:
@@ -1320,6 +1440,17 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
+
+    environment_block_reason = session.environment_execution_block_message()
+    if environment_block_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": environment_block_reason,
+                "code": "ENVIRONMENT_BUSY",
+                "environment_job": session.serialize_environment_job_state(),
+            },
+        )
 
     # Find the cell
     cell = next(

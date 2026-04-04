@@ -331,6 +331,51 @@ function parseDependencyInfo(raw: any): DependencyInfo {
   }
 }
 
+function parseEnvironmentOperation(raw: any): EnvironmentOperation | null {
+  if (!raw || typeof raw !== 'object') return null
+  const action =
+    raw.action === 'add' ||
+    raw.action === 'remove' ||
+    raw.action === 'sync' ||
+    raw.action === 'import'
+      ? raw.action
+      : null
+  if (!action) return null
+  const status = raw.status === 'completed' || raw.status === 'failed' ? raw.status : 'running'
+  return {
+    id: typeof raw.id === 'string' ? raw.id : `${action}-${Date.now()}`,
+    action,
+    status,
+    packageName: typeof raw.package === 'string' ? raw.package : null,
+    phase: typeof raw.phase === 'string' ? raw.phase : null,
+    command: typeof raw.command === 'string' ? raw.command : '',
+    durationMs: typeof raw.duration_ms === 'number' ? raw.duration_ms : null,
+    stdout: typeof raw.stdout === 'string' ? raw.stdout : '',
+    stderr: typeof raw.stderr === 'string' ? raw.stderr : '',
+    stdoutTruncated: raw.stdout_truncated === true,
+    stderrTruncated: raw.stderr_truncated === true,
+    startedAt: typeof raw.started_at === 'number' ? raw.started_at : Date.now(),
+    finishedAt: typeof raw.finished_at === 'number' ? raw.finished_at : null,
+    lockfileChanged: raw.lockfile_changed === true,
+    staleCellCount: typeof raw.stale_cell_count === 'number' ? raw.stale_cell_count : 0,
+    staleCellIds: Array.isArray(raw.stale_cell_ids)
+      ? raw.stale_cell_ids
+          .map((value: unknown) => String(value || '').trim())
+          .filter((value: string) => value.length > 0)
+      : [],
+    error: typeof raw.error === 'string' ? raw.error : null,
+  }
+}
+
+function syncEnvironmentOperationFromBackend(raw: any) {
+  const parsed = parseEnvironmentOperation(raw)
+  if (!parsed) return
+  environmentOperation.value = parsed
+  const isRunning = parsed.status === 'running'
+  dependencyLoading.value = isRunning
+  environmentLoading.value = isRunning
+}
+
 function syncResolvedDependenciesFromBackend(raw: any) {
   resolvedDependencies.value = Array.isArray(raw)
     ? raw.map((dep: any) => parseDependencyInfo(dep)).filter((dep) => dep.name)
@@ -340,6 +385,9 @@ function syncResolvedDependenciesFromBackend(raw: any) {
 function syncEnvironmentPayloadFromBackend(data: any) {
   if (data?.environment) {
     syncNotebookEnvironmentFromBackend(data.environment)
+  }
+  if (data?.environment_job) {
+    syncEnvironmentOperationFromBackend(data.environment_job)
   }
   if (Array.isArray(data?.dependencies)) {
     dependencies.value = data.dependencies.map((dep: any) => parseDependencyInfo(dep))
@@ -688,8 +736,11 @@ function extractOperationLogPayload(raw: any): any | null {
 
 function beginEnvironmentOperation(action: EnvironmentOperation['action'], command: string) {
   environmentOperation.value = {
+    id: `${action}-${Date.now()}`,
     action,
+    packageName: null,
     status: 'running',
+    phase: 'starting',
     command,
     durationMs: null,
     stdout: '',
@@ -698,6 +749,10 @@ function beginEnvironmentOperation(action: EnvironmentOperation['action'], comma
     stderrTruncated: false,
     startedAt: Date.now(),
     finishedAt: null,
+    lockfileChanged: false,
+    staleCellCount: 0,
+    staleCellIds: [],
+    error: null,
   }
 }
 
@@ -709,8 +764,11 @@ function finishEnvironmentOperation(
 ) {
   const previous = environmentOperation.value
   environmentOperation.value = {
+    id: previous?.id || `${action}-${Date.now()}`,
     action,
+    packageName: previous?.packageName ?? null,
     status,
+    phase: status === 'running' ? previous?.phase || 'running' : status,
     command: typeof raw?.command === 'string' && raw.command.trim() ? raw.command : fallbackCommand,
     durationMs:
       typeof raw?.duration_ms === 'number'
@@ -724,6 +782,10 @@ function finishEnvironmentOperation(
     stderrTruncated: raw?.stderr_truncated === true,
     startedAt: previous?.action === action ? previous.startedAt : Date.now(),
     finishedAt: status === 'running' ? null : Date.now(),
+    lockfileChanged: previous?.lockfileChanged === true,
+    staleCellCount: previous?.staleCellCount ?? 0,
+    staleCellIds: previous?.staleCellIds ?? [],
+    error: status === 'failed' ? (typeof raw?.error === 'string' ? raw.error : null) : null,
   }
 }
 
@@ -771,7 +833,7 @@ function loadNotebookStateFromBackend(data: any) {
   notebook.env = parseEnvMap(data.env)
   notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
   notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
-  syncNotebookEnvironmentFromBackend(data.environment)
+  syncEnvironmentPayloadFromBackend(data)
   notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
   notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
   ;(notebook as any).sessionId = data.session_id
@@ -1078,6 +1140,7 @@ const environmentWarnings = ref<string[]>([])
 const environmentLastAction = ref<EnvironmentActionSummary | null>(null)
 const environmentOperation = ref<EnvironmentOperation | null>(null)
 const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
+const environmentMutationActive = computed(() => environmentOperation.value?.status === 'running')
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerDefinitionsEditable = ref(true)
 const workerHealthLoading = ref(false)
@@ -1427,6 +1490,67 @@ function initializeWebSocket() {
       dependencyLoading.value = false
     })
 
+    function handleEnvironmentJobMessage(payload: Record<string, any>) {
+      syncEnvironmentPayloadFromBackend(payload)
+      if (payload.cells && Array.isArray(payload.cells)) {
+        syncCellsFromBackend(payload.cells)
+      }
+
+      const job = parseEnvironmentOperation(payload.environment_job)
+      if (!job) return
+
+      if (job.status === 'running') {
+        dependencyError.value = null
+        environmentError.value = null
+        environmentWarnings.value = []
+        return
+      }
+
+      dependencyLoading.value = false
+      environmentLoading.value = false
+
+      if (job.status === 'completed') {
+        setEnvironmentActionSummary({
+          action: job.action,
+          packageName: job.packageName,
+          lockfileChanged: payload.lockfile_changed === true || job.lockfileChanged,
+          staleCellCount:
+            typeof payload.stale_cell_count === 'number'
+              ? payload.stale_cell_count
+              : job.staleCellCount,
+        })
+        dependencyError.value = null
+        environmentError.value = null
+        environmentWarnings.value = []
+      } else {
+        const message = job.error || 'Environment update failed'
+        if (job.action === 'add' || job.action === 'remove') {
+          dependencyError.value = message
+        } else {
+          environmentError.value = message
+        }
+      }
+    }
+
+    wsInstance.onMessage('environment_job_started', (msg: WsMessage) => {
+      handleEnvironmentJobMessage(msg.payload as Record<string, any>)
+    })
+
+    wsInstance.onMessage('environment_job_progress', (msg: WsMessage) => {
+      handleEnvironmentJobMessage(msg.payload as Record<string, any>)
+    })
+
+    wsInstance.onMessage('environment_job_finished', (msg: WsMessage) => {
+      handleEnvironmentJobMessage(msg.payload as Record<string, any>)
+    })
+
+    wsInstance.onMessage('error', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      if (p.code === 'ENVIRONMENT_BUSY' && typeof p.error === 'string') {
+        environmentError.value = p.error
+      }
+    })
+
     wsInstance.connect()
   }
 }
@@ -1446,6 +1570,12 @@ function cleanupWebSocket() {
 }
 
 async function executeCellWebSocket(cellId: CellId) {
+  if (environmentMutationActive.value) {
+    environmentError.value =
+      environmentOperation.value?.error ||
+      'Environment update in progress. Running cells is disabled until it finishes.'
+    return
+  }
   if (!wsInstance) {
     console.warn('[notebook] No WebSocket instance, cannot execute cell:', cellId)
     return
@@ -1469,6 +1599,12 @@ function executeCascadeWebSocket(cellId: CellId, planId: string) {
 }
 
 function executeForceWebSocket(cellId: CellId) {
+  if (environmentMutationActive.value) {
+    environmentError.value =
+      environmentOperation.value?.error ||
+      'Environment update in progress. Running cells is disabled until it finishes.'
+    return
+  }
   if (wsInstance && wsInstance.connected()) {
     setCellStatus(cellId, 'running')
     wsInstance.executeForce(cellId)
@@ -1591,28 +1727,15 @@ async function addDependencyAction(pkg: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
-    setEnvironmentActionSummary({
-      action: 'add',
-      packageName: pkg,
-      lockfileChanged: data.lockfile_changed === true,
-      staleCellCount: Number(data.stale_cell_count ?? 0),
-    })
-    finishEnvironmentOperation(
-      'add',
-      'completed',
-      extractOperationLogPayload(data),
-      `uv add ${pkg}`,
-    )
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to add dependency'
+    syncEnvironmentPayloadFromBackend(err?.payload)
     finishEnvironmentOperation(
       'add',
       'failed',
       extractOperationLogPayload(err?.payload),
       `uv add ${pkg}`,
     )
-  } finally {
-    dependencyLoading.value = false
   }
 }
 
@@ -1632,28 +1755,15 @@ async function removeDependencyAction(pkg: string) {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
-    setEnvironmentActionSummary({
-      action: 'remove',
-      packageName: pkg,
-      lockfileChanged: data.lockfile_changed === true,
-      staleCellCount: Number(data.stale_cell_count ?? 0),
-    })
-    finishEnvironmentOperation(
-      'remove',
-      'completed',
-      extractOperationLogPayload(data),
-      `uv remove ${pkg}`,
-    )
   } catch (err: any) {
     dependencyError.value = err.message || 'Failed to remove dependency'
+    syncEnvironmentPayloadFromBackend(err?.payload)
     finishEnvironmentOperation(
       'remove',
       'failed',
       extractOperationLogPayload(err?.payload),
       `uv remove ${pkg}`,
     )
-  } finally {
-    dependencyLoading.value = false
   }
 }
 
@@ -1672,22 +1782,15 @@ async function syncEnvironmentAction() {
     if (data.cells && Array.isArray(data.cells)) {
       syncCellsFromBackend(data.cells)
     }
-    setEnvironmentActionSummary({
-      action: 'sync',
-      lockfileChanged: data.lockfile_changed === true,
-      staleCellCount: Number(data.stale_cell_count ?? 0),
-    })
-    finishEnvironmentOperation('sync', 'completed', extractOperationLogPayload(data), 'uv sync')
   } catch (err: any) {
     environmentError.value = err.message || 'Failed to sync environment'
+    syncEnvironmentPayloadFromBackend(err?.payload)
     finishEnvironmentOperation(
       'sync',
       'failed',
       extractOperationLogPayload(err?.payload),
       'uv sync',
     )
-  } finally {
-    environmentLoading.value = false
   }
 }
 
@@ -2266,6 +2369,7 @@ export function useNotebook() {
     environmentWarnings,
     environmentLastAction,
     environmentOperation,
+    environmentMutationActive,
     environmentImportPreview,
     availableWorkers,
     workerDefinitionsEditable,

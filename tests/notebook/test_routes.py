@@ -385,6 +385,82 @@ def test_sync_environment_endpoint(monkeypatch):
         assert "cells" in data
 
 
+def test_submit_environment_job_endpoint(monkeypatch):
+    """POST /environment/jobs should accept a background job and expose its snapshot."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Job Test")
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.routes import get_session_manager
+        from strata.notebook.session import EnvironmentJobSnapshot
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+
+        async def _fake_submit_environment_job(*, action: str, package: str | None = None):
+            job = EnvironmentJobSnapshot(
+                id="job-123",
+                action=action,
+                package=package,
+                command=f"uv {action} {package}".strip(),
+                status="running",
+                phase="uv_running",
+                started_at=1234567890,
+            )
+            session.environment_job = job
+            return job
+
+        monkeypatch.setattr(session, "submit_environment_job", _fake_submit_environment_job)
+
+        response = client.post(
+            f"/v1/notebooks/{session_id}/environment/jobs",
+            json={"action": "add", "package": "six"},
+        )
+        assert response.status_code == 202
+        data = response.json()
+        assert data["accepted"] is True
+        assert data["environment_job"]["action"] == "add"
+        assert data["environment_job"]["package"] == "six"
+        assert data["environment_job"]["status"] == "running"
+
+
+def test_submit_environment_job_endpoint_conflict_when_execution_running():
+    """Background environment jobs should be rejected while cells are running."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Environment Busy Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+        write_cell(notebook_dir, "cell-1", "x = 1")
+
+        response = client.post(
+            "/v1/notebooks/open",
+            json={"path": str(notebook_dir)},
+        )
+        session_id = response.json()["session_id"]
+
+        from strata.notebook.models import CellStatus
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        session.notebook_state.cells[0].status = CellStatus.RUNNING
+
+        response = client.post(
+            f"/v1/notebooks/{session_id}/environment/jobs",
+            json={"action": "sync"},
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "ENVIRONMENT_BUSY"
+
+
 def test_list_sessions_personal_mode(deployment_mode_state):
     """Session listing should work in personal mode for reconnect UX."""
     deployment_mode_state("personal")

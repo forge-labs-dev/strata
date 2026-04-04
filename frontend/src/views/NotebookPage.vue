@@ -24,6 +24,7 @@ const {
   orderedCells,
   connected,
   connectError,
+  environmentMutationActive,
   workerDefinitionsEditable,
   openBySessionId,
   openNotebook,
@@ -208,6 +209,7 @@ function startEditName() {
 }
 
 async function runCell(cellId: string) {
+  if (environmentMutationActive.value) return
   const cell = orderedCells.value.find((c) => c.id === cellId)
   if (!cell || !cell.source.trim()) return
   executeCellWebSocket(cellId)
@@ -259,7 +261,9 @@ function goHome() {
         <span class="connection" :class="{ connected: connected }">
           {{ loading ? '◌ Connecting…' : connected ? '● Live' : '○ Not connected' }}
         </span>
-        <button class="btn" :disabled="!connected" @click="runAll">▶ Run All</button>
+        <button class="btn" :disabled="!connected || environmentMutationActive" @click="runAll">
+          ▶ Run All
+        </button>
         <button class="btn btn-secondary" :disabled="!connected" @click="addCell()">+ Cell</button>
       </div>
     </header>

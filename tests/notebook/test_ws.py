@@ -1459,6 +1459,40 @@ def test_malformed_message(client, temp_notebook, app):
         assert "error" in response["payload"]
 
 
+def test_cell_execute_blocked_while_environment_job_running(client, temp_notebook, app):
+    """Cell execution should be rejected while an environment job is active."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+    from strata.notebook.session import EnvironmentJobSnapshot
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    cell_id = session.notebook_state.cells[0].id
+    session.environment_job = EnvironmentJobSnapshot(
+        id="job-1",
+        action="sync",
+        command="uv sync",
+        status="running",
+        phase="uv_running",
+        started_at=1,
+    )
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": cell_id},
+            }
+        )
+
+        response = websocket.receive_json()
+        assert response["type"] == "error"
+        assert response["payload"]["code"] == "ENVIRONMENT_BUSY"
+
+
 def test_unknown_notebook(client, app):
     """Test connecting to non-existent notebook."""
     # Try to connect to non-existent notebook

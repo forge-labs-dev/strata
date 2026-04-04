@@ -462,10 +462,10 @@ async function listDependencies(notebookId: string): Promise<any> {
 }
 
 async function addDependency(notebookId: string, pkg: string): Promise<any> {
-  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies`, {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/jobs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ package: pkg }),
+    body: JSON.stringify({ action: 'add', package: pkg }),
   })
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to add dependency')
@@ -474,12 +474,11 @@ async function addDependency(notebookId: string, pkg: string): Promise<any> {
 }
 
 async function removeDependency(notebookId: string, pkg: string): Promise<any> {
-  const resp = await fetch(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/dependencies/${encodeURIComponent(pkg)}`,
-    {
-      method: 'DELETE',
-    },
-  )
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'remove', package: pkg }),
+  })
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to remove dependency')
   }
@@ -495,8 +494,10 @@ async function getEnvironmentStatus(notebookId: string): Promise<any> {
 }
 
 async function syncEnvironment(notebookId: string): Promise<any> {
-  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/sync`, {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/environment/jobs`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'sync' }),
   })
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to sync notebook environment')

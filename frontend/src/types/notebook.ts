@@ -315,8 +315,11 @@ export interface EnvironmentActionSummary {
 }
 
 export interface EnvironmentOperation {
+  id: string
   action: 'add' | 'remove' | 'sync' | 'import'
   status: 'running' | 'completed' | 'failed'
+  packageName: string | null
+  phase: string | null
   command: string
   durationMs: number | null
   stdout: string
@@ -325,6 +328,10 @@ export interface EnvironmentOperation {
   stderrTruncated: boolean
   startedAt: number
   finishedAt: number | null
+  lockfileChanged: boolean
+  staleCellCount: number
+  staleCellIds: string[]
+  error: string | null
 }
 
 export interface EnvironmentImportPreview {
@@ -464,6 +471,9 @@ export type WsServerMessageType =
   | 'notebook_status' // Batch status update (e.g., after open or env change)
   | 'notebook_state' // Full state sync (reconnection)
   | 'dependency_changed' // Dependency added/removed — updated list
+  | 'environment_job_started' // Background env job accepted and started
+  | 'environment_job_progress' // Background env job emitted logs or phase changes
+  | 'environment_job_finished' // Background env job completed or failed
   | 'error' // Protocol-level error (auth, not found, etc.)
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType

@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from strata.notebook.cascade import CascadePlanner
-from strata.notebook.dependencies import list_resolved_dependencies
 from strata.notebook.executor import CellExecutor
 from strata.notebook.impact import ImpactAnalyzer
 from strata.notebook.inspect_repl import InspectManager
@@ -71,6 +70,41 @@ def _json_encode(obj: Any) -> str:
 def _json_decode(text: str) -> Any:
     """Decode JSON from string."""
     return json.loads(text)
+
+
+def _ensure_execution_state(notebook_id: str) -> dict[str, Any]:
+    """Get or create per-notebook execution bookkeeping."""
+    if notebook_id not in _notebook_execution_state:
+        _notebook_execution_state[notebook_id] = {
+            "running_cell": None,
+            "requested_cell": None,
+            "sequence": 0,
+            "cascade_plan": None,
+            "execution_task": None,
+            "control_lock": asyncio.Lock(),
+        }
+    return _notebook_execution_state[notebook_id]
+
+
+def next_notebook_sequence(notebook_id: str) -> int:
+    """Increment and return the next outbound sequence for a notebook."""
+    execution_state = _ensure_execution_state(notebook_id)
+    execution_state["sequence"] += 1
+    return execution_state["sequence"]
+
+
+def notebook_has_active_execution(notebook_id: str) -> bool:
+    """Return whether a notebook currently has an active execution task."""
+    execution_state = _notebook_execution_state.get(notebook_id)
+    if execution_state is None:
+        return False
+    task = _get_active_execution_task(execution_state)
+    return task is not None or execution_state.get("running_cell") is not None
+
+
+async def broadcast_notebook_message(notebook_id: str, message: dict[str, Any]) -> None:
+    """Public wrapper for broadcasting notebook protocol messages."""
+    await _broadcast_message(notebook_id, message)
 
 
 async def _send_message(websocket: WebSocket, message: dict[str, Any]) -> None:
@@ -378,18 +412,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
         _notebook_connections[notebook_id] = []
     _notebook_connections[notebook_id].append(websocket)
 
-    # Initialize execution state
-    if notebook_id not in _notebook_execution_state:
-        _notebook_execution_state[notebook_id] = {
-            "running_cell": None,
-            "requested_cell": None,
-            "sequence": 0,  # For sequencing incoming messages
-            "cascade_plan": None,
-            "execution_task": None,
-            "control_lock": asyncio.Lock(),
-        }
-
-    execution_state = _notebook_execution_state[notebook_id]
+    execution_state = _ensure_execution_state(notebook_id)
 
     try:
         while True:
@@ -527,6 +550,23 @@ async def _handle_cell_execute(
         )
         return
 
+    environment_block_reason = session.environment_execution_block_message()
+    if environment_block_reason:
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "error": environment_block_reason,
+                        "code": "ENVIRONMENT_BUSY",
+                    },
+                }
+            )
+        )
+        return
+
     # Find cell
     cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
     if not cell:
@@ -620,6 +660,23 @@ async def _handle_cell_execute_cascade(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
+    environment_block_reason = session.environment_execution_block_message()
+    if environment_block_reason:
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "error": environment_block_reason,
+                        "code": "ENVIRONMENT_BUSY",
+                    },
+                }
+            )
+        )
+        return
+
     # Get the cascade plan
     plan = execution_state.get("cascade_plan")
     if not plan or plan.plan_id != plan_id:
@@ -674,6 +731,23 @@ async def _handle_cell_execute_force(
         return
 
     execution_state["sequence"] += 1
+
+    environment_block_reason = session.environment_execution_block_message()
+    if environment_block_reason:
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "error": environment_block_reason,
+                        "code": "ENVIRONMENT_BUSY",
+                    },
+                }
+            )
+        )
+        return
 
     # Execute cell directly, ignoring staleness.
     await _schedule_execution(
@@ -1600,7 +1674,7 @@ async def _handle_dependency_add(
     execution_state: dict[str, Any],
     notebook_id: str,
 ) -> None:
-    """Handle dependency_add — add a package and broadcast the change."""
+    """Handle dependency_add — submit an async env job for ``uv add``."""
     from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
@@ -1630,43 +1704,19 @@ async def _handle_dependency_add(
         )
         return
 
-    outcome = await session.mutate_dependency(package, action="add")
-    result = outcome.result
-
-    execution_state["sequence"] += 1
-    seq = execution_state["sequence"]
-
-    msg = {
-        "type": "dependency_changed",
-        "seq": seq,
-        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-        "payload": {
-            "action": "add",
-            "package": result.package,
-            "success": result.success,
-            "error": result.error,
-            "lockfile_changed": result.lockfile_changed,
-            "cells": session.serialize_cells(),
-            "dependencies": [
-                {"name": d.name, "version": d.version, "specifier": d.specifier}
-                for d in result.dependencies
-            ],
-            "resolved_dependencies": [
-                {"name": d.name, "version": d.version, "specifier": d.specifier}
-                for d in list_resolved_dependencies(session.path)
-            ],
-            "environment": session.serialize_environment_state(),
-            "stale_cell_count": sum(
-                1
-                for staleness in outcome.staleness_map.values()
-                if staleness.status != CellStatus.READY
-            ),
-        },
-    }
-    await _broadcast_message(notebook_id, msg)
-    if outcome.staleness_map:
-        await _broadcast_staleness_updates(
-            session, notebook_id, seq, outcome.staleness_map
+    try:
+        await session.submit_environment_job(action="add", package=package)
+    except RuntimeError as exc:
+        execution_state["sequence"] += 1
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": str(exc), "code": "ENVIRONMENT_BUSY"},
+                }
+            )
         )
 
 
@@ -1677,7 +1727,7 @@ async def _handle_dependency_remove(
     execution_state: dict[str, Any],
     notebook_id: str,
 ) -> None:
-    """Handle dependency_remove — remove a package and broadcast the change."""
+    """Handle dependency_remove — submit an async env job for ``uv remove``."""
     from strata.notebook.routes import validate_package_name
 
     package = payload.get("package", "")
@@ -1707,43 +1757,19 @@ async def _handle_dependency_remove(
         )
         return
 
-    outcome = await session.mutate_dependency(package, action="remove")
-    result = outcome.result
-
-    execution_state["sequence"] += 1
-    seq = execution_state["sequence"]
-
-    msg = {
-        "type": "dependency_changed",
-        "seq": seq,
-        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-        "payload": {
-            "action": "remove",
-            "package": result.package,
-            "success": result.success,
-            "error": result.error,
-            "lockfile_changed": result.lockfile_changed,
-            "cells": session.serialize_cells(),
-            "dependencies": [
-                {"name": d.name, "version": d.version, "specifier": d.specifier}
-                for d in result.dependencies
-            ],
-            "resolved_dependencies": [
-                {"name": d.name, "version": d.version, "specifier": d.specifier}
-                for d in list_resolved_dependencies(session.path)
-            ],
-            "environment": session.serialize_environment_state(),
-            "stale_cell_count": sum(
-                1
-                for staleness in outcome.staleness_map.values()
-                if staleness.status != CellStatus.READY
-            ),
-        },
-    }
-    await _broadcast_message(notebook_id, msg)
-    if outcome.staleness_map:
-        await _broadcast_staleness_updates(
-            session, notebook_id, seq, outcome.staleness_map
+    try:
+        await session.submit_environment_job(action="remove", package=package)
+    except RuntimeError as exc:
+        execution_state["sequence"] += 1
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": str(exc), "code": "ENVIRONMENT_BUSY"},
+                }
+            )
         )
 
 

@@ -13,6 +13,7 @@ const {
   environmentWarnings,
   environmentLastAction,
   environmentOperation,
+  environmentMutationActive,
   environmentImportPreview,
   addDependencyAction,
   removeDependencyAction,
@@ -52,7 +53,11 @@ const syncStateLabel = computed(() => {
 })
 
 const syncStateClass = computed(() => `state-${notebook.environment.syncState}`)
-const syncButtonLabel = computed(() => (environmentLoading.value ? 'Rebuilding…' : 'Rebuild .venv'))
+const syncButtonLabel = computed(() =>
+  environmentMutationActive.value && environmentOperation.value?.action === 'sync'
+    ? 'Rebuilding…'
+    : 'Rebuild .venv',
+)
 
 const shortLockfileHash = computed(() =>
   notebook.environment.lockfileHash ? notebook.environment.lockfileHash.slice(0, 12) : 'none',
@@ -168,6 +173,15 @@ const operationStatusLabel = computed(() => {
 const operationStatusClass = computed(() =>
   environmentOperation.value ? `operation-${environmentOperation.value.status}` : '',
 )
+
+const operationPhaseLabel = computed(() => {
+  const phase = environmentOperation.value?.phase
+  if (!phase) return ''
+  return phase
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+})
 
 const operationDurationLabel = computed(() => {
   if (!environmentOperation.value || environmentOperation.value.durationMs == null) return 'Timing…'
@@ -296,28 +310,36 @@ function downloadRequirements() {
         <div class="env-actions">
           <button
             class="btn-sync"
-            :disabled="!connected || dependencyLoading || environmentLoading"
+            :disabled="
+              !connected || environmentMutationActive || dependencyLoading || environmentLoading
+            "
             @click="syncEnvironmentAction"
           >
             {{ syncButtonLabel }}
           </button>
           <button
             class="btn-secondary"
-            :disabled="!connected || dependencyLoading || environmentLoading"
+            :disabled="
+              !connected || environmentMutationActive || dependencyLoading || environmentLoading
+            "
             @click="openRequirementsExport"
           >
             Export
           </button>
           <button
             class="btn-secondary"
-            :disabled="!connected || dependencyLoading || environmentLoading"
+            :disabled="
+              !connected || environmentMutationActive || dependencyLoading || environmentLoading
+            "
             @click="openRequirementsImport"
           >
             Import requirements
           </button>
           <button
             class="btn-secondary"
-            :disabled="!connected || dependencyLoading || environmentLoading"
+            :disabled="
+              !connected || environmentMutationActive || dependencyLoading || environmentLoading
+            "
             @click="openEnvironmentYamlImport"
           >
             Import env.yaml
@@ -380,6 +402,9 @@ function downloadRequirements() {
         <div class="env-operation-command">
           <code>{{ environmentOperation.command }}</code>
           <span class="env-operation-duration">{{ operationDurationLabel }}</span>
+        </div>
+        <div v-if="operationPhaseLabel" class="env-operation-phase">
+          {{ operationPhaseLabel }}
         </div>
         <details
           v-if="environmentOperation.stdout || environmentOperation.stderr"
@@ -512,7 +537,11 @@ function downloadRequirements() {
             v-if="requirementsMode !== 'requirements-export'"
             class="btn-secondary"
             :disabled="
-              !connected || dependencyLoading || environmentLoading || !requirementsText.trim()
+              !connected ||
+              environmentMutationActive ||
+              dependencyLoading ||
+              environmentLoading ||
+              !requirementsText.trim()
             "
             @click="previewImport"
           >
@@ -523,6 +552,7 @@ function downloadRequirements() {
             class="btn-sync"
             :disabled="
               !connected ||
+              environmentMutationActive ||
               dependencyLoading ||
               environmentLoading ||
               !requirementsText.trim() ||
@@ -566,15 +596,23 @@ function downloadRequirements() {
           type="text"
           placeholder="Add package (e.g. pandas)"
           class="dep-input"
-          :disabled="!connected || dependencyLoading || environmentLoading"
+          :disabled="
+            !connected || environmentMutationActive || dependencyLoading || environmentLoading
+          "
           @keydown.enter="addPackage"
         />
         <button
           class="btn-add"
-          :disabled="!connected || dependencyLoading || environmentLoading || !newPackage.trim()"
+          :disabled="
+            !connected ||
+            environmentMutationActive ||
+            dependencyLoading ||
+            environmentLoading ||
+            !newPackage.trim()
+          "
           @click="addPackage"
         >
-          {{ dependencyLoading ? '…' : '+' }}
+          {{ environmentMutationActive ? '…' : dependencyLoading ? '…' : '+' }}
         </button>
       </div>
 
@@ -603,7 +641,7 @@ function downloadRequirements() {
             v-if="packageView === 'declared'"
             class="btn-remove"
             title="Remove"
-            :disabled="dependencyLoading || environmentLoading"
+            :disabled="environmentMutationActive || dependencyLoading || environmentLoading"
             @click="removePackage(dep.name)"
           >
             Remove

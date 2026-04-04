@@ -7,11 +7,13 @@ is re-synced so that ``uv.lock`` and ``.venv/`` stay consistent.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shlex
 import subprocess
 import threading
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,6 +110,33 @@ class _UvCommandResult:
     success: bool
     error: str | None
     operation_log: EnvironmentOperationLog
+
+
+class _BoundedOutputBuffer:
+    """Accumulate subprocess output without letting UI payloads grow unbounded."""
+
+    def __init__(self) -> None:
+        self._text = ""
+        self.truncated = False
+
+    def append(self, value: str) -> None:
+        if not value:
+            return
+        if self.truncated:
+            return
+        remaining = _MAX_OPERATION_LOG_CHARS - len(self._text)
+        if remaining <= 0:
+            self.truncated = True
+            return
+        if len(value) <= remaining:
+            self._text += value
+            return
+        self._text += value[:remaining]
+        self.truncated = True
+
+    @property
+    def text(self) -> str:
+        return self._text.strip()
 
 
 def _normalize_output_text(value: str | bytes | None) -> str:
@@ -207,6 +236,110 @@ def _run_uv_command(
                 stderr_truncated=stderr_truncated,
             ),
         )
+
+
+async def run_uv_command_streaming(
+    notebook_dir: Path,
+    args: list[str],
+    *,
+    timeout: int,
+    display_name: str,
+    on_update: Callable[[str, str, bool], Awaitable[None] | None] | None = None,
+) -> _UvCommandResult:
+    """Run a uv command asynchronously and surface bounded live stdout/stderr."""
+    command = ["uv", *args]
+    started = time.perf_counter()
+    formatted_command = _format_command_for_ui(command)
+    stdout_buffer = _BoundedOutputBuffer()
+    stderr_buffer = _BoundedOutputBuffer()
+
+    async def _emit_update(stream_name: str, text: str, truncated: bool) -> None:
+        if on_update is None:
+            return
+        maybe_awaitable = on_update(stream_name, text, truncated)
+        if asyncio.iscoroutine(maybe_awaitable):
+            await maybe_awaitable
+
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            cwd=str(notebook_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        return _UvCommandResult(
+            success=False,
+            error="uv not found on PATH",
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            ),
+        )
+
+    async def _read_stream(
+        stream: asyncio.StreamReader | None,
+        name: str,
+        buffer: _BoundedOutputBuffer,
+    ) -> None:
+        if stream is None:
+            return
+        while True:
+            chunk = await stream.read(4096)
+            if not chunk:
+                return
+            text = chunk.decode(errors="replace")
+            buffer.append(text)
+            await _emit_update(name, buffer.text, buffer.truncated)
+
+    stdout_task = asyncio.create_task(_read_stream(process.stdout, "stdout", stdout_buffer))
+    stderr_task = asyncio.create_task(_read_stream(process.stderr, "stderr", stderr_buffer))
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(stdout_task, stderr_task, process.wait()),
+            timeout=timeout,
+        )
+    except TimeoutError:
+        process.kill()
+        await asyncio.gather(stdout_task, stderr_task, process.wait(), return_exceptions=True)
+        return _UvCommandResult(
+            success=False,
+            error=f"{display_name} timed out after {timeout}s",
+            operation_log=EnvironmentOperationLog(
+                command=formatted_command,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+                stdout=stdout_buffer.text,
+                stderr=stderr_buffer.text,
+                stdout_truncated=stdout_buffer.truncated,
+                stderr_truncated=stderr_buffer.truncated,
+            ),
+        )
+
+    stdout = stdout_buffer.text
+    stderr = stderr_buffer.text
+    operation_log = EnvironmentOperationLog(
+        command=formatted_command,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        stdout=stdout,
+        stderr=stderr,
+        stdout_truncated=stdout_buffer.truncated,
+        stderr_truncated=stderr_buffer.truncated,
+    )
+
+    if process.returncode == 0:
+        return _UvCommandResult(
+            success=True,
+            error=None,
+            operation_log=operation_log,
+        )
+
+    error_detail = stderr or stdout or f"{display_name} exited with status {process.returncode}"
+    return _UvCommandResult(
+        success=False,
+        error=f"{display_name} failed: {error_detail}",
+        operation_log=operation_log,
+    )
 
 
 # ---------------------------------------------------------------------------

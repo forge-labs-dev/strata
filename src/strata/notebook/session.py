@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import logging
 import subprocess
+import threading
 import time as _time
 import uuid
 from dataclasses import dataclass
@@ -18,10 +19,13 @@ from strata.notebook.causality import CausalityChain, compute_causality_on_stale
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
 from strata.notebook.dependencies import (
     DependencyChangeResult,
+    EnvironmentOperationLog,
     RequirementsImportResult,
+    _get_notebook_lock,
     import_environment_yaml_text,
     import_requirements_text,
     list_dependencies,
+    run_uv_command_streaming,
 )
 from strata.notebook.env import compute_execution_env_hash, compute_lockfile_hash
 from strata.notebook.models import (
@@ -70,6 +74,51 @@ class RequirementsImportOutcome:
 
     result: RequirementsImportResult
     staleness_map: dict[str, CellStaleness]
+
+
+@dataclass
+class EnvironmentJobSnapshot:
+    """One notebook-scoped background environment operation."""
+
+    id: str
+    action: str
+    command: str
+    status: str
+    started_at: int
+    package: str | None = None
+    phase: str | None = None
+    duration_ms: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    finished_at: int | None = None
+    lockfile_changed: bool = False
+    stale_cell_count: int = 0
+    stale_cell_ids: list[str] | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the job for REST and WebSocket payloads."""
+        return {
+            "id": self.id,
+            "action": self.action,
+            "package": self.package,
+            "command": self.command,
+            "status": self.status,
+            "phase": self.phase,
+            "duration_ms": self.duration_ms,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "stdout_truncated": self.stdout_truncated,
+            "stderr_truncated": self.stderr_truncated,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
+            "lockfile_changed": self.lockfile_changed,
+            "stale_cell_count": self.stale_cell_count,
+            "stale_cell_ids": list(self.stale_cell_ids or []),
+            "error": self.error,
+        }
 
 
 class NotebookSession:
@@ -125,6 +174,10 @@ class NotebookSession:
         self.environment_last_sync_duration_ms: int | None = None
         self.environment_python_version: str = ""
         self.environment_interpreter_source: str = "unknown"
+        self.environment_job: EnvironmentJobSnapshot | None = None
+        self.environment_job_task: asyncio.Task[None] | None = None
+        self._environment_state_lock = threading.RLock()
+        self._synchronous_environment_mutation: str | None = None
 
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
@@ -471,6 +524,7 @@ class NotebookSession:
         data = self.notebook_state.model_dump()
         data["cells"] = self.serialize_cells()
         data["environment"] = self.serialize_environment_state()
+        data["environment_job"] = self.serialize_environment_job_state()
         return data
 
     def _probe_python_version(self, python_executable: Path) -> str:
@@ -539,6 +593,79 @@ class NotebookSession:
             "venv_python": str(self.venv_python) if self.venv_python else None,
             "interpreter_source": self.environment_interpreter_source,
         }
+
+    def serialize_environment_job_state(self) -> dict[str, Any] | None:
+        """Serialize the currently active environment job when present."""
+        with self._environment_state_lock:
+            if self.environment_job is None or self.environment_job.status != "running":
+                return None
+            return self.environment_job.to_dict()
+
+    def _has_active_cell_status(self) -> bool:
+        """Return whether any notebook cell is currently marked running."""
+        return any(cell.status == CellStatus.RUNNING for cell in self.notebook_state.cells)
+
+    def has_active_environment_mutation(self) -> bool:
+        """Return whether an environment change is currently in progress."""
+        with self._environment_state_lock:
+            return (
+                self.environment_job is not None
+                and self.environment_job.status == "running"
+            ) or self._synchronous_environment_mutation is not None
+
+    def _active_environment_mutation_label(self) -> str | None:
+        """Return the label of the current environment mutation, if any."""
+        with self._environment_state_lock:
+            if self.environment_job is not None and self.environment_job.status == "running":
+                if self.environment_job.package:
+                    return f"{self.environment_job.action} {self.environment_job.package}"
+                return self.environment_job.action
+            return self._synchronous_environment_mutation
+
+    def _has_active_execution(self) -> bool:
+        """Return whether cell execution is currently active for this notebook."""
+        if self._has_active_cell_status():
+            return True
+        try:
+            from strata.notebook.ws import notebook_has_active_execution
+
+            return notebook_has_active_execution(self.id)
+        except Exception:
+            return False
+
+    def environment_execution_block_message(self) -> str | None:
+        """Return the reason cell execution should be blocked, if any."""
+        label = self._active_environment_mutation_label()
+        if label is None:
+            return None
+        return (
+            "Environment update in progress. Running cells is disabled until "
+            f"{label} finishes."
+        )
+
+    def _assert_environment_job_can_start(self, action_label: str) -> None:
+        """Reject starting a new environment update when the notebook is busy."""
+        if self.has_active_environment_mutation():
+            active_label = self._active_environment_mutation_label() or "environment update"
+            raise RuntimeError(
+                f"Another environment update is already in progress: {active_label}"
+            )
+        if self._has_active_execution():
+            raise RuntimeError(
+                "Notebook execution is currently running. Wait for execution to "
+                f"finish before starting {action_label}."
+            )
+
+    def _begin_synchronous_environment_mutation(self, label: str) -> None:
+        """Reserve the notebook environment for a synchronous mutation path."""
+        with self._environment_state_lock:
+            self._assert_environment_job_can_start(label)
+            self._synchronous_environment_mutation = label
+
+    def _end_synchronous_environment_mutation(self) -> None:
+        """Release the synchronous environment mutation reservation."""
+        with self._environment_state_lock:
+            self._synchronous_environment_mutation = None
 
     def serialize_worker_catalog(self) -> list[dict[str, Any]]:
         """Serialize the worker catalog visible to this notebook."""
@@ -771,12 +898,16 @@ class NotebookSession:
             self.path,
             python_version=read_requested_python_minor(self.path),
         )
-        self.environment_last_synced_at = int(_time.time() * 1000)
-        self.environment_last_sync_duration_ms = int(
-            (_time.perf_counter() - started) * 1000
+        self._apply_uv_sync_result(
+            ok,
+            duration_ms=int((_time.perf_counter() - started) * 1000),
         )
 
-        # Locate python inside the venv created by uv
+    def _apply_uv_sync_result(self, ok: bool, *, duration_ms: int) -> None:
+        """Update runtime state after a uv sync attempt."""
+        self.environment_last_synced_at = int(_time.time() * 1000)
+        self.environment_last_sync_duration_ms = duration_ms
+
         venv_python = self.path / ".venv" / "bin" / "python"
         if venv_python.exists():
             self.venv_python = venv_python
@@ -795,7 +926,9 @@ class NotebookSession:
                     "uv sync failed for %s, using existing notebook venv",
                     self.path,
                 )
-        elif ok:
+            return
+
+        if ok:
             self.venv_python = Path("python")
             self.environment_interpreter_source = "path"
             self.environment_sync_state = "fallback"
@@ -809,20 +942,21 @@ class NotebookSession:
                 "uv sync succeeded but .venv/bin/python not found in %s",
                 self.path,
             )
-        else:
-            self.venv_python = Path("python")
-            self.environment_interpreter_source = "path"
-            self.environment_sync_state = "failed"
-            self.environment_sync_error = (
-                "Environment refresh failed and no notebook venv is available; "
-                "notebook execution will fall back to python from PATH."
-            )
-            self.environment_sync_notice = None
-            self.environment_python_version = self._probe_python_version(self.venv_python)
-            logger.warning(
-                "uv sync failed and no notebook venv is available for %s",
-                self.path,
-            )
+            return
+
+        self.venv_python = Path("python")
+        self.environment_interpreter_source = "path"
+        self.environment_sync_state = "failed"
+        self.environment_sync_error = (
+            "Environment refresh failed and no notebook venv is available; "
+            "notebook execution will fall back to python from PATH."
+        )
+        self.environment_sync_notice = None
+        self.environment_python_version = self._probe_python_version(self.venv_python)
+        logger.warning(
+            "uv sync failed and no notebook venv is available for %s",
+            self.path,
+        )
 
     def refresh_environment_runtime(self) -> None:
         """Refresh runtime metadata from an existing notebook venv.
@@ -975,6 +1109,362 @@ class NotebookSession:
             result=result,
             staleness_map=staleness_map,
         )
+
+    def wait_for_environment_job_task(self) -> asyncio.Task[None] | None:
+        """Return the current environment job task, if any."""
+        with self._environment_state_lock:
+            return self.environment_job_task
+
+    async def wait_for_environment_job(self) -> None:
+        """Wait for the currently active environment job to finish."""
+        task = self.wait_for_environment_job_task()
+        if task is not None:
+            await task
+
+    async def submit_environment_job(
+        self,
+        *,
+        action: str,
+        package: str | None = None,
+    ) -> EnvironmentJobSnapshot:
+        """Start an asynchronous notebook environment job."""
+        if action not in {"add", "remove", "sync"}:
+            raise ValueError(f"Unsupported environment job action: {action}")
+
+        action_label = f"{action} {package}".strip()
+        with self._environment_state_lock:
+            self._assert_environment_job_can_start(action_label)
+            requested_python = read_requested_python_minor(self.path)
+            command = "uv sync"
+            if action == "add" and package:
+                command = f"uv add {package}"
+            elif action == "remove" and package:
+                command = f"uv remove {package}"
+            elif requested_python:
+                command = f"uv sync --python {requested_python}"
+
+            job = EnvironmentJobSnapshot(
+                id=str(uuid.uuid4()),
+                action=action,
+                package=package,
+                command=command,
+                status="running",
+                phase="uv_running",
+                started_at=int(_time.time() * 1000),
+            )
+            self.environment_job = job
+
+        await self._broadcast_environment_job_event("environment_job_started", job)
+        task = asyncio.create_task(self._run_environment_job(job))
+        with self._environment_state_lock:
+            self.environment_job_task = task
+        return job
+
+    async def _run_environment_job(self, job: EnvironmentJobSnapshot) -> None:
+        """Execute a background environment job and publish updates."""
+        stale_cell_ids: list[str] = []
+        try:
+            if job.action == "sync":
+                stale_cell_ids = await self._run_sync_environment_job(job)
+            else:
+                assert job.package is not None
+                stale_cell_ids = await self._run_dependency_environment_job(
+                    job,
+                    action=job.action,
+                    package=job.package,
+                )
+            job.status = "completed"
+            job.phase = "completed"
+        except Exception as exc:
+            logger.exception("Environment job %s failed for %s", job.action, self.path)
+            job.status = "failed"
+            job.phase = "failed"
+            job.error = str(exc)
+        finally:
+            job.finished_at = int(_time.time() * 1000)
+            job.duration_ms = job.finished_at - job.started_at
+            payload: dict[str, Any] = {
+                "environment_job": job.to_dict(),
+                "cells": self.serialize_cells(),
+                **{
+                    "lockfile_changed": job.lockfile_changed,
+                    "stale_cell_count": job.stale_cell_count,
+                    "stale_cell_ids": stale_cell_ids,
+                },
+            }
+            if job.status == "completed":
+                payload.update(
+                    {
+                        "environment": self.serialize_environment_state(),
+                        "dependencies": [
+                            {
+                                "name": dep.name,
+                                "version": dep.version,
+                                "specifier": dep.specifier,
+                            }
+                            for dep in list_dependencies(self.path)
+                        ],
+                    }
+                )
+                from strata.notebook.dependencies import list_resolved_dependencies
+
+                payload["resolved_dependencies"] = [
+                    {
+                        "name": dep.name,
+                        "version": dep.version,
+                        "specifier": dep.specifier,
+                    }
+                    for dep in list_resolved_dependencies(self.path)
+                ]
+            await self._broadcast_environment_job_message(
+                "environment_job_finished",
+                payload,
+            )
+            if job.action in {"add", "remove"}:
+                legacy_payload = {
+                    "action": job.action,
+                    "package": job.package,
+                    "success": job.status == "completed",
+                    "error": job.error,
+                    "lockfile_changed": job.lockfile_changed,
+                    "stale_cell_count": job.stale_cell_count,
+                    "cells": payload["cells"],
+                }
+                if "environment" in payload:
+                    legacy_payload["environment"] = payload["environment"]
+                    legacy_payload["dependencies"] = payload.get("dependencies", [])
+                    legacy_payload["resolved_dependencies"] = payload.get(
+                        "resolved_dependencies", []
+                    )
+                await self._broadcast_environment_job_message(
+                    "dependency_changed",
+                    legacy_payload,
+                )
+                await self._broadcast_environment_staleness_updates(job.stale_cell_ids or [])
+            with self._environment_state_lock:
+                if self.environment_job is job:
+                    self.environment_job = None
+                current_task = asyncio.current_task()
+                if self.environment_job_task is current_task:
+                    self.environment_job_task = None
+
+    async def _run_dependency_environment_job(
+        self,
+        job: EnvironmentJobSnapshot,
+        *,
+        action: str,
+        package: str,
+    ) -> list[str]:
+        """Run ``uv add`` / ``uv remove`` as a background job."""
+        timeout = 120
+        display_name = f"uv {action}"
+        args = [action, package]
+        old_lockfile_hash = compute_lockfile_hash(self.path)
+        lock = _get_notebook_lock(self.path)
+        await asyncio.to_thread(lock.acquire)
+        try:
+            result = await run_uv_command_streaming(
+                self.path,
+                args,
+                timeout=timeout,
+                display_name=display_name,
+                on_update=lambda stream, text, truncated: self._update_environment_job_stream(
+                    job,
+                    stream=stream,
+                    text=text,
+                    truncated=truncated,
+                ),
+            )
+        finally:
+            lock.release()
+
+        self._apply_environment_operation_log(job, result.operation_log)
+        if not result.success:
+            raise RuntimeError(result.error or f"{display_name} failed")
+
+        job.lockfile_changed = compute_lockfile_hash(self.path) != old_lockfile_hash
+        return await self._finalize_environment_job(job, lockfile_changed=job.lockfile_changed)
+
+    async def _run_sync_environment_job(
+        self,
+        job: EnvironmentJobSnapshot,
+    ) -> list[str]:
+        """Run ``uv sync`` as a background job."""
+        old_lockfile_hash = compute_lockfile_hash(self.path)
+        requested_python = read_requested_python_minor(self.path)
+        args = ["sync"]
+        if requested_python:
+            args.extend(["--python", requested_python])
+        result = await run_uv_command_streaming(
+            self.path,
+            args,
+            timeout=60,
+            display_name="uv sync",
+            on_update=lambda stream, text, truncated: self._update_environment_job_stream(
+                job,
+                stream=stream,
+                text=text,
+                truncated=truncated,
+            ),
+        )
+        self._apply_environment_operation_log(job, result.operation_log)
+        self._apply_uv_sync_result(
+            result.success,
+            duration_ms=result.operation_log.duration_ms or 0,
+        )
+        if not result.success:
+            raise RuntimeError(result.error or "uv sync failed")
+
+        return await self._finalize_environment_job(
+            job,
+            lockfile_changed=compute_lockfile_hash(self.path) != old_lockfile_hash,
+            refresh_runtime=False,
+        )
+
+    async def _finalize_environment_job(
+        self,
+        job: EnvironmentJobSnapshot,
+        *,
+        lockfile_changed: bool,
+        refresh_runtime: bool = True,
+    ) -> list[str]:
+        """Refresh runtime metadata and staleness after a successful env mutation."""
+        if refresh_runtime:
+            job.phase = "refreshing_runtime"
+            await self._broadcast_environment_job_event("environment_job_progress", job)
+            await asyncio.to_thread(self.refresh_environment_runtime)
+
+        job.phase = "invalidating_warm_pool"
+        await self._broadcast_environment_job_event("environment_job_progress", job)
+        await self._invalidate_warm_pool_for_environment_change()
+
+        job.phase = "recomputing_staleness"
+        await self._broadcast_environment_job_event("environment_job_progress", job)
+        try:
+            await asyncio.to_thread(update_environment_metadata, self.path)
+        except Exception:
+            logger.exception("Failed to update environment metadata")
+
+        staleness_map = self.compute_staleness()
+        stale_cell_ids = [
+            cell_id
+            for cell_id, staleness in staleness_map.items()
+            if staleness.status != CellStatus.READY
+        ]
+        job.lockfile_changed = lockfile_changed
+        job.stale_cell_count = len(stale_cell_ids)
+        job.stale_cell_ids = stale_cell_ids
+        return stale_cell_ids
+
+    def _apply_environment_operation_log(
+        self,
+        job: EnvironmentJobSnapshot,
+        operation_log: EnvironmentOperationLog | None,
+    ) -> None:
+        """Copy final command log details onto a job snapshot."""
+        if operation_log is None:
+            return
+        job.command = operation_log.command or job.command
+        job.duration_ms = operation_log.duration_ms
+        job.stdout = operation_log.stdout
+        job.stderr = operation_log.stderr
+        job.stdout_truncated = operation_log.stdout_truncated
+        job.stderr_truncated = operation_log.stderr_truncated
+
+    async def _update_environment_job_stream(
+        self,
+        job: EnvironmentJobSnapshot,
+        *,
+        stream: str,
+        text: str,
+        truncated: bool,
+    ) -> None:
+        """Update a running job's live stdout/stderr snapshot and broadcast it."""
+        if stream == "stdout":
+            job.stdout = text
+            job.stdout_truncated = truncated
+        else:
+            job.stderr = text
+            job.stderr_truncated = truncated
+        await self._broadcast_environment_job_event("environment_job_progress", job)
+
+    async def _broadcast_environment_job_event(
+        self,
+        event_type: str,
+        job: EnvironmentJobSnapshot,
+    ) -> None:
+        """Broadcast a single environment-job state snapshot over notebook WS."""
+        await self._broadcast_environment_job_message(
+            event_type,
+            {"environment_job": job.to_dict()},
+        )
+
+    async def _broadcast_environment_job_message(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Send a structured notebook environment-job message to WS clients."""
+        try:
+            from strata.notebook.ws import broadcast_notebook_message, next_notebook_sequence
+        except Exception:
+            return
+
+        await broadcast_notebook_message(
+            self.id,
+            {
+                "type": event_type,
+                "seq": next_notebook_sequence(self.id),
+                "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "payload": payload,
+            },
+        )
+
+    async def _broadcast_environment_staleness_updates(self, cell_ids: list[str]) -> None:
+        """Broadcast current stale/idle statuses after an environment mutation."""
+        if not cell_ids:
+            return
+        try:
+            from strata.notebook.ws import broadcast_notebook_message, next_notebook_sequence
+        except Exception:
+            return
+
+        for cell_id in cell_ids:
+            cell = next(
+                (
+                    candidate
+                    for candidate in self.notebook_state.cells
+                    if candidate.id == cell_id
+                ),
+                None,
+            )
+            if cell is None:
+                continue
+            status = (
+                cell.status.value
+                if isinstance(cell.status, CellStatus)
+                else str(cell.status)
+            )
+            payload: dict[str, Any] = {
+                "cell_id": cell.id,
+                "status": status,
+                "staleness_reasons": [
+                    reason.value for reason in (cell.staleness.reasons if cell.staleness else [])
+                ],
+            }
+            causality = self.causality_map.get(cell.id)
+            if causality is not None:
+                payload["causality"] = causality.to_dict()
+
+            await broadcast_notebook_message(
+                self.id,
+                {
+                    "type": "cell_status",
+                    "seq": next_notebook_sequence(self.id),
+                    "ts": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                    "payload": payload,
+                },
+            )
 
 
 class SessionManager:

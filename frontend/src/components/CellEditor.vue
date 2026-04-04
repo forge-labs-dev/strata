@@ -28,6 +28,7 @@ const emit = defineEmits<{
 
 const {
   connected,
+  environmentMutationActive,
   updateSource,
   openInspect,
   inspectCellId,
@@ -347,7 +348,13 @@ function formatScalar(scalar: unknown): string {
     <div class="cell-gutter">
       <span class="status-dot" :title="cell.status">{{ statusLabel }}</span>
       <div class="cell-actions">
-        <button title="Run (Shift+Enter)" @click="emit('run', cell.id)">&#x25B6;</button>
+        <button
+          title="Run (Shift+Enter)"
+          :disabled="environmentMutationActive"
+          @click="emit('run', cell.id)"
+        >
+          &#x25B6;
+        </button>
         <button title="Add cell below" @click="emit('addBelow', cell.id)">+</button>
         <button title="Delete cell" @click="emit('delete', cell.id)">&times;</button>
         <button title="Inspect inputs" :class="{ active: isInspecting }" @click="toggleInspect">
