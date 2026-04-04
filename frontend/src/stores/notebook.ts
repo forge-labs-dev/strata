@@ -1624,6 +1624,28 @@ async function executeCellWebSocket(cellId: CellId) {
   wsInstance.executeCell(cellId)
 }
 
+async function executeNotebookRunAllWebSocket() {
+  if (environmentMutationActive.value) {
+    environmentError.value =
+      environmentOperation.value?.error ||
+      'Environment update in progress. Running cells is disabled until it finishes.'
+    return
+  }
+  if (!wsInstance) {
+    console.warn('[notebook] No WebSocket instance, cannot run all cells')
+    return
+  }
+  if (!wsInstance.connected()) {
+    try {
+      await wsInstance.waitForConnection(5000)
+    } catch {
+      console.warn('[notebook] WebSocket not connected, cannot run all cells')
+      return
+    }
+  }
+  wsInstance.executeNotebookRunAll()
+}
+
 function executeCascadeWebSocket(cellId: CellId, planId: string) {
   if (wsInstance && wsInstance.connected()) {
     wsInstance.executeCascade(cellId, planId)
@@ -2355,6 +2377,7 @@ export function useNotebook() {
     // WebSocket
     cleanupWebSocket,
     executeCellWebSocket,
+    executeNotebookRunAllWebSocket,
     executeCascadeWebSocket,
     executeForceWebSocket,
     cancelCellWebSocket,

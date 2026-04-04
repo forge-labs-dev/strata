@@ -133,6 +133,10 @@ class WebSocketTestHelper:
         self.send("notebook_sync")
         return self.receive_until("notebook_state")
 
+    def run_all(self) -> None:
+        """Send notebook_run_all message."""
+        self.send("notebook_run_all")
+
 
 # ============================================================================
 # Notebook Builder
@@ -257,3 +261,28 @@ def execute_cell_and_wait(
 
     # If no output found, return the last status message
     return terminal_message or msg
+
+
+def run_all_and_wait(
+    helper: WebSocketTestHelper,
+    terminal_cell_id: str,
+) -> list[dict[str, Any]]:
+    """Run all notebook cells and wait until the terminal cell finishes."""
+    helper.run_all()
+
+    saw_terminal_running = False
+    while True:
+        msg = helper.receive()
+        if msg["type"] == "cell_status":
+            payload = msg["payload"]
+            if (
+                payload.get("cell_id") == terminal_cell_id
+                and payload.get("status") == "running"
+            ):
+                saw_terminal_running = True
+            if (
+                payload.get("cell_id") == terminal_cell_id
+                and payload.get("status") in ("ready", "error")
+                and saw_terminal_running
+            ):
+                return helper.messages

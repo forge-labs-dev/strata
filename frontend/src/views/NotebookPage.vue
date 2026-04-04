@@ -31,6 +31,7 @@ const {
   addCell,
   removeCell,
   executeCellWebSocket,
+  executeNotebookRunAllWebSocket,
   cleanupWebSocket,
 } = useNotebook()
 
@@ -216,11 +217,7 @@ async function runCell(cellId: string) {
 }
 
 async function runAll() {
-  for (const cell of orderedCells.value) {
-    if (cell.source.trim()) {
-      await runCell(cell.id)
-    }
-  }
+  await executeNotebookRunAllWebSocket()
 }
 
 function goHome() {

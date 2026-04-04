@@ -383,6 +383,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
     - cell_execute: Run a cell (check if cascade needed)
     - cell_execute_cascade: Execute cascade plan
     - cell_execute_force: Run with stale inputs
+    - notebook_run_all: Run all non-empty cells in notebook order
     - cell_cancel: Cancel execution
     - cell_source_update: Source code changed
     - notebook_sync: Request full state
@@ -429,6 +430,10 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
             if msg_type == "cell_execute":
                 await _handle_cell_execute(
                     websocket, session, payload, execution_state, notebook_id
+                )
+            elif msg_type == "notebook_run_all":
+                await _handle_notebook_run_all(
+                    websocket, session, execution_state, notebook_id
                 )
             elif msg_type == "cell_execute_cascade":
                 await _handle_cell_execute_cascade(
@@ -628,6 +633,74 @@ async def _handle_cell_execute(
                 websocket, session, cell_id, execution_state, notebook_id
             ),
         )
+
+
+async def _handle_notebook_run_all(
+    websocket: WebSocket,
+    session: NotebookSession,
+    execution_state: dict[str, Any],
+    notebook_id: str,
+) -> None:
+    """Handle notebook_run_all message.
+
+    Execute all non-empty cells in notebook order, stopping on first failure.
+    """
+    execution_state["sequence"] += 1
+    seq = execution_state["sequence"]
+
+    if _get_active_execution_task(execution_state) is not None:
+        busy_cell = (
+            execution_state.get("running_cell")
+            or execution_state.get("requested_cell")
+        )
+        await _send_error_message(
+            websocket,
+            seq,
+            (
+                f"Notebook is already executing cell {busy_cell}"
+                if busy_cell
+                else "Notebook is already executing another cell"
+            ),
+        )
+        return
+
+    environment_block_reason = session.environment_execution_block_message()
+    if environment_block_reason:
+        await websocket.send_text(
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "error": environment_block_reason,
+                        "code": "ENVIRONMENT_BUSY",
+                    },
+                }
+            )
+        )
+        return
+
+    runnable_cells = [
+        cell.id for cell in session.notebook_state.cells if cell.source.strip()
+    ]
+    if not runnable_cells:
+        return
+
+    await _schedule_execution(
+        websocket,
+        execution_state,
+        notebook_id,
+        runnable_cells[0],
+        seq,
+        lambda: _execute_run_all(
+            websocket,
+            session,
+            runnable_cells,
+            execution_state,
+            notebook_id,
+        ),
+    )
 
 
 async def _handle_cell_execute_cascade(
@@ -1467,6 +1540,230 @@ async def _execute_cascade(
                 previous_snapshot,
                 preserve_ready_cell_id=plan.target_cell_id,
             )
+    finally:
+        execution_state["running_cell"] = None
+
+
+async def _execute_run_all(
+    websocket: WebSocket,
+    session: NotebookSession,
+    cell_ids: list[str],
+    execution_state: dict[str, Any],
+    notebook_id: str,
+) -> None:
+    """Execute all requested notebook cells in notebook order."""
+    del websocket
+    execution_state["sequence"] += 1
+    seq = execution_state["sequence"]
+
+    executor = CellExecutor(session, session.warm_pool)
+
+    logger.info(
+        "Run all for notebook %s: executing %d cells: %s",
+        notebook_id,
+        len(cell_ids),
+        cell_ids,
+    )
+
+    try:
+        for cell_id in cell_ids:
+            cell = next(
+                (
+                    candidate
+                    for candidate in session.notebook_state.cells
+                    if candidate.id == cell_id
+                ),
+                None,
+            )
+            if cell is None or not cell.source.strip():
+                continue
+
+            execution_state["running_cell"] = cell_id
+            cell.status = CellStatus.RUNNING
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "cell_status",
+                    "seq": seq,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"cell_id": cell_id, "status": "running"},
+                },
+            )
+
+            try:
+                result = await executor.execute_cell(cell_id, cell.source)
+
+                if result.stdout:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_console",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "stream": "stdout",
+                                "text": result.stdout,
+                            },
+                        },
+                    )
+
+                if result.stderr:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_console",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "stream": "stderr",
+                                "text": result.stderr,
+                            },
+                        },
+                    )
+
+                session.record_execution(cell_id, result.duration_ms, result.cache_hit)
+                session.apply_execution_result_metadata(cell_id, result)
+
+                if result.success:
+                    await _broadcast_message(
+                        notebook_id,
+                        {
+                            "type": "cell_output",
+                            "seq": seq,
+                            "ts": datetime.now(tz=UTC).isoformat().replace(
+                                "+00:00", "Z"
+                            ),
+                            "payload": {
+                                "cell_id": cell_id,
+                                "outputs": result.outputs,
+                                "cache_hit": result.cache_hit,
+                                "duration_ms": int(result.duration_ms),
+                                "artifact_uri": result.artifact_uri,
+                                "stdout": result.stdout,
+                                "stderr": result.stderr,
+                                "execution_method": result.execution_method,
+                                "mutation_warnings": result.mutation_warnings,
+                                **(
+                                    {"remote_worker": result.remote_worker}
+                                    if result.remote_worker
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_transport": result.remote_transport}
+                                    if result.remote_transport
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_build_id": result.remote_build_id}
+                                    if result.remote_build_id
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_build_state": result.remote_build_state}
+                                    if result.remote_build_state
+                                    else {}
+                                ),
+                                **(
+                                    {"remote_error_code": result.remote_error_code}
+                                    if result.remote_error_code
+                                    else {}
+                                ),
+                            },
+                        },
+                    )
+
+                    previous_snapshot = _capture_cell_state_snapshot(session)
+                    await _refresh_and_broadcast_changed_staleness(
+                        session,
+                        notebook_id,
+                        seq,
+                        previous_snapshot,
+                        preserve_ready_cell_id=cell_id,
+                    )
+                    continue
+
+                cell.status = CellStatus.ERROR
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_error",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace(
+                            "+00:00", "Z"
+                        ),
+                        "payload": {
+                            "cell_id": cell_id,
+                            "error": result.error,
+                            **(
+                                {"remote_worker": result.remote_worker}
+                                if result.remote_worker
+                                else {}
+                            ),
+                            **(
+                                {"remote_transport": result.remote_transport}
+                                if result.remote_transport
+                                else {}
+                            ),
+                            **(
+                                {"remote_build_id": result.remote_build_id}
+                                if result.remote_build_id
+                                else {}
+                            ),
+                            **(
+                                {"remote_build_state": result.remote_build_state}
+                                if result.remote_build_state
+                                else {}
+                            ),
+                            **(
+                                {"remote_error_code": result.remote_error_code}
+                                if result.remote_error_code
+                                else {}
+                            ),
+                            **(
+                                {"suggest_install": result.suggest_install}
+                                if result.suggest_install
+                                else {}
+                            ),
+                        },
+                    },
+                )
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_status",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "status": CellStatus.ERROR},
+                    },
+                )
+                break
+
+            except asyncio.CancelledError:
+                await _set_cell_idle(session, notebook_id, seq, cell_id)
+                raise
+            except Exception as exc:
+                cell.status = CellStatus.ERROR
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_error",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "error": str(exc)},
+                    },
+                )
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "cell_status",
+                        "seq": seq,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "payload": {"cell_id": cell_id, "status": CellStatus.ERROR},
+                    },
+                )
+                break
     finally:
         execution_state["running_cell"] = None
 

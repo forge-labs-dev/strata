@@ -21,6 +21,7 @@ from tests.notebook.e2e_fixtures import (
     create_test_app,
     execute_cell_and_wait,
     open_notebook_session,
+    run_all_and_wait,
     ws_connect,
 )
 
@@ -50,6 +51,35 @@ class TestCellCancel:
 
 class TestRapidExecution:
     """Test executing cells in rapid succession."""
+
+    def test_notebook_run_all_executes_all_nonempty_cells(self, setup):
+        """Run-all should execute each non-empty cell, not just the first one."""
+        client, tmp = setup
+        nb = NotebookBuilder(tmp)
+        nb.add_cell("c0", "v0 = 0")
+        nb.add_cell("c1", "")
+        nb.add_cell("c2", "v2 = v0 + 2", "c1")
+        nb.add_cell("c3", "v3 = v2 + 1", "c2")
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                run_all_and_wait(ws, "c3")
+
+                output_cells = [
+                    msg["payload"]["cell_id"]
+                    for msg in ws.messages
+                    if msg["type"] == "cell_output"
+                ]
+                assert output_cells == ["c0", "c2", "c3"]
+
+                synced = ws.sync()
+                cells = {
+                    cell["id"]: cell for cell in synced["payload"]["cells"]
+                }
+                assert cells["c0"]["status"] == "ready"
+                assert cells["c1"]["status"] == "idle"
+                assert cells["c2"]["status"] == "ready"
+                assert cells["c3"]["status"] == "ready"
 
     def test_execute_all_cells_sequentially(self, setup):
         """Execute 5 cells in sequence — all should complete."""

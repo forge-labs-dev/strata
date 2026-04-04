@@ -231,6 +231,13 @@ export function useWebSocket(notebookId: string) {
   }
 
   /**
+   * Execute all runnable notebook cells in notebook order.
+   */
+  function executeNotebookRunAll(): void {
+    send('notebook_run_all', {})
+  }
+
+  /**
    * Execute cascade plan.
    */
   function executeCascade(cellId: string, planId: string): void {
@@ -361,6 +368,7 @@ export function useWebSocket(notebookId: string) {
     // High-level actions
     requestSync,
     executeCell,
+    executeNotebookRunAll,
     executeCascade,
     executeForce,
     cancelCell,
