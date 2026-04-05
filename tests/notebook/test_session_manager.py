@@ -13,7 +13,7 @@ from strata.notebook.models import (
     WorkerBackendType,
     WorkerSpec,
 )
-from strata.notebook.session import SessionManager
+from strata.notebook.session import EnvironmentJobSnapshot, SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
@@ -235,3 +235,32 @@ def test_open_notebook_can_reuse_existing_session_by_path(tmp_path: Path):
     assert reopened is session
     assert reopened.id == original_id
     assert reopened.notebook_state.name == "reuse_open_renamed"
+
+
+def test_open_notebook_reuse_existing_session_keeps_pending_environment(
+    monkeypatch, tmp_path: Path
+):
+    """Reusing a live session should preserve pending env bootstrap instead of refreshing it."""
+    notebook_dir = create_notebook(tmp_path, "reuse_pending")
+    manager = SessionManager()
+
+    session = manager.open_notebook(notebook_dir)
+    session.environment_job = EnvironmentJobSnapshot(
+        id="job-123",
+        action="sync",
+        command="uv sync",
+        status="running",
+        phase="uv_running",
+        started_at=1,
+    )
+    session.mark_environment_pending()
+
+    def _fail_refresh() -> None:
+        raise AssertionError("refresh_environment_runtime should not be called")
+
+    monkeypatch.setattr(session, "refresh_environment_runtime", _fail_refresh)
+
+    reopened = manager.open_notebook(notebook_dir, reuse_existing=True)
+
+    assert reopened is session
+    assert reopened.environment_sync_state == "pending"

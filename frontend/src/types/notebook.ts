@@ -288,7 +288,7 @@ export interface NotebookEnvironment {
   packageCount: number
   declaredPackageCount: number
   resolvedPackageCount: number
-  syncState: 'unknown' | 'ready' | 'fallback' | 'failed'
+  syncState: 'unknown' | 'pending' | 'ready' | 'fallback' | 'failed'
   syncError: string | null
   syncNotice: string | null
   lastSyncedAt: number | null

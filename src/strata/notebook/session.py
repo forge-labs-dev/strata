@@ -242,6 +242,23 @@ class NotebookSession:
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
 
+    def mark_environment_pending(self, notice: str | None = None) -> None:
+        """Mark the notebook environment as pending background initialization."""
+        self.venv_python = None
+        self.environment_python_version = ""
+        self.environment_interpreter_source = "unknown"
+        self.environment_sync_state = "pending"
+        self.environment_sync_error = None
+        self.environment_sync_notice = (
+            notice
+            or (
+                "Notebook environment is being created in the background. "
+                "Running cells is disabled until it finishes."
+            )
+        )
+        self.environment_last_synced_at = None
+        self.environment_last_sync_duration_ms = None
+
     def touch(self) -> None:
         """Record recent activity for TTL accounting."""
         self.last_accessed = _time.time()
@@ -1127,6 +1144,9 @@ class NotebookSession:
         """
         venv_python = self.path / ".venv" / "bin" / "python"
         if not venv_python.exists():
+            if self.has_active_environment_mutation():
+                self.mark_environment_pending()
+                return
             logger.warning(
                 "Notebook venv missing after dependency change for %s; "
                 "falling back to uv sync",
@@ -1162,6 +1182,30 @@ class NotebookSession:
             else int((_time.perf_counter() - started) * 1000)
         )
 
+    def _should_start_warm_pool(self) -> bool:
+        """Return whether the notebook has a stable enough runtime for warm workers."""
+        if self.has_active_environment_mutation():
+            return False
+        return self.environment_sync_state in {"ready", "fallback"}
+
+    async def _ensure_warm_pool_started(self) -> None:
+        """Create and start the warm process pool when the runtime is ready."""
+        if self.warm_pool is not None or not self._should_start_warm_pool():
+            return
+
+        from strata.notebook.pool import WarmProcessPool
+
+        self.warm_pool = WarmProcessPool(
+            notebook_dir=self.path,
+            pool_size=2,
+            python_executable=self.venv_python or Path("python"),
+        )
+        try:
+            task = asyncio.get_running_loop().create_task(self.warm_pool.start())
+            self.warm_pool.track_background_task(task)
+        except RuntimeError:
+            pass  # No running loop; pool stays cold until first acquire
+
     async def _invalidate_warm_pool_for_environment_change(self) -> None:
         """Invalidate the warm pool after the runtime environment changes."""
         if self.warm_pool is None:
@@ -1180,6 +1224,10 @@ class NotebookSession:
         old_hash = compute_lockfile_hash(self.path)
         await asyncio.to_thread(self.ensure_venv_synced)
         await self._invalidate_warm_pool_for_environment_change()
+        try:
+            await self._ensure_warm_pool_started()
+        except Exception:
+            logger.warning("Failed to start warm pool after sync for %s", self.path, exc_info=True)
 
         try:
             await asyncio.to_thread(update_environment_metadata, self.path)
@@ -1606,6 +1654,16 @@ class NotebookSession:
             for cell_id, staleness in staleness_map.items()
             if staleness.status != CellStatus.READY
         ]
+        job.phase = "starting_warm_pool"
+        await self._broadcast_environment_job_event("environment_job_progress", job)
+        try:
+            await self._ensure_warm_pool_started()
+        except Exception:
+            logger.warning(
+                "Failed to start warm pool after environment job for %s",
+                self.path,
+                exc_info=True,
+            )
         job.lockfile_changed = lockfile_changed
         job.stale_cell_count = len(stale_cell_ids)
         job.stale_cell_ids = stale_cell_ids
@@ -1752,6 +1810,7 @@ class SessionManager:
         directory: Path,
         *,
         skip_initial_venv_sync: bool = False,
+        defer_initial_venv_sync: bool = False,
         reuse_existing: bool = False,
         timing: NotebookTimingRecorder | None = None,
     ) -> NotebookSession:
@@ -1761,6 +1820,8 @@ class SessionManager:
             directory: Path to notebook directory
             skip_initial_venv_sync: Reuse an already-created notebook venv and
                 only refresh lightweight runtime metadata on first open.
+            defer_initial_venv_sync: Mark the notebook environment as pending
+                background initialization instead of synchronizing it during open.
             reuse_existing: Reuse an already-open in-memory session for the
                 same path instead of constructing a new one.
             timing: Optional request timing recorder for internal phases.
@@ -1779,7 +1840,9 @@ class SessionManager:
                     with timing.phase("session_reload"):
                         existing.reload()
                 try:
-                    if timing is None:
+                    if existing.has_active_environment_mutation():
+                        existing.mark_environment_pending()
+                    elif timing is None:
                         existing.refresh_environment_runtime()
                     else:
                         with timing.phase("session_env_refresh"):
@@ -1800,7 +1863,9 @@ class SessionManager:
         # synced .venv from writer.create_notebook(), so avoid immediately
         # paying for a second uv sync and just refresh runtime metadata.
         try:
-            if skip_initial_venv_sync:
+            if defer_initial_venv_sync:
+                session.mark_environment_pending()
+            elif skip_initial_venv_sync:
                 if timing is None:
                     session.refresh_environment_runtime()
                 else:
@@ -1819,24 +1884,8 @@ class SessionManager:
 
         # M6: Initialize and start warm process pool
         try:
-            if timing is None:
-                from strata.notebook.pool import WarmProcessPool
-
-                session.warm_pool = WarmProcessPool(
-                    notebook_dir=Path(directory),
-                    pool_size=2,
-                    python_executable=session.venv_python or Path("python"),
-                )
-                # Start pool in background (don't block on notebook open)
-                import asyncio
-
-                try:
-                    task = asyncio.get_running_loop().create_task(session.warm_pool.start())
-                    session.warm_pool.track_background_task(task)
-                except RuntimeError:
-                    pass  # No running loop; pool stays cold until first acquire
-            else:
-                with timing.phase("session_warm_pool"):
+            if session._should_start_warm_pool():
+                if timing is None:
                     from strata.notebook.pool import WarmProcessPool
 
                     session.warm_pool = WarmProcessPool(
@@ -1852,6 +1901,25 @@ class SessionManager:
                         session.warm_pool.track_background_task(task)
                     except RuntimeError:
                         pass  # No running loop; pool stays cold until first acquire
+                else:
+                    with timing.phase("session_warm_pool"):
+                        from strata.notebook.pool import WarmProcessPool
+
+                        session.warm_pool = WarmProcessPool(
+                            notebook_dir=Path(directory),
+                            pool_size=2,
+                            python_executable=session.venv_python or Path("python"),
+                        )
+                        # Start pool in background (don't block on notebook open)
+                        import asyncio
+
+                        try:
+                            task = asyncio.get_running_loop().create_task(
+                                session.warm_pool.start()
+                            )
+                            session.warm_pool.track_background_task(task)
+                        except RuntimeError:
+                            pass  # No running loop; pool stays cold until first acquire
         except Exception as e:
             logger.warning("Failed to initialize warm pool: %s", e)
 

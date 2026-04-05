@@ -557,6 +557,7 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
                 parent_path,
                 req.name,
                 python_version=selected_python_version,
+                initialize_environment=False,
             )
         if req.starter_cell:
             with timing.phase("create_starter_cell"):
@@ -564,9 +565,23 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
         with timing.phase("session_open"):
             session = _session_manager.open_notebook(
                 notebook_dir,
-                skip_initial_venv_sync=True,
+                defer_initial_venv_sync=True,
                 timing=timing,
             )
+        with timing.phase("environment_job_submit"):
+            try:
+                await session.submit_environment_job(action="sync")
+            except Exception as exc:
+                logger.exception(
+                    "Failed to start initial environment bootstrap for %s",
+                    notebook_dir,
+                )
+                session.environment_sync_state = "failed"
+                session.environment_sync_error = (
+                    "Failed to start notebook environment initialization: "
+                    f"{exc}"
+                )
+                session.environment_sync_notice = None
 
         with timing.phase("serialize"):
             data = session.serialize_notebook_state()

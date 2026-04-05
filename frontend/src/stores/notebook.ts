@@ -292,7 +292,7 @@ function parseBackendEnvironment(raw: any): NotebookEnvironment {
     packageCount: declaredPackageCount,
     declaredPackageCount,
     resolvedPackageCount: Number(raw?.resolved_package_count ?? raw?.resolvedPackageCount ?? 0),
-    syncState: ['ready', 'fallback', 'failed', 'unknown'].includes(raw?.sync_state)
+    syncState: ['ready', 'fallback', 'failed', 'pending', 'unknown'].includes(raw?.sync_state)
       ? raw.sync_state
       : 'unknown',
     syncError: typeof raw?.sync_error === 'string' ? raw.sync_error : null,
@@ -1437,6 +1437,7 @@ function initializeWebSocket() {
 
     wsInstance.onMessage('notebook_state', (msg: WsMessage) => {
       const state = msg.payload as Record<string, any>
+      syncEnvironmentPayloadFromBackend(state)
       if ('worker' in state) {
         syncNotebookWorkerFromBackend(state.worker)
       }

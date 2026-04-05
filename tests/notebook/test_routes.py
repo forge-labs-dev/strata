@@ -23,6 +23,16 @@ def no_uv_sync(monkeypatch):
     """Skip real venv/pool creation — route tests only test HTTP routing."""
     monkeypatch.setattr("strata.notebook.session._uv_sync", lambda path, **kw: True)
 
+    async def _fake_run_uv_command_streaming(*args, **kwargs):
+        del args
+        del kwargs
+        return SimpleNamespace(success=True, error=None, operation_log=None)
+
+    monkeypatch.setattr(
+        "strata.notebook.session.run_uv_command_streaming",
+        _fake_run_uv_command_streaming,
+    )
+
     async def _noop_start(self):
         pass
 
@@ -331,8 +341,8 @@ def test_create_notebook_endpoint():
         assert "create_notebook" in response.headers["Server-Timing"]
 
 
-def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
-    """Fresh notebook creation should reuse the writer-created venv on first open."""
+def test_create_notebook_endpoint_defers_initial_environment_sync(monkeypatch):
+    """Fresh notebook creation should bootstrap the initial env as a background job."""
     client = TestClient(create_test_app())
     captured: dict[str, object] = {}
 
@@ -350,18 +360,42 @@ def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
     class FakeSession:
         id = "session-123"
         path = Path("/tmp/fake-notebook")
+        environment_job = None
+        environment_sync_state = "pending"
+        environment_sync_error = None
+        environment_sync_notice = "Notebook environment is initializing."
 
         def serialize_notebook_state(self):
             return {
                 "id": "notebook-123",
                 "name": "Fast Notebook",
                 "cells": [],
-                "environment": {},
+                "environment": {
+                    "sync_state": self.environment_sync_state,
+                },
+                "environment_job": self.environment_job,
             }
 
-    def fake_open_notebook(directory, *, skip_initial_venv_sync=False, timing=None):
+        async def submit_environment_job(self, *, action: str, **_kwargs):
+            captured["environment_job_action"] = action
+            self.environment_job = {
+                "id": "job-123",
+                "action": action,
+                "status": "running",
+                "command": "uv sync",
+            }
+            return self.environment_job
+
+    def fake_open_notebook(
+        directory,
+        *,
+        skip_initial_venv_sync=False,
+        defer_initial_venv_sync=False,
+        timing=None,
+    ):
         captured["directory"] = directory
         captured["skip_initial_venv_sync"] = skip_initial_venv_sync
+        captured["defer_initial_venv_sync"] = defer_initial_venv_sync
         captured["timing"] = timing
         return FakeSession()
 
@@ -374,9 +408,15 @@ def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert captured["initialize_environment"] is True
-    assert captured["skip_initial_venv_sync"] is True
+    data = response.json()
+    assert captured["initialize_environment"] is False
+    assert captured["skip_initial_venv_sync"] is False
+    assert captured["defer_initial_venv_sync"] is True
+    assert captured["environment_job_action"] == "sync"
     assert captured["timing"] is not None
+    assert data["environment"]["sync_state"] == "pending"
+    assert data["environment_job"]["action"] == "sync"
+    assert data["environment_job"]["status"] == "running"
 
 
 def test_create_notebook_endpoint_with_starter_cell():

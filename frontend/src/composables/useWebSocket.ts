@@ -75,6 +75,7 @@ export function useWebSocket(notebookId: string) {
         reconnectAttempts.value = 0
         reconnectDelay.value = 1000
         connection.value = ws
+        requestSync()
         // Resolve any pending waitForConnection promise
         if (_connectResolve) {
           _connectResolve()

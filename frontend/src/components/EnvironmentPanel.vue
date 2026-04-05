@@ -43,6 +43,8 @@ const lastPreviewSignature = ref<string | null>(null)
 
 const syncStateLabel = computed(() => {
   switch (notebook.environment.syncState) {
+    case 'pending':
+      return 'Initializing'
     case 'ready':
       return 'Ready'
     case 'fallback':
@@ -784,6 +786,10 @@ function downloadRequirements() {
 
 .state-ready {
   background: #a6e3a1;
+}
+
+.state-pending {
+  background: #89b4fa;
 }
 
 .state-fallback {
