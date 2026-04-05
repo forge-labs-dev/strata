@@ -4,6 +4,7 @@ import {
   findRecentNotebookBySessionId,
   normalizeRecentNotebookEntries,
   recordRecentNotebookEntries,
+  removeRecentNotebookEntries,
 } from './recentNotebooks.ts'
 
 test('normalizeRecentNotebookEntries keeps valid entries and orders newest first', () => {
@@ -52,4 +53,18 @@ test('findRecentNotebookBySessionId returns the matching notebook path', () => {
     lastOpened: 5,
     sessionId: 'session-b',
   })
+})
+
+test('removeRecentNotebookEntries removes only the matching path', () => {
+  const updated = removeRecentNotebookEntries(
+    [
+      { name: 'Notebook', path: '/tmp/notebook', lastOpened: 10, sessionId: 'session-a' },
+      { name: 'Other', path: '/tmp/other', lastOpened: 5, sessionId: 'session-b' },
+    ],
+    '/tmp/notebook',
+  )
+
+  assert.deepEqual(updated, [
+    { name: 'Other', path: '/tmp/other', lastOpened: 5, sessionId: 'session-b' },
+  ])
 })

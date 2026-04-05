@@ -22,6 +22,8 @@ const showOpenForm = ref(false)
 const openPath = ref('')
 const loading = ref(false)
 const error = ref<string | null>(null)
+const failedRecentPath = ref<string | null>(null)
+const failedRecentName = ref<string | null>(null)
 
 onMounted(async () => {
   try {
@@ -53,7 +55,7 @@ onMounted(async () => {
 async function createNotebook() {
   if (!newName.value.trim()) return
   loading.value = true
-  error.value = null
+  dismissError()
   void preloadNotebookRoute()
   clearNotebookPerfMarks('create_click', 'create_response', 'create_request_ms', 'create_total_ms')
   markNotebookPerf('create_click')
@@ -86,7 +88,7 @@ async function openNotebook(path?: string) {
   const target = path || openPath.value.trim()
   if (!target) return
   loading.value = true
-  error.value = null
+  dismissError()
   void preloadNotebookRoute()
   clearNotebookPerfMarks('open_click', 'open_response', 'open_request_ms', 'open_total_ms')
   markNotebookPerf('open_click')
@@ -105,12 +107,26 @@ async function openNotebook(path?: string) {
     })
   } catch (e: any) {
     error.value = e.message || 'Failed to open notebook'
-    // If opening from recent list failed, offer to remove
     if (path) {
-      remove(path)
+      const failedEntry = recentNotebooks.value.find((entry) => entry.path === path)
+      failedRecentPath.value = path
+      failedRecentName.value = failedEntry?.name ?? null
     }
   } finally {
     loading.value = false
+  }
+}
+
+function dismissError() {
+  error.value = null
+  failedRecentPath.value = null
+  failedRecentName.value = null
+}
+
+function removeRecent(path: string) {
+  remove(path)
+  if (failedRecentPath.value === path) {
+    dismissError()
   }
 }
 
@@ -135,8 +151,21 @@ function formatTime(ts: number): string {
 
       <!-- Error banner -->
       <div v-if="error" class="error-banner">
-        {{ error }}
-        <button class="btn-dismiss" @click="error = null">&times;</button>
+        <div class="error-copy">
+          <span>{{ error }}</span>
+          <button
+            v-if="failedRecentPath"
+            type="button"
+            class="btn-inline"
+            data-testid="remove-failed-recent"
+            @click="removeRecent(failedRecentPath)"
+          >
+            Remove
+            {{ failedRecentName ? `"${failedRecentName}"` : 'this notebook' }}
+            from recents
+          </button>
+        </div>
+        <button class="btn-dismiss" @click="dismissError">&times;</button>
       </div>
 
       <!-- Actions -->
@@ -255,13 +284,25 @@ function formatTime(ts: number): string {
             v-for="entry in recentNotebooks"
             :key="entry.path"
             class="recent-item"
+            :data-testid="`recent-notebook-${entry.name}`"
             @click="openNotebook(entry.path)"
           >
             <div class="recent-info">
               <span class="recent-name">{{ entry.name }}</span>
               <span class="recent-path">{{ entry.path }}</span>
             </div>
-            <span class="recent-time">{{ formatTime(entry.lastOpened) }}</span>
+            <div class="recent-meta">
+              <span class="recent-time">{{ formatTime(entry.lastOpened) }}</span>
+              <button
+                type="button"
+                class="recent-remove"
+                :data-testid="`recent-remove-${entry.name}`"
+                :aria-label="`Remove ${entry.name} from recents`"
+                @click.stop="removeRecent(entry.path)"
+              >
+                Remove
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -320,6 +361,13 @@ function formatTime(ts: number): string {
   margin-bottom: 24px;
 }
 
+.error-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
 .btn-dismiss {
   background: none;
   border: none;
@@ -327,6 +375,21 @@ function formatTime(ts: number): string {
   font-size: 18px;
   cursor: pointer;
   padding: 0 4px;
+}
+
+.btn-inline {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: #f9e2af;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.btn-inline:hover {
+  text-decoration: underline;
 }
 
 .actions {
@@ -435,6 +498,7 @@ function formatTime(ts: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   padding: 12px 16px;
   background: #181825;
   border: 1px solid transparent;
@@ -475,7 +539,33 @@ function formatTime(ts: number): string {
   font-size: 12px;
   color: #6c7086;
   flex-shrink: 0;
-  margin-left: 16px;
+}
+
+.recent-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.recent-remove {
+  background: none;
+  border: 1px solid #45475a;
+  border-radius: 999px;
+  color: #a6adc8;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 4px 10px;
+  transition:
+    border-color 0.15s,
+    color 0.15s,
+    background 0.15s;
+}
+
+.recent-remove:hover {
+  background: #1e1e2e;
+  border-color: #f38ba8;
+  color: #f38ba8;
 }
 
 .loading-overlay {

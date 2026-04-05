@@ -61,6 +61,13 @@ export function findRecentNotebookBySessionId(
   return currentEntries.find((entry) => entry.sessionId === sessionId) ?? null
 }
 
+export function removeRecentNotebookEntries(
+  currentEntries: RecentNotebookEntry[],
+  path: string,
+): RecentNotebookEntry[] {
+  return currentEntries.filter((entry) => entry.path !== path)
+}
+
 const entries = ref<RecentNotebookEntry[]>(load())
 
 function load(): RecentNotebookEntry[] {
@@ -94,7 +101,7 @@ export function useRecentNotebooks() {
   }
 
   function remove(path: string) {
-    entries.value = entries.value.filter((e) => e.path !== path)
+    entries.value = removeRecentNotebookEntries(entries.value, path)
     save()
   }
 
