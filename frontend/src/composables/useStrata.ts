@@ -159,6 +159,7 @@ async function createNotebook(
   parentPath: string,
   name: string,
   pythonVersion?: string | null,
+  starterCell = false,
 ): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/create`, {
     method: 'POST',
@@ -167,6 +168,7 @@ async function createNotebook(
       parent_path: parentPath,
       name,
       ...(pythonVersion ? { python_version: pythonVersion } : {}),
+      ...(starterCell ? { starter_cell: true } : {}),
     }),
   })
   if (!resp.ok) {

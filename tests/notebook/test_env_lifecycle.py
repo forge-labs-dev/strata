@@ -63,6 +63,25 @@ class TestCreateNotebookVenv:
             assert (nb_dir / "notebook.toml").exists()
             assert (nb_dir / "pyproject.toml").exists()
 
+    def test_can_skip_initial_environment_creation(self, tmp_path: Path):
+        """Notebook scaffolding can skip the initial uv sync when requested."""
+        with (
+            patch("strata.notebook.writer._uv_sync") as mock_sync,
+            patch("strata.notebook.writer._update_environment_metadata") as mock_update,
+        ):
+            nb_dir = create_notebook(
+                tmp_path,
+                "deferred_env",
+                initialize_environment=False,
+            )
+
+        assert (nb_dir / "notebook.toml").exists()
+        assert (nb_dir / "pyproject.toml").exists()
+        assert not (nb_dir / "uv.lock").exists()
+        assert not (nb_dir / ".venv").exists()
+        mock_sync.assert_not_called()
+        mock_update.assert_not_called()
+
 
 class TestUvSyncHelper:
     """_uv_sync() helper function."""

@@ -116,6 +116,32 @@ def test_open_notebook():
         assert "environment_job_history" in data
 
 
+def test_open_notebook_reuses_existing_session_in_personal_mode(monkeypatch):
+    """Opening the same path twice should reuse the live session in personal mode."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Reusable Notebook")
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="personal",
+                    notebook_storage_dir=Path("/tmp/strata-notebooks"),
+                    notebook_python_versions=["3.13"],
+                    transforms_config={},
+                )
+            ),
+        )
+
+        first = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        second = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+
+        assert first.status_code == 200
+        assert second.status_code == 200
+        assert first.json()["session_id"] == second.json()["session_id"]
+
+
 def test_open_notebook_rehydrates_environment_job_history():
     """Opening a notebook should expose persisted recent environment jobs."""
     client = TestClient(create_test_app())
@@ -299,6 +325,69 @@ def test_create_notebook_endpoint():
         assert "requested_python_version" in data["environment"]
         assert "runtime_python_version" in data["environment"]
         assert "resolved_package_count" in data["environment"]
+
+
+def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
+    """Fresh notebook creation should reuse the writer-created venv on first open."""
+    client = TestClient(create_test_app())
+    captured: dict[str, object] = {}
+
+    def fake_create_notebook(
+        parent_path,
+        name,
+        python_version=None,
+        *,
+        initialize_environment=True,
+    ):
+        captured["initialize_environment"] = initialize_environment
+        captured["python_version"] = python_version
+        return Path("/tmp/fake-notebook")
+
+    class FakeSession:
+        id = "session-123"
+        path = Path("/tmp/fake-notebook")
+
+        def serialize_notebook_state(self):
+            return {
+                "id": "notebook-123",
+                "name": "Fast Notebook",
+                "cells": [],
+                "environment": {},
+            }
+
+    def fake_open_notebook(directory, *, skip_initial_venv_sync=False):
+        captured["directory"] = directory
+        captured["skip_initial_venv_sync"] = skip_initial_venv_sync
+        return FakeSession()
+
+    monkeypatch.setattr("strata.notebook.routes.create_notebook", fake_create_notebook)
+    monkeypatch.setattr("strata.notebook.routes._session_manager.open_notebook", fake_open_notebook)
+
+    response = client.post(
+        "/v1/notebooks/create",
+        json={"parent_path": "/tmp/notebooks", "name": "Fast Notebook"},
+    )
+
+    assert response.status_code == 200
+    assert captured["initialize_environment"] is True
+    assert captured["skip_initial_venv_sync"] is True
+
+
+def test_create_notebook_endpoint_with_starter_cell():
+    """Scratch-style create requests can return a starter empty cell."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        response = client.post(
+            "/v1/notebooks/create",
+            json={"parent_path": tmpdir, "name": "Scratch Notebook", "starter_cell": True},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["cells"]) == 1
+        assert data["cells"][0]["source"] == ""
+        assert data["cells"][0]["language"] == "python"
 
 
 def test_create_notebook_endpoint_rejects_unsupported_python_version(monkeypatch):

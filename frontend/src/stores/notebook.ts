@@ -26,6 +26,7 @@ import type {
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
 import { useWebSocket } from '../composables/useWebSocket'
+import { consumePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
 import {
   applyWorkerHealth,
   effectiveWorkerNameForCell,
@@ -655,6 +656,7 @@ function syncWorkerCatalogFromBackend(serverWorkers: any[]) {
   availableWorkers.value = Array.isArray(serverWorkers)
     ? serverWorkers.map(parseWorkerCatalogEntry).filter((worker) => worker.name)
     : []
+  workerCatalogLoaded.value = true
 }
 
 function syncWorkerHealthCheckedAtFromBackend(rawCheckedAt: unknown) {
@@ -683,6 +685,18 @@ function clearServerWorkerRegistryState() {
   serverWorkerRegistryLoading.value = false
   serverWorkerActionLoading.value = {}
   serverWorkerRegistryError.value = null
+}
+
+function resetWorkerCatalogState() {
+  availableWorkers.value = []
+  workerCatalogLoaded.value = false
+  workerDefinitionsEditable.value = true
+  workerHealthLoading.value = false
+  workerHealthCheckedAt.value = null
+  notebookWorkerError.value = null
+  workerRegistryError.value = null
+  cellWorkerErrors.value = {}
+  clearServerWorkerRegistryState()
 }
 
 function syncNotebookTimeoutFromBackend(serverTimeout: any) {
@@ -1012,7 +1026,7 @@ function extractReferences(source: string, localDefs: string[]): string[] {
 // --- API Integration -------------------------------------------------------
 
 /**
- * Boot: create scratch notebook, add one empty cell, connect WebSocket.
+ * Boot: create scratch notebook with one empty cell, connect WebSocket.
  * Called once on app mount. Resolves when ready to use.
  */
 async function boot(): Promise<void> {
@@ -1025,51 +1039,18 @@ async function boot(): Promise<void> {
     environmentLastAction.value = null
     environmentOperation.value = null
     environmentJobHistory.value = []
-    notebookWorkerError.value = null
-    workerRegistryError.value = null
-    cellWorkerErrors.value = {}
-    workerHealthCheckedAt.value = null
-    clearServerWorkerRegistryState()
+    resetWorkerCatalogState()
     const runtimeConfig = parseBackendNotebookRuntimeConfig(await strata.getNotebookRuntimeConfig())
 
-    // Create a scratch notebook
-    const data = await strata.createNotebook(runtimeConfig.defaultParentPath, 'scratch')
+    // Create a scratch notebook with one starter cell
+    const data = await strata.createNotebook(runtimeConfig.defaultParentPath, 'scratch', null, true)
     loadNotebookStateFromBackend(data)
-
-    // New notebook starts with 0 cells — add one empty cell
-    const cellData = await strata.addCell(data.session_id)
-    notebook.cells = [
-      {
-        id: cellData.id,
-        source: '',
-        language: cellData.language || 'python',
-        order: 0,
-        status: 'idle' as CellStatus,
-        worker: notebook.worker,
-        workerOverride: null,
-        timeout: notebook.timeout,
-        timeoutOverride: null,
-        env: { ...notebook.env },
-        envOverrides: {},
-        mounts: [...notebook.mounts],
-        mountOverrides: [],
-        annotations: { worker: null, timeout: null, env: {}, mounts: [] },
-        upstreamIds: [],
-        downstreamIds: [],
-        defines: [],
-        references: [],
-        inputs: [],
-        isLeaf: false,
-      },
-    ]
 
     // Connect WebSocket and wait for it
     initializeWebSocket()
     await waitForWebSocket()
 
     connected.value = true
-    fetchWorkers()
-    fetchDependencies()
   } catch (e: any) {
     console.error('Failed to boot notebook:', e)
     connectError.value = e.message || 'Failed to connect to server'
@@ -1090,11 +1071,7 @@ async function openNotebook(path: string): Promise<any> {
   environmentLastAction.value = null
   environmentOperation.value = null
   environmentJobHistory.value = []
-  notebookWorkerError.value = null
-  workerRegistryError.value = null
-  cellWorkerErrors.value = {}
-  workerHealthCheckedAt.value = null
-  clearServerWorkerRegistryState()
+  resetWorkerCatalogState()
 
   const data = await strata.openNotebook(path)
   loadNotebookStateFromBackend(data)
@@ -1102,10 +1079,6 @@ async function openNotebook(path: string): Promise<any> {
   initializeWebSocket()
   await waitForWebSocket()
   connected.value = true
-
-  // Load dependencies after connection is established
-  fetchWorkers()
-  fetchDependencies()
 
   return data
 }
@@ -1124,13 +1097,9 @@ async function openBySessionId(sessionId: string): Promise<any> {
   environmentLastAction.value = null
   environmentOperation.value = null
   environmentJobHistory.value = []
-  notebookWorkerError.value = null
-  workerRegistryError.value = null
-  cellWorkerErrors.value = {}
-  workerHealthCheckedAt.value = null
-  clearServerWorkerRegistryState()
+  resetWorkerCatalogState()
 
-  const data = await strata.getSession(sessionId)
+  const data = consumePrefetchedNotebookSession(sessionId) ?? (await strata.getSession(sessionId))
   if (!data.session_id) {
     data.session_id = sessionId
   }
@@ -1139,9 +1108,6 @@ async function openBySessionId(sessionId: string): Promise<any> {
   initializeWebSocket()
   await waitForWebSocket()
   connected.value = true
-
-  fetchWorkers()
-  fetchDependencies()
 
   return data
 }
@@ -1166,6 +1132,7 @@ const environmentJobHistory = ref<EnvironmentOperation[]>([])
 const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
 const environmentMutationActive = computed(() => environmentOperation.value?.status === 'running')
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
+const workerCatalogLoaded = ref(false)
 const workerDefinitionsEditable = ref(true)
 const workerHealthLoading = ref(false)
 const workerHealthCheckedAt = ref<number | null>(null)
@@ -1738,6 +1705,13 @@ async function fetchWorkers(forceRefresh = false) {
   } finally {
     workerHealthLoading.value = false
   }
+}
+
+async function ensureWorkersLoaded(forceRefresh = false) {
+  if (!forceRefresh && (workerCatalogLoaded.value || workerHealthLoading.value)) {
+    return
+  }
+  await fetchWorkers(forceRefresh)
 }
 
 async function fetchServerWorkerRegistry(forceRefresh = false) {
@@ -2432,6 +2406,7 @@ export function useNotebook() {
     serverWorkerRegistryError,
     cellWorkerErrorForCell,
     fetchWorkers,
+    ensureWorkersLoaded,
     fetchServerWorkerRegistry,
     fetchDependencies,
     fetchEnvironment,

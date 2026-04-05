@@ -25,6 +25,7 @@ const {
   previewEnvironmentYamlImportAction,
   importEnvironmentYamlAction,
   clearEnvironmentImportPreview,
+  fetchDependencies,
   fetchEnvironment,
   connected,
 } = useNotebook()
@@ -204,6 +205,7 @@ watch(
   showPanel,
   (open) => {
     if (open) {
+      void fetchDependencies()
       void fetchEnvironment()
     }
   },

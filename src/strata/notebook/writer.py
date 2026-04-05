@@ -151,13 +151,20 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         tomli_w.dump(toml_data, f)
 
 
-def create_notebook(parent_dir: Path, name: str, python_version: str | None = None) -> Path:
+def create_notebook(
+    parent_dir: Path,
+    name: str,
+    python_version: str | None = None,
+    *,
+    initialize_environment: bool = True,
+) -> Path:
     """Create a new notebook directory with notebook.toml and pyproject.toml.
 
     Args:
         parent_dir: Parent directory for the notebook
         name: Notebook name (used for folder and notebook name)
         python_version: Requested notebook Python major.minor version
+        initialize_environment: Whether to create the notebook venv immediately
 
     Returns:
         Path to created notebook directory
@@ -212,11 +219,12 @@ dependencies = [
     with open(notebook_dir / "pyproject.toml", "w", encoding="utf-8") as f:
         f.write(pyproject_content)
 
-    # Run uv sync to create venv + uv.lock (best-effort)
-    _uv_sync(notebook_dir, python_version=requested_python_version)
+    if initialize_environment:
+        # Run uv sync to create venv + uv.lock (best-effort)
+        _uv_sync(notebook_dir, python_version=requested_python_version)
 
-    # Populate environment section with lockfile hash + python version
-    _update_environment_metadata(notebook_dir)
+        # Populate environment section with lockfile hash + python version
+        _update_environment_metadata(notebook_dir)
 
     return notebook_dir
 

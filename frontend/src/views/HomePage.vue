@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStrata } from '../composables/useStrata'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
+import { primePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
 
 const router = useRouter()
 const strata = useStrata()
@@ -59,6 +60,7 @@ async function createNotebook() {
       selectedPythonVersion.value || null,
     )
     const resolvedPath = data.path || notebookPath
+    primePrefetchedNotebookSession(data)
     record(data.name, resolvedPath, data.session_id)
     router.push({
       name: 'notebook',
@@ -79,11 +81,13 @@ async function openNotebook(path?: string) {
   error.value = null
   try {
     const data = await strata.openNotebook(target)
-    record(data.name, target, data.session_id)
+    const resolvedPath = data.path || target
+    primePrefetchedNotebookSession(data)
+    record(data.name, resolvedPath, data.session_id)
     router.push({
       name: 'notebook',
       params: { sessionId: data.session_id },
-      query: { path: target },
+      query: { path: resolvedPath },
     })
   } catch (e: any) {
     error.value = e.message || 'Failed to open notebook'

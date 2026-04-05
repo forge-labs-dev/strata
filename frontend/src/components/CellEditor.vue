@@ -35,6 +35,7 @@ const {
   openInspect,
   inspectCellId,
   availableWorkers,
+  ensureWorkersLoaded,
   cellWorkerErrorForCell,
   addDependencyAction,
   updateCellEnvAction,
@@ -159,6 +160,12 @@ function toggleCausality() {
 watch(canExplainStaleness, (canExplain) => {
   if (!canExplain) {
     showCausality.value = false
+  }
+})
+
+watch(showInfra, (visible) => {
+  if (visible) {
+    void ensureWorkersLoaded()
   }
 })
 

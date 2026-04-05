@@ -1688,21 +1688,60 @@ class SessionManager:
         """Initialize session manager."""
         self._sessions: dict[str, NotebookSession] = {}
 
-    def open_notebook(self, directory: Path) -> NotebookSession:
+    def _find_session_by_path(self, directory: Path) -> NotebookSession | None:
+        """Return an existing live session for *directory*, if any."""
+        target = Path(directory).resolve()
+        for session in self._sessions.values():
+            try:
+                if session.path.resolve() == target:
+                    return session
+            except FileNotFoundError:
+                continue
+        return None
+
+    def open_notebook(
+        self,
+        directory: Path,
+        *,
+        skip_initial_venv_sync: bool = False,
+        reuse_existing: bool = False,
+    ) -> NotebookSession:
         """Open a notebook directory.
 
         Args:
             directory: Path to notebook directory
+            skip_initial_venv_sync: Reuse an already-created notebook venv and
+                only refresh lightweight runtime metadata on first open.
+            reuse_existing: Reuse an already-open in-memory session for the
+                same path instead of constructing a new one.
 
         Returns:
             NotebookSession for the opened notebook
         """
+        self._evict_stale()
+
+        if reuse_existing:
+            existing = self._find_session_by_path(Path(directory))
+            if existing is not None:
+                existing.reload()
+                try:
+                    existing.refresh_environment_runtime()
+                except Exception as e:
+                    logger.warning("Failed to refresh existing notebook runtime: %s", e)
+                existing.touch()
+                return existing
+
         notebook_state = parse_notebook(Path(directory))
         session = NotebookSession(notebook_state, Path(directory))
 
-        # Ensure venv is synced (idempotent, typically <1s)
+        # Ensure venv is ready. Freshly-created notebooks may already have a
+        # synced .venv from writer.create_notebook(), so avoid immediately
+        # paying for a second uv sync and just refresh runtime metadata.
         try:
-            session.ensure_venv_synced()
+            if skip_initial_venv_sync:
+                session.refresh_environment_runtime()
+            else:
+                session.ensure_venv_synced()
         except Exception as e:
             # Log warning but don't fail — notebook can still be opened,
             # it just won't be able to execute cells
@@ -1728,7 +1767,6 @@ class SessionManager:
 
         session.compute_staleness()
 
-        self._evict_stale()
         self._sessions[session.id] = session
         return session
 

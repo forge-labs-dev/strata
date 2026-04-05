@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useNotebook } from '../stores/notebook'
 import type { WorkerCatalogEntry, WorkerHealthHistoryEntry } from '../types/notebook'
 import {
@@ -25,6 +25,7 @@ const {
   workerRegistryError,
   serverWorkerRegistryError,
   fetchWorkers,
+  ensureWorkersLoaded,
   updateNotebookWorkerAction,
   updateNotebookWorkersAction,
   updateServerWorkerRegistryAction,
@@ -125,6 +126,12 @@ const attentionWorkers = computed(() =>
 function workerAttentionLabel(worker: WorkerCatalogEntry): string {
   return workerAttentionReason(worker) || 'Needs attention'
 }
+
+watch(showPanel, (open) => {
+  if (open) {
+    void ensureWorkersLoaded()
+  }
+})
 </script>
 
 <template>

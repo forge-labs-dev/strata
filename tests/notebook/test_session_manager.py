@@ -218,3 +218,20 @@ def test_reload_does_not_restore_ready_state_after_worker_runtime_change(tmp_pat
 
     cell = next(c for c in session.notebook_state.cells if c.id == "c1")
     assert cell.status == "idle"
+
+
+def test_open_notebook_can_reuse_existing_session_by_path(tmp_path: Path):
+    """Reopening the same path can reuse and refresh the existing session."""
+    notebook_dir = create_notebook(tmp_path, "reuse_open")
+    manager = SessionManager()
+
+    session = manager.open_notebook(notebook_dir)
+    original_id = session.id
+
+    rename_notebook(notebook_dir, "reuse_open_renamed")
+
+    reopened = manager.open_notebook(notebook_dir, reuse_existing=True)
+
+    assert reopened is session
+    assert reopened.id == original_id
+    assert reopened.notebook_state.name == "reuse_open_renamed"

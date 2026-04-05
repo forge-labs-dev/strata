@@ -88,6 +88,18 @@ def _require_personal_mode_session_api() -> None:
         )
 
 
+def _reuse_open_session_by_path() -> bool:
+    """Enable path-based session reuse only in personal mode."""
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+    except RuntimeError:
+        return True
+
+    return state.config.deployment_mode == "personal"
+
+
 def validate_package_name(package: str) -> str:
     """Validate and sanitize a package specifier.
 
@@ -291,6 +303,7 @@ class CreateNotebookRequest(BaseModel):
     parent_path: str
     name: str
     python_version: str | None = Field(default=None, max_length=16)
+    starter_cell: bool = False
 
     @field_validator("python_version")
     @classmethod
@@ -458,7 +471,10 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
 
     try:
         # Create session (parses notebook and triggers DAG analysis)
-        session = _session_manager.open_notebook(notebook_path)
+        session = _session_manager.open_notebook(
+            notebook_path,
+            reuse_existing=_reuse_open_session_by_path(),
+        )
 
         # Return notebook state with session ID and DAG
         data = session.serialize_notebook_state()
@@ -502,7 +518,12 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
             req.name,
             python_version=selected_python_version,
         )
-        session = _session_manager.open_notebook(notebook_dir)
+        if req.starter_cell:
+            add_cell_to_notebook(notebook_dir, str(uuid.uuid4()))
+        session = _session_manager.open_notebook(
+            notebook_dir,
+            skip_initial_venv_sync=True,
+        )
 
         data = session.serialize_notebook_state()
         data["session_id"] = session.id
