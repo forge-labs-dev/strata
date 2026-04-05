@@ -29,6 +29,7 @@ const {
   workerDefinitionsEditable,
   openBySessionId,
   openNotebook,
+  updateNotebookNameAction,
   deleteNotebookAction,
   addCell,
   removeCell,
@@ -39,7 +40,10 @@ const {
 
 const editingName = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
+const nameDraft = ref('')
 const loading = ref(true)
+const renamingNotebook = ref(false)
+const renameError = ref<string | null>(null)
 const deletingNotebook = ref(false)
 const deleteError = ref<string | null>(null)
 const reconnectError = ref<string | null>(null)
@@ -116,6 +120,7 @@ watch(
 
 async function connectToSession(sessionId: string) {
   loading.value = true
+  renameError.value = null
   deleteError.value = null
   reconnectError.value = null
   recoveryPath.value = null
@@ -262,8 +267,49 @@ onUnmounted(() => {
 })
 
 function startEditName() {
+  nameDraft.value = notebook.name
+  renameError.value = null
   editingName.value = true
   setTimeout(() => nameInput.value?.select(), 0)
+}
+
+function cancelEditName() {
+  nameDraft.value = notebook.name
+  editingName.value = false
+}
+
+async function commitEditName() {
+  if (!editingName.value) return
+
+  const nextName = nameDraft.value.trim()
+  if (!nextName) {
+    renameError.value = 'Notebook name cannot be empty'
+    setTimeout(() => nameInput.value?.select(), 0)
+    return
+  }
+  if (nextName === notebook.name) {
+    editingName.value = false
+    return
+  }
+
+  renamingNotebook.value = true
+  renameError.value = null
+
+  try {
+    const data = await updateNotebookNameAction(nextName)
+    const path = routeNotebookPath.value || findBySessionId(props.sessionId)?.path || null
+    if (path) {
+      record(data.name || nextName, path, props.sessionId)
+    }
+    nameDraft.value = data.name || nextName
+    editingName.value = false
+  } catch (e: any) {
+    renameError.value = e?.message || 'Failed to rename notebook'
+    nameDraft.value = notebook.name
+    setTimeout(() => nameInput.value?.select(), 0)
+  } finally {
+    renamingNotebook.value = false
+  }
 }
 
 async function runCell(cellId: string) {
@@ -294,10 +340,12 @@ function goHome() {
         <input
           v-else
           ref="nameInput"
-          v-model="notebook.name"
+          v-model="nameDraft"
           class="name-input"
-          @blur="editingName = false"
-          @keydown.enter="editingName = false"
+          :disabled="renamingNotebook"
+          @blur="commitEditName"
+          @keydown.enter.prevent="commitEditName"
+          @keydown.esc.prevent="cancelEditName"
         />
       </div>
       <div class="header-right">
@@ -354,6 +402,10 @@ function goHome() {
 
     <div v-else-if="deleteError && !loading" class="error-banner">
       {{ deleteError }}
+    </div>
+
+    <div v-else-if="renameError && !loading" class="error-banner">
+      {{ renameError }}
     </div>
 
     <div v-else-if="reconnectError && !loading" class="reconnect-state">

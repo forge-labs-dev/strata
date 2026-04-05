@@ -177,6 +177,18 @@ async function createNotebook(
   return resp.json()
 }
 
+async function renameNotebook(notebookId: string, name: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/name`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to rename notebook')
+  }
+  return resp.json()
+}
+
 async function deleteNotebook(notebookId: string): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}`, {
     method: 'DELETE',
@@ -615,6 +627,7 @@ export function useStrata() {
     fetchStream,
     openNotebook,
     createNotebook,
+    renameNotebook,
     deleteNotebook,
     getNotebookRuntimeConfig,
     updateCellSource,

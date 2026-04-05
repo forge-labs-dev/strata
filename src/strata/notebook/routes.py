@@ -418,7 +418,15 @@ class ReorderCellsRequest(BaseModel):
 class RenameNotebookRequest(BaseModel):
     """Request to rename notebook."""
 
-    name: str
+    name: str = Field(..., min_length=1, max_length=255)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Notebook name cannot be empty")
+        return normalized
 
 
 class AddDependencyRequest(BaseModel):
@@ -1449,6 +1457,8 @@ async def rename_notebook_endpoint(
             "notebook_id": session.notebook_state.id,
             "name": session.notebook_state.name,
         }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

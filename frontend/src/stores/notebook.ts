@@ -1201,6 +1201,20 @@ async function deleteNotebookAction(): Promise<any> {
   return data
 }
 
+async function updateNotebookNameAction(name: string): Promise<any> {
+  const sid = sessionId()
+  if (!sid) {
+    throw new Error('Notebook is not open')
+  }
+
+  const strata = useStrata()
+  const data = await strata.renameNotebook(sid, name)
+  if (typeof data?.name === 'string' && data.name.trim()) {
+    notebook.name = data.name
+  }
+  return data
+}
+
 // --- WebSocket integration -------------------------------------------------
 
 // v1.1: Impact preview and profiling state
@@ -2442,6 +2456,7 @@ export function useNotebook() {
     boot,
     openNotebook,
     openBySessionId,
+    updateNotebookNameAction,
     deleteNotebookAction,
     // Cell operations (always backend-backed)
     addCell,

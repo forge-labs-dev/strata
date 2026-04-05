@@ -1668,6 +1668,24 @@ def test_rename_notebook():
         assert data["name"] == "New Name"
 
 
+def test_rename_notebook_rejects_blank_name():
+    """Renaming should reject empty notebook names."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        notebook_dir = create_notebook(tmpdir_path, "Original Name")
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        session_id = response.json()["session_id"]
+
+        response = client.put(
+            f"/v1/notebooks/{session_id}/name",
+            json={"name": "   "},
+        )
+
+        assert response.status_code == 422
+
+
 def test_execute_cell():
     """Test POST /v1/notebooks/{id}/cells/{cell_id}/execute endpoint."""
     client = TestClient(create_test_app())

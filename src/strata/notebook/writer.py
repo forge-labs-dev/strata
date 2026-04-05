@@ -494,11 +494,22 @@ def rename_notebook(notebook_dir: Path, new_name: str) -> None:
     """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
+    normalized_name = new_name.strip()
+
+    if not normalized_name:
+        raise ValueError("Notebook name cannot be empty")
+    if (
+        "/" in normalized_name
+        or "\\" in normalized_name
+        or ".." in normalized_name
+        or "\0" in normalized_name
+    ):
+        raise ValueError("Notebook name contains invalid characters")
 
     with open(notebook_toml_path, "rb") as f:
         toml_data = tomllib.load(f)
 
-    toml_data["name"] = new_name
+    toml_data["name"] = normalized_name
     toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
 
     with open(notebook_toml_path, "wb") as f:
