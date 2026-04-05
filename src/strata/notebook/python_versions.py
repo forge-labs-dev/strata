@@ -14,6 +14,7 @@ except ModuleNotFoundError:
 
 
 _MINOR_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)$")
+_PATCH_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")
 
 
 def current_python_minor() -> str:
@@ -82,3 +83,25 @@ def read_requested_python_minor(notebook_dir: Path) -> str | None:
         return None
 
     return infer_requested_python_minor(requires_python)
+
+
+def read_venv_runtime_python_version(python_executable: Path) -> str | None:
+    """Read ``major.minor.micro`` from a venv ``pyvenv.cfg`` when available."""
+    python_path = Path(python_executable)
+    config_path = python_path.parent.parent / "pyvenv.cfg"
+    if not config_path.exists():
+        return None
+
+    try:
+        for raw_line in config_path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = raw_line.partition("=")
+            if separator != "=" or key.strip() != "version_info":
+                continue
+            version = value.strip()
+            if _PATCH_VERSION_RE.fullmatch(version):
+                return version
+            return None
+    except Exception:
+        return None
+
+    return None

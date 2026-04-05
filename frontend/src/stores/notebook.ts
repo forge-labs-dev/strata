@@ -1052,14 +1052,22 @@ async function boot(): Promise<void> {
     markNotebookPerf('boot_hydrated')
     measureNotebookPerf('boot_hydrate_ms', 'boot_response', 'boot_hydrated')
 
-    // Connect WebSocket and wait for it
+    // Connect WebSocket in the background; initial notebook render does not
+    // need to wait for the live channel as long as execution stays disabled.
     initializeWebSocket()
-    await waitForWebSocket()
-    markNotebookPerf('boot_ws_ready')
-    measureNotebookPerf('boot_ws_connect_ms', 'boot_hydrated', 'boot_ws_ready')
-    measureNotebookPerf('boot_total_ms', 'boot_request_start', 'boot_ws_ready')
-
-    connected.value = true
+    connected.value = false
+    void waitForWebSocket()
+      .then(() => {
+        markNotebookPerf('boot_ws_ready')
+        measureNotebookPerf('boot_ws_connect_ms', 'boot_hydrated', 'boot_ws_ready')
+        measureNotebookPerf('boot_total_ms', 'boot_request_start', 'boot_ws_ready')
+        connectError.value = null
+        connected.value = true
+      })
+      .catch((e: any) => {
+        connectError.value = e?.message || 'Failed to connect to server'
+        connected.value = false
+      })
   } catch (e: any) {
     console.error('Failed to boot notebook:', e)
     connectError.value = e.message || 'Failed to connect to server'
@@ -1091,11 +1099,19 @@ async function openNotebook(path: string): Promise<any> {
   measureNotebookPerf('store_open_hydrate_ms', 'store_open_response', 'store_open_hydrated')
 
   initializeWebSocket()
-  await waitForWebSocket()
-  markNotebookPerf('store_open_ws_ready')
-  measureNotebookPerf('store_open_ws_connect_ms', 'store_open_hydrated', 'store_open_ws_ready')
-  measureNotebookPerf('store_open_total_ms', 'store_open_request_start', 'store_open_ws_ready')
-  connected.value = true
+  connected.value = false
+  void waitForWebSocket()
+    .then(() => {
+      markNotebookPerf('store_open_ws_ready')
+      measureNotebookPerf('store_open_ws_connect_ms', 'store_open_hydrated', 'store_open_ws_ready')
+      measureNotebookPerf('store_open_total_ms', 'store_open_request_start', 'store_open_ws_ready')
+      connectError.value = null
+      connected.value = true
+    })
+    .catch((e: any) => {
+      connectError.value = e?.message || 'Failed to connect to server'
+      connected.value = false
+    })
 
   return data
 }
@@ -1136,19 +1152,27 @@ async function openBySessionId(sessionId: string): Promise<any> {
   )
 
   initializeWebSocket()
-  await waitForWebSocket()
-  markNotebookPerf('store_session_ws_ready')
-  measureNotebookPerf(
-    'store_session_ws_connect_ms',
-    'store_session_hydrated',
-    'store_session_ws_ready',
-  )
-  measureNotebookPerf(
-    'store_session_total_ms',
-    'store_session_request_start',
-    'store_session_ws_ready',
-  )
-  connected.value = true
+  connected.value = false
+  void waitForWebSocket()
+    .then(() => {
+      markNotebookPerf('store_session_ws_ready')
+      measureNotebookPerf(
+        'store_session_ws_connect_ms',
+        'store_session_hydrated',
+        'store_session_ws_ready',
+      )
+      measureNotebookPerf(
+        'store_session_total_ms',
+        'store_session_request_start',
+        'store_session_ws_ready',
+      )
+      connectError.value = null
+      connected.value = true
+    })
+    .catch((e: any) => {
+      connectError.value = e?.message || 'Failed to connect to server'
+      connected.value = false
+    })
 
   return data
 }

@@ -6,6 +6,13 @@ from pathlib import Path
 
 import pytest
 
+# Python 3.10 compatibility
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore
+
+from strata.notebook import writer as writer_module
 from strata.notebook.models import (
     CellMeta,
     MountMode,
@@ -24,6 +31,7 @@ from strata.notebook.writer import (
     update_cell_env,
     update_cell_timeout,
     update_cell_worker,
+    update_environment_metadata,
     update_notebook_env,
     update_notebook_timeout,
     update_notebook_worker,
@@ -47,6 +55,32 @@ def test_create_notebook():
         assert (notebook_dir / "pyproject.toml").exists()
         assert (notebook_dir / "cells").exists()
         assert (notebook_dir / "cells").is_dir()
+
+
+def test_update_environment_metadata_reads_pyvenv_cfg_without_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Refreshing environment metadata should reuse pyvenv.cfg when available."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Metadata Probe Test")
+
+        def fail_subprocess(*args, **kwargs):
+            raise AssertionError("venv python probe should not spawn a subprocess")
+
+        monkeypatch.setattr(
+            writer_module,
+            "read_venv_runtime_python_version",
+            lambda *_args, **_kwargs: "3.13.3",
+        )
+        monkeypatch.setattr(writer_module.subprocess, "run", fail_subprocess)
+
+        update_environment_metadata(notebook_dir)
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        environment = data.get("environment", {})
+        assert environment.get("runtime_python_version") == "3.13.3"
 
 
 def test_write_cell():

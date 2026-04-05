@@ -131,6 +131,22 @@ async function collectMeasures(page) {
   })
 }
 
+async function waitForOptionalMeasure(page, measureName, timeoutMs) {
+  try {
+    await page.waitForFunction(
+      (name) => {
+        const entryName = `strata:notebook:${name}`
+        return performance.getEntriesByName(entryName, 'measure').length > 0
+      },
+      measureName,
+      { timeout: timeoutMs },
+    )
+  } catch {
+    // The benchmark should still succeed even if the optional measure is not
+    // present before timeout.
+  }
+}
+
 async function waitForNotebookReady(page, timeoutMs) {
   await page.waitForURL(/#\/notebook\//, { timeout: timeoutMs })
   await page.getByTestId('notebook-page').waitFor({ state: 'visible', timeout: timeoutMs })
@@ -169,6 +185,7 @@ async function runCreateFlow(page, options, notebookName) {
   await page.getByTestId('create-notebook-submit').click()
   const response = await responsePromise
   await waitForNotebookReady(page, options.timeoutMs)
+  await waitForOptionalMeasure(page, 'store_session_ws_connect_ms', 2_000)
   const finishedAt = Date.now()
 
   const body = await response.json().catch(() => ({}))
@@ -200,6 +217,7 @@ async function runOpenFlow(page, options, notebookPath) {
   await page.getByTestId('open-notebook-submit').click()
   const response = await responsePromise
   await waitForNotebookReady(page, options.timeoutMs)
+  await waitForOptionalMeasure(page, 'store_session_ws_connect_ms', 2_000)
   const finishedAt = Date.now()
 
   const body = await response.json().catch(() => ({}))
@@ -223,34 +241,30 @@ function average(values) {
 function summarizeResults(results) {
   const createFlows = results.map((result) => result.create)
   const openFlows = results.map((result) => result.open)
+  const averageMeasure = (flows, measureName) =>
+    average(
+      flows.map((flow) => flow.measures[measureName]).filter((value) => typeof value === 'number'),
+    )
 
   return {
     iterations: results.length,
     create: {
       wallClockMs: average(createFlows.map((flow) => flow.wallClockMs)),
-      createRequestMs: average(
-        createFlows
-          .map((flow) => flow.measures.create_request_ms)
-          .filter((value) => typeof value === 'number'),
-      ),
-      createTotalMs: average(
-        createFlows
-          .map((flow) => flow.measures.create_total_ms)
-          .filter((value) => typeof value === 'number'),
-      ),
+      createRequestMs: averageMeasure(createFlows, 'create_request_ms'),
+      createRouteMs: averageMeasure(createFlows, 'create_route_ms'),
+      createTotalMs: averageMeasure(createFlows, 'create_total_ms'),
+      notebookMountToReadyMs: averageMeasure(createFlows, 'notebook_mount_to_ready_ms'),
+      connectTotalMs: averageMeasure(createFlows, 'connect_total_ms'),
+      storeSessionWsConnectMs: averageMeasure(createFlows, 'store_session_ws_connect_ms'),
     },
     open: {
       wallClockMs: average(openFlows.map((flow) => flow.wallClockMs)),
-      openRequestMs: average(
-        openFlows
-          .map((flow) => flow.measures.open_request_ms)
-          .filter((value) => typeof value === 'number'),
-      ),
-      openTotalMs: average(
-        openFlows
-          .map((flow) => flow.measures.open_total_ms)
-          .filter((value) => typeof value === 'number'),
-      ),
+      openRequestMs: averageMeasure(openFlows, 'open_request_ms'),
+      openRouteMs: averageMeasure(openFlows, 'open_route_ms'),
+      openTotalMs: averageMeasure(openFlows, 'open_total_ms'),
+      notebookMountToReadyMs: averageMeasure(openFlows, 'notebook_mount_to_ready_ms'),
+      connectTotalMs: averageMeasure(openFlows, 'connect_total_ms'),
+      storeSessionWsConnectMs: averageMeasure(openFlows, 'store_session_ws_connect_ms'),
     },
   }
 }

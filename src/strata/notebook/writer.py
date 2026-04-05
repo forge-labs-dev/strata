@@ -18,6 +18,7 @@ from strata.notebook.python_versions import (
     format_requires_python,
     normalize_python_minor,
     read_requested_python_minor,
+    read_venv_runtime_python_version,
 )
 
 # Python 3.10 compatibility
@@ -289,29 +290,31 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
     runtime_python_version = ""
     venv_python = notebook_dir / ".venv" / "bin" / "python"
     if venv_python.exists():
-        try:
-            result = subprocess.run(
-                [
-                    str(venv_python),
-                    "-c",
-                    (
-                        "import sys; "
-                        "print("
-                        "f'{sys.version_info.major}."
-                        "{sys.version_info.minor}."
-                        "{sys.version_info.micro}'"
-                        ")"
-                    ),
-                ],
-                cwd=str(notebook_dir),
-                capture_output=True,
-                check=True,
-                text=True,
-                timeout=10,
-            )
-            runtime_python_version = result.stdout.strip()
-        except Exception:
-            _logger.debug("Failed to probe notebook venv python version", exc_info=True)
+        runtime_python_version = read_venv_runtime_python_version(venv_python) or ""
+        if not runtime_python_version:
+            try:
+                result = subprocess.run(
+                    [
+                        str(venv_python),
+                        "-c",
+                        (
+                            "import sys; "
+                            "print("
+                            "f'{sys.version_info.major}."
+                            "{sys.version_info.minor}."
+                            "{sys.version_info.micro}'"
+                            ")"
+                        ),
+                    ],
+                    cwd=str(notebook_dir),
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                    timeout=10,
+                )
+                runtime_python_version = result.stdout.strip()
+            except Exception:
+                _logger.debug("Failed to probe notebook venv python version", exc_info=True)
 
     resolved_package_count = 0
     lock_path = notebook_dir / "uv.lock"

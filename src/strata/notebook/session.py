@@ -14,6 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore
+
 from strata.notebook.analyzer import analyze_cell
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
@@ -39,7 +44,10 @@ from strata.notebook.models import (
 from strata.notebook.mounts import MountFingerprinter, resolve_cell_mounts
 from strata.notebook.parser import parse_notebook
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
-from strata.notebook.python_versions import read_requested_python_minor
+from strata.notebook.python_versions import (
+    read_requested_python_minor,
+    read_venv_runtime_python_version,
+)
 from strata.notebook.timing import NotebookTimingRecorder
 from strata.notebook.workers import (
     build_worker_catalog,
@@ -582,6 +590,10 @@ class NotebookSession:
 
     def _probe_python_version(self, python_executable: Path) -> str:
         """Return ``major.minor.micro`` for a Python interpreter when available."""
+        cfg_version = read_venv_runtime_python_version(python_executable)
+        if cfg_version:
+            return cfg_version
+
         try:
             result = subprocess.run(
                 [
@@ -606,6 +618,26 @@ class NotebookSession:
             return ""
 
         return result.stdout.strip()
+
+    def _read_persisted_environment_metadata(self) -> dict[str, Any]:
+        """Best-effort read of the persisted ``[environment]`` notebook metadata."""
+        notebook_toml = self.path / "notebook.toml"
+        if not notebook_toml.exists():
+            return {}
+
+        try:
+            with open(notebook_toml, "rb") as f:
+                data = tomllib.load(f)
+        except Exception:
+            logger.debug(
+                "Failed to parse notebook.toml environment metadata for %s",
+                self.path,
+                exc_info=True,
+            )
+            return {}
+
+        environment = data.get("environment", {})
+        return environment if isinstance(environment, dict) else {}
 
     def _resolved_package_count(self) -> int:
         """Count resolved packages from ``uv.lock`` when present."""
@@ -1106,13 +1138,28 @@ class NotebookSession:
         started = _time.perf_counter()
         self.venv_python = venv_python
         self.environment_interpreter_source = "venv"
-        self.environment_python_version = self._probe_python_version(venv_python)
+        persisted = self._read_persisted_environment_metadata()
+        persisted_runtime_python = persisted.get("runtime_python_version") or persisted.get(
+            "python_version"
+        )
+        if isinstance(persisted_runtime_python, str) and persisted_runtime_python.strip():
+            self.environment_python_version = persisted_runtime_python.strip()
+        else:
+            self.environment_python_version = self._probe_python_version(venv_python)
         self.environment_sync_state = "ready"
         self.environment_sync_error = None
         self.environment_sync_notice = None
-        self.environment_last_synced_at = int(_time.time() * 1000)
-        self.environment_last_sync_duration_ms = int(
-            (_time.perf_counter() - started) * 1000
+        persisted_last_synced_at = persisted.get("last_synced_at")
+        self.environment_last_synced_at = (
+            persisted_last_synced_at
+            if isinstance(persisted_last_synced_at, int)
+            else int(_time.time() * 1000)
+        )
+        persisted_last_sync_duration_ms = persisted.get("last_sync_duration_ms")
+        self.environment_last_sync_duration_ms = (
+            persisted_last_sync_duration_ms
+            if isinstance(persisted_last_sync_duration_ms, int)
+            else int((_time.perf_counter() - started) * 1000)
         )
 
     async def _invalidate_warm_pool_for_environment_change(self) -> None:

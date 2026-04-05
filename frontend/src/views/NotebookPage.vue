@@ -90,6 +90,9 @@ function clampSidebarWidth(width: number): number {
 }
 
 onMounted(async () => {
+  markNotebookPerf('notebook_page_mount')
+  measureNotebookPerf('create_route_ms', 'create_route_start', 'notebook_page_mount')
+  measureNotebookPerf('open_route_ms', 'open_route_start', 'notebook_page_mount')
   await connectToSession(props.sessionId)
 })
 
@@ -127,6 +130,7 @@ async function connectToSession(sessionId: string) {
     }
     await nextTick()
     markNotebookPerf('notebook_ready')
+    measureNotebookPerf('notebook_mount_to_ready_ms', 'notebook_page_mount', 'notebook_ready')
     measureNotebookPerf('connect_total_ms', 'connect_start', 'notebook_ready')
     measureNotebookPerf('create_total_ms', 'create_click', 'notebook_ready')
     measureNotebookPerf('open_total_ms', 'open_click', 'notebook_ready')

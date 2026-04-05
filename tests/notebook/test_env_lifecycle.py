@@ -16,6 +16,13 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+import tomli_w
+
+# Python 3.10 compatibility
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib  # type: ignore
 
 from strata.notebook.dependencies import EnvironmentOperationLog, RequirementsImportResult
 from strata.notebook.env import compute_lockfile_hash
@@ -212,6 +219,55 @@ class TestSessionVenvPython:
         assert session.environment_sync_state == "ready"
         assert session.environment_sync_error is None
         assert session.environment_sync_notice is None
+        assert session.environment_interpreter_source == "venv"
+
+    def test_refresh_environment_runtime_reuses_persisted_python_metadata(
+        self, tmp_path: Path
+    ):
+        """Refreshing runtime should trust persisted notebook metadata before probing."""
+        nb_dir = create_notebook(tmp_path, "refresh_runtime_metadata")
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch.object(
+            session,
+            "_probe_python_version",
+            side_effect=AssertionError("python probe should not run"),
+        ):
+            session.refresh_environment_runtime()
+
+        assert session.environment_python_version
+        assert session.environment_sync_state == "ready"
+        assert session.environment_interpreter_source == "venv"
+
+    def test_refresh_environment_runtime_uses_pyvenv_cfg_when_metadata_missing(
+        self, tmp_path: Path
+    ):
+        """Refreshing runtime should avoid spawning Python when pyvenv.cfg is present."""
+        nb_dir = create_notebook(tmp_path, "refresh_runtime_pyvenv")
+
+        notebook_toml = nb_dir / "notebook.toml"
+        with open(notebook_toml, "rb") as f:
+            data = tomllib.load(f)
+        data["environment"] = {}
+        with open(notebook_toml, "wb") as f:
+            tomli_w.dump(data, f)
+
+        from strata.notebook.parser import parse_notebook
+
+        state = parse_notebook(nb_dir)
+        session = NotebookSession(state, nb_dir)
+
+        with patch(
+            "strata.notebook.session.subprocess.run",
+            side_effect=AssertionError("python probe should not run"),
+        ):
+            session.refresh_environment_runtime()
+
+        assert session.environment_python_version
+        assert session.environment_sync_state == "ready"
         assert session.environment_interpreter_source == "venv"
 
     def test_refresh_environment_runtime_falls_back_when_venv_missing(
