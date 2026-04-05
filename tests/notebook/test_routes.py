@@ -114,6 +114,8 @@ def test_open_notebook():
         assert "interpreter_source" in data["environment"]
         assert "last_sync_duration_ms" in data["environment"]
         assert "environment_job_history" in data
+        assert "Server-Timing" in response.headers
+        assert "session_open" in response.headers["Server-Timing"]
 
 
 def test_open_notebook_reuses_existing_session_in_personal_mode(monkeypatch):
@@ -325,6 +327,8 @@ def test_create_notebook_endpoint():
         assert "requested_python_version" in data["environment"]
         assert "runtime_python_version" in data["environment"]
         assert "resolved_package_count" in data["environment"]
+        assert "Server-Timing" in response.headers
+        assert "create_notebook" in response.headers["Server-Timing"]
 
 
 def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
@@ -355,9 +359,10 @@ def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
                 "environment": {},
             }
 
-    def fake_open_notebook(directory, *, skip_initial_venv_sync=False):
+    def fake_open_notebook(directory, *, skip_initial_venv_sync=False, timing=None):
         captured["directory"] = directory
         captured["skip_initial_venv_sync"] = skip_initial_venv_sync
+        captured["timing"] = timing
         return FakeSession()
 
     monkeypatch.setattr("strata.notebook.routes.create_notebook", fake_create_notebook)
@@ -371,6 +376,7 @@ def test_create_notebook_endpoint_skips_duplicate_session_sync(monkeypatch):
     assert response.status_code == 200
     assert captured["initialize_environment"] is True
     assert captured["skip_initial_venv_sync"] is True
+    assert captured["timing"] is not None
 
 
 def test_create_notebook_endpoint_with_starter_cell():
@@ -746,6 +752,8 @@ def test_get_session_personal_mode_includes_execution_metadata(deployment_mode_s
 
         response = client.get(f"/v1/notebooks/sessions/{session_id}")
         assert response.status_code == 200
+        assert "Server-Timing" in response.headers
+        assert "lookup" in response.headers["Server-Timing"]
         cell_payload = response.json()["cells"][0]
         assert cell_payload["execution_method"] == "executor"
         assert cell_payload["remote_worker"] == "gpu-http-signed"

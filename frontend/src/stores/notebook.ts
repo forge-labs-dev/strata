@@ -26,6 +26,7 @@ import type {
 } from '../types/notebook'
 import { useStrata } from '../composables/useStrata'
 import { useWebSocket } from '../composables/useWebSocket'
+import { markNotebookPerf, measureNotebookPerf } from '../utils/perf'
 import { consumePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
 import {
   applyWorkerHealth,
@@ -1032,6 +1033,7 @@ function extractReferences(source: string, localDefs: string[]): string[] {
 async function boot(): Promise<void> {
   const strata = useStrata()
   try {
+    markNotebookPerf('boot_request_start')
     connectError.value = null
     dependencyError.value = null
     environmentError.value = null
@@ -1044,11 +1046,18 @@ async function boot(): Promise<void> {
 
     // Create a scratch notebook with one starter cell
     const data = await strata.createNotebook(runtimeConfig.defaultParentPath, 'scratch', null, true)
+    markNotebookPerf('boot_response')
+    measureNotebookPerf('boot_request_ms', 'boot_request_start', 'boot_response')
     loadNotebookStateFromBackend(data)
+    markNotebookPerf('boot_hydrated')
+    measureNotebookPerf('boot_hydrate_ms', 'boot_response', 'boot_hydrated')
 
     // Connect WebSocket and wait for it
     initializeWebSocket()
     await waitForWebSocket()
+    markNotebookPerf('boot_ws_ready')
+    measureNotebookPerf('boot_ws_connect_ms', 'boot_hydrated', 'boot_ws_ready')
+    measureNotebookPerf('boot_total_ms', 'boot_request_start', 'boot_ws_ready')
 
     connected.value = true
   } catch (e: any) {
@@ -1063,6 +1072,7 @@ async function boot(): Promise<void> {
  */
 async function openNotebook(path: string): Promise<any> {
   const strata = useStrata()
+  markNotebookPerf('store_open_request_start')
   // Cleanup existing WebSocket
   cleanupWebSocket()
   dependencyError.value = null
@@ -1074,10 +1084,17 @@ async function openNotebook(path: string): Promise<any> {
   resetWorkerCatalogState()
 
   const data = await strata.openNotebook(path)
+  markNotebookPerf('store_open_response')
+  measureNotebookPerf('store_open_request_ms', 'store_open_request_start', 'store_open_response')
   loadNotebookStateFromBackend(data)
+  markNotebookPerf('store_open_hydrated')
+  measureNotebookPerf('store_open_hydrate_ms', 'store_open_response', 'store_open_hydrated')
 
   initializeWebSocket()
   await waitForWebSocket()
+  markNotebookPerf('store_open_ws_ready')
+  measureNotebookPerf('store_open_ws_connect_ms', 'store_open_hydrated', 'store_open_ws_ready')
+  measureNotebookPerf('store_open_total_ms', 'store_open_request_start', 'store_open_ws_ready')
   connected.value = true
 
   return data
@@ -1090,6 +1107,7 @@ async function openNotebook(path: string): Promise<any> {
  */
 async function openBySessionId(sessionId: string): Promise<any> {
   const strata = useStrata()
+  markNotebookPerf('store_session_request_start')
   cleanupWebSocket()
   dependencyError.value = null
   environmentError.value = null
@@ -1100,13 +1118,36 @@ async function openBySessionId(sessionId: string): Promise<any> {
   resetWorkerCatalogState()
 
   const data = consumePrefetchedNotebookSession(sessionId) ?? (await strata.getSession(sessionId))
+  markNotebookPerf('store_session_response')
+  measureNotebookPerf(
+    'store_session_request_ms',
+    'store_session_request_start',
+    'store_session_response',
+  )
   if (!data.session_id) {
     data.session_id = sessionId
   }
   loadNotebookStateFromBackend(data)
+  markNotebookPerf('store_session_hydrated')
+  measureNotebookPerf(
+    'store_session_hydrate_ms',
+    'store_session_response',
+    'store_session_hydrated',
+  )
 
   initializeWebSocket()
   await waitForWebSocket()
+  markNotebookPerf('store_session_ws_ready')
+  measureNotebookPerf(
+    'store_session_ws_connect_ms',
+    'store_session_hydrated',
+    'store_session_ws_ready',
+  )
+  measureNotebookPerf(
+    'store_session_total_ms',
+    'store_session_request_start',
+    'store_session_ws_ready',
+  )
   connected.value = true
 
   return data

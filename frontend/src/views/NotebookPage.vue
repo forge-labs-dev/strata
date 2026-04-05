@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import CellEditor from '../components/CellEditor.vue'
+import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
 
 const DagView = defineAsyncComponent(() => import('../components/DagView.vue'))
 const EnvironmentPanel = defineAsyncComponent(() => import('../components/EnvironmentPanel.vue'))
@@ -108,11 +109,28 @@ async function connectToSession(sessionId: string) {
   loading.value = true
   reconnectError.value = null
   recoveryPath.value = null
+  clearNotebookPerfMarks(
+    'session_click',
+    'connect_start',
+    'notebook_ready',
+    'connect_total_ms',
+    'create_total_ms',
+    'open_total_ms',
+    'session_total_ms',
+  )
+  markNotebookPerf('session_click')
+  markNotebookPerf('connect_start')
   try {
     const data = await openBySessionId(sessionId)
     if (data && data.path) {
       record(data.name || notebook.name, data.path, data.session_id || sessionId)
     }
+    await nextTick()
+    markNotebookPerf('notebook_ready')
+    measureNotebookPerf('connect_total_ms', 'connect_start', 'notebook_ready')
+    measureNotebookPerf('create_total_ms', 'create_click', 'notebook_ready')
+    measureNotebookPerf('open_total_ms', 'open_click', 'notebook_ready')
+    measureNotebookPerf('session_total_ms', 'session_click', 'notebook_ready')
   } catch (e: any) {
     const message = e?.message || 'Failed to reconnect to notebook session'
     const recoveryCandidate = routeNotebookPath.value || findBySessionId(sessionId)?.path || null
@@ -226,7 +244,7 @@ function goHome() {
 </script>
 
 <template>
-  <div class="app">
+  <div class="app" data-testid="notebook-page">
     <!-- Header -->
     <header class="header">
       <div class="header-left">
@@ -258,10 +276,22 @@ function goHome() {
         <span class="connection" :class="{ connected: connected }">
           {{ loading ? '◌ Connecting…' : connected ? '● Live' : '○ Not connected' }}
         </span>
-        <button class="btn" :disabled="!connected || environmentMutationActive" @click="runAll">
+        <button
+          class="btn"
+          data-testid="notebook-run-all"
+          :disabled="!connected || environmentMutationActive"
+          @click="runAll"
+        >
           ▶ Run All
         </button>
-        <button class="btn btn-secondary" :disabled="!connected" @click="addCell()">+ Cell</button>
+        <button
+          class="btn btn-secondary"
+          data-testid="notebook-add-cell"
+          :disabled="!connected"
+          @click="addCell()"
+        >
+          + Cell
+        </button>
       </div>
     </header>
 
@@ -292,7 +322,7 @@ function goHome() {
     <!-- Main layout -->
     <div v-else-if="!loading" class="main" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
       <!-- Cells -->
-      <div class="cells-panel">
+      <div class="cells-panel" data-testid="notebook-cells-panel">
         <CellEditor
           v-for="cell in orderedCells"
           :key="cell.id"

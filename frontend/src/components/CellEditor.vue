@@ -396,7 +396,7 @@ function formatScalar(scalar: unknown): string {
 </script>
 
 <template>
-  <div class="cell" :class="statusClass">
+  <div class="cell" :class="statusClass" data-testid="notebook-cell">
     <!-- Left gutter -->
     <div class="cell-gutter">
       <span class="status-dot" :title="cell.status">{{ statusLabel }}</span>

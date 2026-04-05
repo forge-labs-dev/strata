@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { useStrata } from '../composables/useStrata'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import { primePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
+import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
 
 const router = useRouter()
 const strata = useStrata()
@@ -52,6 +53,8 @@ async function createNotebook() {
   if (!newName.value.trim()) return
   loading.value = true
   error.value = null
+  clearNotebookPerfMarks('create_click', 'create_response', 'create_request_ms', 'create_total_ms')
+  markNotebookPerf('create_click')
   try {
     const notebookPath = `${newParentPath.value.replace(/\/+$/, '')}/${newName.value}`
     const data = await strata.createNotebook(
@@ -59,6 +62,8 @@ async function createNotebook() {
       newName.value,
       selectedPythonVersion.value || null,
     )
+    markNotebookPerf('create_response')
+    measureNotebookPerf('create_request_ms', 'create_click', 'create_response')
     const resolvedPath = data.path || notebookPath
     primePrefetchedNotebookSession(data)
     record(data.name, resolvedPath, data.session_id)
@@ -79,8 +84,12 @@ async function openNotebook(path?: string) {
   if (!target) return
   loading.value = true
   error.value = null
+  clearNotebookPerfMarks('open_click', 'open_response', 'open_request_ms', 'open_total_ms')
+  markNotebookPerf('open_click')
   try {
     const data = await strata.openNotebook(target)
+    markNotebookPerf('open_response')
+    measureNotebookPerf('open_request_ms', 'open_click', 'open_response')
     const resolvedPath = data.path || target
     primePrefetchedNotebookSession(data)
     record(data.name, resolvedPath, data.session_id)
@@ -112,7 +121,7 @@ function formatTime(ts: number): string {
 </script>
 
 <template>
-  <div class="home">
+  <div class="home" data-testid="home-page">
     <div class="home-container">
       <div class="home-header">
         <span class="logo">◆ strata</span>
@@ -127,18 +136,18 @@ function formatTime(ts: number): string {
 
       <!-- Actions -->
       <div class="actions">
-        <div class="action-card" @click="showNewForm = true">
+        <div class="action-card" data-testid="action-new-notebook" @click="showNewForm = true">
           <div class="action-icon">+</div>
           <div class="action-label">New Notebook</div>
         </div>
-        <div class="action-card" @click="showOpenForm = true">
+        <div class="action-card" data-testid="action-open-notebook" @click="showOpenForm = true">
           <div class="action-icon">📂</div>
           <div class="action-label">Open Existing</div>
         </div>
       </div>
 
       <!-- New notebook form -->
-      <div v-if="showNewForm" class="form-card">
+      <div v-if="showNewForm" class="form-card" data-testid="new-notebook-form">
         <h3>New Notebook</h3>
         <label class="form-label">
           Name
@@ -146,6 +155,7 @@ function formatTime(ts: number): string {
             v-model="newName"
             type="text"
             class="form-input"
+            data-testid="new-notebook-name"
             placeholder="My Notebook"
             @keydown.enter="createNotebook"
           />
@@ -156,6 +166,7 @@ function formatTime(ts: number): string {
             v-model="newParentPath"
             type="text"
             class="form-input"
+            data-testid="new-notebook-parent-path"
             :placeholder="FALLBACK_NOTEBOOK_PARENT_PATH"
           />
         </label>
@@ -164,6 +175,7 @@ function formatTime(ts: number): string {
           <select
             v-model="selectedPythonVersion"
             class="form-input"
+            data-testid="new-notebook-python-version"
             :disabled="pythonSelectionFixed || availablePythonVersions.length === 0"
           >
             <option v-for="version in availablePythonVersions" :key="version" :value="version">
@@ -179,13 +191,20 @@ function formatTime(ts: number): string {
           </span>
         </label>
         <div class="form-actions">
-          <button class="btn" :disabled="loading" @click="createNotebook">Create</button>
+          <button
+            class="btn"
+            data-testid="create-notebook-submit"
+            :disabled="loading"
+            @click="createNotebook"
+          >
+            Create
+          </button>
           <button class="btn btn-secondary" @click="showNewForm = false">Cancel</button>
         </div>
       </div>
 
       <!-- Open notebook form -->
-      <div v-if="showOpenForm" class="form-card">
+      <div v-if="showOpenForm" class="form-card" data-testid="open-notebook-form">
         <h3>Open Notebook</h3>
         <label class="form-label">
           Path to notebook directory
@@ -193,12 +212,20 @@ function formatTime(ts: number): string {
             v-model="openPath"
             type="text"
             class="form-input"
+            data-testid="open-notebook-path"
             placeholder="/path/to/notebook"
             @keydown.enter="openNotebook()"
           />
         </label>
         <div class="form-actions">
-          <button class="btn" :disabled="loading" @click="openNotebook()">Open</button>
+          <button
+            class="btn"
+            data-testid="open-notebook-submit"
+            :disabled="loading"
+            @click="openNotebook()"
+          >
+            Open
+          </button>
           <button class="btn btn-secondary" @click="showOpenForm = false">Cancel</button>
         </div>
       </div>
@@ -223,7 +250,7 @@ function formatTime(ts: number): string {
       </div>
 
       <!-- Loading overlay -->
-      <div v-if="loading" class="loading-overlay">
+      <div v-if="loading" class="loading-overlay" data-testid="home-loading">
         <div class="spinner"></div>
         <span>Loading notebook...</span>
       </div>

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -27,6 +28,7 @@ from strata.notebook.executor import CellExecutor
 from strata.notebook.models import CellStatus, MountSpec, WorkerSpec
 from strata.notebook.python_versions import current_python_minor, normalize_python_minor
 from strata.notebook.session import SessionManager
+from strata.notebook.timing import NotebookTimingRecorder
 from strata.notebook.workers import (
     build_worker_catalog_with_health,
     notebook_worker_definitions_editable,
@@ -98,6 +100,28 @@ def _reuse_open_session_by_path() -> bool:
         return True
 
     return state.config.deployment_mode == "personal"
+
+
+def _timed_json_response(
+    data: dict,
+    *,
+    timing: NotebookTimingRecorder,
+    route_name: str,
+    log_context: str,
+) -> JSONResponse:
+    timings_ms = timing.as_dict()
+    logger.info(
+        "%s timing %s",
+        route_name,
+        {
+            "context": log_context,
+            "timings_ms": {name: round(duration, 1) for name, duration in timings_ms.items()},
+        },
+    )
+    return JSONResponse(
+        content=jsonable_encoder(data),
+        headers={"Server-Timing": timing.server_timing_header()},
+    )
 
 
 def validate_package_name(package: str) -> str:
@@ -456,7 +480,7 @@ class PreviewEnvironmentYamlRequest(BaseModel):
 
 
 @router.post("/open")
-async def open_notebook(req: OpenNotebookRequest) -> dict:
+async def open_notebook(req: OpenNotebookRequest) -> JSONResponse:
     """Open a notebook directory.
 
     Args:
@@ -465,33 +489,46 @@ async def open_notebook(req: OpenNotebookRequest) -> dict:
     Returns:
         Notebook state, session ID, and DAG as JSON
     """
-    notebook_path = _validate_notebook_path(req.path, "notebook path")
-    if not notebook_path.exists():
-        raise HTTPException(status_code=404, detail="Notebook directory not found")
+    timing = NotebookTimingRecorder()
 
     try:
+        with timing.phase("validate"):
+            notebook_path = _validate_notebook_path(req.path, "notebook path")
+            if not notebook_path.exists():
+                raise HTTPException(status_code=404, detail="Notebook directory not found")
+
         # Create session (parses notebook and triggers DAG analysis)
-        session = _session_manager.open_notebook(
-            notebook_path,
-            reuse_existing=_reuse_open_session_by_path(),
-        )
+        with timing.phase("session_open"):
+            session = _session_manager.open_notebook(
+                notebook_path,
+                reuse_existing=_reuse_open_session_by_path(),
+                timing=timing,
+            )
 
         # Return notebook state with session ID and DAG
-        data = session.serialize_notebook_state()
-        data["session_id"] = session.id
-        data["path"] = str(session.path)
-        data["dag"] = _format_dag(session)
-        data.update(_serialize_notebook_runtime_config())
-        return data
+        with timing.phase("serialize"):
+            data = session.serialize_notebook_state()
+            data["session_id"] = session.id
+            data["path"] = str(session.path)
+            data["dag"] = _format_dag(session)
+            data.update(_serialize_notebook_runtime_config())
+        return _timed_json_response(
+            data,
+            timing=timing,
+            route_name="notebook_open",
+            log_context=str(notebook_path),
+        )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/create")
-async def create_new_notebook(req: CreateNotebookRequest) -> dict:
+async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
     """Create a new notebook.
 
     Args:
@@ -500,36 +537,48 @@ async def create_new_notebook(req: CreateNotebookRequest) -> dict:
     Returns:
         Notebook state as JSON
     """
+    timing = NotebookTimingRecorder()
     try:
-        parent_path = _validate_notebook_path(req.parent_path, "parent path")
-        runtime_config = _serialize_notebook_runtime_config()
-        selected_python_version = req.python_version or runtime_config["default_python_version"]
-        allowed_python_versions = runtime_config["available_python_versions"]
-        if selected_python_version not in allowed_python_versions:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Python {selected_python_version} is not available for notebook creation"
-                ),
+        with timing.phase("validate"):
+            parent_path = _validate_notebook_path(req.parent_path, "parent path")
+            runtime_config = _serialize_notebook_runtime_config()
+            selected_python_version = req.python_version or runtime_config["default_python_version"]
+            allowed_python_versions = runtime_config["available_python_versions"]
+            if selected_python_version not in allowed_python_versions:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Python {selected_python_version} is not available for notebook creation"
+                    ),
+                )
+
+        with timing.phase("create_notebook"):
+            notebook_dir = create_notebook(
+                parent_path,
+                req.name,
+                python_version=selected_python_version,
+            )
+        if req.starter_cell:
+            with timing.phase("create_starter_cell"):
+                add_cell_to_notebook(notebook_dir, str(uuid.uuid4()))
+        with timing.phase("session_open"):
+            session = _session_manager.open_notebook(
+                notebook_dir,
+                skip_initial_venv_sync=True,
+                timing=timing,
             )
 
-        notebook_dir = create_notebook(
-            parent_path,
-            req.name,
-            python_version=selected_python_version,
+        with timing.phase("serialize"):
+            data = session.serialize_notebook_state()
+            data["session_id"] = session.id
+            data["path"] = str(session.path)
+            data.update(runtime_config)
+        return _timed_json_response(
+            data,
+            timing=timing,
+            route_name="notebook_create",
+            log_context=str(notebook_dir),
         )
-        if req.starter_cell:
-            add_cell_to_notebook(notebook_dir, str(uuid.uuid4()))
-        session = _session_manager.open_notebook(
-            notebook_dir,
-            skip_initial_venv_sync=True,
-        )
-
-        data = session.serialize_notebook_state()
-        data["session_id"] = session.id
-        data["path"] = str(session.path)
-        data.update(runtime_config)
-        return data
     except HTTPException:
         raise
     except ValueError as exc:
@@ -836,7 +885,7 @@ async def list_sessions() -> dict:
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str) -> dict:
+async def get_session(session_id: str) -> JSONResponse:
     """Get full state for an existing session.
 
     This allows the frontend to reconnect to a session after a page
@@ -849,17 +898,25 @@ async def get_session(session_id: str) -> dict:
         Notebook state, session ID, and DAG as JSON (same shape as
         the ``open`` endpoint response).
     """
+    timing = NotebookTimingRecorder()
     _require_personal_mode_session_api()
-    session = _session_manager.get_session(session_id)
+    with timing.phase("lookup"):
+        session = _session_manager.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    data = session.serialize_notebook_state()
-    data["session_id"] = session.id
-    data["path"] = str(session.path)
-    data["dag"] = _format_dag(session)
-    data.update(_serialize_notebook_runtime_config())
-    return data
+    with timing.phase("serialize"):
+        data = session.serialize_notebook_state()
+        data["session_id"] = session.id
+        data["path"] = str(session.path)
+        data["dag"] = _format_dag(session)
+        data.update(_serialize_notebook_runtime_config())
+    return _timed_json_response(
+        data,
+        timing=timing,
+        route_name="notebook_get_session",
+        log_context=session_id,
+    )
 
 
 @router.put("/{notebook_id}/cells/reorder")

@@ -40,6 +40,7 @@ from strata.notebook.mounts import MountFingerprinter, resolve_cell_mounts
 from strata.notebook.parser import parse_notebook
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 from strata.notebook.python_versions import read_requested_python_minor
+from strata.notebook.timing import NotebookTimingRecorder
 from strata.notebook.workers import (
     build_worker_catalog,
     resolve_worker_spec,
@@ -1705,6 +1706,7 @@ class SessionManager:
         *,
         skip_initial_venv_sync: bool = False,
         reuse_existing: bool = False,
+        timing: NotebookTimingRecorder | None = None,
     ) -> NotebookSession:
         """Open a notebook directory.
 
@@ -1714,6 +1716,7 @@ class SessionManager:
                 only refresh lightweight runtime metadata on first open.
             reuse_existing: Reuse an already-open in-memory session for the
                 same path instead of constructing a new one.
+            timing: Optional request timing recorder for internal phases.
 
         Returns:
             NotebookSession for the opened notebook
@@ -1723,15 +1726,27 @@ class SessionManager:
         if reuse_existing:
             existing = self._find_session_by_path(Path(directory))
             if existing is not None:
-                existing.reload()
+                if timing is None:
+                    existing.reload()
+                else:
+                    with timing.phase("session_reload"):
+                        existing.reload()
                 try:
-                    existing.refresh_environment_runtime()
+                    if timing is None:
+                        existing.refresh_environment_runtime()
+                    else:
+                        with timing.phase("session_env_refresh"):
+                            existing.refresh_environment_runtime()
                 except Exception as e:
                     logger.warning("Failed to refresh existing notebook runtime: %s", e)
                 existing.touch()
                 return existing
 
-        notebook_state = parse_notebook(Path(directory))
+        if timing is None:
+            notebook_state = parse_notebook(Path(directory))
+        else:
+            with timing.phase("session_parse"):
+                notebook_state = parse_notebook(Path(directory))
         session = NotebookSession(notebook_state, Path(directory))
 
         # Ensure venv is ready. Freshly-created notebooks may already have a
@@ -1739,9 +1754,17 @@ class SessionManager:
         # paying for a second uv sync and just refresh runtime metadata.
         try:
             if skip_initial_venv_sync:
-                session.refresh_environment_runtime()
+                if timing is None:
+                    session.refresh_environment_runtime()
+                else:
+                    with timing.phase("session_env_refresh"):
+                        session.refresh_environment_runtime()
             else:
-                session.ensure_venv_synced()
+                if timing is None:
+                    session.ensure_venv_synced()
+                else:
+                    with timing.phase("session_env_sync"):
+                        session.ensure_venv_synced()
         except Exception as e:
             # Log warning but don't fail — notebook can still be opened,
             # it just won't be able to execute cells
@@ -1749,23 +1772,47 @@ class SessionManager:
 
         # M6: Initialize and start warm process pool
         try:
-            from strata.notebook.pool import WarmProcessPool
-            session.warm_pool = WarmProcessPool(
-                notebook_dir=Path(directory),
-                pool_size=2,
-                python_executable=session.venv_python or Path("python"),
-            )
-            # Start pool in background (don't block on notebook open)
-            import asyncio
-            try:
-                task = asyncio.get_running_loop().create_task(session.warm_pool.start())
-                session.warm_pool.track_background_task(task)
-            except RuntimeError:
-                pass  # No running loop; pool stays cold until first acquire
+            if timing is None:
+                from strata.notebook.pool import WarmProcessPool
+
+                session.warm_pool = WarmProcessPool(
+                    notebook_dir=Path(directory),
+                    pool_size=2,
+                    python_executable=session.venv_python or Path("python"),
+                )
+                # Start pool in background (don't block on notebook open)
+                import asyncio
+
+                try:
+                    task = asyncio.get_running_loop().create_task(session.warm_pool.start())
+                    session.warm_pool.track_background_task(task)
+                except RuntimeError:
+                    pass  # No running loop; pool stays cold until first acquire
+            else:
+                with timing.phase("session_warm_pool"):
+                    from strata.notebook.pool import WarmProcessPool
+
+                    session.warm_pool = WarmProcessPool(
+                        notebook_dir=Path(directory),
+                        pool_size=2,
+                        python_executable=session.venv_python or Path("python"),
+                    )
+                    # Start pool in background (don't block on notebook open)
+                    import asyncio
+
+                    try:
+                        task = asyncio.get_running_loop().create_task(session.warm_pool.start())
+                        session.warm_pool.track_background_task(task)
+                    except RuntimeError:
+                        pass  # No running loop; pool stays cold until first acquire
         except Exception as e:
             logger.warning("Failed to initialize warm pool: %s", e)
 
-        session.compute_staleness()
+        if timing is None:
+            session.compute_staleness()
+        else:
+            with timing.phase("session_staleness"):
+                session.compute_staleness()
 
         self._sessions[session.id] = session
         return session

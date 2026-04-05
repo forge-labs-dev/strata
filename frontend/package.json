@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
     "test": "node --test src/**/*.test.ts",
+    "benchmark:notebook": "node scripts/bench-notebook-flows.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "preview": "vite preview"
@@ -25,6 +26,7 @@
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/tsconfig": "^0.9.0",
+    "playwright": "^1.59.1",
     "prettier": "^3.8.1",
     "typescript": "~5.9.3",
     "vite": "^8.0.1",
