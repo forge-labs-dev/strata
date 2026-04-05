@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useStrata } from '../composables/useStrata'
+import { preloadNotebookRoute } from '../router'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import { primePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
 import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
@@ -53,6 +54,7 @@ async function createNotebook() {
   if (!newName.value.trim()) return
   loading.value = true
   error.value = null
+  void preloadNotebookRoute()
   clearNotebookPerfMarks('create_click', 'create_response', 'create_request_ms', 'create_total_ms')
   markNotebookPerf('create_click')
   try {
@@ -67,7 +69,8 @@ async function createNotebook() {
     const resolvedPath = data.path || notebookPath
     primePrefetchedNotebookSession(data)
     record(data.name, resolvedPath, data.session_id)
-    router.push({
+    markNotebookPerf('create_route_start')
+    await router.push({
       name: 'notebook',
       params: { sessionId: data.session_id },
       query: { path: resolvedPath },
@@ -84,6 +87,7 @@ async function openNotebook(path?: string) {
   if (!target) return
   loading.value = true
   error.value = null
+  void preloadNotebookRoute()
   clearNotebookPerfMarks('open_click', 'open_response', 'open_request_ms', 'open_total_ms')
   markNotebookPerf('open_click')
   try {
@@ -93,7 +97,8 @@ async function openNotebook(path?: string) {
     const resolvedPath = data.path || target
     primePrefetchedNotebookSession(data)
     record(data.name, resolvedPath, data.session_id)
-    router.push({
+    markNotebookPerf('open_route_start')
+    await router.push({
       name: 'notebook',
       params: { sessionId: data.session_id },
       query: { path: resolvedPath },
@@ -136,11 +141,23 @@ function formatTime(ts: number): string {
 
       <!-- Actions -->
       <div class="actions">
-        <div class="action-card" data-testid="action-new-notebook" @click="showNewForm = true">
+        <div
+          class="action-card"
+          data-testid="action-new-notebook"
+          @click="showNewForm = true"
+          @mouseenter="void preloadNotebookRoute()"
+          @focusin="void preloadNotebookRoute()"
+        >
           <div class="action-icon">+</div>
           <div class="action-label">New Notebook</div>
         </div>
-        <div class="action-card" data-testid="action-open-notebook" @click="showOpenForm = true">
+        <div
+          class="action-card"
+          data-testid="action-open-notebook"
+          @click="showOpenForm = true"
+          @mouseenter="void preloadNotebookRoute()"
+          @focusin="void preloadNotebookRoute()"
+        >
           <div class="action-icon">📂</div>
           <div class="action-label">Open Existing</div>
         </div>

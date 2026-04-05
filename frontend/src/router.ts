@@ -1,6 +1,14 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import HomePage from './views/HomePage.vue'
 
+const loadNotebookPage = () => import('./views/NotebookPage.vue')
+let notebookPagePrefetch: Promise<unknown> | null = null
+
+export function preloadNotebookRoute(): Promise<unknown> {
+  notebookPagePrefetch ??= loadNotebookPage()
+  return notebookPagePrefetch
+}
+
 const router = createRouter({
   history: createWebHashHistory(),
   routes: [
@@ -8,7 +16,7 @@ const router = createRouter({
     {
       path: '/notebook/:sessionId',
       name: 'notebook',
-      component: () => import('./views/NotebookPage.vue'),
+      component: loadNotebookPage,
       props: true,
     },
   ],
