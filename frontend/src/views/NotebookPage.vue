@@ -18,7 +18,7 @@ const props = defineProps<{ sessionId: string }>()
 
 const route = useRoute()
 const router = useRouter()
-const { record, findBySessionId } = useRecentNotebooks()
+const { record, remove, findBySessionId } = useRecentNotebooks()
 
 const {
   notebook,
@@ -29,6 +29,7 @@ const {
   workerDefinitionsEditable,
   openBySessionId,
   openNotebook,
+  deleteNotebookAction,
   addCell,
   removeCell,
   executeCellWebSocket,
@@ -39,6 +40,8 @@ const {
 const editingName = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
 const loading = ref(true)
+const deletingNotebook = ref(false)
+const deleteError = ref<string | null>(null)
 const reconnectError = ref<string | null>(null)
 const recoveryPath = ref<string | null>(null)
 const sidebarWidth = ref(340)
@@ -76,6 +79,9 @@ const reconnectSummary = computed(() =>
 const reconnectActionLabel = computed(() =>
   serviceReconnectBlocked.value ? 'Reopen From Path' : 'Reopen Notebook',
 )
+const deleteButtonDisabled = computed(
+  () => deletingNotebook.value || loading.value || environmentMutationActive.value,
+)
 const routeNotebookPath = computed(() => {
   const raw = route.query.path
   return typeof raw === 'string' && raw.trim() ? raw.trim() : null
@@ -110,6 +116,7 @@ watch(
 
 async function connectToSession(sessionId: string) {
   loading.value = true
+  deleteError.value = null
   reconnectError.value = null
   recoveryPath.value = null
   clearNotebookPerfMarks(
@@ -196,6 +203,34 @@ async function reopenNotebookFromRecent() {
     recoveryPath.value = path
   } finally {
     loading.value = false
+  }
+}
+
+async function deleteNotebook() {
+  const notebookName = notebook.name || 'Untitled Notebook'
+  const confirmed = window.confirm(
+    `Delete notebook "${notebookName}" and all local environment and artifact data? This cannot be undone.`,
+  )
+  if (!confirmed) return
+
+  deletingNotebook.value = true
+  deleteError.value = null
+
+  try {
+    const data = await deleteNotebookAction()
+    const deletedPath =
+      (typeof data?.path === 'string' && data.path) ||
+      routeNotebookPath.value ||
+      findBySessionId(props.sessionId)?.path ||
+      null
+    if (deletedPath) {
+      remove(deletedPath)
+    }
+    await router.replace({ name: 'home' })
+  } catch (e: any) {
+    deleteError.value = e?.message || 'Failed to delete notebook'
+  } finally {
+    deletingNotebook.value = false
   }
 }
 
@@ -296,12 +331,29 @@ function goHome() {
         >
           + Cell
         </button>
+        <button
+          class="btn btn-danger"
+          data-testid="notebook-delete"
+          :disabled="deleteButtonDisabled"
+          :title="
+            environmentMutationActive
+              ? 'Finish the environment update before deleting the notebook.'
+              : ''
+          "
+          @click="deleteNotebook"
+        >
+          {{ deletingNotebook ? 'Deleting…' : 'Delete Notebook' }}
+        </button>
       </div>
     </header>
 
     <!-- Connection error banner -->
     <div v-if="connectError && !loading" class="error-banner">
       Server not reachable: {{ connectError }}
+    </div>
+
+    <div v-else-if="deleteError && !loading" class="error-banner">
+      {{ deleteError }}
     </div>
 
     <div v-else-if="reconnectError && !loading" class="reconnect-state">
@@ -418,5 +470,15 @@ function goHome() {
 .reconnect-actions {
   display: flex;
   gap: 12px;
+}
+
+.btn-danger {
+  border-color: #7f1d1d;
+  background: #3f1010;
+  color: #fecaca;
+}
+
+.btn-danger:disabled {
+  opacity: 0.6;
 }
 </style>

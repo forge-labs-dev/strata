@@ -177,6 +177,16 @@ async function createNotebook(
   return resp.json()
 }
 
+async function deleteNotebook(notebookId: string): Promise<any> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}`, {
+    method: 'DELETE',
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to delete notebook')
+  }
+  return resp.json()
+}
+
 async function getNotebookRuntimeConfig(): Promise<any> {
   const resp = await fetch(`${STRATA_BASE}/v1/notebooks/config`)
   if (!resp.ok) {
@@ -605,6 +615,7 @@ export function useStrata() {
     fetchStream,
     openNotebook,
     createNotebook,
+    deleteNotebook,
     getNotebookRuntimeConfig,
     updateCellSource,
     addCell,

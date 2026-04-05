@@ -1177,6 +1177,30 @@ async function openBySessionId(sessionId: string): Promise<any> {
   return data
 }
 
+async function deleteNotebookAction(): Promise<any> {
+  const sid = sessionId()
+  if (!sid) {
+    throw new Error('Notebook is not open')
+  }
+
+  const strata = useStrata()
+  const data = await strata.deleteNotebook(sid)
+
+  cleanupWebSocket()
+  connected.value = false
+  connectError.value = null
+  dependencyError.value = null
+  environmentError.value = null
+  environmentWarnings.value = []
+  environmentLastAction.value = null
+  environmentOperation.value = null
+  environmentJobHistory.value = []
+  resetWorkerCatalogState()
+  ;(notebook as any).sessionId = undefined
+
+  return data
+}
+
 // --- WebSocket integration -------------------------------------------------
 
 // v1.1: Impact preview and profiling state
@@ -2418,6 +2442,7 @@ export function useNotebook() {
     boot,
     openNotebook,
     openBySessionId,
+    deleteNotebookAction,
     // Cell operations (always backend-backed)
     addCell,
     removeCell,

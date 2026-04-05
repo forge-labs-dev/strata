@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from strata.notebook.routes import router
+from strata.notebook.session import EnvironmentJobSnapshot
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
@@ -460,6 +461,111 @@ def test_create_notebook_endpoint_rejects_unsupported_python_version(monkeypatch
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Python 3.12 is not available for notebook creation"
+
+
+def test_delete_notebook_endpoint_removes_directory_and_closes_session():
+    """Deleting a notebook should remove its files and close the live session."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Delete Me")
+        artifact_file = notebook_dir / ".strata" / "artifacts" / "result.bin"
+        artifact_file.parent.mkdir(parents=True, exist_ok=True)
+        artifact_file.write_bytes(b"artifact")
+        venv_marker = notebook_dir / ".venv" / "bin" / "python"
+        venv_marker.parent.mkdir(parents=True, exist_ok=True)
+        venv_marker.write_text("", encoding="utf-8")
+
+        open_response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert open_response.status_code == 200
+        session_id = open_response.json()["session_id"]
+
+        delete_response = client.delete(f"/v1/notebooks/{session_id}")
+
+        assert delete_response.status_code == 200
+        data = delete_response.json()
+        assert data["deleted"] is True
+        assert data["path"] == str(notebook_dir.resolve())
+        assert not notebook_dir.exists()
+
+        from strata.notebook.routes import get_session_manager
+
+        assert get_session_manager().get_session(session_id) is None
+
+
+def test_delete_notebook_endpoint_rejects_service_mode(deployment_mode_state):
+    """Notebook deletion should remain disabled in service mode."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Delete")
+        open_response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert open_response.status_code == 200
+        session_id = open_response.json()["session_id"]
+
+        deployment_mode_state("service")
+        response = client.delete(f"/v1/notebooks/{session_id}")
+
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Notebook deletion is only available in personal mode"
+        assert notebook_dir.exists()
+
+
+def test_delete_notebook_endpoint_rejects_active_environment_job():
+    """Notebook deletion should be blocked while env mutation is running."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Busy Notebook")
+        open_response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert open_response.status_code == 200
+        session_id = open_response.json()["session_id"]
+
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        session.environment_job = EnvironmentJobSnapshot(
+            id="job-123",
+            action="sync",
+            command="uv sync",
+            status="running",
+            phase="uv_running",
+            started_at=1,
+        )
+
+        response = client.delete(f"/v1/notebooks/{session_id}")
+
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "ENVIRONMENT_BUSY"
+        assert "environment update is in progress" in detail["message"]
+        assert notebook_dir.exists()
+
+
+def test_delete_notebook_endpoint_rejects_running_execution(monkeypatch):
+    """Notebook deletion should be blocked while notebook execution is active."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Running Notebook")
+        open_response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert open_response.status_code == 200
+        session_id = open_response.json()["session_id"]
+
+        from strata.notebook.routes import get_session_manager
+
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        monkeypatch.setattr(session, "_has_active_execution", lambda: True)
+
+        response = client.delete(f"/v1/notebooks/{session_id}")
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == (
+            "Notebook deletion is blocked while notebook execution is running."
+        )
+        assert notebook_dir.exists()
 
 
 def test_get_notebook_runtime_config_endpoint(monkeypatch):

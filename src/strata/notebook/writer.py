@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import time
 import uuid
@@ -502,6 +503,23 @@ def rename_notebook(notebook_dir: Path, new_name: str) -> None:
 
     with open(notebook_toml_path, "wb") as f:
         tomli_w.dump(toml_data, f)
+
+
+def delete_notebook_directory(notebook_dir: Path) -> None:
+    """Delete a notebook directory and all notebook-owned runtime state."""
+    notebook_dir = Path(notebook_dir).resolve()
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    if notebook_dir.is_symlink():
+        raise ValueError("Refusing to delete a symlinked notebook directory")
+    if not notebook_dir.exists():
+        raise FileNotFoundError(f"Notebook directory not found: {notebook_dir}")
+    if not notebook_dir.is_dir():
+        raise ValueError(f"Notebook path is not a directory: {notebook_dir}")
+    if not notebook_toml_path.is_file():
+        raise ValueError(f"Notebook directory missing notebook.toml: {notebook_dir}")
+
+    shutil.rmtree(notebook_dir)
 
 
 def update_notebook_mounts(notebook_dir: Path, mounts: list[MountSpec]) -> None:

@@ -37,6 +37,7 @@ from strata.notebook.workers import (
 from strata.notebook.writer import (
     add_cell_to_notebook,
     create_notebook,
+    delete_notebook_directory,
     remove_cell_from_notebook,
     rename_notebook,
     reorder_cells,
@@ -100,6 +101,22 @@ def _reuse_open_session_by_path() -> bool:
         return True
 
     return state.config.deployment_mode == "personal"
+
+
+def _require_personal_mode_notebook_delete() -> None:
+    """Restrict destructive notebook deletion to personal mode for now."""
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+    except RuntimeError:
+        return
+
+    if state.config.deployment_mode != "personal":
+        raise HTTPException(
+            status_code=403,
+            detail="Notebook deletion is only available in personal mode",
+        )
 
 
 def _timed_json_response(
@@ -601,6 +618,50 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.delete("/{notebook_id}")
+async def delete_notebook(notebook_id: str) -> dict:
+    """Delete a notebook directory and all notebook-owned runtime state."""
+    _require_personal_mode_notebook_delete()
+
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    if session.has_active_environment_mutation():
+        _raise_environment_busy(
+            session,
+            "Notebook deletion is blocked while an environment update is in progress.",
+        )
+
+    if session._has_active_execution():
+        raise HTTPException(
+            status_code=409,
+            detail="Notebook deletion is blocked while notebook execution is running.",
+        )
+
+    notebook_path = session.path.resolve()
+    notebook_name = session.notebook_state.name
+
+    _session_manager.close_session(session.id)
+
+    try:
+        delete_notebook_directory(notebook_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Failed to delete notebook %s", notebook_path)
+        raise HTTPException(status_code=500, detail="Failed to delete notebook")
+
+    return {
+        "deleted": True,
+        "session_id": notebook_id,
+        "name": notebook_name,
+        "path": str(notebook_path),
+    }
 
 
 @router.get("/{notebook_id}/environment")
