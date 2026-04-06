@@ -272,6 +272,27 @@ plt.show()
         assert "_" in result["variables"]
         assert result["variables"]["_"]["content_type"] == "image/png"
 
+    def test_harness_captures_multiple_visible_outputs_in_order(self, harness_script):
+        """Visible outputs should be emitted in order with the last one preserved as '_'."""
+        manifest = {
+            "source": """
+display(Markdown("# First"))
+42
+""",
+            "inputs": {},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert len(result["displays"]) == 2
+        assert result["displays"][0]["content_type"] == "text/markdown"
+        assert result["displays"][0]["markdown_text"] == "# First"
+        assert result["displays"][1]["content_type"] == "json/object"
+        assert result["displays"][1]["preview"] == 42
+        assert result["variables"]["_"]["content_type"] == "json/object"
+        assert result["variables"]["_"]["preview"] == 42
+
     def test_harness_complex_dataframe(self, harness_script):
         """Test harness with a more complex DataFrame."""
         manifest = {

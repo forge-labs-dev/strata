@@ -102,15 +102,24 @@ def parse_notebook(directory: Path) -> NotebookState:
         )
         resolved_env = dict(notebook_toml.env)
         resolved_env.update(cell_meta.env)
-        display_output = None
+        display_outputs: list[CellOutput] = []
         raw_artifacts = artifact_entries.get(cell_meta.id, {})
         if isinstance(raw_artifacts, dict):
+            raw_displays = raw_artifacts.get("display_outputs")
+            if isinstance(raw_displays, list):
+                for raw_display in raw_displays:
+                    if not isinstance(raw_display, dict):
+                        continue
+                    try:
+                        display_outputs.append(CellOutput(**raw_display))
+                    except Exception:
+                        continue
             raw_display = raw_artifacts.get("display")
-            if isinstance(raw_display, dict):
+            if not display_outputs and isinstance(raw_display, dict):
                 try:
-                    display_output = CellOutput(**raw_display)
+                    display_outputs = [CellOutput(**raw_display)]
                 except Exception:
-                    display_output = None
+                    display_outputs = []
 
         cell_states.append(
             CellState(
@@ -126,7 +135,8 @@ def parse_notebook(directory: Path) -> NotebookState:
                 env_overrides=dict(cell_meta.env),
                 mounts=list(resolved_mounts.values()),
                 mount_overrides=list(cell_meta.mounts),
-                display_output=display_output,
+                display_outputs=display_outputs,
+                display_output=display_outputs[-1] if display_outputs else None,
             )
         )
 

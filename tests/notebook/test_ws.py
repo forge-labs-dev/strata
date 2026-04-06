@@ -384,6 +384,49 @@ display(Markdown("# Side effect\\n\\nVia websocket."))
         assert terminal_status["payload"]["status"] == "ready"
 
 
+def test_cell_execute_emits_multiple_display_payloads_in_order(client, temp_notebook, app):
+    """Ordered visible outputs should be sent together, with the last one preserved as display."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(
+        notebook_dir,
+        "root",
+        """
+display(Markdown("# First"))
+42
+""",
+    )
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": "root"},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, "root"
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert len(output_message["payload"]["displays"]) == 2
+        assert output_message["payload"]["displays"][0]["content_type"] == "text/markdown"
+        assert output_message["payload"]["displays"][0]["markdown_text"] == "# First"
+        assert output_message["payload"]["displays"][1]["content_type"] == "json/object"
+        assert output_message["payload"]["displays"][1]["preview"] == 42
+        assert output_message["payload"]["display"]["content_type"] == "json/object"
+        assert output_message["payload"]["display"]["preview"] == 42
+        assert terminal_status["payload"]["status"] == "ready"
+
+
 def test_cell_execute_refreshes_downstream_staleness(client, temp_notebook, app):
     """Successful execution should immediately invalidate downstream cell state."""
     notebook_dir, _ = temp_notebook

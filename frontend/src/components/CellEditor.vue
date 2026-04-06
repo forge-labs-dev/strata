@@ -6,7 +6,7 @@ import EnvVarsEditor from './EnvVarsEditor.vue'
 import MountListEditor from './MountListEditor.vue'
 import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
 import WorkerConfigEditor from './WorkerConfigEditor.vue'
-import type { Cell } from '../types/notebook'
+import type { Cell, CellOutput } from '../types/notebook'
 import {
   resolveEffectiveWorkerEntry,
   summarizeRemoteExecutionState,
@@ -395,12 +395,23 @@ function formatScalar(scalar: unknown): string {
   return String(scalar)
 }
 
-const renderedMarkdownOutput = computed(() => {
-  if (props.cell.output?.contentType !== 'text/markdown' || !props.cell.output.markdownText) {
+const visibleOutputs = computed(() => {
+  if (props.cell.displayOutputs?.length) {
+    return props.cell.displayOutputs
+  }
+  return props.cell.output ? [props.cell.output] : []
+})
+
+function renderedMarkdownOutput(output: CellOutput): string {
+  if (output.contentType !== 'text/markdown' || !output.markdownText) {
     return ''
   }
-  return renderMarkdownToHtml(props.cell.output.markdownText)
-})
+  return renderMarkdownToHtml(output.markdownText)
+}
+
+function outputKey(output: CellOutput, index: number): string {
+  return `${index}:${output.artifactUri || output.contentType}`
+}
 </script>
 
 <template>
@@ -741,45 +752,53 @@ const renderedMarkdownOutput = computed(() => {
             </button>
           </div>
         </div>
-        <div v-else-if="cell.output.rows?.length" class="output-table-wrap">
-          <table class="output-table">
-            <thead>
-              <tr>
-                <th v-for="col in cell.output.columns" :key="col">{{ col }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, i) in cell.output.rows?.slice(0, 50)" :key="i">
-                <td v-for="col in cell.output.columns" :key="col">{{ row[col] }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-if="(cell.output.rowCount ?? 0) > 50" class="row-count">
-            showing 50 of {{ cell.output.rowCount?.toLocaleString() }} rows
+        <template v-else>
+          <div
+            v-for="(output, index) in visibleOutputs"
+            :key="outputKey(output, index)"
+            class="output-block"
+          >
+            <div v-if="output.rows?.length" class="output-table-wrap">
+              <table class="output-table">
+                <thead>
+                  <tr>
+                    <th v-for="col in output.columns" :key="col">{{ col }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, rowIndex) in output.rows?.slice(0, 50)" :key="rowIndex">
+                    <td v-for="col in output.columns" :key="col">{{ row[col] }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div v-if="(output.rowCount ?? 0) > 50" class="row-count">
+                showing 50 of {{ output.rowCount?.toLocaleString() }} rows
+              </div>
+            </div>
+            <div
+              v-else-if="output.contentType === 'image/png' && output.inlineDataUrl"
+              class="output-image"
+            >
+              <img
+                :src="output.inlineDataUrl"
+                alt="Cell output"
+                :width="output.width || undefined"
+                :height="output.height || undefined"
+              />
+            </div>
+            <div
+              v-else-if="output.contentType === 'text/markdown' && output.markdownText"
+              class="output-markdown"
+              v-html="renderedMarkdownOutput(output)"
+            ></div>
+            <div
+              v-else-if="output.scalar !== undefined && !isConsoleOnly(output.scalar)"
+              class="output-scalar"
+            >
+              <pre>{{ formatScalar(output.scalar) }}</pre>
+            </div>
           </div>
-        </div>
-        <div
-          v-else-if="cell.output.contentType === 'image/png' && cell.output.inlineDataUrl"
-          class="output-image"
-        >
-          <img
-            :src="cell.output.inlineDataUrl"
-            alt="Cell output"
-            :width="cell.output.width || undefined"
-            :height="cell.output.height || undefined"
-          />
-        </div>
-        <div
-          v-else-if="cell.output.contentType === 'text/markdown' && cell.output.markdownText"
-          class="output-markdown"
-          v-html="renderedMarkdownOutput"
-        ></div>
-        <div
-          v-else-if="cell.output.scalar !== undefined && !isConsoleOnly(cell.output.scalar)"
-          class="output-scalar"
-        >
-          <pre>{{ formatScalar(cell.output.scalar) }}</pre>
-        </div>
+        </template>
       </div>
 
       <div v-if="installCompleted && installTargetPackage" class="install-complete-hint">
@@ -1253,6 +1272,9 @@ const renderedMarkdownOutput = computed(() => {
   border-top: 1px solid #2a2a3c;
   padding: 8px 12px;
   font-size: 13px;
+}
+.output-block + .output-block {
+  margin-top: 12px;
 }
 .output-error {
   color: #f38ba8;

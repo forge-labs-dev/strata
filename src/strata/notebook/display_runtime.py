@@ -27,33 +27,36 @@ class Markdown:
 class DisplayCapture:
     """Capture explicit display-side effects during cell execution.
 
-    The current runtime still supports only a single primary visible display
-    output per cell. Side effects therefore use a "last display wins" policy.
+    Visible outputs are captured in order. A legacy last-item compatibility
+    shim is handled by higher layers.
     """
 
     def __init__(self) -> None:
-        self._last_value: Any | None = None
+        self._values: list[Any] = []
 
     def capture(self, value: Any) -> Any:
-        """Record *value* as the primary display output and return it."""
+        """Record *value* as a visible display output and return it."""
         if value is not None:
-            self._last_value = value
+            self._values.append(value)
         return value
 
     def display(self, value: Any) -> Any:
         """Notebook-visible display helper injected into cell globals."""
-        return self.capture(value)
+        self.capture(value)
+        # Mirror notebook display helpers like IPython.display.display(),
+        # which are side-effecting and do not produce a separate value.
+        return None
 
     def install(self, namespace: dict[str, Any]) -> None:
         """Inject display helpers into the execution namespace."""
         namespace.setdefault("display", self.display)
         namespace.setdefault("Markdown", Markdown)
 
-    def resolve(self, last_expression_value: Any | None) -> Any | None:
-        """Return the winning display output after one cell execution."""
+    def resolve(self, last_expression_value: Any | None) -> list[Any]:
+        """Return ordered visible outputs after one cell execution."""
         if last_expression_value is not None:
             self.capture(last_expression_value)
-        return self._last_value
+        return list(self._values)
 
     @contextmanager
     def capture_side_effects(self):

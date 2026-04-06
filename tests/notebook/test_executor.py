@@ -251,7 +251,7 @@ display(Markdown("# Side effect\\n\\nCaptured."))
     async def test_execute_last_expression_overrides_earlier_display_side_effect(
         self, sample_notebook
     ):
-        """With a single display slot, the last visible result should win."""
+        """The last visible result should remain the legacy primary display shim."""
         executor = CellExecutor(sample_notebook)
         source = """
 display(Markdown("# Earlier"))
@@ -261,9 +261,46 @@ display(Markdown("# Earlier"))
         result = await executor.execute_cell("cell1", source)
 
         assert result.success is True
+        assert len(result.display_outputs) == 2
+        assert result.display_outputs[0]["content_type"] == "text/markdown"
+        assert result.display_outputs[0]["markdown_text"] == "# Earlier"
+        assert result.display_outputs[1]["content_type"] == "json/object"
+        assert result.display_outputs[1]["preview"] == 42
         assert result.display_output is not None
         assert result.display_output["content_type"] == "json/object"
         assert result.display_output["preview"] == 42
+
+    @pytest.mark.asyncio
+    async def test_execute_multiple_display_outputs_are_cached_in_order(self, sample_notebook):
+        """Ordered display outputs should persist and survive cache hits."""
+        executor = CellExecutor(sample_notebook)
+        source = """
+display(Markdown("# First"))
+42
+"""
+
+        first = await executor.execute_cell("cell1", source)
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert len(first.display_outputs) == 2
+        assert first.display_outputs[0]["content_type"] == "text/markdown"
+        assert first.display_outputs[0]["artifact_uri"].startswith("strata://artifact/")
+        assert first.display_outputs[1]["content_type"] == "json/object"
+        assert first.display_outputs[1]["artifact_uri"].startswith("strata://artifact/")
+        assert first.display_output is not None
+        assert first.display_output["content_type"] == "json/object"
+        assert first.display_output["preview"] == 42
+
+        second = await executor.execute_cell("cell1", source)
+
+        assert second.success is True
+        assert second.cache_hit is True
+        assert len(second.display_outputs) == 2
+        assert second.display_outputs[0]["content_type"] == "text/markdown"
+        assert second.display_outputs[1]["content_type"] == "json/object"
+        assert second.display_output is not None
+        assert second.display_output["preview"] == 42
 
     @pytest.mark.asyncio
     async def test_execute_ignores_private_vars(self, sample_notebook):

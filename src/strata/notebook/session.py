@@ -59,7 +59,7 @@ from strata.notebook.workers import (
 )
 from strata.notebook.writer import (
     _uv_sync,
-    update_cell_display_output,
+    update_cell_display_outputs,
     update_environment_metadata,
 )
 
@@ -349,6 +349,9 @@ class NotebookSession:
             cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
             cell.artifact_uri = previous.artifact_uri
             cell.artifact_uris = dict(previous.artifact_uris)
+            cell.display_outputs = [
+                output.model_copy(deep=True) for output in previous.display_outputs
+            ]
             cell.display_output = (
                 previous.display_output.model_copy(deep=True)
                 if previous.display_output is not None
@@ -472,15 +475,16 @@ class NotebookSession:
             #   sha256(f"{provenance_hash}:{var_name}")
             # so we must check with the same scheme.
             cached_outputs = self._resolve_cached_outputs(cell_id, provenance_hash)
-            cached_display_output = self._resolve_cached_display_output(
+            cached_display_outputs = self._resolve_cached_display_outputs(
                 cell_id,
                 provenance_hash,
-                cell.display_output,
+                cell.display_outputs,
             )
 
             if cached_outputs is None:
-                if cached_display_output is not None:
-                    cell.display_output = cached_display_output
+                if cached_display_outputs:
+                    cell.display_outputs = cached_display_outputs
+                    cell.display_output = cached_display_outputs[-1]
                     staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 else:
                     can_preserve_uncached_ready = (
@@ -503,7 +507,10 @@ class NotebookSession:
                     uri = f"strata://artifact/{artifact_id}@v={version}"
                     cell.artifact_uris[var_name] = uri
                     cell.artifact_uri = uri  # backward compat
-                cell.display_output = cached_display_output
+                cell.display_outputs = cached_display_outputs or []
+                cell.display_output = (
+                    cached_display_outputs[-1] if cached_display_outputs else None
+                )
 
         self._apply_staleness_map(staleness_map)
 
@@ -548,11 +555,14 @@ class NotebookSession:
             return
 
         cell.execution_method = result.execution_method
-        if result.success and result.display_output:
-            cell.display_output = CellOutput(**result.display_output)
+        if result.success and result.display_outputs:
+            cell.display_outputs = [CellOutput(**output) for output in result.display_outputs]
+            cell.display_output = cell.display_outputs[-1]
         elif result.success:
+            cell.display_outputs = []
             cell.display_output = None
         elif not result.success:
+            cell.display_outputs = []
             cell.display_output = None
 
         if (
@@ -602,6 +612,10 @@ class NotebookSession:
     def serialize_cell(self, cell: Any) -> dict[str, Any]:
         """Serialize a cell with causality and flattened staleness reasons."""
         data = cell.model_dump()
+        if cell.display_outputs:
+            data["display_outputs"] = [
+                self._hydrate_display_output(output) for output in cell.display_outputs
+            ]
         if cell.display_output is not None:
             data["display_output"] = self._hydrate_display_output(cell.display_output)
         data["staleness_reasons"] = (
@@ -621,34 +635,45 @@ class NotebookSession:
             data["causality"] = causality.to_dict()
         return data
 
+    def persist_display_outputs(
+        self, cell_id: str, display_outputs: list[dict[str, Any]] | None
+    ) -> None:
+        """Persist display metadata to notebook.toml for reopen/refresh restoration."""
+        update_cell_display_outputs(self.path, cell_id, display_outputs)
+
     def persist_display_output(
         self, cell_id: str, display_output: dict[str, Any] | None
     ) -> None:
-        """Persist display metadata to notebook.toml for reopen/refresh restoration."""
-        update_cell_display_output(self.path, cell_id, display_output)
+        """Backward-compatible single-display wrapper."""
+        self.persist_display_outputs(cell_id, [display_output] if display_output else None)
 
-    def _resolve_cached_display_output(
+    def _resolve_cached_display_outputs(
         self,
         cell_id: str,
         provenance_hash: str,
-        current_output: CellOutput | None,
-    ) -> CellOutput | None:
-        """Return the cached primary display output for a cell when available."""
+        current_outputs: list[CellOutput],
+    ) -> list[CellOutput]:
+        """Return cached ordered display outputs for a cell when available."""
+        if not current_outputs:
+            return []
+
+        resolved: list[CellOutput] = []
         notebook_id = self.notebook_state.id
-        artifact_id = f"nb_{notebook_id}_cell_{cell_id}_var___display__"
-        expected_hash = hashlib.sha256(f"{provenance_hash}:__display__".encode()).hexdigest()
-        artifact = self.artifact_manager.artifact_store.get_latest_version(artifact_id)
-        if artifact is None or artifact.provenance_hash != expected_hash:
-            return None
+        for index, current_output in enumerate(current_outputs):
+            artifact_id = f"nb_{notebook_id}_cell_{cell_id}_var___display__{index}"
+            expected_hash = hashlib.sha256(
+                f"{provenance_hash}:__display__{index}".encode()
+            ).hexdigest()
+            artifact = self.artifact_manager.artifact_store.get_latest_version(artifact_id)
+            if artifact is None or artifact.provenance_hash != expected_hash:
+                return []
 
-        artifact_uri = f"strata://artifact/{artifact.id}@v={artifact.version}"
-        if current_output is None:
-            return None
-
-        output = current_output.model_copy(deep=True)
-        output.artifact_uri = artifact_uri
-        hydrated = self._hydrate_display_output(output)
-        return CellOutput(**hydrated) if hydrated is not None else output
+            artifact_uri = f"strata://artifact/{artifact.id}@v={artifact.version}"
+            output = current_output.model_copy(deep=True)
+            output.artifact_uri = artifact_uri
+            hydrated = self._hydrate_display_output(output)
+            resolved.append(CellOutput(**hydrated) if hydrated is not None else output)
+        return resolved
 
     def _hydrate_display_output(self, output: CellOutput | dict[str, Any]) -> dict[str, Any] | None:
         """Return a serialized display payload with any transient inline data added."""

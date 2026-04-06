@@ -299,9 +299,13 @@ class CellState(BaseModel):
         default_factory=dict,
         description="Per-variable artifact URIs: {var_name: uri}",
     )
+    display_outputs: list[CellOutput] = Field(
+        default_factory=list,
+        description="Ordered persisted display outputs for the cell",
+    )
     display_output: CellOutput | None = Field(
         default=None,
-        description="Primary persisted display output for the cell",
+        description="Primary persisted display output for the cell (legacy last-item shim)",
     )
     cache_hit: bool = Field(
         default=False,

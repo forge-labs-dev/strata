@@ -152,10 +152,10 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
     except ImportError:
         pass
 
-    if variable_name == "_" and _is_markdown_display_value(value):
+    if _is_display_variable_name(variable_name) and _is_markdown_display_value(value):
         return "text/markdown"
 
-    if variable_name == "_" and _is_png_display_value(value):
+    if _is_display_variable_name(variable_name) and _is_png_display_value(value):
         return "image/png"
 
     if isinstance(value, (dict, list, int, float, str, bool, type(None))):
@@ -172,6 +172,13 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         return "module/cell-instance"
 
     return "pickle/object"
+
+
+def _is_display_variable_name(variable_name: str | None) -> bool:
+    """Return whether a variable name represents a display-only value."""
+    return variable_name == "_" or (
+        isinstance(variable_name, str) and variable_name.startswith("__display__")
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -219,12 +219,15 @@ def execute_harness(manifest: dict) -> dict:
                 except Exception as e:
                     variables[key] = {"content_type": "error", "error": str(e)}
 
-        primary_display = display_capture.resolve(_display_value)
-        if primary_display is not None:
+        display_values = display_capture.resolve(_display_value)
+        serialized_displays: list[dict[str, Any]] = []
+        for index, value in enumerate(display_values):
             try:
-                variables["_"] = _ser.serialize_value(primary_display, output_dir, "_")
+                serialized_displays.append(
+                    _ser.serialize_value(value, output_dir, f"__display__{index}")
+                )
             except Exception:
-                pass
+                continue
 
         mutation_warnings = [
             _serialize_mutation_warning(warning)
@@ -233,7 +236,11 @@ def execute_harness(manifest: dict) -> dict:
 
         return {
             "success": True,
-            "variables": variables,
+            "variables": {
+                **variables,
+                **({"_": serialized_displays[-1]} if serialized_displays else {}),
+            },
+            "displays": serialized_displays,
             "stdout": stdout_buf.getvalue(),
             "stderr": stderr_buf.getvalue(),
             "error": None,

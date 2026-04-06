@@ -77,6 +77,21 @@ def _sanitize_display_output_for_toml(
     return {key: value for key, value in persisted.items() if value is not None}
 
 
+def _sanitize_display_outputs_for_toml(
+    display_outputs: list[dict[str, object]] | None,
+) -> list[dict[str, object]]:
+    """Strip transient fields from a display output list before persistence."""
+    if not display_outputs:
+        return []
+
+    persisted_outputs: list[dict[str, object]] = []
+    for display_output in display_outputs:
+        persisted = _sanitize_display_output_for_toml(display_output)
+        if persisted:
+            persisted_outputs.append(persisted)
+    return persisted_outputs
+
+
 def write_cell(notebook_dir: Path, cell_id: str, source: str) -> None:
     """Write cell source to disk.
 
@@ -736,12 +751,12 @@ def update_cell_env(
     raise ValueError(f"Cell {cell_id} not found")
 
 
-def update_cell_display_output(
+def update_cell_display_outputs(
     notebook_dir: Path,
     cell_id: str,
-    display_output: dict[str, object] | None,
+    display_outputs: list[dict[str, object]] | None,
 ) -> None:
-    """Persist or clear the primary display output metadata for a cell."""
+    """Persist or clear ordered display output metadata for a cell."""
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
 
@@ -754,12 +769,14 @@ def update_cell_display_output(
 
     raw_cell_artifacts = artifacts_data.get(cell_id, {})
     cell_artifacts = dict(raw_cell_artifacts) if isinstance(raw_cell_artifacts, dict) else {}
-    persisted_display = _sanitize_display_output_for_toml(display_output)
+    persisted_displays = _sanitize_display_outputs_for_toml(display_outputs)
 
-    if persisted_display is None:
-        cell_artifacts.pop("display", None)
+    if persisted_displays:
+        cell_artifacts["display_outputs"] = persisted_displays
+        cell_artifacts["display"] = persisted_displays[-1]
     else:
-        cell_artifacts["display"] = persisted_display
+        cell_artifacts.pop("display_outputs", None)
+        cell_artifacts.pop("display", None)
 
     if cell_artifacts:
         artifacts_data[cell_id] = cell_artifacts
@@ -770,3 +787,16 @@ def update_cell_display_output(
 
     with open(notebook_toml_path, "wb") as out:
         tomli_w.dump(toml_data, out)
+
+
+def update_cell_display_output(
+    notebook_dir: Path,
+    cell_id: str,
+    display_output: dict[str, object] | None,
+) -> None:
+    """Backward-compatible wrapper for persisting a single display output."""
+    update_cell_display_outputs(
+        notebook_dir,
+        cell_id,
+        [display_output] if display_output is not None else None,
+    )

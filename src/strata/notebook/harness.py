@@ -158,8 +158,10 @@ def apply_env_overrides(manifest: dict):
                 os.environ[key] = value
 
 
-def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]:
-    """Execute a cell and return (outputs, stdout, stderr, mutation_warnings)."""
+def execute_cell(
+    source: str, inputs: dict
+) -> tuple[dict, list[Any], str, str, list[dict]]:
+    """Execute a cell and return (outputs, displays, stdout, stderr, mutation_warnings)."""
     namespace = dict(inputs)
     display_capture = _display.DisplayCapture()
     display_capture.install(namespace)
@@ -187,15 +189,19 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
             if name not in namespace_before or id(value) != input_identities.get(name):
                 new_vars[name] = value
 
-        primary_display = display_capture.resolve(_display_value)
-        if primary_display is not None:
-            new_vars["_"] = primary_display
+        display_values = display_capture.resolve(_display_value)
 
         mutation_warnings = [
             _serialize_mutation_warning(warning)
             for warning in _immut.detect_mutations(namespace, input_snapshots)
         ]
-        return new_vars, stdout_capture.getvalue(), stderr_capture.getvalue(), mutation_warnings
+        return (
+            new_vars,
+            display_values,
+            stdout_capture.getvalue(),
+            stderr_capture.getvalue(),
+            mutation_warnings,
+        )
 
     finally:
         sys.stdout = old_stdout
@@ -225,7 +231,7 @@ def main():
         inputs = deserialize_inputs(manifest)
         inject_mounts(manifest, inputs)
         with apply_env_overrides(manifest):
-            outputs, stdout_text, stderr_text, mutation_warnings = execute_cell(
+            outputs, display_values, stdout_text, stderr_text, mutation_warnings = execute_cell(
                 source,
                 inputs,
             )
@@ -237,9 +243,25 @@ def main():
             except Exception as e:
                 serialized[var_name] = {"error": str(e), "type": type(value).__name__}
 
+        serialized_displays: list[dict[str, Any]] = []
+        for index, value in enumerate(display_values):
+            try:
+                serialized_display = _ser.serialize_value(
+                    value,
+                    output_dir,
+                    f"__display__{index}",
+                )
+            except Exception as e:
+                serialized_display = {"error": str(e), "type": type(value).__name__}
+            serialized_displays.append(serialized_display)
+
+        if serialized_displays:
+            serialized["_"] = serialized_displays[-1]
+
         result = {
             "success": True,
             "variables": serialized,
+            "displays": serialized_displays,
             "stdout": stdout_text,
             "stderr": stderr_text,
             "mutation_warnings": mutation_warnings,

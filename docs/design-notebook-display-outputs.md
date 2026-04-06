@@ -44,8 +44,6 @@ The next implementation should introduce display outputs as a first-class concep
 
 - Full IPython/Jupyter display protocol compatibility in v1
 - Arbitrary unsanitized HTML rendering
-- Multiple independent display outputs per cell in the first phase
-- Ordered multi-display persistence in the current model
 - A generic frontend plugin system for renderers
 
 ---
@@ -56,9 +54,9 @@ What exists today:
 
 - the harness executes a cell and captures:
   - named outputs
-  - `_` when the last statement is a bare expression
-  - single-slot display side effects via `display(obj)`
-  - matplotlib side effects via `plt.show()` / `Figure.show()`
+  - ordered visible outputs via `display(obj)`
+  - ordered matplotlib side effects via `plt.show()` / `Figure.show()`
+  - the last visible output through the legacy `_` / `display` shim
   - console output
 - the serializer supports:
   - `arrow/ipc`
@@ -77,9 +75,8 @@ What exists today:
 
 Important limitations:
 
-- there is still only one persisted primary display output per cell
-- multiple display side effects are reduced to a single "last display wins" slot
-- ordered display streams are not preserved
+- the frontend still keeps a legacy last-item `display` / `cell.output` shim
+- display outputs are still limited to the currently supported renderer set
 - raw HTML is still intentionally unsupported
 
 ---
@@ -91,10 +88,11 @@ Important limitations:
    DAG artifacts exist for dependency tracking, caching, and downstream execution.
    Display outputs exist for what the user sees in the notebook.
 
-2. **One primary display output first**
+2. **Keep a legacy last-item shim while the canonical model grows**
 
-   The initial design should support one primary visible display result per cell.
-   Multiple display outputs can come later.
+   Ordered visible outputs can be the canonical runtime model, while a
+   compatibility `display` / last-item shim keeps older clients and code paths
+   working during rollout.
 
 3. **Persist display output like a real notebook result**
 
@@ -202,13 +200,18 @@ Supported source objects for `text/markdown`:
 
 ### Current Rule
 
-The runtime still persists a single primary display output per cell.
+The runtime now persists **ordered visible outputs per cell**.
 
-That display slot is chosen by a "last visible result wins" rule:
+Visible outputs are appended in execution order:
 
-- explicit display side effects like `display(obj)` can populate the slot
-- matplotlib side effects like `plt.show()` and `fig.show()` can populate the slot
-- a non-`None` last-expression result (`_`) overrides earlier display side effects
+- explicit display side effects like `display(obj)` append one visible output
+- matplotlib side effects like `plt.show()` and `fig.show()` append visible outputs
+- a non-`None` last-expression result (`_`) appends after earlier display side effects
+
+The last visible output is still exposed through the legacy single-display shim:
+
+- backend payload field: `display`
+- frontend compatibility field: `cell.output`
 
 That means this should work:
 
@@ -235,21 +238,12 @@ And so does this:
 display(Markdown("# Hello"))
 ```
 
-Why the single-slot rule is still correct for the current phase:
+And this now preserves both visible results in order:
 
-- it fits the existing harness model
-- it keeps persistence and cache restoration simple
-- it is enough to support intentional plot/image/markdown display values
-
-### Future Display Capture
-
-A later phase can capture rich display side effects as an ordered stream:
-
-- multiple visible outputs in order
-- multiple `display(...)` calls without collapsing them to one slot
-- display history that survives refresh/reopen
-
-That should be a separate extension once the primary display model exists.
+```python
+display(Markdown("# First"))
+42
+```
 
 ---
 
@@ -365,39 +359,22 @@ injecting arbitrary executable browser content into the notebook UI.
 
 ## API and WebSocket Shape
 
-### Current State
+### Current Shape
 
-Live execution currently sends:
-
-- `outputs`
-- `display`
-- `stdout`
-- `stderr`
-
-Notebook/session serialization now does the same, so:
-
-- `cell_output`
-- `notebook_state`
-- route open / reopen
-
-all share the same single-display model.
-
-### Next Shape
-
-Successful cell execution payloads already carry:
+Successful cell execution payloads now carry:
 
 ```json
 {
   "cell_id": "cell_123",
   "outputs": { "...": "..." },
+  "displays": [{ "...": "..." }],
   "display": { "...": "..." },
   "stdout": "...",
   "stderr": "..."
 }
 ```
 
-The next extension should preserve that shape while allowing `display` to become
-an ordered display list when multiple visible outputs are implemented.
+`display` remains the legacy last-item shim for compatibility.
 
 ---
 
@@ -431,6 +408,8 @@ Completed.
 
 ### Phase 4: Multiple Visible Outputs Per Cell
 
+Completed.
+
 - support multiple visible outputs per cell in order
 
 ---
@@ -461,11 +440,11 @@ Completed.
 
 ## Recommendation
 
-The next architectural step should be **multiple visible outputs per cell** on top
-of the explicit `display` model.
+The next architectural step should be **additional display types and richer MIME
+capture**, not output ordering.
 
 That gives Strata:
 
-- retained compatibility with the current image/markdown/display-hook work
-- a clean path from single-slot display capture to ordered display streams
+- retained compatibility via the legacy single-display shim
+- a clean path to SVG or later HTML-like renderers if we choose to add them
 - no commitment yet to raw HTML or full Jupyter MIME bundles

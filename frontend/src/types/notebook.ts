@@ -140,8 +140,10 @@ export interface Cell {
   status: CellStatus
   /** Why the cell is stale (only present when status === 'stale') */
   stalenessReasons?: StalenessReason[]
-  /** Output data — may contain multiple outputs (one per consumed variable) */
+  /** Legacy last visible output compatibility shim */
   output?: CellOutput
+  /** Ordered visible outputs rendered for this cell */
+  displayOutputs?: CellOutput[]
   /** Structured input status — each input with its artifact state */
   inputs: CellInput[]
   /** Cells this cell depends on (reads variables from) */

@@ -117,7 +117,8 @@ class CellExecutionResult:
         stdout: Captured standard output
         stderr: Captured standard error
         outputs: Dict of output variable name -> metadata
-        display_output: Primary visible display output metadata
+        display_outputs: Ordered visible display output metadata
+        display_output: Primary visible display output metadata (legacy last-item shim)
         duration_ms: Execution duration in milliseconds
         error: Error message if execution failed
         cache_hit: Whether execution was skipped due to cache hit
@@ -133,6 +134,7 @@ class CellExecutionResult:
         stdout: str = "",
         stderr: str = "",
         outputs: dict[str, Any] | None = None,
+        display_outputs: list[dict[str, Any]] | None = None,
         display_output: dict[str, Any] | None = None,
         duration_ms: float = 0,
         error: str | None = None,
@@ -152,6 +154,14 @@ class CellExecutionResult:
         self.stdout = stdout
         self.stderr = stderr
         self.outputs = outputs or {}
+        normalized_display_outputs = (
+            list(display_outputs)
+            if display_outputs is not None
+            else ([display_output] if display_output is not None else [])
+        )
+        if display_output is None and normalized_display_outputs:
+            display_output = normalized_display_outputs[-1]
+        self.display_outputs = normalized_display_outputs
         self.display_output = display_output
         self.duration_ms = duration_ms
         self.error = error
@@ -196,6 +206,7 @@ class CellExecutionResult:
             "stdout": self.stdout,
             "stderr": self.stderr,
             "outputs": self.outputs,
+            "displays": self.display_outputs,
             "display": self.display_output,
             "duration_ms": self.duration_ms,
             "error": self.error,
@@ -533,14 +544,20 @@ class CellExecutor:
             )
 
             cached_artifact = None
-            cached_display_output = (
-                self.session._resolve_cached_display_output(
+            if cell is not None:
+                current_display_outputs = cell.display_outputs or (
+                    [cell.display_output] if cell.display_output is not None else []
+                )
+            else:
+                current_display_outputs = []
+            cached_display_outputs = (
+                self.session._resolve_cached_display_outputs(
                     cell_id,
                     provenance_hash,
-                    cell.display_output if cell is not None else None,
+                    current_display_outputs,
                 )
                 if cell is not None
-                else None
+                else []
             )
             if use_cache:
                 if consumed_vars:
@@ -598,11 +615,11 @@ class CellExecutor:
                 cell_id,
                 consumed_vars,
                 use_cache,
-                cached_artifact is not None or cached_display_output is not None,
+                cached_artifact is not None or bool(cached_display_outputs),
             )
 
             if cached_artifact is not None or (
-                not consumed_vars and cached_display_output is not None
+                not consumed_vars and cached_display_outputs
             ):
                 if remote_metadata.get("remote_transport") == "signed":
                     remote_metadata.setdefault("remote_build_state", "ready")
@@ -610,7 +627,10 @@ class CellExecutor:
                 duration_ms = (time.time() - start_time) * 1000
                 if cell:
                     cell.cache_hit = True
-                    cell.display_output = cached_display_output
+                    cell.display_outputs = list(cached_display_outputs)
+                    cell.display_output = (
+                        cached_display_outputs[-1] if cached_display_outputs else None
+                    )
                     # Populate per-variable URIs from canonical artifacts
                     for var_name in consumed_vars:
                         canonical_id = (
@@ -632,9 +652,12 @@ class CellExecutor:
                     cell_id=cell_id,
                     success=True,
                     outputs={},
+                    display_outputs=[
+                        output.model_dump() for output in cached_display_outputs
+                    ],
                     display_output=(
-                        cached_display_output.model_dump()
-                        if cached_display_output is not None
+                        cached_display_outputs[-1].model_dump()
+                        if cached_display_outputs
                         else None
                     ),
                     duration_ms=duration_ms,
@@ -646,8 +669,8 @@ class CellExecutor:
                         )
                         if cached_artifact is not None
                         else (
-                            cached_display_output.artifact_uri
-                            if cached_display_output is not None
+                            cached_display_outputs[-1].artifact_uri
+                            if cached_display_outputs
                             else None
                         )
                     ),
@@ -764,14 +787,19 @@ class CellExecutor:
                             ).apply_remote_metadata(**remote_metadata)
 
                     if exec_result.success:
-                        exec_result.display_output = self._store_display_output(
+                        exec_result.display_outputs = self._store_display_outputs(
                             cell_id,
                             result_output_dir,
                             provenance_hash,
                             input_hashes,
-                            exec_result.display_output,
+                            exec_result.display_outputs,
                             source_hash=source_hash,
                             env_hash=env_hash,
+                        )
+                        exec_result.display_output = (
+                            exec_result.display_outputs[-1]
+                            if exec_result.display_outputs
+                            else None
                         )
 
                     # ⑥ Sync-back read-write mounts after successful execution.
@@ -798,9 +826,9 @@ class CellExecutor:
                                 mutation_warnings=exec_result.mutation_warnings,
                             ).apply_remote_metadata(**remote_metadata)
 
-                self.session.persist_display_output(
+                self.session.persist_display_outputs(
                     cell_id,
-                    exec_result.display_output if exec_result.success else None,
+                    exec_result.display_outputs if exec_result.success else None,
                 )
                 self.session.apply_execution_result_metadata(cell_id, exec_result)
                 return exec_result
@@ -1961,51 +1989,58 @@ class CellExecutor:
 
         return all_stored
 
-    def _store_display_output(
+    def _store_display_outputs(
         self,
         cell_id: str,
         output_dir: Path,
         provenance_hash: str,
         input_hashes: list[str],
-        display_output: dict[str, Any] | None,
+        display_outputs: list[dict[str, Any]] | None,
         *,
         source_hash: str = "",
         env_hash: str = "",
-    ) -> dict[str, Any] | None:
-        """Persist the cell's primary display output as a canonical artifact."""
-        if not display_output:
-            return None
-
-        file_name = str(display_output.get("file", "")).strip()
-        content_type = str(display_output.get("content_type", "")).strip()
-        if not file_name or not content_type:
-            return None
-
-        output_file = output_dir / file_name
-        if not output_file.exists():
-            return None
+    ) -> list[dict[str, Any]]:
+        """Persist ordered cell display outputs as canonical artifacts."""
+        if not display_outputs:
+            return []
 
         artifact_mgr = self.session.get_artifact_manager()
-        blob_data = output_file.read_bytes()
-        row_count = display_output.get("rows")
-        display_provenance = hashlib.sha256(
-            f"{provenance_hash}:__display__".encode()
-        ).hexdigest()
-        artifact_version = artifact_mgr.store_cell_output(
-            cell_id=cell_id,
-            variable_name="__display__",
-            blob_data=blob_data,
-            content_type=content_type,
-            row_count=row_count if isinstance(row_count, int) else None,
-            provenance_hash=display_provenance,
-            input_versions={h: h for h in input_hashes},
-            source_hash=source_hash,
-            env_hash=env_hash,
-        )
-        display_uri = f"strata://artifact/{artifact_version.id}@v={artifact_version.version}"
-        stored_display = dict(display_output)
-        stored_display["artifact_uri"] = display_uri
-        return stored_display
+        stored_displays: list[dict[str, Any]] = []
+
+        for index, display_output in enumerate(display_outputs):
+            file_name = str(display_output.get("file", "")).strip()
+            content_type = str(display_output.get("content_type", "")).strip()
+            if not file_name or not content_type:
+                continue
+
+            output_file = output_dir / file_name
+            if not output_file.exists():
+                continue
+
+            blob_data = output_file.read_bytes()
+            row_count = display_output.get("rows")
+            display_provenance = hashlib.sha256(
+                f"{provenance_hash}:__display__{index}".encode()
+            ).hexdigest()
+            artifact_version = artifact_mgr.store_cell_output(
+                cell_id=cell_id,
+                variable_name=f"__display__{index}",
+                blob_data=blob_data,
+                content_type=content_type,
+                row_count=row_count if isinstance(row_count, int) else None,
+                provenance_hash=display_provenance,
+                input_versions={h: h for h in input_hashes},
+                source_hash=source_hash,
+                env_hash=env_hash,
+            )
+            display_uri = (
+                f"strata://artifact/{artifact_version.id}@v={artifact_version.version}"
+            )
+            stored_display = dict(display_output)
+            stored_display["artifact_uri"] = display_uri
+            stored_displays.append(stored_display)
+
+        return stored_displays
 
     def _write_module_export_outputs(
         self,
@@ -2164,7 +2199,16 @@ class CellExecutor:
                 outputs[var_name] = output_meta
 
         mutation_warnings = result.get("mutation_warnings", [])
-        display_output = outputs.get("_")
+        raw_displays = result.get("displays")
+        display_outputs = (
+            [display for display in raw_displays if isinstance(display, dict)]
+            if isinstance(raw_displays, list)
+            else []
+        )
+        if not display_outputs:
+            display_output = outputs.get("_")
+            if isinstance(display_output, dict):
+                display_outputs = [display_output]
 
         return CellExecutionResult(
             cell_id=cell_id,
@@ -2172,7 +2216,7 @@ class CellExecutor:
             stdout=result.get("stdout", ""),
             stderr=result.get("stderr", ""),
             outputs=outputs,
-            display_output=display_output if isinstance(display_output, dict) else None,
+            display_outputs=display_outputs,
             duration_ms=duration_ms,
             execution_method=execution_method,
             mutation_warnings=mutation_warnings,

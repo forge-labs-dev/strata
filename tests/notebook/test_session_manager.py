@@ -380,3 +380,42 @@ display(Markdown("# Side effect\\n\\nStill here."))
     assert serialized["status"] == "ready"
     assert serialized["display_output"]["content_type"] == "text/markdown"
     assert serialized["display_output"]["markdown_text"] == "# Side effect\n\nStill here."
+
+
+def test_open_notebook_restores_multiple_display_outputs_in_order(tmp_path: Path):
+    """A reopened notebook should restore ordered display outputs plus the legacy last-item shim."""
+    notebook_dir = create_notebook(tmp_path, "restore_multiple_displays")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(
+        notebook_dir,
+        "c1",
+        """
+display(Markdown("# First"))
+42
+""",
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", session.notebook_state.cells[0].source)).success
+
+    asyncio.run(_prime())
+    manager.close_session(session.id)
+
+    reopened = SessionManager().open_notebook(notebook_dir)
+    cell = next(c for c in reopened.notebook_state.cells if c.id == "c1")
+    serialized = reopened.serialize_cell(cell)
+
+    assert serialized["status"] == "ready"
+    assert len(serialized["display_outputs"]) == 2
+    assert serialized["display_outputs"][0]["content_type"] == "text/markdown"
+    assert serialized["display_outputs"][0]["markdown_text"] == "# First"
+    assert serialized["display_outputs"][1]["content_type"] == "json/object"
+    assert serialized["display_outputs"][1]["preview"] == 42
+    assert serialized["display_output"]["content_type"] == "json/object"
+    assert serialized["display_output"]["preview"] == 42

@@ -227,9 +227,10 @@ function setCellStatus(id: CellId, status: CellStatus) {
   if (cell) cell.status = status
 }
 
-function setCellOutput(id: CellId, output: CellOutput) {
+function setCellOutput(id: CellId, output: CellOutput, displayOutputs?: CellOutput[]) {
   const cell = cellMap.value.get(id)
   if (cell) {
+    cell.displayOutputs = displayOutputs ?? (output.error ? [] : [output])
     cell.output = output
     cell.status = output.error ? 'error' : 'ready'
     cell.lastRunAt = Date.now()
@@ -677,6 +678,33 @@ function parseDisplayOutputPayload(
   return output
 }
 
+function parseDisplayOutputPayloads(
+  raw: any,
+  fallbackArtifactUri: string | null = null,
+): CellOutput[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .map((entry) => parseDisplayOutputPayload(entry, fallbackArtifactUri))
+    .filter((entry): entry is CellOutput => Boolean(entry))
+}
+
+function applyDisplayOutputsToCell(
+  cell: Cell,
+  rawDisplays: any,
+  rawDisplay: any,
+  fallbackArtifactUri: string | null = null,
+) {
+  const displayOutputs = parseDisplayOutputPayloads(rawDisplays, fallbackArtifactUri)
+  if (!displayOutputs.length) {
+    const fallbackOutput = parseDisplayOutputPayload(rawDisplay, fallbackArtifactUri)
+    if (fallbackOutput) {
+      displayOutputs.push(fallbackOutput)
+    }
+  }
+  cell.displayOutputs = displayOutputs
+  cell.output = displayOutputs.at(-1)
+}
+
 function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.defines = serverCell.defines || []
   localCell.references = serverCell.references || []
@@ -701,7 +729,9 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.causality = supportsStalenessDetail(localCell.status)
     ? parseBackendCausality(serverCell.causality)
     : undefined
-  localCell.output = parseDisplayOutputPayload(
+  applyDisplayOutputsToCell(
+    localCell,
+    serverCell.display_outputs,
     serverCell.display_output,
     typeof serverCell.artifact_uri === 'string' ? serverCell.artifact_uri : null,
   )
@@ -931,11 +961,16 @@ function parseBackendCellPayload(raw: any): Cell {
     causality: supportsStalenessDetail(raw.status)
       ? parseBackendCausality(raw.causality)
       : undefined,
-    output: parseDisplayOutputPayload(
-      raw.display_output,
-      typeof raw.artifact_uri === 'string' ? raw.artifact_uri : null,
-    ),
+    output: undefined,
+    displayOutputs: [],
   }
+
+  applyDisplayOutputsToCell(
+    cell,
+    raw.display_outputs,
+    raw.display_output,
+    typeof raw.artifact_uri === 'string' ? raw.artifact_uri : null,
+  )
 
   applySerializedExecutionMetadata(cell, raw)
   return cell
@@ -1360,6 +1395,7 @@ function initializeWebSocket() {
       if (cell && status !== 'error' && cell.suggestInstall) {
         cell.suggestInstall = undefined
         if (cell.output?.error) {
+          cell.displayOutputs = []
           cell.output = undefined
         }
       }
@@ -1395,12 +1431,24 @@ function initializeWebSocket() {
       const cellId = p.cell_id as CellId
       const outputs = p.outputs as Record<string, any> | undefined
 
-      const displayPayload =
-        p.display ?? (outputs && typeof outputs === 'object' ? outputs['_'] : null)
-      let output: CellOutput = parseDisplayOutputPayload(
-        displayPayload,
-        typeof p.artifact_uri === 'string' ? p.artifact_uri : null,
-      ) ?? {
+      const displayOutputs =
+        parseDisplayOutputPayloads(
+          p.displays,
+          typeof p.artifact_uri === 'string' ? p.artifact_uri : null,
+        ) || []
+      if (!displayOutputs.length) {
+        const displayPayload =
+          p.display ?? (outputs && typeof outputs === 'object' ? outputs['_'] : null)
+        const fallbackOutput = parseDisplayOutputPayload(
+          displayPayload,
+          typeof p.artifact_uri === 'string' ? p.artifact_uri : null,
+        )
+        if (fallbackOutput) {
+          displayOutputs.push(fallbackOutput)
+        }
+      }
+
+      let output: CellOutput = displayOutputs.at(-1) ?? {
         contentType: 'json/object',
         artifactUri: p.artifact_uri,
       }
@@ -1435,6 +1483,7 @@ function initializeWebSocket() {
       const cell = cellMap.value.get(cellId)
       if (cell) {
         cell.durationMs = p.duration_ms
+        cell.displayOutputs = displayOutputs
         if (p.execution_method) {
           cell.executorName = p.execution_method
         }
@@ -1446,7 +1495,7 @@ function initializeWebSocket() {
         cell.suggestInstall = p.suggest_install || undefined
       }
 
-      setCellOutput(cellId, output)
+      setCellOutput(cellId, output, displayOutputs)
     })
 
     wsInstance.onMessage('cell_console', (msg: WsMessage) => {
@@ -1460,6 +1509,7 @@ function initializeWebSocket() {
             contentType: 'json/object',
             scalar: { console: '' },
           }
+          cell.displayOutputs = []
         }
         if (
           cell.output.scalar &&
@@ -1480,6 +1530,7 @@ function initializeWebSocket() {
       const cell = cellMap.value.get(cellId)
       if (cell) {
         cell.status = 'error'
+        cell.displayOutputs = []
         applyRemoteExecutionMetadata(cell, p)
         const workerName = effectiveWorkerNameForCell(cell)
         const workerEntry = availableWorkers.value.find((worker) => worker.name === workerName)
