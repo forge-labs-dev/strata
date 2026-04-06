@@ -1,0 +1,14 @@
+[project]
+name = "titanic-ml"
+version = "0.1.0"
+description = "Titanic survival prediction — end-to-end ML pipeline"
+requires-python = ">=3.12"
+dependencies = [
+    "pyarrow>=18.0.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.5.0",
+    "seaborn>=0.13.0",
+    "matplotlib>=3.9.0",
+]
+
+[tool.uv]
