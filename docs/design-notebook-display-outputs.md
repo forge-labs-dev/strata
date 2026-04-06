@@ -45,7 +45,7 @@ The next implementation should introduce display outputs as a first-class concep
 - Full IPython/Jupyter display protocol compatibility in v1
 - Arbitrary unsanitized HTML rendering
 - Multiple independent display outputs per cell in the first phase
-- `plt.show()` / rich display hook capture in the first phase
+- Ordered multi-display persistence in the current model
 - A generic frontend plugin system for renderers
 
 ---
@@ -57,24 +57,30 @@ What exists today:
 - the harness executes a cell and captures:
   - named outputs
   - `_` when the last statement is a bare expression
+  - single-slot display side effects via `display(obj)`
+  - matplotlib side effects via `plt.show()` / `Figure.show()`
   - console output
 - the serializer supports:
   - `arrow/ipc`
   - `json/object`
+  - `image/png`
+  - `text/markdown`
   - module export formats
   - `pickle/object`
 - the frontend renders:
   - tables
   - scalars / JSON
+  - inline PNG images
+  - sanitized markdown
   - errors
   - console output
 
 Important limitations:
 
-- `image/png` exists in frontend types but is not actually emitted or rendered
-- visible output is reconstructed from `outputs["_"]` instead of a dedicated display model
-- display output is not a first-class persisted concept
-- `plt.show()` does nothing useful for display because only the returned value is captured
+- there is still only one persisted primary display output per cell
+- multiple display side effects are reduced to a single "last display wins" slot
+- ordered display streams are not preserved
+- raw HTML is still intentionally unsupported
 
 ---
 
@@ -162,11 +168,12 @@ runtime-derived cell metadata.
 
 ## Content Types
 
-### Phase 1
+### Implemented
 
-The first implementation should add:
+The current implementation supports:
 
 - `image/png`
+- `text/markdown`
 
 Supported source objects for `image/png`:
 
@@ -174,9 +181,13 @@ Supported source objects for `image/png`:
 - `PIL.Image.Image`
 - objects exposing `_repr_png_()`
 
+Supported source objects for `text/markdown`:
+
+- objects exposing `_repr_markdown_()`
+- the injected `Markdown(...)` helper
+
 ### Planned Next Types
 
-- `text/markdown`
 - possibly `image/svg+xml`
 
 ### Types Not In Scope Yet
@@ -189,10 +200,15 @@ Supported source objects for `image/png`:
 
 ## Execution Semantics
 
-### Phase 1 Rule
+### Current Rule
 
-The primary display output comes from the cell’s last-expression result (`_`),
-not from display side effects.
+The runtime still persists a single primary display output per cell.
+
+That display slot is chosen by a "last visible result wins" rule:
+
+- explicit display side effects like `display(obj)` can populate the slot
+- matplotlib side effects like `plt.show()` and `fig.show()` can populate the slot
+- a non-`None` last-expression result (`_`) overrides earlier display side effects
 
 That means this should work:
 
@@ -204,7 +220,7 @@ ax.plot([1, 2, 3], [1, 4, 9])
 fig
 ```
 
-This should **not** be a phase-1 requirement:
+This now also works:
 
 ```python
 import matplotlib.pyplot as plt
@@ -213,19 +229,25 @@ plt.plot([1, 2, 3], [1, 4, 9])
 plt.show()
 ```
 
-Why this constraint is correct for v1:
+And so does this:
+
+```python
+display(Markdown("# Hello"))
+```
+
+Why the single-slot rule is still correct for the current phase:
 
 - it fits the existing harness model
-- it avoids implementing a Jupyter-style display hook system immediately
-- it is enough to support intentional plot/image return values
+- it keeps persistence and cache restoration simple
+- it is enough to support intentional plot/image/markdown display values
 
 ### Future Display Capture
 
-A later phase can capture rich display side effects:
+A later phase can capture rich display side effects as an ordered stream:
 
-- `plt.show()`
-- `display(obj)`
 - multiple visible outputs in order
+- multiple `display(...)` calls without collapsing them to one slot
+- display history that survives refresh/reopen
 
 That should be a separate extension once the primary display model exists.
 
@@ -343,19 +365,26 @@ injecting arbitrary executable browser content into the notebook UI.
 
 ## API and WebSocket Shape
 
-### Current Problem
+### Current State
 
 Live execution currently sends:
 
 - `outputs`
+- `display`
 - `stdout`
 - `stderr`
 
-and the frontend reconstructs the visible output from `outputs["_"]`.
+Notebook/session serialization now does the same, so:
 
-### Proposed Shape
+- `cell_output`
+- `notebook_state`
+- route open / reopen
 
-Successful cell execution payloads should carry:
+all share the same single-display model.
+
+### Next Shape
+
+Successful cell execution payloads already carry:
 
 ```json
 {
@@ -367,19 +396,16 @@ Successful cell execution payloads should carry:
 }
 ```
 
-Notebook/session serialization should do the same so that:
-
-- `cell_output`
-- `notebook_state`
-- route open / reopen
-
-all use the same display model.
+The next extension should preserve that shape while allowing `display` to become
+an ordered display list when multiple visible outputs are implemented.
 
 ---
 
 ## Rollout Plan
 
 ### Phase 1: Primary Display Output + Images
+
+Completed.
 
 - add a first-class `display` payload
 - persist display metadata in session/runtime state
@@ -389,15 +415,23 @@ all use the same display model.
 
 ### Phase 2: Markdown
 
+Completed.
+
 - add `text/markdown`
 - frontend markdown renderer with sanitization
 - persisted markdown display payload
 
-### Phase 3: Rich Display Capture
+### Phase 3: Single-Slot Rich Display Capture
+
+Completed.
 
 - support `plt.show()`
 - support explicit display hooks
-- support multiple visible outputs per cell
+- keep a single persisted primary display slot
+
+### Phase 4: Multiple Visible Outputs Per Cell
+
+- support multiple visible outputs per cell in order
 
 ---
 
@@ -427,11 +461,11 @@ all use the same display model.
 
 ## Recommendation
 
-Implement **Phase 1** next, but do it on top of the explicit `display` model.
+The next architectural step should be **multiple visible outputs per cell** on top
+of the explicit `display` model.
 
 That gives Strata:
 
-- plots/images that users actually expect
-- a coherent persistence story
-- a clean path to markdown
-- no commitment yet to full Jupyter display semantics
+- retained compatibility with the current image/markdown/display-hook work
+- a clean path from single-slot display capture to ordered display streams
+- no commitment yet to raw HTML or full Jupyter MIME bundles
