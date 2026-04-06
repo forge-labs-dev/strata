@@ -593,6 +593,11 @@ The variables consumed by downstream cells, materialized as Strata artifacts.
 This is the main output area — tables, scalars, dicts rendered inline. Persisted,
 cached, versioned.
 
+The current implementation is still narrower than the long-term desired output
+model. The design for richer cell display outputs — including persisted primary
+display output, inline images/plots, and future markdown rendering — lives in
+[design-notebook-display-outputs.md](./design-notebook-display-outputs.md).
+
 **Channel 3: Inspect mode (on-demand REPL)**
 
 When `print()` isn't enough and you need to interactively explore a cell's state.

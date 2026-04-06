@@ -1,8 +1,9 @@
 """Shared serialization/deserialization for notebook cell values.
 
-Supports five content types:
+Supports six content types:
   arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
+  image/png    — Displayable PNG output (figures, images)
   module/import — Python module objects (re-imported by name on read)
   module/cell  — Synthetic module export for top-level defs/classes
   module/cell-instance — Instance of a synthetic notebook-exported class
@@ -29,6 +30,8 @@ Loading pattern (used in each subprocess script):
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 import os
 import pickle
@@ -119,7 +122,7 @@ def _unwrap_codec_payload(obj: Any) -> tuple[str, bytes] | None:
 # ---------------------------------------------------------------------------
 
 
-def detect_content_type(value: Any) -> str:
+def detect_content_type(value: Any, variable_name: str | None = None) -> str:
     """Return the content type string for *value*.
 
     Probes pyarrow, pandas, and numpy with separate try/except blocks so
@@ -147,6 +150,9 @@ def detect_content_type(value: Any) -> str:
             return "arrow/ipc"
     except ImportError:
         pass
+
+    if variable_name == "_" and _is_png_display_value(value):
+        return "image/png"
 
     if isinstance(value, (dict, list, int, float, str, bool, type(None))):
         try:
@@ -184,7 +190,7 @@ def serialize_value(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    content_type = detect_content_type(value)
+    content_type = detect_content_type(value, variable_name)
 
     if content_type == "arrow/ipc":
         try:
@@ -192,6 +198,8 @@ def serialize_value(
         except (ImportError, ValueError):
             # pyarrow unavailable — fall back to JSON with table metadata
             return _serialize_dataframe_json(value, output_dir, variable_name)
+    elif content_type == "image/png":
+        return _serialize_image_png(value, output_dir, variable_name)
     elif content_type == "json/object":
         return _serialize_json(value, output_dir, variable_name)
     elif content_type == "module/import":
@@ -244,6 +252,103 @@ def _serialize_arrow(
         "columns": table.column_names,
         "bytes": filepath.stat().st_size,
         "preview": preview,
+    }
+
+
+def _is_png_display_value(value: Any) -> bool:
+    repr_png = getattr(value, "_repr_png_", None)
+    if callable(repr_png):
+        return True
+
+    try:
+        from matplotlib.figure import Figure
+
+        if isinstance(value, Figure):
+            return True
+    except ImportError:
+        pass
+
+    try:
+        from PIL import Image as _PILImage
+
+        if isinstance(value, _PILImage.Image):
+            return True
+    except ImportError:
+        pass
+
+    return False
+
+
+def _serialize_image_png(
+    value: Any, output_dir: Path, variable_name: str
+) -> dict[str, Any]:
+    png_bytes: bytes | None = None
+    width: int | None = None
+    height: int | None = None
+
+    repr_png = getattr(value, "_repr_png_", None)
+    if callable(repr_png):
+        raw = repr_png()
+        if isinstance(raw, str):
+            png_bytes = raw.encode("latin1")
+        elif isinstance(raw, (bytes, bytearray, memoryview)):
+            png_bytes = bytes(raw)
+        elif raw is not None:
+            raise ValueError("_repr_png_() must return bytes-like data")
+
+    if png_bytes is None:
+        try:
+            from matplotlib.figure import Figure
+
+            if isinstance(value, Figure):
+                buffer = io.BytesIO()
+                value.savefig(buffer, format="png")
+                png_bytes = buffer.getvalue()
+                width = int(round(value.get_figwidth() * value.dpi))
+                height = int(round(value.get_figheight() * value.dpi))
+        except ImportError:
+            pass
+
+    if png_bytes is None:
+        try:
+            from PIL import Image as _PILImage
+
+            if isinstance(value, _PILImage.Image):
+                buffer = io.BytesIO()
+                value.save(buffer, format="PNG")
+                png_bytes = buffer.getvalue()
+                width, height = value.size
+        except ImportError:
+            pass
+
+    if png_bytes is None:
+        raise ValueError(f"Cannot serialize {type(value)} as image/png")
+
+    if width is None or height is None:
+        try:
+            from PIL import Image as _PILImage
+
+            with _PILImage.open(io.BytesIO(png_bytes)) as image:
+                width, height = image.size
+        except Exception:
+            width = None
+            height = None
+
+    filename = f"{variable_name}.png"
+    filepath = output_dir / filename
+    with open(filepath, "wb") as f:
+        f.write(png_bytes)
+
+    return {
+        "content_type": "image/png",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "inline_data_url": (
+            f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
+        ),
+        "width": width,
+        "height": height,
+        "preview": None,
     }
 
 

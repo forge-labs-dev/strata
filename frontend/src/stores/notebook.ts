@@ -604,6 +604,69 @@ function parseEnvMap(raw: any): Record<string, string> {
   return Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, String(value)]))
 }
 
+function parseDisplayOutputPayload(
+  raw: any,
+  fallbackArtifactUri: string | null = null,
+): CellOutput | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+
+  const contentType = String(
+    raw.content_type || raw.contentType || 'json/object',
+  ) as CellOutput['contentType']
+  const output: CellOutput = {
+    contentType,
+    artifactUri:
+      typeof raw.artifact_uri === 'string' && raw.artifact_uri.trim()
+        ? raw.artifact_uri
+        : fallbackArtifactUri || undefined,
+  }
+
+  if (contentType === 'arrow/ipc') {
+    const columns = Array.isArray(raw.columns)
+      ? raw.columns.map((value: unknown) => String(value))
+      : undefined
+    const rowCount =
+      typeof raw.rows === 'number'
+        ? raw.rows
+        : typeof raw.row_count === 'number'
+          ? raw.row_count
+          : typeof raw.rowCount === 'number'
+            ? raw.rowCount
+            : undefined
+    output.columns = columns
+    output.rowCount = rowCount
+
+    const preview = raw.preview
+    if (Array.isArray(preview) && columns) {
+      output.rows = preview.map((row: unknown) => {
+        const values = Array.isArray(row) ? row : []
+        const obj: Record<string, unknown> = {}
+        columns.forEach((col: string, i: number) => {
+          obj[col] = values[i]
+        })
+        return obj
+      })
+    }
+    return output
+  }
+
+  if (contentType === 'image/png') {
+    output.inlineDataUrl =
+      typeof raw.inline_data_url === 'string' && raw.inline_data_url.trim()
+        ? raw.inline_data_url
+        : null
+    output.width = typeof raw.width === 'number' ? raw.width : null
+    output.height = typeof raw.height === 'number' ? raw.height : null
+    return output
+  }
+
+  const scalar = raw.data ?? raw.preview
+  if (scalar !== undefined) {
+    output.scalar = scalar
+  }
+  return output
+}
+
 function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.defines = serverCell.defines || []
   localCell.references = serverCell.references || []
@@ -628,6 +691,10 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.causality = supportsStalenessDetail(localCell.status)
     ? parseBackendCausality(serverCell.causality)
     : undefined
+  localCell.output = parseDisplayOutputPayload(
+    serverCell.display_output,
+    typeof serverCell.artifact_uri === 'string' ? serverCell.artifact_uri : null,
+  )
   applySerializedExecutionMetadata(localCell, serverCell)
 }
 
@@ -854,6 +921,10 @@ function parseBackendCellPayload(raw: any): Cell {
     causality: supportsStalenessDetail(raw.status)
       ? parseBackendCausality(raw.causality)
       : undefined,
+    output: parseDisplayOutputPayload(
+      raw.display_output,
+      typeof raw.artifact_uri === 'string' ? raw.artifact_uri : null,
+    ),
   }
 
   applySerializedExecutionMetadata(cell, raw)
@@ -1314,50 +1385,17 @@ function initializeWebSocket() {
       const cellId = p.cell_id as CellId
       const outputs = p.outputs as Record<string, any> | undefined
 
-      let output: CellOutput = {
+      const displayPayload =
+        p.display ?? (outputs && typeof outputs === 'object' ? outputs['_'] : null)
+      let output: CellOutput = parseDisplayOutputPayload(
+        displayPayload,
+        typeof p.artifact_uri === 'string' ? p.artifact_uri : null,
+      ) ?? {
         contentType: 'json/object',
-        cacheHit: p.cache_hit || false,
-        cacheLoadMs: p.duration_ms,
         artifactUri: p.artifact_uri,
       }
-
-      if (outputs && typeof outputs === 'object') {
-        // Only display the '_' variable (last-expression result, like
-        // Jupyter's Out[n]).  Other outputs are pass-through artifacts
-        // for downstream cells and should not be rendered.
-        const firstVar = outputs['_'] || null
-        if (firstVar) {
-          const contentType = firstVar?.content_type || 'json/object'
-          output.contentType = contentType as CellOutput['contentType']
-
-          if (contentType === 'arrow/ipc') {
-            const src = firstVar?.data || firstVar
-            output.columns = src?.columns
-            output.rowCount = src?.rows ?? src?.row_count ?? src?.rowCount
-
-            // preview is a 2D array [[row0col0, row0col1], ...] — convert
-            // to array of objects [{col0: val, col1: val}, ...] for the table
-            const preview = src?.preview
-            if (Array.isArray(preview) && output.columns) {
-              output.rows = preview.map((row: unknown[]) => {
-                const obj: Record<string, unknown> = {}
-                output.columns!.forEach((col, i) => {
-                  obj[col] = row[i]
-                })
-                return obj
-              })
-            }
-          } else if (contentType === 'module/import') {
-            // Module outputs are pass-through artifacts, not display values
-          } else {
-            // JSON/scalar outputs: prefer .data, fall back to .preview
-            const val = firstVar?.data ?? firstVar?.preview
-            if (val !== undefined) {
-              output.scalar = val
-            }
-          }
-        }
-      }
+      output.cacheHit = p.cache_hit || false
+      output.cacheLoadMs = p.duration_ms
 
       // Carry stdout/stderr forward (cell_output overwrites cell.output)
       const stdout = p.stdout as string | undefined

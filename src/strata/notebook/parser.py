@@ -8,6 +8,7 @@ from pathlib import Path
 
 from strata.notebook.models import (
     CellMeta,
+    CellOutput,
     CellState,
     MountSpec,
     NotebookState,
@@ -77,6 +78,9 @@ def parse_notebook(directory: Path) -> NotebookState:
 
     # Build notebook-level mount defaults (keyed by name for cell overrides)
     notebook_mounts = {m.name: m for m in notebook_toml.mounts}
+    artifact_entries = (
+        notebook_toml.artifacts if isinstance(notebook_toml.artifacts, dict) else {}
+    )
 
     for cell_meta in notebook_toml.cells:
         cell_file = cells_dir / cell_meta.file
@@ -98,6 +102,15 @@ def parse_notebook(directory: Path) -> NotebookState:
         )
         resolved_env = dict(notebook_toml.env)
         resolved_env.update(cell_meta.env)
+        display_output = None
+        raw_artifacts = artifact_entries.get(cell_meta.id, {})
+        if isinstance(raw_artifacts, dict):
+            raw_display = raw_artifacts.get("display")
+            if isinstance(raw_display, dict):
+                try:
+                    display_output = CellOutput(**raw_display)
+                except Exception:
+                    display_output = None
 
         cell_states.append(
             CellState(
@@ -113,6 +126,7 @@ def parse_notebook(directory: Path) -> NotebookState:
                 env_overrides=dict(cell_meta.env),
                 mounts=list(resolved_mounts.values()),
                 mount_overrides=list(cell_meta.mounts),
+                display_output=display_output,
             )
         )
 

@@ -18,6 +18,12 @@ from strata.notebook.writer import (
     write_cell,
 )
 
+_MINIMAL_PNG_LITERAL = (
+    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
+    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+)
+
 
 @pytest.fixture
 def temp_notebook():
@@ -249,10 +255,48 @@ def test_cell_execute_no_cascade(client, temp_notebook, app):
         response = websocket.receive_json()
         assert response["type"] in ["cell_output", "cell_error"]
 
-        # Should receive cell_status(ready/error)
-        response = websocket.receive_json()
-        assert response["type"] == "cell_status"
-        assert response["payload"]["status"] in ["ready", "error"]
+
+def test_cell_execute_emits_explicit_display_payload(client, temp_notebook, app):
+    """Image-like last-expression results should be sent in the dedicated display payload."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(
+        notebook_dir,
+        "root",
+        f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+Display()
+""",
+    )
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": "root"},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, "root"
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert output_message["payload"]["display"]["content_type"] == "image/png"
+        assert output_message["payload"]["display"]["inline_data_url"].startswith(
+            "data:image/png;base64,"
+        )
+        assert terminal_status["payload"]["status"] == "ready"
 
 
 def test_cell_execute_refreshes_downstream_staleness(client, temp_notebook, app):

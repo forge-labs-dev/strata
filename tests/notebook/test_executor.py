@@ -20,6 +20,12 @@ from strata.notebook.parser import parse_notebook
 from strata.notebook.pool import WarmProcessPool
 from strata.notebook.session import NotebookSession
 
+_MINIMAL_PNG_LITERAL = (
+    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
+    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+)
+
 
 @pytest.fixture
 def sample_notebook(tmp_path):
@@ -129,6 +135,35 @@ z = [1, 2, 3]
         assert result.success is True
         assert "data" in result.outputs
         assert result.outputs["data"]["content_type"] == "json/object"
+
+    @pytest.mark.asyncio
+    async def test_execute_png_display_output_is_cached_for_leaf_cells(self, sample_notebook):
+        """Leaf display outputs should persist as display artifacts and cache-hit on rerun."""
+        executor = CellExecutor(sample_notebook)
+        source = f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+Display()
+"""
+
+        first = await executor.execute_cell("cell1", source)
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert first.display_output is not None
+        assert first.display_output["content_type"] == "image/png"
+        assert first.display_output["artifact_uri"].startswith("strata://artifact/")
+        assert first.outputs["_"]["content_type"] == "image/png"
+
+        second = await executor.execute_cell("cell1", source)
+
+        assert second.success is True
+        assert second.cache_hit is True
+        assert second.display_output is not None
+        assert second.display_output["content_type"] == "image/png"
+        assert second.display_output["artifact_uri"].startswith("strata://artifact/")
 
     @pytest.mark.asyncio
     async def test_execute_ignores_private_vars(self, sample_notebook):

@@ -111,6 +111,11 @@ export interface CellOutput {
   rowCount?: number
   /** Scalar/dict output (when contentType = json/scalar) */
   scalar?: unknown
+  /** Inline data URL for image-like display outputs */
+  inlineDataUrl?: string | null
+  /** Optional image dimensions for image-like display outputs */
+  width?: number | null
+  height?: number | null
   /** Strata artifact reference */
   artifactUri?: string
   /** Whether this came from cache */

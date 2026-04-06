@@ -1120,6 +1120,7 @@ async def _execute_cell_directly(
                     "payload": {
                         "cell_id": cell_id,
                         "outputs": result.outputs,
+                        **({"display": result.display_output} if result.display_output else {}),
                         "cache_hit": result.cache_hit,
                         "duration_ms": int(result.duration_ms),
                         "artifact_uri": result.artifact_uri,

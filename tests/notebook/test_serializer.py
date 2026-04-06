@@ -16,6 +16,12 @@ from strata.notebook.serializer import (
     serialize_value,
 )
 
+_MINIMAL_PNG_BYTES = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDATx\xdac\xfc\xff"
+    b"\x1f\x00\x03\x03\x02\x00\xef\x9b\xe0M\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 
 # Module-level classes for pickle tests (local classes can't be pickled)
 class _PickleTestCustomClass:
@@ -85,6 +91,11 @@ class _SerializerCustomStatePerson:
 
     def __str__(self):
         return f"{self.name}:{self.age}:{self.restored}"
+
+
+class _SerializerPngDisplay:
+    def _repr_png_(self):
+        return _MINIMAL_PNG_BYTES
 
 
 def _mark_as_cell_module(cls, module_source: str) -> None:
@@ -218,6 +229,21 @@ class TestJsonSerialization:
             data_loaded = deserialize_value(meta["content_type"], file_path)
 
             assert data_loaded == data_orig
+
+
+class TestImageSerialization:
+    """Test PNG display serialization."""
+
+    def test_serialize_repr_png_value(self):
+        """Values exposing _repr_png_ should serialize as image/png."""
+        value = _SerializerPngDisplay()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = serialize_value(value, Path(tmpdir), "_")
+
+            assert result["content_type"] == "image/png"
+            assert result["bytes"] > 0
+            assert result["inline_data_url"].startswith("data:image/png;base64,")
 
     def test_roundtrip_nested(self):
         """Test round-trip for nested structure."""

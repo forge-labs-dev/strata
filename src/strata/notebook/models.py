@@ -100,6 +100,7 @@ class ContentType(StrEnum):
 
     ARROW_IPC = "arrow/ipc"
     JSON = "json/object"
+    IMAGE_PNG = "image/png"
     PICKLE = "pickle/object"
     ERROR = "error"
 
@@ -203,10 +204,20 @@ class CellOutput(BaseModel):
         default=None, description="Column names (for tables)"
     )
     bytes: int = Field(default=0, description="Size in bytes")
+    artifact_uri: str | None = Field(
+        default=None,
+        description="Artifact URI backing this display output",
+    )
     preview: int | float | str | bool | list | dict | None = Field(
         default=None,
         description="Preview data (first 20 rows for tables, value for scalars)",
     )
+    inline_data_url: str | None = Field(
+        default=None,
+        description="Inline data URL for display-only renderers like images",
+    )
+    width: int | None = Field(default=None, description="Display width in pixels")
+    height: int | None = Field(default=None, description="Display height in pixels")
     error: str | None = Field(
         default=None, description="Error message if serialization failed"
     )
@@ -282,6 +293,10 @@ class CellState(BaseModel):
     artifact_uris: dict[str, str] = Field(
         default_factory=dict,
         description="Per-variable artifact URIs: {var_name: uri}",
+    )
+    display_output: CellOutput | None = Field(
+        default=None,
+        description="Primary persisted display output for the cell",
     )
     cache_hit: bool = Field(
         default=False,

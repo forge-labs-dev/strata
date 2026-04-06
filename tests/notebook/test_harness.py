@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pytest
 
+_MINIMAL_PNG_LITERAL = (
+    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
+    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+)
+
 
 @pytest.fixture
 def harness_script():
@@ -166,6 +172,26 @@ x = 1
 
         assert result["success"] is True
         assert "error" in result["stderr"]
+
+    def test_harness_captures_last_expression_png_display(self, harness_script):
+        """Bare-expression values exposing _repr_png_ should be serialized as display output."""
+        manifest = {
+            "source": f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+Display()
+""",
+            "inputs": {},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "_" in result["variables"]
+        assert result["variables"]["_"]["content_type"] == "image/png"
+        assert result["variables"]["_"]["inline_data_url"].startswith("data:image/png;base64,")
 
     def test_harness_complex_dataframe(self, harness_script):
         """Test harness with a more complex DataFrame."""

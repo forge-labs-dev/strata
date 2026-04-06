@@ -22,6 +22,12 @@ from strata.notebook.writer import (
     write_notebook_toml,
 )
 
+_MINIMAL_PNG_LITERAL = (
+    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
+    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+)
+
 
 def test_close_session_without_running_loop_uses_nowait_pool_shutdown(
     monkeypatch, tmp_path: Path
@@ -264,3 +270,41 @@ def test_open_notebook_reuse_existing_session_keeps_pending_environment(
 
     assert reopened is session
     assert reopened.environment_sync_state == "pending"
+
+
+def test_open_notebook_restores_persisted_display_output(tmp_path: Path):
+    """A reopened notebook should restore persisted display output metadata."""
+    notebook_dir = create_notebook(tmp_path, "restore_display")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(
+        notebook_dir,
+        "c1",
+        f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+Display()
+""",
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", session.notebook_state.cells[0].source)).success
+
+    asyncio.run(_prime())
+    manager.close_session(session.id)
+
+    reopened = SessionManager().open_notebook(notebook_dir)
+    cell = next(c for c in reopened.notebook_state.cells if c.id == "c1")
+    serialized = reopened.serialize_cell(cell)
+
+    assert serialized["status"] == "ready"
+    assert serialized["display_output"]["content_type"] == "image/png"
+    assert serialized["display_output"]["artifact_uri"].startswith("strata://artifact/")
+    assert serialized["display_output"]["inline_data_url"].startswith("data:image/png;base64,")

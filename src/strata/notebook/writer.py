@@ -63,6 +63,19 @@ def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:
     ]
 
 
+def _sanitize_display_output_for_toml(
+    display_output: dict[str, object] | None,
+) -> dict[str, object] | None:
+    """Strip transient fields before persisting cell display metadata."""
+    if display_output is None:
+        return None
+
+    persisted = dict(display_output)
+    persisted.pop("inline_data_url", None)
+    persisted.pop("file", None)
+    return {key: value for key, value in persisted.items() if value is not None}
+
+
 def write_cell(notebook_dir: Path, cell_id: str, source: str) -> None:
     """Write cell source to disk.
 
@@ -720,3 +733,39 @@ def update_cell_env(
             return
 
     raise ValueError(f"Cell {cell_id} not found")
+
+
+def update_cell_display_output(
+    notebook_dir: Path,
+    cell_id: str,
+    display_output: dict[str, object] | None,
+) -> None:
+    """Persist or clear the primary display output metadata for a cell."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    artifacts_data = toml_data.get("artifacts", {})
+    if not isinstance(artifacts_data, dict):
+        artifacts_data = {}
+
+    raw_cell_artifacts = artifacts_data.get(cell_id, {})
+    cell_artifacts = dict(raw_cell_artifacts) if isinstance(raw_cell_artifacts, dict) else {}
+    persisted_display = _sanitize_display_output_for_toml(display_output)
+
+    if persisted_display is None:
+        cell_artifacts.pop("display", None)
+    else:
+        cell_artifacts["display"] = persisted_display
+
+    if cell_artifacts:
+        artifacts_data[cell_id] = cell_artifacts
+    else:
+        artifacts_data.pop(cell_id, None)
+
+    toml_data["artifacts"] = artifacts_data
+
+    with open(notebook_toml_path, "wb") as out:
+        tomli_w.dump(toml_data, out)

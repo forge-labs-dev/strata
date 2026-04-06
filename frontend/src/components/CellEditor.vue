@@ -751,6 +751,17 @@ function formatScalar(scalar: unknown): string {
           </div>
         </div>
         <div
+          v-else-if="cell.output.contentType === 'image/png' && cell.output.inlineDataUrl"
+          class="output-image"
+        >
+          <img
+            :src="cell.output.inlineDataUrl"
+            alt="Cell output"
+            :width="cell.output.width || undefined"
+            :height="cell.output.height || undefined"
+          />
+        </div>
+        <div
           v-else-if="cell.output.scalar !== undefined && !isConsoleOnly(cell.output.scalar)"
           class="output-scalar"
         >
@@ -1309,6 +1320,17 @@ function formatScalar(scalar: unknown): string {
 }
 .output-table-wrap {
   overflow-x: auto;
+}
+.output-image {
+  overflow-x: auto;
+}
+.output-image img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  background: #11111b;
 }
 .output-table {
   width: 100%;
