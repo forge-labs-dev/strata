@@ -344,6 +344,46 @@ Display()
         assert terminal_status["payload"]["status"] == "ready"
 
 
+def test_cell_execute_emits_display_side_effect_payload(client, temp_notebook, app):
+    """display(...) side effects should be surfaced through the websocket display payload."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(
+        notebook_dir,
+        "root",
+        """
+display(Markdown("# Side effect\\n\\nVia websocket."))
+""",
+    )
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": "root"},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, "root"
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert output_message["payload"]["display"]["content_type"] == "text/markdown"
+        assert (
+            output_message["payload"]["display"]["markdown_text"]
+            == "# Side effect\n\nVia websocket."
+        )
+        assert terminal_status["payload"]["status"] == "ready"
+
+
 def test_cell_execute_refreshes_downstream_staleness(client, temp_notebook, app):
     """Successful execution should immediately invalidate downstream cell state."""
     notebook_dir, _ = temp_notebook

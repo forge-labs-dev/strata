@@ -39,6 +39,7 @@ def _load_local_module(filename: str, module_name: str):
 
 _ser = _load_local_module("serializer.py", "_nb_serializer")
 _immut = _load_local_module("immutability.py", "_nb_immutability")
+_display = _load_local_module("display_runtime.py", "_nb_display_runtime")
 
 
 def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
@@ -169,6 +170,7 @@ def execute_harness(manifest: dict) -> dict:
     output_dir = Path(manifest.get("output_dir", ""))
 
     namespace: dict[str, Any] = {}
+    display_capture = _display.DisplayCapture()
 
     # Deserialize inputs
     for var_name, spec in inputs.items():
@@ -185,6 +187,7 @@ def execute_harness(manifest: dict) -> dict:
             print(f"Error deserializing {var_name}: {exc}", file=sys.stderr)
 
     _inject_mounts(manifest, namespace)
+    display_capture.install(namespace)
 
     namespace_before = set(namespace.keys())
     input_identities = {name: id(namespace[name]) for name in namespace_before}
@@ -200,7 +203,8 @@ def execute_harness(manifest: dict) -> dict:
 
     try:
         with _apply_env_overrides(manifest):
-            _display_value = _exec_with_display(source, namespace)
+            with display_capture.capture_side_effects():
+                _display_value = _exec_with_display(source, namespace)
 
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -215,9 +219,10 @@ def execute_harness(manifest: dict) -> dict:
                 except Exception as e:
                     variables[key] = {"content_type": "error", "error": str(e)}
 
-        if _display_value is not None:
+        primary_display = display_capture.resolve(_display_value)
+        if primary_display is not None:
             try:
-                variables["_"] = _ser.serialize_value(_display_value, output_dir, "_")
+                variables["_"] = _ser.serialize_value(primary_display, output_dir, "_")
             except Exception:
                 pass
 

@@ -214,6 +214,64 @@ Display()
         assert result["variables"]["_"]["content_type"] == "text/markdown"
         assert result["variables"]["_"]["markdown_text"] == "# Title\n\n- one\n- two"
 
+    def test_harness_captures_display_call_png_output(self, harness_script):
+        """Explicit display(...) side effects should populate the primary display output."""
+        manifest = {
+            "source": f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+display(Display())
+""",
+            "inputs": {},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "_" in result["variables"]
+        assert result["variables"]["_"]["content_type"] == "image/png"
+
+    def test_harness_captures_display_call_markdown_output(self, harness_script):
+        """Injected display helpers should support Markdown(...) without imports."""
+        manifest = {
+            "source": """
+display(Markdown("# Via helper\\n\\nRendered from display()."))
+""",
+            "inputs": {},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "_" in result["variables"]
+        assert result["variables"]["_"]["content_type"] == "text/markdown"
+        assert (
+            result["variables"]["_"]["markdown_text"]
+            == "# Via helper\n\nRendered from display()."
+        )
+
+    def test_harness_captures_pyplot_show_png_output(self, harness_script):
+        """plt.show() should feed the primary display output when matplotlib is available."""
+        pytest.importorskip("matplotlib.pyplot")
+        manifest = {
+            "source": """
+import matplotlib.pyplot as plt
+
+plt.plot([1, 2, 3], [1, 4, 9])
+plt.show()
+""",
+            "inputs": {},
+            "env": {"MPLBACKEND": "Agg"},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "_" in result["variables"]
+        assert result["variables"]["_"]["content_type"] == "image/png"
+
     def test_harness_complex_dataframe(self, harness_script):
         """Test harness with a more complex DataFrame."""
         manifest = {

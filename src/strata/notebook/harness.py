@@ -35,6 +35,7 @@ def _load_local_module(filename: str, module_name: str):
 
 _ser = _load_local_module("serializer.py", "_nb_serializer")
 _immut = _load_local_module("immutability.py", "_nb_immutability")
+_display = _load_local_module("display_runtime.py", "_nb_display_runtime")
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +161,8 @@ def apply_env_overrides(manifest: dict):
 def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]:
     """Execute a cell and return (outputs, stdout, stderr, mutation_warnings)."""
     namespace = dict(inputs)
+    display_capture = _display.DisplayCapture()
+    display_capture.install(namespace)
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
     stdout_capture = io.StringIO()
@@ -173,7 +176,8 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
         input_identities = {name: id(namespace[name]) for name in namespace_before}
         input_snapshots = _immut.snapshot_inputs(namespace, list(namespace_before))
 
-        _display_value = _exec_with_display(source, namespace)
+        with display_capture.capture_side_effects():
+            _display_value = _exec_with_display(source, namespace)
 
         _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
         new_vars: dict[str, Any] = {}
@@ -183,8 +187,9 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, str, str, list[dict]]
             if name not in namespace_before or id(value) != input_identities.get(name):
                 new_vars[name] = value
 
-        if _display_value is not None:
-            new_vars["_"] = _display_value
+        primary_display = display_capture.resolve(_display_value)
+        if primary_display is not None:
+            new_vars["_"] = primary_display
 
         mutation_warnings = [
             _serialize_mutation_warning(warning)

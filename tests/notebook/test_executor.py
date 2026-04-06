@@ -197,6 +197,75 @@ Display()
         assert second.display_output["markdown_text"] == "# Title\n\nA **markdown** cell."
 
     @pytest.mark.asyncio
+    async def test_execute_display_side_effect_png_output_is_cached(self, sample_notebook):
+        """display(...) side effects should flow through the primary display cache path."""
+        executor = CellExecutor(sample_notebook)
+        source = f"""
+class Display:
+    def _repr_png_(self):
+        return {_MINIMAL_PNG_LITERAL}
+
+display(Display())
+"""
+
+        first = await executor.execute_cell("cell1", source)
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert first.display_output is not None
+        assert first.display_output["content_type"] == "image/png"
+        assert first.outputs["_"]["content_type"] == "image/png"
+
+        second = await executor.execute_cell("cell1", source)
+
+        assert second.success is True
+        assert second.cache_hit is True
+        assert second.display_output is not None
+        assert second.display_output["content_type"] == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_execute_display_side_effect_markdown_output_is_cached(self, sample_notebook):
+        """display(Markdown(...)) should persist and cache-hit like explicit returned outputs."""
+        executor = CellExecutor(sample_notebook)
+        source = """
+display(Markdown("# Side effect\\n\\nCaptured."))
+"""
+
+        first = await executor.execute_cell("cell1", source)
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert first.display_output is not None
+        assert first.display_output["content_type"] == "text/markdown"
+        assert first.display_output["markdown_text"] == "# Side effect\n\nCaptured."
+
+        second = await executor.execute_cell("cell1", source)
+
+        assert second.success is True
+        assert second.cache_hit is True
+        assert second.display_output is not None
+        assert second.display_output["content_type"] == "text/markdown"
+        assert second.display_output["markdown_text"] == "# Side effect\n\nCaptured."
+
+    @pytest.mark.asyncio
+    async def test_execute_last_expression_overrides_earlier_display_side_effect(
+        self, sample_notebook
+    ):
+        """With a single display slot, the last visible result should win."""
+        executor = CellExecutor(sample_notebook)
+        source = """
+display(Markdown("# Earlier"))
+42
+"""
+
+        result = await executor.execute_cell("cell1", source)
+
+        assert result.success is True
+        assert result.display_output is not None
+        assert result.display_output["content_type"] == "json/object"
+        assert result.display_output["preview"] == 42
+
+    @pytest.mark.asyncio
     async def test_execute_ignores_private_vars(self, sample_notebook):
         """Test that private variables (_name) are not included in outputs."""
         executor = CellExecutor(sample_notebook)

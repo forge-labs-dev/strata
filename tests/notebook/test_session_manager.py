@@ -347,3 +347,36 @@ Display()
     assert serialized["display_output"]["content_type"] == "text/markdown"
     assert serialized["display_output"]["artifact_uri"].startswith("strata://artifact/")
     assert serialized["display_output"]["markdown_text"] == "# Reopened\n\nRendered after refresh."
+
+
+def test_open_notebook_restores_explicit_display_side_effect_output(tmp_path: Path):
+    """A reopened notebook should restore explicit display(...) side-effect output."""
+    notebook_dir = create_notebook(tmp_path, "restore_display_side_effect")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(
+        notebook_dir,
+        "c1",
+        """
+display(Markdown("# Side effect\\n\\nStill here."))
+""",
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", session.notebook_state.cells[0].source)).success
+
+    asyncio.run(_prime())
+    manager.close_session(session.id)
+
+    reopened = SessionManager().open_notebook(notebook_dir)
+    cell = next(c for c in reopened.notebook_state.cells if c.id == "c1")
+    serialized = reopened.serialize_cell(cell)
+
+    assert serialized["status"] == "ready"
+    assert serialized["display_output"]["content_type"] == "text/markdown"
+    assert serialized["display_output"]["markdown_text"] == "# Side effect\n\nStill here."
