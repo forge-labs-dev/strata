@@ -1,5 +1,6 @@
 """Strata Notebook — materialization and persistence layer for Python notebooks."""
 
+from strata.notebook.display import Markdown
 from strata.notebook.models import CellMeta, CellState, NotebookState, NotebookToml
 from strata.notebook.parser import parse_notebook
 from strata.notebook.routes import router
@@ -17,6 +18,7 @@ from strata.notebook.writer import (
 __all__ = [
     "CellMeta",
     "CellState",
+    "Markdown",
     "NotebookState",
     "NotebookToml",
     "parse_notebook",

@@ -25,6 +25,7 @@ _MINIMAL_PNG_LITERAL = (
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
     "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
 )
+_MARKDOWN_LITERAL = '"# Title\\n\\nA **markdown** cell."'
 
 
 @pytest.fixture
@@ -164,6 +165,36 @@ Display()
         assert second.display_output is not None
         assert second.display_output["content_type"] == "image/png"
         assert second.display_output["artifact_uri"].startswith("strata://artifact/")
+
+    @pytest.mark.asyncio
+    async def test_execute_markdown_display_output_is_cached_for_leaf_cells(self, sample_notebook):
+        """Markdown display outputs should persist as display artifacts and cache-hit on rerun."""
+        executor = CellExecutor(sample_notebook)
+        source = f"""
+class Display:
+    def _repr_markdown_(self):
+        return {_MARKDOWN_LITERAL}
+
+Display()
+"""
+
+        first = await executor.execute_cell("cell1", source)
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert first.display_output is not None
+        assert first.display_output["content_type"] == "text/markdown"
+        assert first.display_output["artifact_uri"].startswith("strata://artifact/")
+        assert first.display_output["markdown_text"] == "# Title\n\nA **markdown** cell."
+
+        second = await executor.execute_cell("cell1", source)
+
+        assert second.success is True
+        assert second.cache_hit is True
+        assert second.display_output is not None
+        assert second.display_output["content_type"] == "text/markdown"
+        assert second.display_output["artifact_uri"].startswith("strata://artifact/")
+        assert second.display_output["markdown_text"] == "# Title\n\nA **markdown** cell."
 
     @pytest.mark.asyncio
     async def test_execute_ignores_private_vars(self, sample_notebook):

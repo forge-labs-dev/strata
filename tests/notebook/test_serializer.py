@@ -11,6 +11,7 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
+from strata.notebook import Markdown
 from strata.notebook.serializer import (
     deserialize_value,
     serialize_value,
@@ -96,6 +97,11 @@ class _SerializerCustomStatePerson:
 class _SerializerPngDisplay:
     def _repr_png_(self):
         return _MINIMAL_PNG_BYTES
+
+
+class _SerializerMarkdownDisplay:
+    def _repr_markdown_(self):
+        return "# Title\n\n- one\n- two"
 
 
 def _mark_as_cell_module(cls, module_source: str) -> None:
@@ -244,6 +250,28 @@ class TestImageSerialization:
             assert result["content_type"] == "image/png"
             assert result["bytes"] > 0
             assert result["inline_data_url"].startswith("data:image/png;base64,")
+
+    def test_serialize_repr_markdown_value(self):
+        """Values exposing _repr_markdown_ should serialize as text/markdown."""
+        value = _SerializerMarkdownDisplay()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = serialize_value(value, Path(tmpdir), "_")
+
+            assert result["content_type"] == "text/markdown"
+            assert result["bytes"] > 0
+            assert result["markdown_text"] == "# Title\n\n- one\n- two"
+
+    def test_serialize_markdown_helper(self):
+        """The public Markdown helper should opt into markdown display."""
+        value = Markdown("## Heading")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = serialize_value(value, Path(tmpdir), "_")
+            file_path = Path(tmpdir) / result["file"]
+
+            assert result["content_type"] == "text/markdown"
+            assert deserialize_value(result["content_type"], file_path) == "## Heading"
 
     def test_roundtrip_nested(self):
         """Test round-trip for nested structure."""

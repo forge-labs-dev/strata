@@ -101,6 +101,7 @@ export type ArtifactContentType =
   | 'msgpack/object' // Tier 2: Dicts with bytes/datetime (safe, portable)
   | 'pickle/object' // Tier 3: Models, custom objects (unsafe — see security model)
   | 'image/png' // Display-only (plots, charts)
+  | 'text/markdown' // Display-only rich text
 
 export interface CellOutput {
   /** Content type determines how to render */
@@ -113,6 +114,8 @@ export interface CellOutput {
   scalar?: unknown
   /** Inline data URL for image-like display outputs */
   inlineDataUrl?: string | null
+  /** Raw markdown source for markdown display outputs */
+  markdownText?: string | null
   /** Optional image dimensions for image-like display outputs */
   width?: number | null
   height?: number | null

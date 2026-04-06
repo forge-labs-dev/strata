@@ -660,6 +660,16 @@ function parseDisplayOutputPayload(
     return output
   }
 
+  if (contentType === 'text/markdown') {
+    output.markdownText =
+      typeof raw.markdown_text === 'string'
+        ? raw.markdown_text
+        : typeof raw.preview === 'string'
+          ? raw.preview
+          : null
+    return output
+  }
+
   const scalar = raw.data ?? raw.preview
   if (scalar !== undefined) {
     output.scalar = scalar

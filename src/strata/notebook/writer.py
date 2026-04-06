@@ -73,6 +73,7 @@ def _sanitize_display_output_for_toml(
     persisted = dict(display_output)
     persisted.pop("inline_data_url", None)
     persisted.pop("file", None)
+    persisted.pop("markdown_text", None)
     return {key: value for key, value in persisted.items() if value is not None}
 
 

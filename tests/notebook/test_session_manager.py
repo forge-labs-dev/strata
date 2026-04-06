@@ -27,6 +27,7 @@ _MINIMAL_PNG_LITERAL = (
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
     "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
 )
+_MARKDOWN_LITERAL = '"# Reopened\\n\\nRendered after refresh."'
 
 
 def test_close_session_without_running_loop_uses_nowait_pool_shutdown(
@@ -308,3 +309,41 @@ Display()
     assert serialized["display_output"]["content_type"] == "image/png"
     assert serialized["display_output"]["artifact_uri"].startswith("strata://artifact/")
     assert serialized["display_output"]["inline_data_url"].startswith("data:image/png;base64,")
+
+
+def test_open_notebook_restores_persisted_markdown_display_output(tmp_path: Path):
+    """A reopened notebook should restore persisted markdown display output."""
+    notebook_dir = create_notebook(tmp_path, "restore_markdown_display")
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(
+        notebook_dir,
+        "c1",
+        f"""
+class Display:
+    def _repr_markdown_(self):
+        return {_MARKDOWN_LITERAL}
+
+Display()
+""",
+    )
+
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook.executor import CellExecutor
+
+    async def _prime() -> None:
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", session.notebook_state.cells[0].source)).success
+
+    asyncio.run(_prime())
+    manager.close_session(session.id)
+
+    reopened = SessionManager().open_notebook(notebook_dir)
+    cell = next(c for c in reopened.notebook_state.cells if c.id == "c1")
+    serialized = reopened.serialize_cell(cell)
+
+    assert serialized["status"] == "ready"
+    assert serialized["display_output"]["content_type"] == "text/markdown"
+    assert serialized["display_output"]["artifact_uri"].startswith("strata://artifact/")
+    assert serialized["display_output"]["markdown_text"] == "# Reopened\n\nRendered after refresh."

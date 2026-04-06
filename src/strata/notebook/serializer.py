@@ -1,9 +1,10 @@
 """Shared serialization/deserialization for notebook cell values.
 
-Supports six content types:
+Supports seven content types:
   arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
   image/png    — Displayable PNG output (figures, images)
+  text/markdown — Displayable markdown output
   module/import — Python module objects (re-imported by name on read)
   module/cell  — Synthetic module export for top-level defs/classes
   module/cell-instance — Instance of a synthetic notebook-exported class
@@ -151,6 +152,9 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
     except ImportError:
         pass
 
+    if variable_name == "_" and _is_markdown_display_value(value):
+        return "text/markdown"
+
     if variable_name == "_" and _is_png_display_value(value):
         return "image/png"
 
@@ -200,6 +204,8 @@ def serialize_value(
             return _serialize_dataframe_json(value, output_dir, variable_name)
     elif content_type == "image/png":
         return _serialize_image_png(value, output_dir, variable_name)
+    elif content_type == "text/markdown":
+        return _serialize_markdown(value, output_dir, variable_name)
     elif content_type == "json/object":
         return _serialize_json(value, output_dir, variable_name)
     elif content_type == "module/import":
@@ -277,6 +283,40 @@ def _is_png_display_value(value: Any) -> bool:
         pass
 
     return False
+
+
+def _is_markdown_display_value(value: Any) -> bool:
+    repr_markdown = getattr(value, "_repr_markdown_", None)
+    return callable(repr_markdown)
+
+
+def _coerce_markdown_text(value: Any) -> str:
+    repr_markdown = getattr(value, "_repr_markdown_", None)
+    if not callable(repr_markdown):
+        raise ValueError(f"Cannot serialize {type(value)} as text/markdown")
+
+    raw = repr_markdown()
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8")
+    if isinstance(raw, str):
+        return raw
+    raise ValueError("_repr_markdown_() must return str or UTF-8 bytes")
+
+
+def _serialize_markdown(
+    value: Any, output_dir: Path, variable_name: str
+) -> dict[str, Any]:
+    markdown_text = _coerce_markdown_text(value)
+    filename = f"{variable_name}.md"
+    filepath = output_dir / filename
+    filepath.write_text(markdown_text, encoding="utf-8")
+    return {
+        "content_type": "text/markdown",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "markdown_text": markdown_text,
+        "preview": None,
+    }
 
 
 def _serialize_image_png(
@@ -495,6 +535,7 @@ def _serialize_pickle(
 # Extension → content-type mapping (also used by executor._store_outputs)
 EXT_TO_CONTENT_TYPE: dict[str, str] = {
     ".arrow": "arrow/ipc",
+    ".md": "text/markdown",
     ".json": "json/object",
     ".pickle": "pickle/object",
     ".module.json": "module/import",
@@ -514,6 +555,8 @@ def deserialize_value(
     file_path = Path(file_path)
     if content_type == "arrow/ipc":
         return _deserialize_arrow(file_path)
+    elif content_type == "text/markdown":
+        return _deserialize_markdown(file_path)
     elif content_type == "json/object":
         return _deserialize_json(file_path)
     elif content_type == "pickle/object":
@@ -549,6 +592,10 @@ def _deserialize_arrow(file_path: Path) -> Any:
 def _deserialize_json(file_path: Path) -> Any:
     with open(file_path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _deserialize_markdown(file_path: Path) -> str:
+    return file_path.read_text(encoding="utf-8")
 
 
 def _deserialize_pickle(file_path: Path) -> Any:

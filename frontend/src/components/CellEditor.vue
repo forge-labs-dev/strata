@@ -14,6 +14,7 @@ import {
   workerTransportLabel,
   workerWarningForEntry,
 } from '../utils/notebookWorkers'
+import { renderMarkdownToHtml } from '../utils/markdown'
 import { applySourceAnnotations } from '../utils/notebookAnnotations'
 import type { CellAnnotations, MountSpec } from '../types/notebook'
 
@@ -393,6 +394,13 @@ function formatScalar(scalar: unknown): string {
   }
   return String(scalar)
 }
+
+const renderedMarkdownOutput = computed(() => {
+  if (props.cell.output?.contentType !== 'text/markdown' || !props.cell.output.markdownText) {
+    return ''
+  }
+  return renderMarkdownToHtml(props.cell.output.markdownText)
+})
 </script>
 
 <template>
@@ -761,6 +769,11 @@ function formatScalar(scalar: unknown): string {
             :height="cell.output.height || undefined"
           />
         </div>
+        <div
+          v-else-if="cell.output.contentType === 'text/markdown' && cell.output.markdownText"
+          class="output-markdown"
+          v-html="renderedMarkdownOutput"
+        ></div>
         <div
           v-else-if="cell.output.scalar !== undefined && !isConsoleOnly(cell.output.scalar)"
           class="output-scalar"
@@ -1331,6 +1344,69 @@ function formatScalar(scalar: unknown): string {
   border: 1px solid #313244;
   border-radius: 6px;
   background: #11111b;
+}
+.output-markdown {
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.6;
+}
+.output-markdown :deep(h1),
+.output-markdown :deep(h2),
+.output-markdown :deep(h3),
+.output-markdown :deep(h4),
+.output-markdown :deep(h5),
+.output-markdown :deep(h6) {
+  margin: 0 0 8px;
+  color: #f5e0dc;
+}
+.output-markdown :deep(p),
+.output-markdown :deep(blockquote),
+.output-markdown :deep(pre),
+.output-markdown :deep(table),
+.output-markdown :deep(ul),
+.output-markdown :deep(ol) {
+  margin: 0 0 10px;
+}
+.output-markdown :deep(code) {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  background: #11111b;
+  color: #f9e2af;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.output-markdown :deep(pre) {
+  overflow-x: auto;
+  padding: 10px 12px;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  background: #11111b;
+}
+.output-markdown :deep(pre code) {
+  padding: 0;
+  background: transparent;
+}
+.output-markdown :deep(blockquote) {
+  padding-left: 12px;
+  border-left: 3px solid #89b4fa55;
+  color: #bac2de;
+}
+.output-markdown :deep(a) {
+  color: #89b4fa;
+}
+.output-markdown :deep(table) {
+  width: 100%;
+  border-collapse: collapse;
+}
+.output-markdown :deep(th),
+.output-markdown :deep(td) {
+  padding: 6px 10px;
+  border: 1px solid #313244;
+  text-align: left;
+}
+.output-markdown :deep(th) {
+  color: #89b4fa;
+  background: #181825;
 }
 .output-table {
   width: 100%;

@@ -101,6 +101,7 @@ class ContentType(StrEnum):
     ARROW_IPC = "arrow/ipc"
     JSON = "json/object"
     IMAGE_PNG = "image/png"
+    TEXT_MARKDOWN = "text/markdown"
     PICKLE = "pickle/object"
     ERROR = "error"
 
@@ -215,6 +216,10 @@ class CellOutput(BaseModel):
     inline_data_url: str | None = Field(
         default=None,
         description="Inline data URL for display-only renderers like images",
+    )
+    markdown_text: str | None = Field(
+        default=None,
+        description="Markdown source for display-only markdown outputs",
     )
     width: int | None = Field(default=None, description="Display width in pixels")
     height: int | None = Field(default=None, description="Display height in pixels")

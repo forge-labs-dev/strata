@@ -653,6 +653,23 @@ class NotebookSession:
     def _hydrate_display_output(self, output: CellOutput | dict[str, Any]) -> dict[str, Any] | None:
         """Return a serialized display payload with any transient inline data added."""
         raw = output.model_dump() if isinstance(output, CellOutput) else dict(output)
+        if raw.get("content_type") == "text/markdown":
+            artifact_uri = raw.get("artifact_uri")
+            if not isinstance(artifact_uri, str) or not artifact_uri:
+                return raw
+
+            if isinstance(raw.get("markdown_text"), str):
+                return raw
+
+            try:
+                artifact_id, version = self._parse_artifact_uri(artifact_uri)
+                blob = self.artifact_manager.load_artifact_data(artifact_id, version)
+            except Exception:
+                return raw
+
+            raw["markdown_text"] = blob.decode("utf-8", errors="replace")
+            return raw
+
         if raw.get("content_type") != "image/png":
             return raw
 

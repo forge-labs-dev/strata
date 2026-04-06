@@ -15,6 +15,7 @@ _MINIMAL_PNG_LITERAL = (
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
     "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
 )
+_MARKDOWN_LITERAL = '"# Title\\n\\n- one\\n- two"'
 
 
 @pytest.fixture
@@ -192,6 +193,26 @@ Display()
         assert "_" in result["variables"]
         assert result["variables"]["_"]["content_type"] == "image/png"
         assert result["variables"]["_"]["inline_data_url"].startswith("data:image/png;base64,")
+
+    def test_harness_captures_last_expression_markdown_display(self, harness_script):
+        """Bare-expression values exposing _repr_markdown_ should serialize as markdown display."""
+        manifest = {
+            "source": f"""
+class Display:
+    def _repr_markdown_(self):
+        return {_MARKDOWN_LITERAL}
+
+Display()
+""",
+            "inputs": {},
+        }
+
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "_" in result["variables"]
+        assert result["variables"]["_"]["content_type"] == "text/markdown"
+        assert result["variables"]["_"]["markdown_text"] == "# Title\n\n- one\n- two"
 
     def test_harness_complex_dataframe(self, harness_script):
         """Test harness with a more complex DataFrame."""
