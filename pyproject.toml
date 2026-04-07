@@ -1,7 +1,7 @@
 [project]
 name = "strata"
 version = "0.1.0"
-description = "Snapshot-aware serving layer for Iceberg tables with Arrow-based caching"
+description = "Persistence substrate and notebook runtime for long-horizon computation"
 readme = "README.md"
 authors = [
     { name = "Fangchen Li", email = "fangchen.li@outlook.com" }

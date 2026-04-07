@@ -24,6 +24,8 @@ release framing rather than exhaustive commit history.
 
 ### Changed
 
+- the docs are now split into separate Strata Core and Strata Notebook
+  quickstarts, with the root README acting as an umbrella landing page
 - notebook create now bootstraps the initial environment asynchronously, which
   makes first open substantially faster
 - notebook open/create flows reuse prefetched state and lazy-load secondary

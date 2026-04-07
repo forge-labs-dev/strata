@@ -4,14 +4,37 @@
 [![Pre-commit](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/pre-commit.yml)
 [![Docker](https://github.com/fangchenli/strata/actions/workflows/docker.yml/badge.svg)](https://github.com/fangchenli/strata/actions/workflows/docker.yml)
 
-**A Persistence Substrate for Long-Horizon Computation**
+**A Persistence Substrate and Notebook Runtime for Long-Horizon Computation**
 
-Strata is a materialization and persistence layer for long-running, iterative, and expensive computations.
+Strata is a persistence substrate for long-running, iterative, and expensive
+computations, with both a core materialization API and an interactive notebook
+surface built on top of it.
 
-Strata is currently in **alpha**. The most complete user-facing surface today is
-the local/personal notebook workflow. Service mode, hosted deployment, and some
-advanced notebook capabilities are usable, but should still be treated as
-preview features.
+Strata currently has two user-facing surfaces built on the same runtime:
+
+- **Strata Core**: the materialization, artifact, lineage, and executor layer
+- **Strata Notebook**: the interactive notebook product built on top of that substrate
+
+Strata is currently in **alpha**. The repo, package, and runtime are shared,
+but the docs and release framing should be read as two separate surfaces with
+different maturity levels.
+
+## Choose Your Path
+
+- **Strata Core**
+  Start with [docs/core-quickstart.md](docs/core-quickstart.md) if you want the
+  programmatic `materialize(...) -> artifact` API, artifact caching, lineage,
+  and executor integration.
+- **Strata Notebook**
+  Start with [docs/notebook-quickstart.md](docs/notebook-quickstart.md) if you
+  want the interactive notebook UI, notebook environments, and rich display
+  outputs.
+- **Service Mode / Shared Backend**
+  See [docs/service-mode-deployment.md](docs/service-mode-deployment.md) for the
+  advanced shared-backend deployment model.
+- **Hosted Personal Notebook Example**
+  See [docs/fly-notebook-smoke-checklist.md](docs/fly-notebook-smoke-checklist.md)
+  for the current Fly-hosted personal-mode path.
 
 It provides a single primitive:
 
@@ -92,7 +115,12 @@ Those responsibilities belong elsewhere. Strata is the persistence substrate the
 | Multi-step data transformations        | Sub-second latency requirements         |
 | Dashboard reads against Iceberg tables | Joins/aggregations (use a query engine) |
 
-## Quick Start (2 minutes)
+## Core Quick Start (2 minutes)
+
+The rest of this README focuses on **Strata Core**.
+
+If you want the notebook product instead, use
+[docs/notebook-quickstart.md](docs/notebook-quickstart.md).
 
 **1. Install** (Python 3.12+, Rust required)
 
@@ -113,63 +141,6 @@ uv run python examples/hello_world.py
 ```
 
 This creates a 100K-row Iceberg table and runs cold → warm → restart benchmarks. You'll see cache speedup immediately.
-
-## Notebook Quick Start (alpha)
-
-If you want to use Strata as an interactive notebook system, start with
-**personal mode** locally.
-
-**1. Start the notebook server**
-
-```bash
-STRATA_DEPLOYMENT_MODE=personal uv run strata-server
-```
-
-Then open:
-
-```text
-http://127.0.0.1:8765/#/
-```
-
-**2. Create a notebook**
-
-- click `New Notebook`
-- choose a notebook name and parent path
-- choose a Python version if the deployment offers more than one
-
-**3. Run a simple cell**
-
-```python
-x = 1
-x + 1
-```
-
-**4. Try rich display outputs**
-
-```python
-display(Markdown("# First"))
-42
-```
-
-```python
-import matplotlib.pyplot as plt
-
-plt.plot([1, 2, 3], [1, 4, 9])
-plt.show()
-Markdown("## done")
-```
-
-The notebook runtime currently supports:
-
-- environment management via `uv`
-- create / open / rename / delete
-- PNG image display
-- markdown display
-- ordered multiple visible outputs per cell
-
-For a hosted personal-mode deployment example, see
-[docs/fly-notebook-smoke-checklist.md](docs/fly-notebook-smoke-checklist.md).
-For service mode, see [docs/service-mode-deployment.md](docs/service-mode-deployment.md).
 
 ### Materialize (the core primitive)
 
@@ -330,32 +301,34 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 Current release framing:
 
 - Strata is still **alpha**
-- the recommended release target today is **local/personal notebook usage**
+- Strata Core and Strata Notebook live in one repo/package today, but should be
+  read as two separate surfaces with different docs and different maturity
+- the smoothest end-user path today is still **local/personal notebook usage**
 - service mode is functional, but better thought of as an advanced/shared-backend
-  deployment mode than a polished collaborative notebook product
+  deployment mode than a default first-time experience
 
 Notebook-specific limitations:
 
-- no collaborative live notebook editing
-- no full Jupyter MIME bundle compatibility
-- no raw HTML notebook output support
-- markdown is sanitized and display-only
-- service-mode session discovery is intentionally restricted
-- some richer display types such as SVG are still planned work
+- are documented in
+  [docs/notebook-quickstart.md](docs/notebook-quickstart.md),
+  [docs/design-notebook.md](docs/design-notebook.md),
+  [docs/design-notebook-environments.md](docs/design-notebook-environments.md),
+  and
+  [docs/design-notebook-display-outputs.md](docs/design-notebook-display-outputs.md)
 
 Operational limitations:
 
-- hosted personal-mode deployments need persistent volume sizing and notebook
-  storage configured correctly
-- service mode needs explicit auth/proxy/deployment setup; it is not the default
-  recommendation for a first-time notebook user
+- hosted notebook deployments need persistent volume sizing and notebook storage
+  configured correctly
+- service mode needs explicit auth/proxy/deployment setup and should still be
+  treated as advanced deployment work
 
 See also:
 
 - [CHANGELOG.md](CHANGELOG.md)
-- [docs/design-notebook.md](docs/design-notebook.md)
-- [docs/design-notebook-environments.md](docs/design-notebook-environments.md)
-- [docs/design-notebook-display-outputs.md](docs/design-notebook-display-outputs.md)
+- [docs/core-quickstart.md](docs/core-quickstart.md)
+- [docs/notebook-quickstart.md](docs/notebook-quickstart.md)
+- [docs/service-mode-deployment.md](docs/service-mode-deployment.md)
 
 ## Usage Examples
 
