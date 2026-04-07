@@ -1,0 +1,72 @@
+site_name: Strata
+site_url: https://forge-labs-dev.github.io/strata/
+site_description: Persistence substrate and notebook runtime for long-horizon computation
+repo_url: https://github.com/forge-labs-dev/strata
+repo_name: forge-labs-dev/strata
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+  - attr_list
+  - def_list
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Notebook Quickstart: getting-started/notebook.md
+    - Core API Quickstart: getting-started/core.md
+  - Notebook Guide:
+    - Concepts: notebook/concepts.md
+    - Environment: notebook/environment.md
+    - Keyboard Shortcuts: notebook/keyboard.md
+  - Deployment:
+    - Docker: deployment/docker.md
+    - Fly.io: deployment/fly.md
+    - GitHub Codespaces: deployment/codespaces.md
+  - Reference:
+    - Configuration: reference/configuration.md
+    - REST API: reference/rest-api.md
+    - WebSocket Protocol: reference/websocket.md
+
+exclude_docs: |
+  internal/
