@@ -103,6 +103,21 @@ def _reuse_open_session_by_path() -> bool:
     return state.config.deployment_mode == "personal"
 
 
+def _get_notebook_storage_root() -> Path | None:
+    """Return the configured notebook storage root when server state is available."""
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+    except RuntimeError:
+        return None
+
+    configured_path = getattr(state.config, "notebook_storage_dir", None)
+    if configured_path is None:
+        return None
+    return Path(configured_path).resolve()
+
+
 def _require_personal_mode_notebook_delete() -> None:
     """Restrict destructive notebook deletion to personal mode for now."""
     try:
@@ -154,13 +169,27 @@ def validate_package_name(package: str) -> str:
 
 
 def _validate_notebook_path(user_path: str, label: str = "path") -> Path:
-    """Validate that a user-supplied path is safe (no path traversal)."""
+    """Validate that a notebook path is safe and confined to the storage root."""
     path = Path(user_path)
     if ".." in path.parts:
         raise HTTPException(
             status_code=400, detail=f"Invalid {label}: path traversal not allowed"
         )
-    return path.resolve()
+
+    root = _get_notebook_storage_root()
+    resolved = (
+        (root / path).resolve()
+        if root is not None and not path.is_absolute()
+        else path.resolve()
+    )
+
+    if root is not None and resolved != root and root not in resolved.parents:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {label}: must be inside configured notebook storage",
+        )
+
+    return resolved
 
 
 def _safe_filename(name: str) -> str:

@@ -19,7 +19,7 @@ Strata is currently in **alpha**. The repo, package, and runtime are shared,
 but the docs and release framing should be read as two separate surfaces with
 different maturity levels.
 
-**Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev)
+**Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev) (small hosted preview)
 
 ## Docker Quick Start
 
@@ -60,7 +60,7 @@ This path starts the local **personal-mode notebook** stack from
   advanced shared-backend deployment model.
 - **Hosted Personal Notebook Example**
   See [docs/fly-notebook-smoke-checklist.md](docs/fly-notebook-smoke-checklist.md)
-  for the current Fly-hosted personal-mode path.
+  for the current Fly-hosted personal-mode preview path.
 
 It provides a single primitive:
 

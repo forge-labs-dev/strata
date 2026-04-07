@@ -134,13 +134,14 @@ def test_open_notebook_reuses_existing_session_in_personal_mode(monkeypatch):
     client = TestClient(create_test_app())
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Reusable Notebook")
+        storage_root = Path(tmpdir)
+        notebook_dir = create_notebook(storage_root, "Reusable Notebook")
         monkeypatch.setattr(
             "strata.server._state",
             SimpleNamespace(
                 config=SimpleNamespace(
                     deployment_mode="personal",
-                    notebook_storage_dir=Path("/tmp/strata-notebooks"),
+                    notebook_storage_dir=storage_root,
                     notebook_python_versions=["3.13"],
                     transforms_config={},
                 )
@@ -241,7 +242,9 @@ def test_list_cells_includes_remote_execution_metadata(
     client = TestClient(create_test_app())
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Remote Metadata Test")
+        storage_root = Path(tmpdir)
+        notebook_build_server["config"].notebook_storage_dir = storage_root
+        notebook_dir = create_notebook(storage_root, "Remote Metadata Test")
         add_cell_to_notebook(notebook_dir, "cell-1")
         write_cell(notebook_dir, "cell-1", "x = 1")
 
@@ -313,6 +316,37 @@ def test_open_notebook_not_found():
     )
 
     assert response.status_code == 404
+
+
+def test_open_notebook_rejects_path_outside_configured_storage_root(monkeypatch):
+    """Opening a notebook outside the configured storage root should be rejected."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        storage_root = tmpdir_path / "allowed"
+        storage_root.mkdir()
+        outside_root = tmpdir_path / "outside"
+        notebook_dir = create_notebook(outside_root, "Outside Notebook")
+
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="personal",
+                    notebook_storage_dir=storage_root,
+                    notebook_python_versions=["3.13"],
+                    transforms_config={},
+                )
+            ),
+        )
+
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Invalid notebook path: must be inside configured notebook storage"
+        )
 
 
 def test_create_notebook_endpoint():
@@ -439,21 +473,22 @@ def test_create_notebook_endpoint_with_starter_cell():
 
 def test_create_notebook_endpoint_rejects_unsupported_python_version(monkeypatch):
     """Notebook creation should validate requested Python versions against server config."""
-    monkeypatch.setattr(
-        "strata.server._state",
-        SimpleNamespace(
-            config=SimpleNamespace(
-                deployment_mode="personal",
-                notebook_storage_dir=Path("/tmp/strata-notebooks"),
-                notebook_python_versions=["3.13"],
-                transforms_config={},
-            )
-        ),
-    )
-
     client = TestClient(create_test_app())
 
     with tempfile.TemporaryDirectory() as tmpdir:
+        storage_root = Path(tmpdir)
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="personal",
+                    notebook_storage_dir=storage_root,
+                    notebook_python_versions=["3.13"],
+                    transforms_config={},
+                )
+            ),
+        )
+
         response = client.post(
             "/v1/notebooks/create",
             json={"parent_path": tmpdir, "name": "New Notebook", "python_version": "3.12"},
@@ -461,6 +496,40 @@ def test_create_notebook_endpoint_rejects_unsupported_python_version(monkeypatch
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Python 3.12 is not available for notebook creation"
+
+
+def test_create_notebook_endpoint_rejects_parent_path_outside_configured_storage_root(monkeypatch):
+    """Notebook creation parent paths must stay inside the configured storage root."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir_path = Path(tmpdir)
+        storage_root = tmpdir_path / "allowed"
+        storage_root.mkdir()
+        outside_root = tmpdir_path / "outside"
+        outside_root.mkdir()
+
+        monkeypatch.setattr(
+            "strata.server._state",
+            SimpleNamespace(
+                config=SimpleNamespace(
+                    deployment_mode="personal",
+                    notebook_storage_dir=storage_root,
+                    notebook_python_versions=["3.13"],
+                    transforms_config={},
+                )
+            ),
+        )
+
+        response = client.post(
+            "/v1/notebooks/create",
+            json={"parent_path": str(outside_root), "name": "New Notebook"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == (
+            "Invalid parent path: must be inside configured notebook storage"
+        )
 
 
 def test_delete_notebook_endpoint_removes_directory_and_closes_session():
