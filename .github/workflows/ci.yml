@@ -10,6 +10,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm run test
+        working-directory: frontend
+
+      - name: Run frontend build
+        run: npm run build
+        working-directory: frontend
+
+      - name: Run frontend format check
+        run: npm run format:check
+        working-directory: frontend
+
   # Fast unit tests - run on all platforms and Python versions
   unit-tests:
     name: Unit Tests - Python ${{ matrix.python-version }} on ${{ matrix.os }}
@@ -109,3 +139,83 @@ jobs:
 
       - name: Run ruff format check
         run: uv run ruff format --check src/ tests/
+
+  notebook-browser-smoke:
+    name: Notebook Browser Smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install backend dependencies and build Rust extension
+        run: uv sync --all-extras
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+
+      - name: Start Strata notebook server
+        run: |
+          STRATA_DEPLOYMENT_MODE=personal STRATA_PORT=8770 uv run strata-server > /tmp/strata-ci.log 2>&1 &
+          echo $! > /tmp/strata-ci.pid
+
+      - name: Wait for notebook server health
+        run: |
+          python - <<'PY'
+          import time
+          import urllib.request
+
+          url = "http://127.0.0.1:8770/health"
+          deadline = time.time() + 60
+          last_error = None
+
+          while time.time() < deadline:
+              try:
+                  with urllib.request.urlopen(url, timeout=2) as response:
+                      if response.status == 200:
+                          raise SystemExit(0)
+              except Exception as exc:  # pragma: no cover - CI shell helper
+                  last_error = exc
+                  time.sleep(1)
+
+          raise SystemExit(f"Notebook server did not become healthy: {last_error}")
+          PY
+
+      - name: Run notebook browser benchmark smoke
+        run: npm run benchmark:notebook -- --base-url http://127.0.0.1:8770 --iterations 1
+        working-directory: frontend
+
+      - name: Show server logs on failure
+        if: failure()
+        run: cat /tmp/strata-ci.log
+
+      - name: Stop notebook server
+        if: always()
+        run: |
+          if [ -f /tmp/strata-ci.pid ]; then
+            kill "$(cat /tmp/strata-ci.pid)" || true
+          fi

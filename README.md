@@ -8,6 +8,11 @@
 
 Strata is a materialization and persistence layer for long-running, iterative, and expensive computations.
 
+Strata is currently in **alpha**. The most complete user-facing surface today is
+the local/personal notebook workflow. Service mode, hosted deployment, and some
+advanced notebook capabilities are usable, but should still be treated as
+preview features.
+
 It provides a single primitive:
 
 ```
@@ -15,6 +20,7 @@ materialize(inputs, transform) → artifact
 ```
 
 This primitive ensures that:
+
 - Results are **immutable and versioned**
 - Identical computations are **deduplicated**
 - Lineage is **explicit and inspectable**
@@ -25,6 +31,7 @@ Strata is designed to sit **below orchestration** and **outside execution**.
 ## The Problem
 
 Modern data and AI workflows increasingly have these properties:
+
 - **Long-horizon**: minutes to hours, not milliseconds
 - **Iterative**: evaluate → refine → repeat
 - **Branching**: explore multiple variants
@@ -38,6 +45,7 @@ Typical systems rely on implicit task state, in-memory caches, ad-hoc checkpoint
 ## The Solution
 
 Once results are treated as first-class artifacts:
+
 - Retries become **safe**
 - Reuse becomes **trivial**
 - Crashes become **recoverable**
@@ -48,6 +56,7 @@ Strata makes this explicit and reliable.
 ## What Strata Is Not
 
 Strata is **not**:
+
 - A workflow engine or DAG runner
 - A scheduler or agent framework
 - A query engine or SQL layer
@@ -75,32 +84,92 @@ Those responsibilities belong elsewhere. Strata is the persistence substrate the
 
 **Is Strata for you?**
 
-| Good fit | Not a fit |
-|----------|-----------|
-| Long-running AI/ML pipelines | Simple single-shot computations |
-| Iterative evaluation workflows | Systems that need control flow |
-| Expensive computations worth caching | Real-time streaming workloads |
-| Multi-step data transformations | Sub-second latency requirements |
+| Good fit                               | Not a fit                               |
+| -------------------------------------- | --------------------------------------- |
+| Long-running AI/ML pipelines           | Simple single-shot computations         |
+| Iterative evaluation workflows         | Systems that need control flow          |
+| Expensive computations worth caching   | Real-time streaming workloads           |
+| Multi-step data transformations        | Sub-second latency requirements         |
 | Dashboard reads against Iceberg tables | Joins/aggregations (use a query engine) |
 
 ## Quick Start (2 minutes)
 
 **1. Install** (Python 3.12+, Rust required)
+
 ```bash
 uv sync  # or: pip install -e .
 ```
 
 **2. Start server** (in one terminal)
+
 ```bash
 strata-server
 ```
 
 **3. Run the demo** (in another terminal)
+
 ```bash
 uv run python examples/hello_world.py
 ```
 
 This creates a 100K-row Iceberg table and runs cold → warm → restart benchmarks. You'll see cache speedup immediately.
+
+## Notebook Quick Start (alpha)
+
+If you want to use Strata as an interactive notebook system, start with
+**personal mode** locally.
+
+**1. Start the notebook server**
+
+```bash
+STRATA_DEPLOYMENT_MODE=personal uv run strata-server
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765/#/
+```
+
+**2. Create a notebook**
+
+- click `New Notebook`
+- choose a notebook name and parent path
+- choose a Python version if the deployment offers more than one
+
+**3. Run a simple cell**
+
+```python
+x = 1
+x + 1
+```
+
+**4. Try rich display outputs**
+
+```python
+display(Markdown("# First"))
+42
+```
+
+```python
+import matplotlib.pyplot as plt
+
+plt.plot([1, 2, 3], [1, 4, 9])
+plt.show()
+Markdown("## done")
+```
+
+The notebook runtime currently supports:
+
+- environment management via `uv`
+- create / open / rename / delete
+- PNG image display
+- markdown display
+- ordered multiple visible outputs per cell
+
+For a hosted personal-mode deployment example, see
+[docs/fly-notebook-smoke-checklist.md](docs/fly-notebook-smoke-checklist.md).
+For service mode, see [docs/service-mode-deployment.md](docs/service-mode-deployment.md).
 
 ### Materialize (the core primitive)
 
@@ -138,6 +207,7 @@ filtered = client.materialize(
 ```
 
 **Key behaviors:**
+
 - Same inputs + transform → returns existing artifact (no recomputation)
 - Artifacts are immutable and versioned
 - Names are mutable pointers to specific versions
@@ -181,6 +251,7 @@ table = client.fetch(artifact.uri)
 ### Materialization Model
 
 Every expensive computation is a **materialization** defined by:
+
 - **Pinned inputs**: Iceberg snapshots or artifact versions
 - **Transform identity**: executor + parameters + code hash
 
@@ -189,6 +260,7 @@ From these, Strata derives a **provenance hash**. If the same materialization is
 ### Artifact States
 
 Materialization has observable states:
+
 - `ready` — artifact exists and is usable
 - `building` — computation in progress
 - `failed` — computation failed with error
@@ -198,6 +270,7 @@ There is no hidden state inside user code. This makes it possible to poll progre
 ### Why Immutability Matters
 
 Artifacts are:
+
 - **Immutable**: never change once created
 - **Versioned**: each computation produces a new version
 - **Addressable**: can be referenced as inputs to other transforms
@@ -206,12 +279,14 @@ Artifacts are:
 ### Iceberg Table Fetching
 
 Strata provides snapshot-aware fetching for Apache Iceberg tables via the unified `/v1/materialize` endpoint:
+
 - Uses built-in `scan@v1` transform for direct table reads
 - Caches results as artifacts keyed by provenance hash (table + snapshot + columns + filters)
 - Streams with bounded memory (O(row group), not O(result))
 - Two-tier QoS prevents bulk queries from starving dashboards
 
 **When fetching shines:**
+
 - Same snapshot queried repeatedly
 - Interactive or dashboard-driven workloads
 - Cold starts are expensive
@@ -220,6 +295,7 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 ## Features
 
 **Materialization** — the core primitive:
+
 - Provenance-based deduplication (same inputs + transform → existing artifact)
 - Explicit artifact states (`ready`, `building`, `failed`)
 - Lineage tracking (inputs → outputs, dependents)
@@ -228,6 +304,7 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 - Pluggable blob storage (local filesystem, S3/S3-compatible, or GCS)
 
 **Iceberg Fetching** — snapshot-aware table access via unified API:
+
 - Provenance-based caching (keys include table + snapshot + columns + filters)
 - Row-group level caching in Arrow IPC format
 - Two-tier filter pruning (Iceberg manifests → Parquet statistics)
@@ -236,6 +313,7 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 - DuckDB & Polars integration
 
 **Operations** — production readiness:
+
 - Two-tier QoS (interactive vs bulk query isolation)
 - Rate limiting, health checks, pre-flight size limits
 - Prometheus metrics, structured JSON logging
@@ -243,8 +321,41 @@ Strata provides snapshot-aware fetching for Apache Iceberg tables via the unifie
 - Trusted proxy authentication with ACL
 
 **Optional** — enable if needed:
+
 - OpenTelemetry tracing (`pip install strata[otel]`)
 - Circuit breakers for external dependencies
+
+## Known Limitations
+
+Current release framing:
+
+- Strata is still **alpha**
+- the recommended release target today is **local/personal notebook usage**
+- service mode is functional, but better thought of as an advanced/shared-backend
+  deployment mode than a polished collaborative notebook product
+
+Notebook-specific limitations:
+
+- no collaborative live notebook editing
+- no full Jupyter MIME bundle compatibility
+- no raw HTML notebook output support
+- markdown is sanitized and display-only
+- service-mode session discovery is intentionally restricted
+- some richer display types such as SVG are still planned work
+
+Operational limitations:
+
+- hosted personal-mode deployments need persistent volume sizing and notebook
+  storage configured correctly
+- service mode needs explicit auth/proxy/deployment setup; it is not the default
+  recommendation for a first-time notebook user
+
+See also:
+
+- [CHANGELOG.md](CHANGELOG.md)
+- [docs/design-notebook.md](docs/design-notebook.md)
+- [docs/design-notebook-environments.md](docs/design-notebook-environments.md)
+- [docs/design-notebook-display-outputs.md](docs/design-notebook-display-outputs.md)
 
 ## Usage Examples
 
@@ -517,6 +628,7 @@ Executors are external HTTP services that perform the actual computation. Strata
 ### Protocol v1 (Push Model)
 
 **Request:**
+
 ```
 POST {executor_url}/v1/execute
 Content-Type: multipart/form-data
@@ -528,6 +640,7 @@ Parts:
 ```
 
 **Metadata JSON:**
+
 ```json
 {
   "build_id": "build-abc123",
@@ -535,16 +648,21 @@ Parts:
   "principal": "user@example.com",
   "transform": {
     "ref": "duckdb_sql@v1",
-    "params": {"sql": "SELECT * FROM input0 WHERE value > 100"}
+    "params": { "sql": "SELECT * FROM input0 WHERE value > 100" }
   },
   "inputs": [
-    {"name": "input0", "type": "artifact", "uri": "strata://artifact/abc@v=1"},
-    {"name": "input1", "type": "table", "uri": "file:///warehouse#db.events"}
+    {
+      "name": "input0",
+      "type": "artifact",
+      "uri": "strata://artifact/abc@v=1"
+    },
+    { "name": "input1", "type": "table", "uri": "file:///warehouse#db.events" }
   ]
 }
 ```
 
 **Response (success):**
+
 ```
 HTTP/1.1 200 OK
 Content-Type: application/vnd.apache.arrow.stream
@@ -554,6 +672,7 @@ X-Strata-Logs: <base64-encoded logs>  # Optional
 ```
 
 **Response (error):**
+
 ```
 HTTP/1.1 4xx/5xx
 Content-Type: application/json
@@ -613,6 +732,7 @@ async def execute(request: Request):
 For large inputs, executors can pull data via signed URLs instead of receiving it in the request:
 
 **Build Manifest (sent to executor):**
+
 ```json
 {
   "build_id": "build-abc123",
@@ -639,12 +759,14 @@ For large inputs, executors can pull data via signed URLs instead of receiving i
 ```
 
 **Executor workflow:**
+
 1. Download each input from `inputs[].url` (Arrow IPC stream)
 2. Execute transform
 3. Upload result to `output.url` (Arrow IPC stream)
 4. POST to `finalize_url` to complete the build
 
 **Benefits:**
+
 - No bandwidth bottleneck at Strata during execution
 - Native retries for failed downloads/uploads
 - Supports very large inputs/outputs
@@ -693,14 +815,14 @@ export STRATA_PROXY_TOKEN=your-shared-secret  # Proxy must send this token
 
 **Identity headers** (injected by proxy after authentication):
 
-| Header | Required | Description |
-|--------|----------|-------------|
-| `X-Strata-Principal` | Yes | Stable user/service ID |
-| `X-Strata-Tenant` | No | Team/org ID (same as multi-tenancy) |
-| `X-Strata-Scopes` | No | Space-separated scopes (e.g., `scan:create admin:cache`) |
-| `X-Strata-Proxy-Token` | Yes* | Shared secret for proxy verification |
+| Header                 | Required | Description                                              |
+| ---------------------- | -------- | -------------------------------------------------------- |
+| `X-Strata-Principal`   | Yes      | Stable user/service ID                                   |
+| `X-Strata-Tenant`      | No       | Team/org ID (same as multi-tenancy)                      |
+| `X-Strata-Scopes`      | No       | Space-separated scopes (e.g., `scan:create admin:cache`) |
+| `X-Strata-Proxy-Token` | Yes\*    | Shared secret for proxy verification                     |
 
-*Required when `STRATA_PROXY_TOKEN` is configured.
+\*Required when `STRATA_PROXY_TOKEN` is configured.
 
 **ACL configuration** (in `pyproject.toml`):
 
@@ -721,6 +843,7 @@ allow = [
 ```
 
 **Security guarantees:**
+
 - Requests without valid proxy token return 401
 - Deny rules override allow rules (deny-first evaluation)
 - Scan ownership enforced (only creator can retrieve batches)
@@ -747,48 +870,50 @@ Rate limiting is also enabled by default to protect against abuse.
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `STRATA_HOST` | Server host (default: 0.0.0.0) |
-| `STRATA_PORT` | Server port (default: 8765) |
-| `STRATA_CACHE_DIR` | Disk cache location |
-| `STRATA_MAX_CACHE_SIZE_BYTES` | Cache size limit |
-| `STRATA_FETCH_PARALLELISM` | Concurrent row group fetches (default: 4) |
-| `STRATA_S3_REGION` | AWS region |
-| `STRATA_S3_ENDPOINT_URL` | S3-compatible endpoint |
-| `STRATA_S3_ACCESS_KEY` | S3 access key |
-| `STRATA_S3_SECRET_KEY` | S3 secret key |
-| `STRATA_S3_ANONYMOUS` | Public bucket access |
-| `STRATA_LOG_FORMAT` | json or text |
-| `STRATA_LOG_LEVEL` | DEBUG, INFO, WARNING, ERROR |
-| `STRATA_MULTI_TENANT_ENABLED` | Enable multi-tenancy (default: false) |
-| `STRATA_TENANT_HEADER` | Header name for tenant ID (default: X-Tenant-ID) |
-| `STRATA_REQUIRE_TENANT_HEADER` | Reject requests without tenant header |
-| `STRATA_AUTH_MODE` | Auth mode: `none` or `trusted_proxy` (default: none) |
-| `STRATA_PROXY_TOKEN` | Expected proxy token for verification |
-| `STRATA_PRINCIPAL_HEADER` | Header for principal ID (default: X-Strata-Principal) |
-| `STRATA_SCOPES_HEADER` | Header for scopes (default: X-Strata-Scopes) |
-| `STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND` | Return 404 instead of 403 (default: true) |
-| `STRATA_ARTIFACT_BLOB_BACKEND` | Artifact storage: `local`, `s3`, or `gcs` (default: local) |
-| `STRATA_ARTIFACT_S3_BUCKET` | S3 bucket for artifact blobs |
-| `STRATA_ARTIFACT_S3_PREFIX` | Key prefix in bucket (default: artifacts) |
-| `STRATA_ARTIFACT_GCS_BUCKET` | GCS bucket for artifact blobs |
-| `STRATA_ARTIFACT_GCS_PREFIX` | Key prefix in bucket (default: artifacts) |
-| `STRATA_GCS_PROJECT_ID` | GCP project ID (optional) |
-| `STRATA_GCS_CREDENTIALS_JSON` | Path to service account JSON key file |
-| `STRATA_GCS_ANONYMOUS` | Use anonymous access for public buckets |
-| `STRATA_GCS_ENDPOINT_OVERRIDE` | Custom GCS endpoint for testing |
+| Variable                             | Description                                                |
+| ------------------------------------ | ---------------------------------------------------------- |
+| `STRATA_HOST`                        | Server host (default: 0.0.0.0)                             |
+| `STRATA_PORT`                        | Server port (default: 8765)                                |
+| `STRATA_CACHE_DIR`                   | Disk cache location                                        |
+| `STRATA_MAX_CACHE_SIZE_BYTES`        | Cache size limit                                           |
+| `STRATA_FETCH_PARALLELISM`           | Concurrent row group fetches (default: 4)                  |
+| `STRATA_S3_REGION`                   | AWS region                                                 |
+| `STRATA_S3_ENDPOINT_URL`             | S3-compatible endpoint                                     |
+| `STRATA_S3_ACCESS_KEY`               | S3 access key                                              |
+| `STRATA_S3_SECRET_KEY`               | S3 secret key                                              |
+| `STRATA_S3_ANONYMOUS`                | Public bucket access                                       |
+| `STRATA_LOG_FORMAT`                  | json or text                                               |
+| `STRATA_LOG_LEVEL`                   | DEBUG, INFO, WARNING, ERROR                                |
+| `STRATA_MULTI_TENANT_ENABLED`        | Enable multi-tenancy (default: false)                      |
+| `STRATA_TENANT_HEADER`               | Header name for tenant ID (default: X-Tenant-ID)           |
+| `STRATA_REQUIRE_TENANT_HEADER`       | Reject requests without tenant header                      |
+| `STRATA_AUTH_MODE`                   | Auth mode: `none` or `trusted_proxy` (default: none)       |
+| `STRATA_PROXY_TOKEN`                 | Expected proxy token for verification                      |
+| `STRATA_PRINCIPAL_HEADER`            | Header for principal ID (default: X-Strata-Principal)      |
+| `STRATA_SCOPES_HEADER`               | Header for scopes (default: X-Strata-Scopes)               |
+| `STRATA_HIDE_FORBIDDEN_AS_NOT_FOUND` | Return 404 instead of 403 (default: true)                  |
+| `STRATA_ARTIFACT_BLOB_BACKEND`       | Artifact storage: `local`, `s3`, or `gcs` (default: local) |
+| `STRATA_ARTIFACT_S3_BUCKET`          | S3 bucket for artifact blobs                               |
+| `STRATA_ARTIFACT_S3_PREFIX`          | Key prefix in bucket (default: artifacts)                  |
+| `STRATA_ARTIFACT_GCS_BUCKET`         | GCS bucket for artifact blobs                              |
+| `STRATA_ARTIFACT_GCS_PREFIX`         | Key prefix in bucket (default: artifacts)                  |
+| `STRATA_GCS_PROJECT_ID`              | GCP project ID (optional)                                  |
+| `STRATA_GCS_CREDENTIALS_JSON`        | Path to service account JSON key file                      |
+| `STRATA_GCS_ANONYMOUS`               | Use anonymous access for public buckets                    |
+| `STRATA_GCS_ENDPOINT_OVERRIDE`       | Custom GCS endpoint for testing                            |
 
 ### Artifact Blob Storage
 
 Artifacts can be stored on local disk (default), S3/S3-compatible storage, or Google Cloud Storage.
 
 **Local storage (default):**
+
 ```bash
 export STRATA_ARTIFACT_DIR=/var/lib/strata/artifacts
 ```
 
 **S3 storage:**
+
 ```bash
 export STRATA_ARTIFACT_BLOB_BACKEND=s3
 export STRATA_ARTIFACT_S3_BUCKET=my-artifacts-bucket
@@ -801,6 +926,7 @@ export STRATA_S3_SECRET_KEY=...
 ```
 
 **S3-compatible (MinIO, LocalStack):**
+
 ```bash
 export STRATA_ARTIFACT_BLOB_BACKEND=s3
 export STRATA_ARTIFACT_S3_BUCKET=artifacts
@@ -810,6 +936,7 @@ export STRATA_S3_SECRET_KEY=minioadmin
 ```
 
 Or in `pyproject.toml`:
+
 ```toml
 [tool.strata]
 artifact_blob_backend = "s3"
@@ -818,6 +945,7 @@ artifact_s3_prefix = "strata-artifacts"
 ```
 
 **GCS storage:**
+
 ```bash
 export STRATA_ARTIFACT_BLOB_BACKEND=gcs
 export STRATA_ARTIFACT_GCS_BUCKET=my-artifacts-bucket
@@ -829,6 +957,7 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
 
 **GCS with anonymous access (public buckets):**
+
 ```bash
 export STRATA_ARTIFACT_BLOB_BACKEND=gcs
 export STRATA_ARTIFACT_GCS_BUCKET=public-bucket
@@ -836,6 +965,7 @@ export STRATA_GCS_ANONYMOUS=true
 ```
 
 Or in `pyproject.toml`:
+
 ```toml
 [tool.strata]
 artifact_blob_backend = "gcs"
@@ -845,6 +975,7 @@ gcs_project_id = "my-project"
 ```
 
 **Azure Blob Storage:**
+
 ```bash
 pip install strata[azure]
 
@@ -864,6 +995,7 @@ export STRATA_AZURE_USE_DEFAULT_CREDENTIAL=true
 ```
 
 **Azure with Azurite emulator (local development):**
+
 ```bash
 export STRATA_ARTIFACT_BLOB_BACKEND=azure
 export STRATA_ARTIFACT_AZURE_CONTAINER=test-container
@@ -873,6 +1005,7 @@ export STRATA_AZURE_ENDPOINT_URL=http://127.0.0.1:10000/devstoreaccount1
 ```
 
 Or in `pyproject.toml`:
+
 ```toml
 [tool.strata]
 artifact_blob_backend = "azure"
@@ -908,8 +1041,8 @@ config = StrataConfig(
 {
   "status": "healthy",
   "checks": [
-    {"name": "disk_cache", "status": "healthy", "latency_ms": 0.5},
-    {"name": "metadata_store", "status": "healthy", "latency_ms": 1.2}
+    { "name": "disk_cache", "status": "healthy", "latency_ms": 0.5 },
+    { "name": "metadata_store", "status": "healthy", "latency_ms": 1.2 }
   ]
 }
 ```
@@ -936,6 +1069,7 @@ export STRATA_REQUIRE_TENANT_HEADER=true  # Optional: reject requests without te
 ```
 
 **How it works:**
+
 1. API gateway authenticates requests (JWT, OAuth, API key)
 2. Gateway extracts tenant ID from token and injects `X-Tenant-ID` header
 3. Strata validates header format, isolates cache and QoS per tenant
@@ -992,27 +1126,27 @@ Import `grafana/strata-dashboard.json` for comprehensive metrics visualization.
 
 ## Modules
 
-| Module | Description |
-|--------|-------------|
-| `server.py` | FastAPI HTTP server |
-| `client.py` | Python SDK |
-| `planner.py` | Read planning with two-tier pruning |
-| `fetcher.py` | Parquet reading with Rust acceleration |
-| `cache.py` | Disk cache using Arrow IPC |
-| `iceberg.py` | Iceberg catalog integration |
-| `config.py` | Configuration |
-| `types.py` | Core types (CacheKey, ReadPlan, Task, Principal) |
-| `tenant.py` | Multi-tenancy context and config |
-| `tenant_registry.py` | Per-tenant metrics tracking |
-| `auth.py` | Trusted proxy authentication and ACL evaluation |
-| `tenant_acl.py` | Tenant-scoped authorization helpers |
-| `artifact_store.py` | Artifact metadata, blob storage, lineage tracking |
-| `transforms/registry.py` | Transform definitions (executor URL, timeouts) |
-| `transforms/runner.py` | Background build runner, executor HTTP protocol |
-| `transforms/build_store.py` | Build state tracking, lease management |
-| `rate_limiter.py` | Token bucket rate limiting |
-| `health.py` | Dependency health checks |
-| `circuit_breaker.py` | Circuit breaker pattern |
+| Module                      | Description                                       |
+| --------------------------- | ------------------------------------------------- |
+| `server.py`                 | FastAPI HTTP server                               |
+| `client.py`                 | Python SDK                                        |
+| `planner.py`                | Read planning with two-tier pruning               |
+| `fetcher.py`                | Parquet reading with Rust acceleration            |
+| `cache.py`                  | Disk cache using Arrow IPC                        |
+| `iceberg.py`                | Iceberg catalog integration                       |
+| `config.py`                 | Configuration                                     |
+| `types.py`                  | Core types (CacheKey, ReadPlan, Task, Principal)  |
+| `tenant.py`                 | Multi-tenancy context and config                  |
+| `tenant_registry.py`        | Per-tenant metrics tracking                       |
+| `auth.py`                   | Trusted proxy authentication and ACL evaluation   |
+| `tenant_acl.py`             | Tenant-scoped authorization helpers               |
+| `artifact_store.py`         | Artifact metadata, blob storage, lineage tracking |
+| `transforms/registry.py`    | Transform definitions (executor URL, timeouts)    |
+| `transforms/runner.py`      | Background build runner, executor HTTP protocol   |
+| `transforms/build_store.py` | Build state tracking, lease management            |
+| `rate_limiter.py`           | Token bucket rate limiting                        |
+| `health.py`                 | Dependency health checks                          |
+| `circuit_breaker.py`        | Circuit breaker pattern                           |
 
 ## Future Work
 
