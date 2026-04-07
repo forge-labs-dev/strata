@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from fastapi import WebSocket
 from fastapi.testclient import TestClient
 
 from strata.notebook.parser import parse_notebook
@@ -656,7 +657,10 @@ def _receive_execution_terminal_messages(websocket, cell_id: str) -> tuple[dict,
 
     for _ in range(20):
         response = websocket.receive_json()
-        if response["type"] in ["cell_output", "cell_error"]:
+        if (
+            response["type"] in ["cell_output", "cell_error"]
+            and response.get("payload", {}).get("cell_id") == cell_id
+        ):
             output_message = response
         if (
             response["type"] == "cell_status"
@@ -669,6 +673,203 @@ def _receive_execution_terminal_messages(websocket, cell_id: str) -> tuple[dict,
     assert output_message is not None
     assert terminal_status is not None
     return output_message, terminal_status
+
+
+def test_notebook_run_all_emits_multiple_display_payloads_in_order(client, temp_notebook, app):
+    """Run-all should preserve ordered display payloads on the websocket path."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(
+        notebook_dir,
+        "root",
+        """
+display(Markdown("# First"))
+42
+""",
+    )
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "notebook_run_all",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, "root"
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert len(output_message["payload"]["displays"]) == 2
+        assert output_message["payload"]["displays"][0]["content_type"] == "text/markdown"
+        assert output_message["payload"]["displays"][0]["markdown_text"] == "# First"
+        assert output_message["payload"]["displays"][1]["content_type"] == "json/object"
+        assert output_message["payload"]["displays"][1]["preview"] == 42
+        assert output_message["payload"]["display"]["content_type"] == "json/object"
+        assert output_message["payload"]["display"]["preview"] == 42
+        assert terminal_status["payload"]["status"] == "ready"
+
+
+def test_cell_execute_cascade_emits_multiple_display_payloads_in_order(
+    client, temp_notebook, app
+):
+    """Cascade execution should preserve ordered display payloads for the target cell."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    write_cell(
+        notebook_dir,
+        "leaf",
+        """
+display(Markdown("# First"))
+y + 1
+""",
+    )
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": "leaf"},
+            }
+        )
+
+        prompt = websocket.receive_json()
+        assert prompt["type"] == "cascade_prompt"
+
+        websocket.send_json(
+            {
+                "type": "cell_execute_cascade",
+                "seq": 2,
+                "ts": "2026-03-23T00:00:01Z",
+                "payload": {"cell_id": "leaf", "plan_id": prompt["payload"]["plan_id"]},
+            }
+        )
+
+        output_message, terminal_status = _receive_execution_terminal_messages(
+            websocket, "leaf"
+        )
+
+        assert output_message["type"] == "cell_output"
+        assert len(output_message["payload"]["displays"]) == 2
+        assert output_message["payload"]["displays"][0]["content_type"] == "text/markdown"
+        assert output_message["payload"]["displays"][0]["markdown_text"] == "# First"
+        assert output_message["payload"]["displays"][1]["content_type"] == "json/object"
+        assert output_message["payload"]["displays"][1]["preview"] == 3
+        assert output_message["payload"]["display"]["content_type"] == "json/object"
+        assert output_message["payload"]["display"]["preview"] == 3
+        assert terminal_status["payload"]["status"] == "ready"
+
+
+def test_cell_execute_blocked_when_environment_runtime_is_unavailable(
+    client, temp_notebook, app
+):
+    """Execution should be blocked when no notebook runtime is available after bootstrap failure."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    cell_id = session.notebook_state.cells[0].id
+    session.environment_job = None
+    session.venv_python = None
+    session.environment_interpreter_source = "unknown"
+    session.environment_sync_state = "failed"
+    session.environment_sync_error = (
+        "Failed to start notebook environment initialization: boom"
+    )
+    session.environment_sync_notice = None
+
+    with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
+        websocket.send_json(
+            {
+                "type": "cell_execute",
+                "seq": 1,
+                "ts": "2026-03-23T00:00:00Z",
+                "payload": {"cell_id": cell_id},
+            }
+        )
+
+        response = websocket.receive_json()
+        assert response["type"] == "error"
+        assert response["payload"]["code"] == "ENVIRONMENT_BUSY"
+        assert "environment" in response["payload"]["error"].lower()
+
+
+def test_environment_job_submission_rejects_execution_already_accepted(
+    monkeypatch, temp_notebook
+):
+    """Execution acceptance should block env jobs before the task starts."""
+    notebook_dir, _ = temp_notebook
+
+    from strata.notebook import ws as notebook_ws
+    from strata.notebook.routes import get_session_manager
+
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+    execution_state = notebook_ws._ensure_execution_state(session.id)
+    entered_schedule = asyncio.Event()
+    release_schedule = asyncio.Event()
+
+    async def _gated_schedule(
+        websocket,
+        execution_state_arg,
+        notebook_id,
+        requested_cell,
+        seq,
+        operation_factory,
+    ):
+        del websocket, notebook_id, requested_cell, seq, operation_factory
+        assert execution_state_arg is execution_state
+        entered_schedule.set()
+        await release_schedule.wait()
+        return True
+
+    class _FakeWebSocket:
+        async def send_text(self, _text: str) -> None:
+            return None
+
+    monkeypatch.setattr(notebook_ws, "_schedule_execution", _gated_schedule)
+
+    async def _noop_environment_job(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(session, "_run_environment_job", _noop_environment_job)
+
+    async def _exercise() -> None:
+        execute_task = asyncio.create_task(
+            notebook_ws._handle_cell_execute(
+                cast(WebSocket, _FakeWebSocket()),
+                session,
+                {"cell_id": "root"},
+                execution_state,
+                session.id,
+            )
+        )
+        await asyncio.wait_for(entered_schedule.wait(), timeout=1)
+        try:
+            with pytest.raises(RuntimeError):
+                await session.submit_environment_job(action="sync")
+        finally:
+            release_schedule.set()
+            await execute_task
+
+    asyncio.run(_exercise())
 
 
 def test_ws_execute_supports_http_executor_worker(

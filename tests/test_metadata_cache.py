@@ -1,5 +1,7 @@
 """Tests for metadata caching (Parquet metadata and manifest resolution)."""
 
+from pathlib import Path
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -562,6 +564,60 @@ class TestPlannerWithMetadataCache:
 
         manifest_stats = planner.manifest_cache.stats()
         assert manifest_stats["unfiltered"]["hits"] >= 1
+
+    def test_manifest_cache_isolated_per_warehouse(self, tmp_path):
+        """Different warehouses with the same table name should not share manifests."""
+        reset_caches()
+
+        from pyiceberg.catalog.sql import SqlCatalog
+        from pyiceberg.schema import Schema
+        from pyiceberg.types import LongType, NestedField, StringType
+
+        from strata.config import StrataConfig
+        from strata.planner import ReadPlanner
+
+        schema = Schema(
+            NestedField(1, "id", LongType()),
+            NestedField(2, "name", StringType()),
+        )
+
+        def _create_warehouse(base: Path, values: list[int]) -> str:
+            base.mkdir(parents=True, exist_ok=True)
+            warehouse_path = base / "warehouse"
+            warehouse_path.mkdir()
+            catalog = SqlCatalog(
+                "strata",
+                **{
+                    "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
+                    "warehouse": str(warehouse_path),
+                },
+            )
+            catalog.create_namespace("test_ns")
+            table = catalog.create_table("test_ns.events", schema)
+            batch = pa.RecordBatch.from_pydict(
+                {
+                    "id": values,
+                    "name": [f"item_{value}" for value in values],
+                }
+            )
+            table.append(pa.Table.from_batches([batch]))
+            return f"file://{warehouse_path}#test_ns.events"
+
+        table_uri_one = _create_warehouse(tmp_path / "one", [1, 2, 3])
+        table_uri_two = _create_warehouse(tmp_path / "two", [10, 11, 12])
+
+        planner = ReadPlanner(StrataConfig())
+
+        plan_one = planner.plan(table_uri_one)
+        plan_two = planner.plan(table_uri_two)
+
+        warehouse_two_path = str((tmp_path / "two" / "warehouse").resolve())
+        assert len(plan_one.tasks) > 0
+        assert len(plan_two.tasks) > 0
+        assert all(task.file_path.startswith(warehouse_two_path) for task in plan_two.tasks)
+
+        manifest_stats = planner.manifest_cache.stats()
+        assert manifest_stats["unfiltered"]["misses"] >= 2
 
     def test_different_snapshots_use_different_cache_entries(self, warehouse_with_table):
         """Test that different snapshots don't share manifest cache entries."""

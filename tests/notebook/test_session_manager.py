@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 from strata.notebook.models import (
     CellMeta,
@@ -13,6 +14,7 @@ from strata.notebook.models import (
     WorkerBackendType,
     WorkerSpec,
 )
+from strata.notebook.pool import WarmProcessPool
 from strata.notebook.session import EnvironmentJobSnapshot, SessionManager
 from strata.notebook.writer import (
     add_cell_to_notebook,
@@ -51,6 +53,19 @@ def test_close_session_without_running_loop_uses_nowait_pool_shutdown(
     manager.close_session(session.id)
 
     assert called == ["shutdown"]
+
+
+def test_close_session_tolerates_non_pool_warm_pool(tmp_path: Path):
+    """Closing a session should tolerate test doubles without pool methods."""
+    manager = SessionManager()
+    notebook_dir = create_notebook(tmp_path, "session_close_tolerant")
+
+    session = manager.open_notebook(notebook_dir)
+    session.warm_pool = cast(WarmProcessPool, object())
+
+    manager.close_session(session.id)
+
+    assert session.id not in manager.list_sessions()
 
 
 def test_reload_preserves_ready_leaf_runtime_state(tmp_path: Path):
@@ -271,6 +286,43 @@ def test_open_notebook_reuse_existing_session_keeps_pending_environment(
 
     assert reopened is session
     assert reopened.environment_sync_state == "pending"
+
+
+def test_open_notebook_reuse_existing_session_does_not_reload_while_execution_active(
+    monkeypatch, tmp_path: Path
+):
+    """Reusing a live session should not reload/refresh while execution is in flight."""
+    notebook_dir = create_notebook(tmp_path, "reuse_running")
+    manager = SessionManager()
+    session = manager.open_notebook(notebook_dir)
+
+    from strata.notebook import ws as notebook_ws
+
+    async def _exercise() -> None:
+        execution_state = notebook_ws._ensure_execution_state(session.id)
+        blocker = asyncio.Event()
+        task = asyncio.create_task(blocker.wait())
+        execution_state["execution_task"] = task
+
+        def _fail_reload() -> None:
+            raise AssertionError("reload should not be called during active execution")
+
+        def _fail_refresh() -> None:
+            raise AssertionError(
+                "refresh_environment_runtime should not be called during active execution"
+            )
+
+        monkeypatch.setattr(session, "reload", _fail_reload)
+        monkeypatch.setattr(session, "refresh_environment_runtime", _fail_refresh)
+
+        try:
+            reopened = manager.open_notebook(notebook_dir, reuse_existing=True)
+            assert reopened is session
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(_exercise())
 
 
 def test_open_notebook_restores_persisted_display_output(tmp_path: Path):

@@ -189,8 +189,15 @@ class ReadPlanner:
         # Parse table URI and build canonical TableIdentity
         # table_uri is treated as input only; table_identity is the canonical ID
         warehouse_path, table_id = self.catalog.parse_table_uri(table_uri)
-        catalog_name = self.config.catalog_name if warehouse_path is None else "strata"
-        table_identity = TableIdentity.from_table_id(table_id, catalog=catalog_name)
+        identity_catalog_name = (
+            self.config.catalog_name if warehouse_path is None else "strata"
+        )
+        manifest_catalog_name = (
+            self.config.catalog_name if warehouse_path is None else warehouse_path
+        )
+        table_identity = TableIdentity.from_table_id(
+            table_id, catalog=identity_catalog_name
+        )
 
         # Load table and resolve snapshot
         table = self.catalog.load_table(table_uri)
@@ -218,10 +225,12 @@ class ReadPlanner:
 
         # Get data files from manifest cache or resolve fresh
         # Two-level lookup: try filtered cache first, then compute with Iceberg pruning
-        catalog_name = self.config.catalog_name
         table_identity_str = str(table_identity)
         manifest_resolution = self.manifest_cache.get(
-            catalog_name, table_identity_str, resolved_snapshot_id, filter_fingerprint
+            manifest_catalog_name,
+            table_identity_str,
+            resolved_snapshot_id,
+            filter_fingerprint,
         )
 
         if manifest_resolution is None:
@@ -257,7 +266,7 @@ class ReadPlanner:
                 span.set_attribute("files_count", len(entries))
 
             self.manifest_cache.put(
-                catalog_name,
+                manifest_catalog_name,
                 table_identity_str,
                 resolved_snapshot_id,
                 manifest_resolution,

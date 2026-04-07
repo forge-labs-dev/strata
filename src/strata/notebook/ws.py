@@ -99,7 +99,11 @@ def notebook_has_active_execution(notebook_id: str) -> bool:
     if execution_state is None:
         return False
     task = _get_active_execution_task(execution_state)
-    return task is not None or execution_state.get("running_cell") is not None
+    return (
+        task is not None
+        or execution_state.get("running_cell") is not None
+        or execution_state.get("requested_cell") is not None
+    )
 
 
 async def broadcast_notebook_message(notebook_id: str, message: dict[str, Any]) -> None:
@@ -299,24 +303,36 @@ async def _schedule_execution(
 ) -> bool:
     """Schedule notebook execution so the WebSocket can keep receiving messages."""
     busy_cell: str | None = None
+    operation: Any | None = None
 
     async with execution_state["control_lock"]:
-        if _get_active_execution_task(execution_state) is not None:
+        task = _get_active_execution_task(execution_state)
+        active_request = execution_state.get("running_cell") or execution_state.get(
+            "requested_cell"
+        )
+        if task is not None:
             busy_cell = (
                 execution_state.get("running_cell")
                 or execution_state.get("requested_cell")
             )
+        elif active_request not in {None, requested_cell}:
+            busy_cell = active_request
         else:
             execution_state["requested_cell"] = requested_cell
-            execution_state["execution_task"] = asyncio.create_task(
-                _run_execution_task(
-                    execution_state,
-                    requested_cell,
-                    notebook_id,
-                    operation_factory(),
-                ),
-                name=f"notebook-exec-{notebook_id}-{requested_cell}",
-            )
+            try:
+                operation = operation_factory()
+                execution_state["execution_task"] = asyncio.create_task(
+                    _run_execution_task(
+                        execution_state,
+                        requested_cell,
+                        notebook_id,
+                        operation,
+                    ),
+                    name=f"notebook-exec-{notebook_id}-{requested_cell}",
+                )
+            except Exception:
+                execution_state["requested_cell"] = None
+                raise
 
     if busy_cell is not None:
         await _send_error_message(
@@ -331,6 +347,33 @@ async def _schedule_execution(
         return False
 
     return True
+
+
+async def _reserve_execution_request(
+    execution_state: dict[str, Any],
+    requested_cell: str,
+) -> str | None:
+    """Reserve execution for a cell before validation/scheduling."""
+    async with execution_state["control_lock"]:
+        task = _get_active_execution_task(execution_state)
+        busy_cell = execution_state.get("running_cell") or execution_state.get(
+            "requested_cell"
+        )
+        if task is not None or busy_cell is not None:
+            return busy_cell
+        execution_state["requested_cell"] = requested_cell
+        return None
+
+
+async def _release_execution_request(
+    execution_state: dict[str, Any],
+    requested_cell: str,
+) -> None:
+    """Release a pre-scheduling execution reservation when execution did not start."""
+    async with execution_state["control_lock"]:
+        task = _get_active_execution_task(execution_state)
+        if task is None and execution_state.get("requested_cell") == requested_cell:
+            execution_state["requested_cell"] = None
 
 
 async def _cleanup_notebook_websocket(
@@ -539,11 +582,8 @@ async def _handle_cell_execute(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    if _get_active_execution_task(execution_state) is not None:
-        busy_cell = (
-            execution_state.get("running_cell")
-            or execution_state.get("requested_cell")
-        )
+    busy_cell = await _reserve_execution_request(execution_state, cell_id)
+    if busy_cell is not None:
         await _send_error_message(
             websocket,
             seq,
@@ -557,6 +597,7 @@ async def _handle_cell_execute(
 
     environment_block_reason = session.environment_execution_block_message()
     if environment_block_reason:
+        await _release_execution_request(execution_state, cell_id)
         await websocket.send_text(
             _json_encode(
                 {
@@ -575,6 +616,7 @@ async def _handle_cell_execute(
     # Find cell
     cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
     if not cell:
+        await _release_execution_request(execution_state, cell_id)
         await websocket.send_text(
             _json_encode(
                 {
@@ -621,9 +663,10 @@ async def _handle_cell_execute(
                 },
             },
         )
+        await _release_execution_request(execution_state, cell_id)
     else:
         # No cascade needed — execute directly.
-        await _schedule_execution(
+        scheduled = await _schedule_execution(
             websocket,
             execution_state,
             notebook_id,
@@ -633,6 +676,8 @@ async def _handle_cell_execute(
                 websocket, session, cell_id, execution_state, notebook_id
             ),
         )
+        if not scheduled:
+            await _release_execution_request(execution_state, cell_id)
 
 
 async def _handle_notebook_run_all(
@@ -648,11 +693,15 @@ async def _handle_notebook_run_all(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    if _get_active_execution_task(execution_state) is not None:
-        busy_cell = (
-            execution_state.get("running_cell")
-            or execution_state.get("requested_cell")
-        )
+    runnable_cells = [
+        cell.id for cell in session.notebook_state.cells if cell.source.strip()
+    ]
+    if not runnable_cells:
+        return
+
+    requested_cell = runnable_cells[0]
+    busy_cell = await _reserve_execution_request(execution_state, requested_cell)
+    if busy_cell is not None:
         await _send_error_message(
             websocket,
             seq,
@@ -666,6 +715,7 @@ async def _handle_notebook_run_all(
 
     environment_block_reason = session.environment_execution_block_message()
     if environment_block_reason:
+        await _release_execution_request(execution_state, requested_cell)
         await websocket.send_text(
             _json_encode(
                 {
@@ -681,17 +731,11 @@ async def _handle_notebook_run_all(
         )
         return
 
-    runnable_cells = [
-        cell.id for cell in session.notebook_state.cells if cell.source.strip()
-    ]
-    if not runnable_cells:
-        return
-
-    await _schedule_execution(
+    scheduled = await _schedule_execution(
         websocket,
         execution_state,
         notebook_id,
-        runnable_cells[0],
+        requested_cell,
         seq,
         lambda: _execute_run_all(
             websocket,
@@ -701,6 +745,8 @@ async def _handle_notebook_run_all(
             notebook_id,
         ),
     )
+    if not scheduled:
+        await _release_execution_request(execution_state, requested_cell)
 
 
 async def _handle_cell_execute_cascade(
@@ -733,8 +779,22 @@ async def _handle_cell_execute_cascade(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
+    busy_cell = await _reserve_execution_request(execution_state, cell_id)
+    if busy_cell is not None:
+        await _send_error_message(
+            websocket,
+            seq,
+            (
+                f"Notebook is already executing cell {busy_cell}"
+                if busy_cell
+                else "Notebook is already executing another cell"
+            ),
+        )
+        return
+
     environment_block_reason = session.environment_execution_block_message()
     if environment_block_reason:
+        await _release_execution_request(execution_state, cell_id)
         await websocket.send_text(
             _json_encode(
                 {
@@ -753,6 +813,7 @@ async def _handle_cell_execute_cascade(
     # Get the cascade plan
     plan = execution_state.get("cascade_plan")
     if not plan or plan.plan_id != plan_id:
+        await _release_execution_request(execution_state, cell_id)
         await websocket.send_text(
             _json_encode(
                 {
@@ -766,7 +827,7 @@ async def _handle_cell_execute_cascade(
         return
 
     # Execute cascade in the background so this socket can still receive cancel.
-    await _schedule_execution(
+    scheduled = await _schedule_execution(
         websocket,
         execution_state,
         notebook_id,
@@ -776,6 +837,8 @@ async def _handle_cell_execute_cascade(
             websocket, session, plan, execution_state, notebook_id
         ),
     )
+    if not scheduled:
+        await _release_execution_request(execution_state, cell_id)
 
 
 async def _handle_cell_execute_force(
@@ -804,14 +867,29 @@ async def _handle_cell_execute_force(
         return
 
     execution_state["sequence"] += 1
+    seq = execution_state["sequence"]
+
+    busy_cell = await _reserve_execution_request(execution_state, cell_id)
+    if busy_cell is not None:
+        await _send_error_message(
+            websocket,
+            seq,
+            (
+                f"Notebook is already executing cell {busy_cell}"
+                if busy_cell
+                else "Notebook is already executing another cell"
+            ),
+        )
+        return
 
     environment_block_reason = session.environment_execution_block_message()
     if environment_block_reason:
+        await _release_execution_request(execution_state, cell_id)
         await websocket.send_text(
             _json_encode(
                 {
                     "type": "error",
-                    "seq": execution_state["sequence"],
+                    "seq": seq,
                     "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                     "payload": {
                         "error": environment_block_reason,
@@ -823,16 +901,18 @@ async def _handle_cell_execute_force(
         return
 
     # Execute cell directly, ignoring staleness.
-    await _schedule_execution(
+    scheduled = await _schedule_execution(
         websocket,
         execution_state,
         notebook_id,
         cell_id,
-        execution_state["sequence"],
+        seq,
         lambda: _execute_cell_directly(
             websocket, session, cell_id, execution_state, notebook_id, force=True
         ),
     )
+    if not scheduled:
+        await _release_execution_request(execution_state, cell_id)
 
 
 async def _handle_cell_cancel(
@@ -1393,6 +1473,16 @@ async def _execute_cascade(
                             "payload": {
                                 "cell_id": cell_id,
                                 "outputs": result.outputs,
+                                **(
+                                    {"displays": result.display_outputs}
+                                    if result.display_outputs
+                                    else {}
+                                ),
+                                **(
+                                    {"display": result.display_output}
+                                    if result.display_output
+                                    else {}
+                                ),
                                 "cache_hit": result.cache_hit,
                                 "duration_ms": int(result.duration_ms),
                                 "artifact_uri": result.artifact_uri,
@@ -1640,6 +1730,16 @@ async def _execute_run_all(
                             "payload": {
                                 "cell_id": cell_id,
                                 "outputs": result.outputs,
+                                **(
+                                    {"displays": result.display_outputs}
+                                    if result.display_outputs
+                                    else {}
+                                ),
+                                **(
+                                    {"display": result.display_output}
+                                    if result.display_output
+                                    else {}
+                                ),
                                 "cache_hit": result.cache_hit,
                                 "duration_ms": int(result.duration_ms),
                                 "artifact_uri": result.artifact_uri,

@@ -71,12 +71,15 @@ def temp_warehouse(tmp_path):
     # Append data to table
     table.append(data)
 
-    return {
-        "warehouse_path": warehouse_path,
-        "table_uri": f"file://{warehouse_path}#test_db.events",
-        "catalog": catalog,
-        "table": table,
-    }
+    try:
+        yield {
+            "warehouse_path": warehouse_path,
+            "table_uri": f"file://{warehouse_path}#test_db.events",
+            "catalog": catalog,
+            "table": table,
+        }
+    finally:
+        catalog.engine.dispose()
 
 
 @pytest.fixture
@@ -292,6 +295,9 @@ class TestEndToEnd:
         # Update config to use a free port
         import socket
 
+        from strata.artifact_store import reset_artifact_store
+        from strata.metadata_cache import reset_caches
+
         sock = socket.socket()
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -309,6 +315,9 @@ class TestEndToEnd:
         # Initialize state manually for testing
         import strata.server as server_module
         from strata.server import ServerState, app
+
+        reset_caches()
+        reset_artifact_store()
 
         original_state = server_module._state
         server_module._state = ServerState(config)
@@ -348,6 +357,8 @@ class TestEndToEnd:
         server.should_exit = True
         server_thread.join(timeout=5)
         server_module._state = original_state
+        reset_caches()
+        reset_artifact_store()
 
     def test_fetch_and_cache_hit(self, server_with_client):
         """Test fetching twice to demonstrate cache hit."""

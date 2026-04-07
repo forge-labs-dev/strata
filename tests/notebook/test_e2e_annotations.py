@@ -200,7 +200,7 @@ class TestAnnotationOverrides:
                 _update_source_and_wait(
                     ws,
                     "c1",
-                    "# @timeout 1\nimport time\ntime.sleep(0.05)\nvalue = 'done'",
+                    "# @timeout 5\nimport time\ntime.sleep(0.05)\nvalue = 'done'",
                 )
 
                 result = execute_cell_and_wait(ws, "c1")
@@ -210,7 +210,7 @@ class TestAnnotationOverrides:
                 cell = _sync_cell(ws, "c1")
                 assert cell["timeout"] == 0.02
                 assert cell["timeout_override"] == 0.02
-                assert cell["annotations"]["timeout"] == 1.0
+                assert cell["annotations"]["timeout"] == 5.0
 
     def test_mount_annotation_beats_saved_mount_config(self, setup):
         client, tmp = setup

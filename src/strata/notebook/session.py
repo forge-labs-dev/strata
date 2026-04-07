@@ -941,6 +941,26 @@ class NotebookSession:
         """Return the reason cell execution should be blocked, if any."""
         label = self._active_environment_mutation_label()
         if label is None:
+            if self.environment_sync_state == "pending":
+                return (
+                    self.environment_sync_notice
+                    or "Notebook environment is being created in the background. "
+                    "Running cells is disabled until it finishes."
+                )
+            if (
+                self.venv_python is None
+                and self.environment_interpreter_source == "unknown"
+                and self.environment_sync_state in {"failed", "unknown"}
+            ):
+                if self.environment_sync_error:
+                    return (
+                        "Notebook environment is not ready. "
+                        f"{self.environment_sync_error}"
+                    )
+                return (
+                    "Notebook environment is not ready. Running cells is disabled "
+                    "until it finishes initializing."
+                )
             return None
         return (
             "Environment update in progress. Running cells is disabled until "
@@ -1966,15 +1986,20 @@ class SessionManager:
         if reuse_existing:
             existing = self._find_session_by_path(Path(directory))
             if existing is not None:
+                if existing._has_active_execution():
+                    existing.touch()
+                    return existing
+                if existing.has_active_environment_mutation():
+                    existing.mark_environment_pending()
+                    existing.touch()
+                    return existing
                 if timing is None:
                     existing.reload()
                 else:
                     with timing.phase("session_reload"):
                         existing.reload()
                 try:
-                    if existing.has_active_environment_mutation():
-                        existing.mark_environment_pending()
-                    elif timing is None:
+                    if timing is None:
                         existing.refresh_environment_runtime()
                     else:
                         with timing.phase("session_env_refresh"):
@@ -2132,10 +2157,17 @@ class SessionManager:
         if session.warm_pool is not None:
             import asyncio
 
+            drain = getattr(session.warm_pool, "drain", None)
+            shutdown_nowait = getattr(session.warm_pool, "shutdown_nowait", None)
             try:
-                asyncio.get_running_loop().create_task(session.warm_pool.drain())
+                if callable(drain):
+                    asyncio.get_running_loop().create_task(drain())
             except RuntimeError:
-                session.warm_pool.shutdown_nowait()
+                if callable(shutdown_nowait):
+                    shutdown_nowait()
+            else:
+                if not callable(drain) and callable(shutdown_nowait):
+                    shutdown_nowait()
 
     def list_sessions(self) -> list[str]:
         """List all open session IDs.
