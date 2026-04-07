@@ -186,7 +186,14 @@ Supported source objects for `text/markdown`:
 
 ### Planned Next Types
 
-- possibly `image/svg+xml`
+- `image/svg+xml`
+
+SVG is the highest-value next renderer:
+
+- plots and diagrams stay crisp at any zoom level
+- text-heavy charts look better than PNG
+- the existing display-artifact model can support it without changing the
+  ordered-output architecture
 
 ### Types Not In Scope Yet
 
@@ -299,6 +306,26 @@ For `image/png`, the cell output area should:
 - preserve aspect ratio
 - allow the user to open/save the source image later if we add that affordance
 
+The same overall rendering contract should apply to future `image/svg+xml`
+support, with extra care around sanitization before inline rendering.
+
+### Output Chrome and Actions
+
+Now that cells can render multiple visible outputs, the UI should grow a small
+output action bar and better visual structure.
+
+Recommended next UX improvements:
+
+- clear spacing or separators between visible outputs in one cell
+- lightweight output labels when helpful (for example image, markdown, table)
+- per-output actions:
+  - open image
+  - download artifact
+  - copy markdown source
+  - copy JSON/scalar output
+- collapse/expand affordances for long outputs
+- explicit max-height / max-size rules for large rendered outputs
+
 ### Markdown Rendering
 
 Markdown should be designed now even if implementation comes later.
@@ -354,6 +381,18 @@ Markdown rendering should:
 
 Markdown should remain **display-only**. It should not become a route for
 injecting arbitrary executable browser content into the notebook UI.
+
+### Markdown Presentation Improvements
+
+The current markdown renderer is intentionally small and safe. Good next steps
+that stay inside the same security posture:
+
+- syntax highlighting for fenced code blocks
+- better table styling and overflow handling
+- optional task-list support
+- optional footnotes later
+
+These are presentation upgrades, not a change to the trust model.
 
 ---
 
@@ -412,6 +451,33 @@ Completed.
 
 - support multiple visible outputs per cell in order
 
+### Phase 5: SVG + Output UX Polish
+
+Planned.
+
+- add `image/svg+xml`
+- add output action bar affordances
+- add collapse/expand behavior for large outputs
+- keep the same persisted ordered-output model
+
+### Phase 6: Markdown and Renderer Polish
+
+Planned.
+
+- improve fenced-code rendering
+- improve markdown tables and long-content handling
+- keep markdown sanitized and display-only
+
+### Phase 7: Helper Ergonomics and Large-Artifact Strategy
+
+Planned.
+
+- document and possibly extend notebook-facing helpers beyond `Markdown(...)`
+- consider helper wrappers like `Image(...)` or `SVG(...)` only if they simplify
+  authoring materially
+- add lazy-loading or preview-first behavior for large display artifacts
+- avoid loading heavy inline data eagerly when not needed
+
 ---
 
 ## Test Plan
@@ -438,13 +504,25 @@ Completed.
 
 ---
 
-## Recommendation
+## Next Priorities
 
-The next architectural step should be **additional display types and richer MIME
-capture**, not output ordering.
+The recommended follow-up order is:
 
-That gives Strata:
+1. `image/svg+xml`
+2. output action bar + output chrome polish
+3. markdown presentation upgrades
+4. large-artifact lazy-loading / preview strategy
 
-- retained compatibility via the legacy single-display shim
-- a clean path to SVG or later HTML-like renderers if we choose to add them
-- no commitment yet to raw HTML or full Jupyter MIME bundles
+Why this order:
+
+- SVG adds real user value without requiring another architectural shift
+- output actions become more important now that a cell can contain multiple
+  visible outputs
+- markdown polish is useful, but less urgent than renderer breadth and output UX
+- lazy loading matters more once richer outputs become common
+
+Still intentionally deferred:
+
+- raw `text/html`
+- arbitrary executable browser content
+- full Jupyter MIME bundle compatibility
