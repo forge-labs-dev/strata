@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 import tomli_w
 
-from strata.notebook.models import MountSpec, NotebookToml, WorkerSpec
+from strata.notebook.models import CellMeta, MountSpec, NotebookToml, WorkerSpec
 from strata.notebook.python_versions import (
     current_python_minor,
     format_requires_python,
@@ -220,17 +220,45 @@ def create_notebook(
     cells_dir = notebook_dir / "cells"
     cells_dir.mkdir(exist_ok=True)
 
-    # Generate notebook ID
-    notebook_id = str(uuid.uuid4())
+    # Preserve existing notebook ID if notebook.toml already exists.
+    # Overwriting the ID would orphan all artifacts keyed to the old ID.
+    existing_toml_path = notebook_dir / "notebook.toml"
+    existing_notebook_id = None
+    existing_created_at = None
+    existing_cells: list[CellMeta] = []
+    if existing_toml_path.exists():
+        try:
+            import tomllib
+
+            with open(existing_toml_path, "rb") as f:
+                raw = tomllib.load(f)
+            existing_notebook_id = raw.get("notebook_id")
+            raw_created = raw.get("created_at")
+            if isinstance(raw_created, datetime):
+                existing_created_at = raw_created
+            for c in raw.get("cells", []):
+                if isinstance(c, dict) and "id" in c and "file" in c:
+                    existing_cells.append(
+                        CellMeta(
+                            id=c["id"],
+                            file=c["file"],
+                            language=c.get("language", "python"),
+                            order=c.get("order", 0),
+                        )
+                    )
+        except Exception:
+            pass
+
+    notebook_id = existing_notebook_id or str(uuid.uuid4())
 
     # Create notebook.toml
     now = datetime.now(tz=UTC)
     notebook_toml = NotebookToml(
         notebook_id=notebook_id,
         name=name,
-        created_at=now,
+        created_at=existing_created_at or now,
         updated_at=now,
-        cells=[],
+        cells=existing_cells,
     )
     write_notebook_toml(notebook_dir, notebook_toml)
 

@@ -403,3 +403,26 @@ def test_update_cell_timeout_and_env():
         assert notebook_state.cells[0].timeout_override == 2.0
         assert notebook_state.cells[0].env == {"TOKEN": "override"}
         assert notebook_state.cells[0].env_overrides == {"TOKEN": "override"}
+
+
+def test_create_notebook_preserves_existing_id():
+    """Re-creating at the same path must keep the original notebook_id."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        nb_dir = create_notebook(Path(tmpdir), "Stable ID")
+        add_cell_to_notebook(nb_dir, "c1")
+        write_cell(nb_dir, "c1", "x = 1")
+
+        original = parse_notebook(nb_dir)
+        original_id = original.id
+        assert len(original.cells) == 1
+
+        # Re-create at the same path (simulates boot() calling create again)
+        nb_dir_2 = create_notebook(Path(tmpdir), "Stable ID")
+        assert nb_dir_2 == nb_dir
+
+        reopened = parse_notebook(nb_dir)
+        assert reopened.id == original_id, (
+            "create_notebook must preserve the existing notebook_id"
+        )
+        assert len(reopened.cells) == 1
+        assert reopened.cells[0].id == "c1"
