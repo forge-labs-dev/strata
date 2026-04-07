@@ -19,6 +19,8 @@ Strata is currently in **alpha**. The repo, package, and runtime are shared,
 but the docs and release framing should be read as two separate surfaces with
 different maturity levels.
 
+**Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev)
+
 ## Choose Your Path
 
 - **Strata Core**
