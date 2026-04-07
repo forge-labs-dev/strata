@@ -100,6 +100,7 @@ The notebook runtime currently supports:
 
 ## Related Design Docs
 
+- consolidated status view: [docs/design-status.md](design-status.md)
 - notebook core design: [docs/design-notebook.md](design-notebook.md)
 - notebook environments:
   [docs/design-notebook-environments.md](design-notebook-environments.md)

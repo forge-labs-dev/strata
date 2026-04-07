@@ -15,6 +15,27 @@ is no kernel. There is no hidden state. The graph is the notebook.
 The system is designed so that a minimal implementation — cells, DAG, caching, and
 execution — is sufficient to deliver value. All other features are incremental.
 
+## Status (April 2026)
+
+See [docs/design-status.md](design-status.md) for the consolidated shipped vs
+roadmap view across all design docs.
+
+Current state:
+
+- the notebook foundation is largely implemented and usable in alpha
+- create/open/rename/delete, execution, DAG/caching, environments, remote
+  workers, and rich display outputs are all in the codebase
+- this document is still the broad umbrella design, but some milestone and
+  divergence details later in the file are historical
+
+Main roadmap themes still coming out of this doc:
+
+- published outputs
+- lightweight assertions
+- freeze cell / stricter execution modes
+- lineage / bundle-export style extensions
+- collaboration and other larger multi-user features
+
 ---
 
 ## Implementation Scope
@@ -95,14 +116,14 @@ my_analysis/
 
 ### Why a directory?
 
-| Concern | Single-file (.ipynb) | Directory |
-|---------|---------------------|-----------|
-| Git diffs | JSON noise, merge conflicts | Per-cell .py diffs |
-| Linting/formatting | Not possible | `ruff check cells/` just works |
-| Testing | Not possible | `uv run pytest` just works |
-| Imports | Not possible | `from cells.clean import ...` works |
-| Environment | Kernel spec (broken) | `pyproject.toml` + `uv.lock` (standard) |
-| Outputs | Embedded (bloated) | In Strata artifact store (external) |
+| Concern            | Single-file (.ipynb)        | Directory                               |
+| ------------------ | --------------------------- | --------------------------------------- |
+| Git diffs          | JSON noise, merge conflicts | Per-cell .py diffs                      |
+| Linting/formatting | Not possible                | `ruff check cells/` just works          |
+| Testing            | Not possible                | `uv run pytest` just works              |
+| Imports            | Not possible                | `from cells.clean import ...` works     |
+| Environment        | Kernel spec (broken)        | `pyproject.toml` + `uv.lock` (standard) |
+| Outputs            | Embedded (bloated)          | In Strata artifact store (external)     |
 
 Users see none of this. They click "New Notebook," name it, and start writing cells.
 
@@ -192,14 +213,14 @@ lives in [design-notebook-environments.md](./design-notebook-environments.md).
 
 ### What's stored vs. derived
 
-| Stored in notebook.toml | Derived at runtime |
-|------------------------|--------------------|
-| Cell id, file path, language | DAG edges (from AST analysis) |
-| Cell ordering | Cell status (from artifact store) |
-| Last known artifact URIs | Defines/references (from AST) |
-| Environment fingerprint | Provenance hashes |
-| Notebook name, timestamps | Whether a cell is a leaf (from DAG) |
-| Cache policies, pins | Outputs (from artifact store) |
+| Stored in notebook.toml      | Derived at runtime                  |
+| ---------------------------- | ----------------------------------- |
+| Cell id, file path, language | DAG edges (from AST analysis)       |
+| Cell ordering                | Cell status (from artifact store)   |
+| Last known artifact URIs     | Defines/references (from AST)       |
+| Environment fingerprint      | Provenance hashes                   |
+| Notebook name, timestamps    | Whether a cell is a leaf (from DAG) |
+| Cache policies, pins         | Outputs (from artifact store)       |
 
 The DAG is **never serialized** — it's rebuilt from cell source code every time.
 This means renaming a variable automatically updates the graph. No stale metadata.
@@ -237,6 +258,7 @@ cell that references one of its variables, it automatically becomes a cached cel
 user action, no type change, no config update. The DAG handles it.
 
 This eliminates an entire class of consistency issues:
+
 - No `type` field in `notebook.toml` to get out of sync
 - No "is this cell cached or not?" confusion — look at the DAG
 - No need to "promote" a scratch cell to a transform cell
@@ -304,6 +326,7 @@ from `explore`, it starts getting cached automatically.
 ### Cell contract
 
 The runtime:
+
 1. Resolves inputs: which upstream cells' outputs does this cell reference?
 2. Deserializes upstream artifacts into the cell's namespace
 3. Executes the cell source code
@@ -355,12 +378,12 @@ This ensures that mutations inside a cell never affect the cached upstream artif
 
 **Copy cost by tier — defensive copy is not always a deep copy:**
 
-| Content type | Copy strategy | Cost | Why |
-|-------------|--------------|------|-----|
-| `arrow/ipc` (DataFrame, Table) | **No copy needed** | 0 | Deserialization already produces a new PyArrow/Pandas object. The cached blob on disk is untouched by in-memory mutations. |
-| `json/object` (dict, list, scalar) | Shallow copy | ~microseconds | Small objects. `copy.copy()` suffices — nested structures are rarely mutated in notebook workflows. |
-| `msgpack/object` | Shallow copy | ~microseconds | Same as JSON tier. |
-| `pickle/object` (model, custom class) | `copy.deepcopy()` | **Expensive** — can be 100ms+ for large models | This is the real cost. ML models, fitted pipelines, large custom objects hit this path. |
+| Content type                          | Copy strategy      | Cost                                           | Why                                                                                                                        |
+| ------------------------------------- | ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `arrow/ipc` (DataFrame, Table)        | **No copy needed** | 0                                              | Deserialization already produces a new PyArrow/Pandas object. The cached blob on disk is untouched by in-memory mutations. |
+| `json/object` (dict, list, scalar)    | Shallow copy       | ~microseconds                                  | Small objects. `copy.copy()` suffices — nested structures are rarely mutated in notebook workflows.                        |
+| `msgpack/object`                      | Shallow copy       | ~microseconds                                  | Same as JSON tier.                                                                                                         |
+| `pickle/object` (model, custom class) | `copy.deepcopy()`  | **Expensive** — can be 100ms+ for large models | This is the real cost. ML models, fitted pipelines, large custom objects hit this path.                                    |
 
 **The pickle copy problem:** A 500MB scikit-learn model going through `deepcopy` can
 take 200ms+ and double memory usage. For the common case (model is read-only in the
@@ -384,14 +407,14 @@ wrappers that raise on mutation — making the contract enforceable, not just ad
 
 **What the AST can and cannot catch:**
 
-| Pattern | AST detects? | Behavior |
-|---------|-------------|----------|
-| `df = df.dropna()` | Yes (assignment to `df`) | `df` in defines — correct |
-| `df["x"] = df["x"] * 2` | Yes (subscript assignment) | `df` in defines — correct |
-| `df.drop(columns=["x"], inplace=True)` | **No** | Mutation not detected |
-| `my_list.append(item)` | **No** | Mutation not detected |
-| `del df["x"]` | **No** | Mutation not detected |
-| `some_func(df)` (mutates inside) | **No** | Mutation not detected |
+| Pattern                                | AST detects?               | Behavior                  |
+| -------------------------------------- | -------------------------- | ------------------------- |
+| `df = df.dropna()`                     | Yes (assignment to `df`)   | `df` in defines — correct |
+| `df["x"] = df["x"] * 2`                | Yes (subscript assignment) | `df` in defines — correct |
+| `df.drop(columns=["x"], inplace=True)` | **No**                     | Mutation not detected     |
+| `my_list.append(item)`                 | **No**                     | Mutation not detected     |
+| `del df["x"]`                          | **No**                     | Mutation not detected     |
+| `some_func(df)` (mutates inside)       | **No**                     | Mutation not detected     |
 
 For the "No" cases, the mutation happens but Strata doesn't know about it. Because
 inputs are defensively copied, this doesn't corrupt the upstream cache — but the
@@ -403,7 +426,7 @@ tracked as explicit defines in the DAG.
 **Runtime mutation detection (heuristic, best-effort):**
 
 Static analysis (AST) can't catch `inplace=True` or `.append()`. The runtime can
-detect *some* mutations — but not all. This is a heuristic warning system, not a
+detect _some_ mutations — but not all. This is a heuristic warning system, not a
 sound mutation tracker. After a cell finishes, the executor compares each input
 variable's identity and a content sample against the defensive copy:
 
@@ -662,11 +685,11 @@ you never have to restart anything.
 
 The cold start has three phases:
 
-| Phase | Cost | Mitigation |
-|-------|------|------------|
-| 1. Spawn Python process | ~50-100ms | One-time; reuse process if user inspects multiple cells |
-| 2. Load input artifacts into namespace | Varies (see below) | Lazy loading |
-| 3. Re-execute cell source (if needed) | Varies by cell | Skip if cell's own outputs are cached |
+| Phase                                  | Cost               | Mitigation                                              |
+| -------------------------------------- | ------------------ | ------------------------------------------------------- |
+| 1. Spawn Python process                | ~50-100ms          | One-time; reuse process if user inspects multiple cells |
+| 2. Load input artifacts into namespace | Varies (see below) | Lazy loading                                            |
+| 3. Re-execute cell source (if needed)  | Varies by cell     | Skip if cell's own outputs are cached                   |
 
 Phase 2 is the bottleneck. For a cell with a 2GB DataFrame input, eager loading means
 2GB of Arrow IPC read + memory allocation before the REPL is usable.
@@ -713,13 +736,13 @@ avoids repeated process spawn overhead during an exploration session.
 
 **When to use which channel:**
 
-| Need | Use | Why |
-|------|-----|-----|
-| Quick peek at a value | `print()` in the cell | Zero friction, see it on next run |
-| Check types, shapes, basic stats | Console output | Already there after execution |
-| Interactive exploration | Inspect mode | Full REPL with cell's namespace |
-| See a table or DataFrame | Artifact output | Rendered inline, cached |
-| Deep debugging with breakpoints | External debugger | Out of scope for day one |
+| Need                             | Use                   | Why                               |
+| -------------------------------- | --------------------- | --------------------------------- |
+| Quick peek at a value            | `print()` in the cell | Zero friction, see it on next run |
+| Check types, shapes, basic stats | Console output        | Already there after execution     |
+| Interactive exploration          | Inspect mode          | Full REPL with cell's namespace   |
+| See a table or DataFrame         | Artifact output       | Rendered inline, cached           |
+| Deep debugging with breakpoints  | External debugger     | Out of scope for day one          |
 
 ### Input status and readiness
 
@@ -735,12 +758,12 @@ inputs: events ●  model ○            model has never been computed → canno
 
 **Input states:**
 
-| Symbol | State | Meaning |
-|--------|-------|---------|
-| ● | ready | Artifact exists and provenance is current |
-| ◐ | stale | Artifact exists but provenance has changed (upstream edited) |
-| ○ | missing | No artifact — upstream cell has never been executed |
-| ✕ | error | Upstream cell failed |
+| Symbol | State   | Meaning                                                      |
+| ------ | ------- | ------------------------------------------------------------ |
+| ●      | ready   | Artifact exists and provenance is current                    |
+| ◐      | stale   | Artifact exists but provenance has changed (upstream edited) |
+| ○      | missing | No artifact — upstream cell has never been executed          |
+| ✕      | error   | Upstream cell failed                                         |
 
 This gives users instant visibility into what's blocking a cell, without running anything.
 
@@ -752,16 +775,16 @@ that matter for the user's mental model.
 
 **Cell status values:**
 
-| Status | Visual | Meaning | User action |
-|--------|--------|---------|-------------|
-| `idle` | gray | Cell has never been executed | Run it |
-| `ready` | green ● | Artifact exists, provenance matches | Nothing — output is current |
-| `stale:self` | yellow ◐ | Cell source was edited since last run | Re-run this cell |
-| `stale:upstream` | orange ◐ | Cell source unchanged, but an upstream input is stale or was re-run | Re-run (or cascade) |
-| `stale:env` | orange ◐ | Environment (uv.lock) changed since last run | Re-run (all cells affected) |
-| `stale:forced` | yellow ◐⚠ | Ran with stale inputs ("Run this only") — result exists but is suspect | Re-run with fresh inputs |
-| `running` | blue spinner | Currently executing | Wait |
-| `error` | red ✕ | Last execution failed | Fix code, re-run |
+| Status           | Visual       | Meaning                                                                | User action                 |
+| ---------------- | ------------ | ---------------------------------------------------------------------- | --------------------------- |
+| `idle`           | gray         | Cell has never been executed                                           | Run it                      |
+| `ready`          | green ●      | Artifact exists, provenance matches                                    | Nothing — output is current |
+| `stale:self`     | yellow ◐     | Cell source was edited since last run                                  | Re-run this cell            |
+| `stale:upstream` | orange ◐     | Cell source unchanged, but an upstream input is stale or was re-run    | Re-run (or cascade)         |
+| `stale:env`      | orange ◐     | Environment (uv.lock) changed since last run                           | Re-run (all cells affected) |
+| `stale:forced`   | yellow ◐⚠    | Ran with stale inputs ("Run this only") — result exists but is suspect | Re-run with fresh inputs    |
+| `running`        | blue spinner | Currently executing                                                    | Wait                        |
+| `error`          | red ✕        | Last execution failed                                                  | Fix code, re-run            |
 
 The UI **does not** show all these as separate icons — that would be overwhelming.
 Instead:
@@ -774,7 +797,7 @@ Instead:
 - The **`stale:forced`** case additionally shows a persistent inline warning:
   `⚠ computed from stale inputs — results may be outdated` (as described in the
   cascade section). This is the only staleness subtype with a visible inline warning,
-  because it's the only one where the output *exists but may be wrong*.
+  because it's the only one where the output _exists but may be wrong_.
 
 **Why distinguish `stale:self` from `stale:upstream`?** Because the user action
 differs. `stale:self` means "you edited this cell, re-run it to see your changes."
@@ -850,6 +873,7 @@ The output is displayed with a **warning badge**:
 
 The artifact IS stored, but its provenance hash reflects the stale input hashes. This
 means:
+
 - The cell's status shows as `stale:forced` — because its provenance includes
   stale inputs
 - Downstream cells that depend on this output also see it as stale
@@ -944,13 +968,13 @@ dev = ["pytest", "ruff"]
 
 ### Lifecycle
 
-| Action | What happens |
-|--------|-------------|
-| **New notebook** | `uv init` + `uv add strata-client` |
-| **Open notebook** | `uv sync` (fast — usually a no-op) |
+| Action               | What happens                                       |
+| -------------------- | -------------------------------------------------- |
+| **New notebook**     | `uv init` + `uv add strata-client`                 |
+| **Open notebook**    | `uv sync` (fast — usually a no-op)                 |
 | **User adds import** | UI prompts to `uv add <package>`, lockfile updates |
-| **Share notebook** | Recipient runs `uv sync`, exact same environment |
-| **CI/testing** | `cd my_analysis && uv run pytest` |
+| **Share notebook**   | Recipient runs `uv sync`, exact same environment   |
+| **CI/testing**       | `cd my_analysis && uv run pytest`                  |
 
 ### Cache invalidation via environment
 
@@ -992,11 +1016,11 @@ def compute_lockfile_hash(lockfile: Path, pyproject: Path) -> str:
 
 **What counts as "runtime":**
 
-| Included in hash | Excluded from hash |
-|------------------|--------------------|
-| `[project].dependencies` | `[project.optional-dependencies].dev` |
-| Transitive deps of the above | `ruff`, `pytest`, `mypy`, etc. |
-| `requires-python` version constraint | Editor plugins, pre-commit hooks |
+| Included in hash                     | Excluded from hash                    |
+| ------------------------------------ | ------------------------------------- |
+| `[project].dependencies`             | `[project.optional-dependencies].dev` |
+| Transitive deps of the above         | `ruff`, `pytest`, `mypy`, etc.        |
+| `requires-python` version constraint | Editor plugins, pre-commit hooks      |
 
 **Edge case: optional dependency groups.** If a cell imports a package that's in an
 optional group (e.g., `[project.optional-dependencies].ml = ["scikit-learn"]`), the
@@ -1054,10 +1078,10 @@ by using a **warm process pool**.
 
 **What you get:**
 
-| Without pool | With pool |
-|-------------|-----------|
+| Without pool                                                                     | With pool                                              |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | `spawn` (~50ms) + `import pandas` (~800ms) + `import sklearn` (~400ms) + execute | `execute` (process already spawned and imports cached) |
-| ~1.5s overhead per cell | ~50ms overhead per cell |
+| ~1.5s overhead per cell                                                          | ~50ms overhead per cell                                |
 
 **What you don't get:** Shared state. Each execution still starts from a clean
 namespace with only the declared inputs. No variable leakage between cells, no
@@ -1099,6 +1123,7 @@ artifact = strata.materialize(
 ```
 
 Strata computes:
+
 ```
 provenance_hash = sha256(sorted(input_hashes) + transform_spec + env_hash)
 ```
@@ -1107,16 +1132,16 @@ If this hash already exists → **instant cache hit**, no execution needed.
 
 ### When things get recomputed
 
-| Change | Effect |
-|--------|--------|
-| Edit cell source | This cell + all downstream cells recompute |
-| Edit upstream cell | This cell + all downstream cells recompute |
-| Change `uv.lock` | ALL cells recompute (env hash changed) |
-| Change nothing | Everything cached |
-| Open notebook next week | Everything cached (artifacts are in Strata) |
-| Colleague opens same notebook | Cache hit if same Strata server |
-| Add downstream consumer to a leaf | Leaf cell starts being cached |
-| Remove all consumers of a cell | Cell becomes a leaf, caching optional |
+| Change                            | Effect                                      |
+| --------------------------------- | ------------------------------------------- |
+| Edit cell source                  | This cell + all downstream cells recompute  |
+| Edit upstream cell                | This cell + all downstream cells recompute  |
+| Change `uv.lock`                  | ALL cells recompute (env hash changed)      |
+| Change nothing                    | Everything cached                           |
+| Open notebook next week           | Everything cached (artifacts are in Strata) |
+| Colleague opens same notebook     | Cache hit if same Strata server             |
+| Add downstream consumer to a leaf | Leaf cell starts being cached               |
+| Remove all consumers of a cell    | Cell becomes a leaf, caching optional       |
 
 ### Open notebook flow
 
@@ -1184,6 +1209,7 @@ But users can **compare any two versions** of a cell side by side:
 **Revert:**
 
 "Revert to v2" does three things:
+
 1. Repoints the named artifact `clean@latest` to v2
 2. Restores the cell source code to the version that produced v2
 3. Marks all downstream cells as stale (since their input changed)
@@ -1193,12 +1219,12 @@ is destroyed. Reverting is just changing a pointer.
 
 **Use cases:**
 
-| Scenario | Action |
-|----------|--------|
-| "My cleaning was better yesterday" | Compare v1 ↔ v2, revert to v2 |
-| "Did the new filter change the output?" | Compare before/after, check row counts |
-| "What broke the model?" | Walk version history, find where output diverged |
-| "Try a different approach" | Edit cell, run → new version. Compare with old. Pick the winner. |
+| Scenario                                | Action                                                           |
+| --------------------------------------- | ---------------------------------------------------------------- |
+| "My cleaning was better yesterday"      | Compare v1 ↔ v2, revert to v2                                    |
+| "Did the new filter change the output?" | Compare before/after, check row counts                           |
+| "What broke the model?"                 | Walk version history, find where output diverged                 |
+| "Try a different approach"              | Edit cell, run → new version. Compare with old. Pick the winner. |
 
 **What this is NOT:**
 
@@ -1248,12 +1274,12 @@ team collaboration — a much larger design surface.
 Uses the three-tier content type system (see "Serialization tiers" in the Co-Design
 section):
 
-| Type | Tier | Content type | Why |
-|------|------|-------------|-----|
-| DataFrame / Table / RecordBatch | 1: Arrow | `arrow/ipc` | Zero-copy, streamable, language-agnostic |
-| Large arrays | 1: Arrow | `arrow/ipc` | Columnar, efficient |
-| Dict / list / scalar | 2: Structured | `json/object` or `msgpack/object` | Safe, portable, no code execution on deser |
-| Trained models / custom objects | 3: Pickle | `pickle/object` | Escape hatch — see security model |
+| Type                            | Tier          | Content type                      | Why                                        |
+| ------------------------------- | ------------- | --------------------------------- | ------------------------------------------ |
+| DataFrame / Table / RecordBatch | 1: Arrow      | `arrow/ipc`                       | Zero-copy, streamable, language-agnostic   |
+| Large arrays                    | 1: Arrow      | `arrow/ipc`                       | Columnar, efficient                        |
+| Dict / list / scalar            | 2: Structured | `json/object` or `msgpack/object` | Safe, portable, no code execution on deser |
+| Trained models / custom objects | 3: Pickle     | `pickle/object`                   | Escape hatch — see security model          |
 
 Arrow IPC is the default and fast path. Tier selection is automatic based on Python type.
 
@@ -1268,8 +1294,8 @@ they expose or refine existing ones.** See "Implementation Scope" for what ships
 
 ### Causality Inspector ("Why is this stale?")
 
-The staleness UX (see "Cell status vs. input status") tells users *that* a cell is
-stale. The causality inspector tells them *why*, down to the specific change that
+The staleness UX (see "Cell status vs. input status") tells users _that_ a cell is
+stale. The causality inspector tells them _why_, down to the specific change that
 triggered it.
 
 **Feature:** Each cell exposes a causality breakdown accessible via a "Why stale?"
@@ -1303,34 +1329,34 @@ Caused by:
 **Implementation:** The topological status pass already compares provenance hashes
 component-by-component (source hash, input hashes, lockfile hash). To produce the
 causality chain, the server stores the previous provenance components alongside the
-current ones. The diff between old and new components *is* the causality explanation.
+current ones. The diff between old and new components _is_ the causality explanation.
 No new data structures — just exposing what the staleness detector already computes.
 
 **WebSocket message:** The `cell_status` message gains an optional `causality` field:
 
 ```typescript
 interface CausalityChain {
-  reason: StalenessReason
-  details: CausalityDetail[]
+  reason: StalenessReason;
+  details: CausalityDetail[];
 }
 
 interface CausalityDetail {
-  type: 'source_changed' | 'input_changed' | 'env_changed'
+  type: "source_changed" | "input_changed" | "env_changed";
   /** For source_changed: which cell's source */
-  cellId?: string
+  cellId?: string;
   /** For input_changed: old and new artifact versions */
-  fromVersion?: string
-  toVersion?: string
+  fromVersion?: string;
+  toVersion?: string;
   /** For env_changed: which package changed */
-  package?: string
-  fromPackageVersion?: string
-  toPackageVersion?: string
+  package?: string;
+  fromPackageVersion?: string;
+  toPackageVersion?: string;
 }
 ```
 
 **"Why did this run?" — the other half of causality.**
 
-The causality inspector also works *after* execution. When a cell finishes running,
+The causality inspector also works _after_ execution. When a cell finishes running,
 the UI shows why it ran (not just that it did):
 
 ```
@@ -1363,13 +1389,13 @@ train_model  ◐ ran      12.3s   434 MB   gpu-pool-1
 
 **Exposed per cell:**
 
-| Metric | Source | Always visible? |
-|--------|--------|----------------|
-| Execution duration | `durationMs` on Cell | Yes, after first run |
-| Cache hit/miss | `cacheHit` on CellOutput | Yes (icon: ⚡ cached / 🔄 computed) |
-| Artifact size | `size_bytes` on Artifact | Yes |
-| Executor used | From executor routing | Only if remote |
-| Cache load time | `cacheLoadMs` on CellOutput | Only on cache hit |
+| Metric             | Source                      | Always visible?                     |
+| ------------------ | --------------------------- | ----------------------------------- |
+| Execution duration | `durationMs` on Cell        | Yes, after first run                |
+| Cache hit/miss     | `cacheHit` on CellOutput    | Yes (icon: ⚡ cached / 🔄 computed) |
+| Artifact size      | `size_bytes` on Artifact    | Yes                                 |
+| Executor used      | From executor routing       | Only if remote                      |
+| Cache load time    | `cacheLoadMs` on CellOutput | Only on cache hit                   |
 
 **Notebook-level summary** in the sidebar:
 
@@ -1407,7 +1433,7 @@ Running "aggregate" will:
 ```
 
 **Key difference from cascade prompt:** The cascade prompt only appears when inputs
-are stale. The impact preview also shows *downstream* consequences — cells that are
+are stale. The impact preview also shows _downstream_ consequences — cells that are
 currently `ready` but will become `stale:upstream` after this cell produces a new
 artifact version.
 
@@ -1421,18 +1447,18 @@ plan (backward walk for upstream) already exists. Combine them into an `ImpactPr
 
 ```typescript
 interface ImpactPreview {
-  targetCellId: CellId
-  upstream: CascadeStep[]       // existing type — cells that need to run first
-  downstream: DownstreamImpact[] // cells that will become stale
-  estimatedMs: number
+  targetCellId: CellId;
+  upstream: CascadeStep[]; // existing type — cells that need to run first
+  downstream: DownstreamImpact[]; // cells that will become stale
+  estimatedMs: number;
 }
 
 interface DownstreamImpact {
-  cellId: CellId
-  cellName: string
-  currentStatus: CellStatus
+  cellId: CellId;
+  cellName: string;
+  currentStatus: CellStatus;
   /** Status after target cell runs */
-  newStatus: 'stale:upstream'
+  newStatus: "stale:upstream";
 }
 ```
 
@@ -1458,10 +1484,10 @@ daily_anomalies = { cell = "detect", mode = "api" }
 
 **Two modes:**
 
-| Mode | Behavior | Use case |
-|------|----------|----------|
-| `static` | Returns the latest cached artifact. No execution. | Dashboards, downstream consumers that read periodically |
-| `api` | Triggers execution if stale, then returns the artifact. Cascade runs automatically. | On-demand computation, fresh results required |
+| Mode     | Behavior                                                                            | Use case                                                |
+| -------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| `static` | Returns the latest cached artifact. No execution.                                   | Dashboards, downstream consumers that read periodically |
+| `api`    | Triggers execution if stale, then returns the artifact. Cascade runs automatically. | On-demand computation, fresh results required           |
 
 **API:**
 
@@ -1471,6 +1497,7 @@ GET /v1/notebooks/{id}/outputs/{name}/meta    → schema, provenance, last updat
 ```
 
 **What this reuses:**
+
 - Artifact store (the output is just a named artifact pointer)
 - Provenance hashing (staleness detection decides whether to re-run)
 - Cascade execution (api mode triggers the same cascade as the UI)
@@ -1481,6 +1508,7 @@ plus an HTTP endpoint. The output schema (columns, types) is derived from the
 artifact metadata — no user-authored schema definition.
 
 **MVP scope — what this is NOT:**
+
 - No scheduling (use `strata run` + cron externally)
 - No monitoring or alerting (use existing Prometheus metrics)
 - No SLAs or freshness guarantees
@@ -1517,6 +1545,7 @@ DAG-driven invalidation — the core model that makes everything else work. Use
 sparingly.
 
 **Feature:** Freezing a cell:
+
 - Pins its current artifact version
 - Skips staleness propagation — upstream changes do not mark it stale
 - Downstream cells see it as `ready` with the pinned artifact
@@ -1534,15 +1563,16 @@ frozen = true          # artifact pinned, skip invalidation
 
 **Relationship to existing concepts:**
 
-| Concept | What it does | Scope |
-|---------|-------------|-------|
-| **Pin** (cache section) | Protects a specific artifact version from eviction | Storage only — cell still re-runs if stale |
-| **Freeze** | Prevents the cell from becoming stale at all | Execution — cell never re-runs until unfrozen |
+| Concept                 | What it does                                       | Scope                                         |
+| ----------------------- | -------------------------------------------------- | --------------------------------------------- |
+| **Pin** (cache section) | Protects a specific artifact version from eviction | Storage only — cell still re-runs if stale    |
+| **Freeze**              | Prevents the cell from becoming stale at all       | Execution — cell never re-runs until unfrozen |
 
 Freezing implies pinning (the frozen artifact won't be evicted), but pinning does
 not imply freezing (a pinned cell can still become stale and re-run).
 
 **Use cases:**
+
 - Model training took 2 hours. Don't re-run it because someone edited `load_data`.
 - The dataset was correct as of Tuesday. Freeze it while exploring downstream cells.
 - Production export uses a known-good artifact. Freeze it while iterating upstream.
@@ -1559,8 +1589,8 @@ downstream results are also stale in a way the system can't detect. This is the
 user's responsibility — freezing is an explicit opt-out from the invalidation model.
 
 **Why this is post-v1:** Freeze introduces hidden staleness that the system cannot
-reason about. Every other feature in this doc makes staleness *more* visible; freeze
-makes it *less* visible. The use cases are real (expensive model training, stable
+reason about. Every other feature in this doc makes staleness _more_ visible; freeze
+makes it _less_ visible. The use cases are real (expensive model training, stable
 snapshots), but the debugging complexity is also real. Ship it after users ask for
 it, not before.
 
@@ -1675,24 +1705,25 @@ everything from scratch. A 10-minute data pipeline means 10 minutes of waiting e
 time you sit down to work. This is why people leave Jupyter kernels running for days.
 
 **What Strata does differently:** Cell outputs are persisted as Arrow IPC on disk (or
-S3/GCS/Azure). Arrow IPC is not a serialization format — it's the *in-memory layout
-written directly to disk*. Reading it back is a memory-mapped file read with zero
+S3/GCS/Azure). Arrow IPC is not a serialization format — it's the _in-memory layout
+written directly to disk_. Reading it back is a memory-mapped file read with zero
 parsing, zero deserialization, zero copy.
 
 The numbers:
 
-| Operation | Pickle | Parquet | Arrow IPC |
-|-----------|--------|---------|-----------|
-| Write 1M rows | ~800ms | ~400ms | ~50ms |
-| Read 1M rows | ~600ms | ~300ms | **~5ms** (mmap) |
-| Read back to DataFrame | deserialize | decompress + decode | **zero-copy** |
+| Operation              | Pickle      | Parquet             | Arrow IPC       |
+| ---------------------- | ----------- | ------------------- | --------------- |
+| Write 1M rows          | ~800ms      | ~400ms              | ~50ms           |
+| Read 1M rows           | ~600ms      | ~300ms              | **~5ms** (mmap) |
+| Read back to DataFrame | deserialize | decompress + decode | **zero-copy**   |
 
 That 5ms read is why "open notebook, everything is already there" works in practice,
 not just in theory. When the user opens a notebook with 20 cached cells, Strata serves
-all 20 outputs in under 100ms total. It feels instant because it *is* instant — there's
+all 20 outputs in under 100ms total. It feels instant because it _is_ instant — there's
 no deserialization step.
 
 The Rust extension (`_strata_core`) makes this even faster:
+
 - `read_arrow_ipc_as_stream` — memory-maps the file, converts to stream format,
   never creates Python objects for the actual data
 - `concat_ipc_streams` — combines multiple outputs by manipulating bytes directly,
@@ -1747,11 +1778,11 @@ else goes through a tiered serialization system with explicit security boundarie
 
 #### Serialization tiers
 
-| Tier | Content type | Formats | Security | Use case |
-|------|-------------|---------|----------|----------|
-| **1: Arrow** | `arrow/ipc` | Arrow IPC stream | Safe (declarative schema, no code execution) | DataFrames, Tables, RecordBatches, large arrays |
-| **2: Structured** | `json/object`, `msgpack/object` | JSON, MessagePack | Safe (no code execution on deser) | Dicts, lists, scalars, JSON-serializable objects |
-| **3: Pickle** | `pickle/object` | Python pickle (protocol 5) | **Unsafe** (arbitrary code execution on deser) | Trained models, custom classes, anything else |
+| Tier              | Content type                    | Formats                    | Security                                       | Use case                                         |
+| ----------------- | ------------------------------- | -------------------------- | ---------------------------------------------- | ------------------------------------------------ |
+| **1: Arrow**      | `arrow/ipc`                     | Arrow IPC stream           | Safe (declarative schema, no code execution)   | DataFrames, Tables, RecordBatches, large arrays  |
+| **2: Structured** | `json/object`, `msgpack/object` | JSON, MessagePack          | Safe (no code execution on deser)              | Dicts, lists, scalars, JSON-serializable objects |
+| **3: Pickle**     | `pickle/object`                 | Python pickle (protocol 5) | **Unsafe** (arbitrary code execution on deser) | Trained models, custom classes, anything else    |
 
 **Serialization selection** is automatic, based on the Python type of the variable:
 
@@ -1777,11 +1808,11 @@ user's inspect session or downstream cell.
 
 **Policy:**
 
-| Deployment | Pickle allowed? | Rationale |
-|-----------|----------------|-----------|
-| **Local** (single user) | Yes | User trusts their own code |
-| **Team server** (shared) | Restricted | Pickle artifacts are tagged with the principal who created them. Deserialization only proceeds if the consuming principal is the same user OR has `pickle:trust` scope. Otherwise, the cell fails with a clear error explaining why. |
-| **CI/headless** | Configurable | `--allow-pickle` flag, off by default |
+| Deployment               | Pickle allowed? | Rationale                                                                                                                                                                                                                            |
+| ------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Local** (single user)  | Yes             | User trusts their own code                                                                                                                                                                                                           |
+| **Team server** (shared) | Restricted      | Pickle artifacts are tagged with the principal who created them. Deserialization only proceeds if the consuming principal is the same user OR has `pickle:trust` scope. Otherwise, the cell fails with a clear error explaining why. |
+| **CI/headless**          | Configurable    | `--allow-pickle` flag, off by default                                                                                                                                                                                                |
 
 **Artifact metadata tracks serialization tier:**
 
@@ -1807,6 +1838,7 @@ check is always between the consuming principal and the artifact's `creator_prin
 not the transitive chain of who produced the inputs.
 
 This means:
+
 - Alice runs cell that deserializes Bob's pickle artifact → allowed (Alice trusts Bob)
 - That cell's input happened to include data from Carol → irrelevant. The artifact
   Alice is deserializing was created by Bob's execution.
@@ -1848,6 +1880,7 @@ distributed compute, overkill for `df.dropna()`.
 **Change:** Two executor tiers, selected per-cell via UI and notebook.toml.
 
 **Local executor** (default, for most notebook cells):
+
 - Strata spawns a Python subprocess in the notebook's venv
 - Sends cell source + serialized inputs via stdin/pipe
 - Receives serialized outputs via stdout/pipe
@@ -1855,12 +1888,14 @@ distributed compute, overkill for `df.dropna()`.
 - Lifecycle tied to the notebook session
 
 **Remote executor** (for heavy compute):
+
 - HTTP protocol (existing Strata executor protocol)
 - Used for expensive transforms: model training, large aggregations, GPU workloads
 - Cell inputs are shipped as Arrow IPC over the network — same format, no re-serialization
 - Outputs are returned the same way and cached locally
 
 **Auto executor** (Strata picks based on resource hints):
+
 - Cell declares what it needs (GPU, memory, CPU cores)
 - Strata matches against available executor pool
 - Routes to local if requirements are modest, remote if they need more
@@ -1971,6 +2006,7 @@ class Cell:
 ```
 
 This means the Strata server can answer questions like:
+
 - "What cells produced this artifact?" (lineage)
 - "What happens if I change this cell?" (impact analysis)
 - "Which cells are stale?" (status across the notebook)
@@ -1992,42 +2028,42 @@ are still accessible for comparison or rollback.
 
 ### What to keep from current Strata
 
-| Keep | Reason |
-|------|--------|
-| Artifact store + SQLite metadata | Battle-tested, versioning works |
-| Provenance hashing + deduplication | Core to notebook caching |
-| Blob store abstraction (local/S3/GCS/Azure) | Flexible storage backend |
-| Arrow IPC as the fast path | Zero-copy for tables |
-| Streaming while building | Interactive feedback in UI |
-| Lineage tracking | Notebook DAG visualization |
-| Named artifacts | Maps to cell → artifact pointer |
+| Keep                                        | Reason                          |
+| ------------------------------------------- | ------------------------------- |
+| Artifact store + SQLite metadata            | Battle-tested, versioning works |
+| Provenance hashing + deduplication          | Core to notebook caching        |
+| Blob store abstraction (local/S3/GCS/Azure) | Flexible storage backend        |
+| Arrow IPC as the fast path                  | Zero-copy for tables            |
+| Streaming while building                    | Interactive feedback in UI      |
+| Lineage tracking                            | Notebook DAG visualization      |
+| Named artifacts                             | Maps to cell → artifact pointer |
 
 ### What to deprioritize
 
-| Feature | Reason |
-|---------|--------|
-| Iceberg scanning as core | Becomes a data source plugin, not the center |
-| Row-group level caching | Only relevant for Iceberg scan use case |
-| Two-tier QoS (interactive/bulk) | Notebook cells don't need admission control |
-| Multi-tenancy | Not day-one for notebooks |
-| Trusted proxy auth | Not day-one for notebooks |
-| Remote executor HTTP protocol | Keep but add inline executor as default |
+| Feature                         | Reason                                       |
+| ------------------------------- | -------------------------------------------- |
+| Iceberg scanning as core        | Becomes a data source plugin, not the center |
+| Row-group level caching         | Only relevant for Iceberg scan use case      |
+| Two-tier QoS (interactive/bulk) | Notebook cells don't need admission control  |
+| Multi-tenancy                   | Not day-one for notebooks                    |
+| Trusted proxy auth              | Not day-one for notebooks                    |
+| Remote executor HTTP protocol   | Keep but add inline executor as default      |
 
 These features don't go away — they stay in the codebase for the data serving use case.
 But they're not on the critical path for shipping the notebook.
 
 ### What to build new
 
-| Feature | Reason |
-|---------|--------|
-| Inline cell executor | Subprocess in venv, fast, no HTTP |
-| Content type system for artifacts | Support non-tabular outputs |
-| Environment hash in provenance | Lockfile-aware cache invalidation |
-| Cell entity in artifact store | First-class notebook concept |
-| Notebook session management | Open/close/save notebooks |
-| AST-based variable analysis | Python `ast` module for DAG construction |
-| `uv` integration | Spawn venvs, sync lockfiles, add packages |
-| Demand-driven caching | Only materialize consumed outputs |
+| Feature                           | Reason                                    |
+| --------------------------------- | ----------------------------------------- |
+| Inline cell executor              | Subprocess in venv, fast, no HTTP         |
+| Content type system for artifacts | Support non-tabular outputs               |
+| Environment hash in provenance    | Lockfile-aware cache invalidation         |
+| Cell entity in artifact store     | First-class notebook concept              |
+| Notebook session management       | Open/close/save notebooks                 |
+| AST-based variable analysis       | Python `ast` module for DAG construction  |
+| `uv` integration                  | Spawn venvs, sync lockfiles, add packages |
+| Demand-driven caching             | Only materialize consumed outputs         |
 
 ### API surface for the notebook
 
@@ -2122,12 +2158,12 @@ The UI sidebar shows cache usage per notebook:
 
 Actions:
 
-| Action | What it does |
-|--------|-------------|
-| **Compact to latest** | Keep only the most recent version of each cell's artifact. Deletes all older versions (except pinned). Fastest way to reclaim space. |
-| **Clear old versions** | Keep latest N versions (configurable, default 3). Safer — keeps some history for rollback. |
-| **Clear cell cache** | Right-click a specific cell → delete all its cached artifacts. Cell becomes `idle`. |
-| **Clear all** | Nuclear option. Wipes all artifacts for this notebook. Everything needs to recompute. |
+| Action                 | What it does                                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **Compact to latest**  | Keep only the most recent version of each cell's artifact. Deletes all older versions (except pinned). Fastest way to reclaim space. |
+| **Clear old versions** | Keep latest N versions (configurable, default 3). Safer — keeps some history for rollback.                                           |
+| **Clear cell cache**   | Right-click a specific cell → delete all its cached artifacts. Cell becomes `idle`.                                                  |
+| **Clear all**          | Nuclear option. Wipes all artifacts for this notebook. Everything needs to recompute.                                                |
 
 These are the actions users reach for when they notice disk filling up or want to
 share a notebook without gigabytes of cached data.
@@ -2221,12 +2257,12 @@ to manage. The notebook lives in git. Collaboration is git branches. Sharing is
 
 ### Deployment configurations
 
-| Configuration | Use case | Setup |
-|--------------|----------|-------|
-| **Local** | Solo developer | `strata serve --notebook .` on laptop. Cache on local disk. |
-| **Team server** | Shared notebooks | Strata server on shared machine. Cache on S3/GCS. Multiple users connect via browser. |
-| **CI/CD** | Automated runs | `strata run my-analysis/` in CI. Headless, no UI. Run all cells, check for errors. |
-| **Remote executors** | GPU/heavy compute | Strata server + executor pool. Cells route to appropriate hardware. |
+| Configuration        | Use case          | Setup                                                                                 |
+| -------------------- | ----------------- | ------------------------------------------------------------------------------------- |
+| **Local**            | Solo developer    | `strata serve --notebook .` on laptop. Cache on local disk.                           |
+| **Team server**      | Shared notebooks  | Strata server on shared machine. Cache on S3/GCS. Multiple users connect via browser. |
+| **CI/CD**            | Automated runs    | `strata run my-analysis/` in CI. Headless, no UI. Run all cells, check for errors.    |
+| **Remote executors** | GPU/heavy compute | Strata server + executor pool. Cells route to appropriate hardware.                   |
 
 ### Authentication
 
@@ -2255,6 +2291,7 @@ deny-first ACL model handles this. The notebook layer just adds scope checks:
 A cell could allocate 100GB of RAM or run forever. The executor needs guardrails:
 
 **For local execution:**
+
 - Per-cell timeout (configurable in notebook.toml, default 5 minutes)
 - Memory limit via process `ulimit` or cgroups
 - CPU limit for fairness when multiple notebooks run simultaneously
@@ -2267,12 +2304,14 @@ max_memory_mb = 4096               # per-cell memory limit (default 4GB)
 ```
 
 **For remote execution:**
+
 - The executor pool enforces its own resource limits
 - Strata passes the cell's declared requirements; the executor rejects if exceeded
 
 **Graceful shutdown:**
 
 If the server restarts while a cell is executing:
+
 1. The artifact is in `building` state with a lease (Strata's existing mechanism)
 2. On restart, orphan recovery detects abandoned builds (existing behavior)
 3. The cell shows as `error` in the UI with "execution interrupted"
@@ -2324,32 +2363,32 @@ interface WsMessage {
 
 **Client → Server messages:**
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `cell_execute` | `{ cellId, cascade: bool }` | Run a cell. If `cascade=true`, auto-run upstream deps. If `cascade=false` and inputs are stale, server responds with `cascade_prompt`. |
-| `cell_execute_cascade` | `{ cellId, plan: CascadePlan }` | User confirmed cascade — execute the plan. |
-| `cell_execute_force` | `{ cellId }` | "Run this only" — execute with stale inputs. |
-| `cell_cancel` | `{ cellId }` | Cancel a running cell (best-effort, kills subprocess). |
-| `cell_source_update` | `{ cellId, source: string }` | Cell source changed (debounced). Server re-analyzes AST, returns `dag_update`. |
-| `notebook_run_all` | `{ staleOnly: bool }` | Run all cells (or just stale ones) in topological order. |
-| `inspect_open` | `{ cellId }` | Open inspect REPL for a cell. |
-| `inspect_eval` | `{ cellId, expr: string }` | Evaluate expression in inspect REPL. |
-| `inspect_close` | `{ cellId }` | Close inspect REPL, kill process. |
+| Type                   | Payload                         | Description                                                                                                                            |
+| ---------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `cell_execute`         | `{ cellId, cascade: bool }`     | Run a cell. If `cascade=true`, auto-run upstream deps. If `cascade=false` and inputs are stale, server responds with `cascade_prompt`. |
+| `cell_execute_cascade` | `{ cellId, plan: CascadePlan }` | User confirmed cascade — execute the plan.                                                                                             |
+| `cell_execute_force`   | `{ cellId }`                    | "Run this only" — execute with stale inputs.                                                                                           |
+| `cell_cancel`          | `{ cellId }`                    | Cancel a running cell (best-effort, kills subprocess).                                                                                 |
+| `cell_source_update`   | `{ cellId, source: string }`    | Cell source changed (debounced). Server re-analyzes AST, returns `dag_update`.                                                         |
+| `notebook_run_all`     | `{ staleOnly: bool }`           | Run all cells (or just stale ones) in topological order.                                                                               |
+| `inspect_open`         | `{ cellId }`                    | Open inspect REPL for a cell.                                                                                                          |
+| `inspect_eval`         | `{ cellId, expr: string }`      | Evaluate expression in inspect REPL.                                                                                                   |
+| `inspect_close`        | `{ cellId }`                    | Close inspect REPL, kill process.                                                                                                      |
 
 **Server → Client messages:**
 
-| Type | Payload | Description |
-|------|---------|-------------|
-| `cell_status` | `{ cellId, status, reason? }` | Cell status changed (idle → running → ready). `reason` is the staleness subcategory when status is stale. |
-| `cell_output` | `{ cellId, output: CellOutput }` | Cell produced output (artifact data for display). |
-| `cell_console` | `{ cellId, stream: "stdout"\|"stderr", text: string }` | Incremental console output during execution. Streamed as it arrives — not buffered until completion. |
-| `cell_error` | `{ cellId, error: string, traceback?: string }` | Cell execution failed. |
-| `dag_update` | `{ cells: Cell[], edges: DagEdge[] }` | Authoritative DAG from backend AST analysis. Replaces the frontend's local DAG. |
-| `cascade_prompt` | `{ plan: CascadePlan }` | "This cell needs N upstream cells to run first." UI shows the cascade dialog. |
-| `cascade_progress` | `{ currentCellId, completedIds: string[], remainingIds: string[] }` | During cascade execution, reports which cell is currently running. |
-| `inspect_result` | `{ cellId, expr: string, result: string, isError: bool }` | Result of an inspect REPL evaluation. |
-| `notebook_status` | `{ cellStatuses: Record<CellId, CellStatus> }` | Batch status update (e.g., after notebook open or environment change). |
-| `error` | `{ code: string, message: string }` | Protocol-level error (auth failure, notebook not found, etc.). |
+| Type               | Payload                                                             | Description                                                                                               |
+| ------------------ | ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `cell_status`      | `{ cellId, status, reason? }`                                       | Cell status changed (idle → running → ready). `reason` is the staleness subcategory when status is stale. |
+| `cell_output`      | `{ cellId, output: CellOutput }`                                    | Cell produced output (artifact data for display).                                                         |
+| `cell_console`     | `{ cellId, stream: "stdout"\|"stderr", text: string }`              | Incremental console output during execution. Streamed as it arrives — not buffered until completion.      |
+| `cell_error`       | `{ cellId, error: string, traceback?: string }`                     | Cell execution failed.                                                                                    |
+| `dag_update`       | `{ cells: Cell[], edges: DagEdge[] }`                               | Authoritative DAG from backend AST analysis. Replaces the frontend's local DAG.                           |
+| `cascade_prompt`   | `{ plan: CascadePlan }`                                             | "This cell needs N upstream cells to run first." UI shows the cascade dialog.                             |
+| `cascade_progress` | `{ currentCellId, completedIds: string[], remainingIds: string[] }` | During cascade execution, reports which cell is currently running.                                        |
+| `inspect_result`   | `{ cellId, expr: string, result: string, isError: bool }`           | Result of an inspect REPL evaluation.                                                                     |
+| `notebook_status`  | `{ cellStatuses: Record<CellId, CellStatus> }`                      | Batch status update (e.g., after notebook open or environment change).                                    |
+| `error`            | `{ code: string, message: string }`                                 | Protocol-level error (auth failure, notebook not found, etc.).                                            |
 
 **Console streaming:** `cell_console` messages are sent incrementally as the cell's
 subprocess produces output. The frontend appends them to the console panel in real
@@ -2374,15 +2413,15 @@ cell output (artifact) is not, since that's persisted.
 Strata already has Prometheus metrics and structured JSON logging. Notebook-specific
 metrics to add:
 
-| Metric | Type | Purpose |
-|--------|------|---------|
-| `strata_cell_executions_total` | counter | Cell runs by notebook, cell, status |
-| `strata_cell_duration_seconds` | histogram | Execution time per cell |
-| `strata_cache_hit_rate` | gauge | Cache hits / total requests per notebook |
-| `strata_cache_size_bytes` | gauge | Cache usage per notebook |
-| `strata_executor_utilization` | gauge | Remote executor busy/idle |
-| `strata_inspect_sessions_active` | gauge | Open inspect REPLs |
-| `strata_cascade_runs_total` | counter | Cascade executions triggered |
+| Metric                           | Type      | Purpose                                  |
+| -------------------------------- | --------- | ---------------------------------------- |
+| `strata_cell_executions_total`   | counter   | Cell runs by notebook, cell, status      |
+| `strata_cell_duration_seconds`   | histogram | Execution time per cell                  |
+| `strata_cache_hit_rate`          | gauge     | Cache hits / total requests per notebook |
+| `strata_cache_size_bytes`        | gauge     | Cache usage per notebook                 |
+| `strata_executor_utilization`    | gauge     | Remote executor busy/idle                |
+| `strata_inspect_sessions_active` | gauge     | Open inspect REPLs                       |
+| `strata_cascade_runs_total`      | counter   | Cascade executions triggered             |
 
 These plug into existing Grafana dashboards. Strata already has the metrics
 infrastructure; notebooks just add new metric names.
@@ -2433,14 +2472,14 @@ later.
 are designed for exploration: run anything, see results fast, deal with staleness
 later. Strict mode (future) inverts this for CI and production.
 
-| Behavior | Default (interactive) | Strict mode (CI/prod) |
-|----------|----------------------|----------------------|
-| Run with stale inputs | Allowed (with warning) | Forbidden |
-| Forced artifacts downstream | Double-confirm | Forbidden |
-| Pickle serialization | Allowed | Forbidden on shared server |
-| Missing inputs | NameError | Fail entire run |
-| Implicit globals | No warning | Fail (lint error) |
-| Input mutation without reassignment | Heuristic warning | Error |
+| Behavior                            | Default (interactive)  | Strict mode (CI/prod)      |
+| ----------------------------------- | ---------------------- | -------------------------- |
+| Run with stale inputs               | Allowed (with warning) | Forbidden                  |
+| Forced artifacts downstream         | Double-confirm         | Forbidden                  |
+| Pickle serialization                | Allowed                | Forbidden on shared server |
+| Missing inputs                      | NameError              | Fail entire run            |
+| Implicit globals                    | No warning             | Fail (lint error)          |
+| Input mutation without reassignment | Heuristic warning      | Error                      |
 
 ### Python vs. determinism
 
@@ -2468,7 +2507,7 @@ Strata notebooks are, structurally, a build system: a DAG of computations with
 caching, invalidation, and reproducibility. The closest analogies are Bazel (content-
 addressed caching), dbt (DAG of SQL transforms), and Airflow (orchestrated tasks).
 
-But users expect *notebook* behavior: immediate feedback, scratch cells, exploration,
+But users expect _notebook_ behavior: immediate feedback, scratch cells, exploration,
 "just run this one thing." Build systems optimize for correctness and reproducibility
 at the cost of interactivity. Notebooks optimize for interactivity at the cost of
 reproducibility.
@@ -2660,11 +2699,11 @@ running a cell.
 `notebook_id` from `notebook.toml`. This is because multiple sessions could
 theoretically open the same notebook. Key endpoint differences:
 
-| Design | Implementation |
-|--------|---------------|
-| `POST /v1/notebooks` | `POST /v1/notebooks/create` |
-| `GET /v1/notebooks/{id}` | `POST /v1/notebooks/open` |
-| `POST .../cells/{cell_id}/run` | Execution is via WebSocket (`cell_execute`), not REST |
+| Design                           | Implementation                                          |
+| -------------------------------- | ------------------------------------------------------- |
+| `POST /v1/notebooks`             | `POST /v1/notebooks/create`                             |
+| `GET /v1/notebooks/{id}`         | `POST /v1/notebooks/open`                               |
+| `POST .../cells/{cell_id}/run`   | Execution is via WebSocket (`cell_execute`), not REST   |
 | `GET .../cells/{cell_id}/status` | Status comes via WebSocket (`cell_status`), not polling |
 
 ### Cell status values
@@ -2685,6 +2724,7 @@ not yet wired into the status update path.
 messages and `cell_error`, `notebook_status`, `inspect_result` server messages.
 
 **Implementation:** The following are implemented and working:
+
 - Client → Server: `cell_execute`, `cell_execute_cascade`, `cell_execute_force`,
   `cell_source_update`, `notebook_sync`, `impact_preview_request`,
   `inspect_open`, `inspect_eval`, `inspect_close`

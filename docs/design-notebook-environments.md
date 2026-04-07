@@ -2,6 +2,9 @@
 
 ## Overview
 
+See [docs/design-status.md](design-status.md) for the consolidated status across
+all design docs.
+
 Strata notebooks currently run with **one Python environment per notebook**:
 
 - notebook root `pyproject.toml`
@@ -24,6 +27,13 @@ support cases like:
 - a compatibility environment for legacy package constraints
 
 without breaking caching, staleness, or reproducibility.
+
+Current status:
+
+- the current single-environment notebook model is implemented and much more
+  complete than when this doc was first written
+- named environments remain roadmap work
+- per-cell environment selection is still intentionally deferred
 
 ---
 
@@ -100,7 +110,6 @@ Implementation decision for the next phase:
 3. **Canonical source of truth stays `uv`-based**
 
    Every named environment is represented canonically as:
-
    - `pyproject.toml`
    - `uv.lock`
    - managed `.venv`
@@ -524,22 +533,22 @@ the artifact is not portable, execution should fail with an explicit message, fo
 example:
 
 > `Cell train_model uses environment "ml", but upstream value "model" was produced in
-> environment "default" as module/cell-instance. Only portable data artifacts may
-> cross environment boundaries.`
+environment "default" as module/cell-instance. Only portable data artifacts may
+cross environment boundaries.`
 
 This should appear as a notebook execution error, not a low-level deserialization or
 `NameError`.
 
 ### Compatibility Matrix
 
-| Artifact kind | Same env | Different env |
-|---------------|----------|---------------|
-| Arrow / table | Allowed | Allowed |
-| JSON / portable scalar/container | Allowed | Allowed |
-| `module/cell` | Allowed | Blocked |
-| `module/cell-instance` | Allowed | Blocked |
-| `pickle/object` | Allowed | Blocked |
-| imported module object | Allowed | Blocked |
+| Artifact kind                    | Same env | Different env |
+| -------------------------------- | -------- | ------------- |
+| Arrow / table                    | Allowed  | Allowed       |
+| JSON / portable scalar/container | Allowed  | Allowed       |
+| `module/cell`                    | Allowed  | Blocked       |
+| `module/cell-instance`           | Allowed  | Blocked       |
+| `pickle/object`                  | Allowed  | Blocked       |
+| imported module object           | Allowed  | Blocked       |
 
 This is intentionally conservative.
 

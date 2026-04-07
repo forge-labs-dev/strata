@@ -2,6 +2,9 @@
 
 ## Overview
 
+See [docs/design-status.md](design-status.md) for the consolidated status across
+all design docs.
+
 Two features that together turn Strata Notebook into a distributed compute notebook:
 
 1. **File Mounts** — Declarative read/write access to local and remote filesystems from cells
@@ -151,6 +154,7 @@ This keeps the harness simple — it only sees local paths. The local directory 
 Mounts affect caching. A cell reading from `s3://bucket/data` should invalidate when the data changes.
 
 **For read-only mounts:**
+
 - **Iceberg tables** (Strata's sweet spot): Use snapshot ID as the mount fingerprint
 - **S3/GCS directories**: Use a content manifest hash (list of object keys + ETags + sizes)
 - **Local directories**: Use `mtime` of the directory tree (fast but not cryptographic)
@@ -167,7 +171,7 @@ provenance = sha256(
 )
 ```
 
-**For read-write mounts**: These are *side effects*. They do not participate in provenance, and cells that declare any `rw` mount are treated as **non-cacheable** — the executor skips the cache check at step ④ entirely. The mount declarations are still recorded in artifact metadata for lineage and audit purposes. If we later want cacheable read-write semantics, we will need explicit mount snapshots or versioned mount outputs.
+**For read-write mounts**: These are _side effects_. They do not participate in provenance, and cells that declare any `rw` mount are treated as **non-cacheable** — the executor skips the cache check at step ④ entirely. The mount declarations are still recorded in artifact metadata for lineage and audit purposes. If we later want cacheable read-write semantics, we will need explicit mount snapshots or versioned mount outputs.
 
 ### Mount Fingerprinting and Cache-Skip Mechanism
 
@@ -333,6 +337,7 @@ timeout = 3600
 ```
 
 The cell infrastructure toolbar shows:
+
 - **Worker dropdown**: Current worker name with health dot (green/yellow/red). Click to switch.
 - **Mount pills**: Compact badges showing which mounts this cell uses, color-coded by scheme.
 
@@ -545,7 +550,7 @@ Mounts are declared in the `BuildManifest` params and resolved **on the executor
 - **Local executor**: Mount paths are local paths (current behavior, resolved by `MountResolver`)
 - **Remote executor**: The executor resolves mounts using its own credentials and filesystem access. S3/GCS mounts are accessed natively (the GPU machine has its own IAM role). Notebook-declared `file://` mounts are rejected for remote execution in phase 2.
 
-The executor is responsible for materializing mounts to local paths and passing them in the harness manifest, just like the local path does today. The difference is only *where* this resolution happens.
+The executor is responsible for materializing mounts to local paths and passing them in the harness manifest, just like the local path does today. The difference is only _where_ this resolution happens.
 
 ### Remote `file://` Mount Policy
 
@@ -602,7 +607,7 @@ POST   /v1/admin/notebook-workers/{worker_name}/refresh
       "name": "gpu-cluster",
       "backend": "executor",
       "runtime_id": "gpu-a100-4x",
-      "config": {"url": "https://gpu-node-1.internal:8766/v1/execute"},
+      "config": { "url": "https://gpu-node-1.internal:8766/v1/execute" },
       "source": "server",
       "allowed": true,
       "enabled": true,
@@ -612,7 +617,7 @@ POST   /v1/admin/notebook-workers/{worker_name}/refresh
       "health_checked_at": 1774815252000,
       "last_error": null,
       "health_history": [
-        {"checked_at": 1774815252000, "health": "healthy", "error": null}
+        { "checked_at": 1774815252000, "health": "healthy", "error": null }
       ]
     }
   ],
@@ -649,10 +654,12 @@ For notebook cells:
 Two new UI components, shown in the mockup (`docs/mockup-mounts-workers.html`):
 
 **Sidebar panels** (right side, alongside DAG view):
+
 - **Mounts panel**: Lists notebook-level mounts with scheme icon, name, URI (truncated), and ro/rw badge. "+ Add mount" button opens a form for name, URI, mode.
 - **Workers panel**: Lists registered workers with health status dot, transport, last check time, recent health history, and inline last-error details. In personal/dev mode it edits notebook-scoped definitions. In service/multi-tenant mode it can either show the server-managed catalog read-only or expose admin CRUD when the caller is authorized.
 
 **Cell infrastructure toolbar** (per cell, between editor and metadata bar):
+
 - **Worker dropdown**: Shows assigned worker name with health dot. Defaults to `local`. Dropdown lists all registered workers with their health.
 - **Mount pills**: Compact color-coded badges for each mount this cell uses. Peach for S3, green for local, blue for GCS. Each pill shows mount name and ro/rw mode. "+" button to add a cell-level override. Cells without overrides show "inherits notebook defaults".
 - **Source override badges**: Cells with active `# @...` directives surface that in the header and infra panel rather than hiding it in source.
@@ -882,6 +889,7 @@ The design is now mostly implemented. The main remaining gaps are:
 ### Why fsspec (not PyArrow FS)?
 
 PyArrow filesystems are already used in Strata core for Parquet reads, but fsspec is better for the notebook use case:
+
 - Broader ecosystem: HDFS, FTP, HTTP, Hugging Face Hub, etc.
 - Local caching layer (`filecache`) built in
 - Standard in the data science ecosystem (pandas, dask, xarray all use it)
@@ -890,6 +898,7 @@ PyArrow filesystems are already used in Strata core for Parquet reads, but fsspe
 ### Why not FUSE mounts?
 
 FUSE (e.g., s3fs-fuse, gcsfuse) would give the most transparent experience but:
+
 - Requires root/FUSE privileges (not available in many containers)
 - Hard to control from Python
 - Debugging is painful when FUSE has issues
@@ -898,6 +907,7 @@ FUSE (e.g., s3fs-fuse, gcsfuse) would give the most transparent experience but:
 ### Why inject paths, not fsspec filesystems?
 
 Cells get `pathlib.Path` objects, not `fsspec.filesystem` objects. This means:
+
 - Cell code uses standard Python I/O: `pd.read_parquet(mount_path / "file.parquet")`
 - No SDK imports needed
 - Works with any library that takes file paths

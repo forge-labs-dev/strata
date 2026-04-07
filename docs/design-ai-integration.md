@@ -1,5 +1,13 @@
 # AI Integration Design
 
+## Status (April 2026)
+
+See [docs/design-status.md](design-status.md) for the consolidated status
+across all design docs.
+
+This area is still **roadmap / exploratory**. None of the AI-specific execution
+or authoring features in this document are shipped yet.
+
 This document describes how AI/LLM capabilities integrate into Strata Notebook.
 The design follows Strata's layering model: orchestration decides what to run,
 executors decide how to compute, and Strata decides whether the result already
@@ -15,15 +23,15 @@ LLM calls share every property that motivates Strata's existence:
 - **Failure-prone** -- rate limits, timeouts, model outages
 
 The insight is that `materialize(inputs, transform) -> artifact` already handles
-all of this.  An LLM call with the same prompt, same model, and same input data
+all of this. An LLM call with the same prompt, same model, and same input data
 should return the cached result -- not bill you again.
 
 ## Integration Tiers
 
 ### Tier 1: AI Cell Type
 
-A cell where `source` is a prompt template instead of Python code.  Upstream
-variables are injected as context.  The LLM response becomes the output artifact.
+A cell where `source` is a prompt template instead of Python code. Upstream
+variables are injected as context. The LLM response becomes the output artifact.
 
 ```
 # Cell source (prompt template)
@@ -33,14 +41,16 @@ Summarize the following dataset in 3 bullet points:
 ```
 
 **Provenance hashing**:
+
 ```
 sha256(prompt_template_hash + model_config_hash + sorted(input_artifact_hashes))
 ```
 
-Same prompt + same model + same inputs = cache hit.  Change the prompt or the
+Same prompt + same model + same inputs = cache hit. Change the prompt or the
 upstream data, and it re-executes.
 
 **Model configuration** lives in `notebook.toml` or cell annotations:
+
 ```toml
 [ai]
 default_model = "claude-sonnet-4-20250514"
@@ -55,19 +65,22 @@ Summarize {{ df }} by category.
 ```
 
 **Output types**:
+
 - `text` -- raw string (default)
 - `json` -- parsed JSON object, stored as `json/object` artifact
 - `code` -- generated Python code (can feed into downstream Python cells)
 - `arrow` -- structured extraction into a table
 
 The output type is either inferred from the prompt or set via annotation:
+
 ```python
 # @output json
 Extract entities from {{ text }} as a JSON array.
 ```
 
-**Variable injection** uses Jinja2-style `{{ var }}` syntax.  Before sending
+**Variable injection** uses Jinja2-style `{{ var }}` syntax. Before sending
 the prompt, the executor:
+
 1. Resolves each referenced variable from upstream artifacts
 2. Converts to a text representation (DataFrame -> `.describe()` or `.head()`,
    scalar -> `str()`, dict -> JSON)
@@ -75,7 +88,7 @@ the prompt, the executor:
 4. Sends to the model API
 
 **DAG integration**: The analyzer treats `{{ var }}` references the same as
-Python variable references for DAG building.  An AI cell that uses `{{ df }}`
+Python variable references for DAG building. An AI cell that uses `{{ df }}`
 depends on the cell that defines `df`.
 
 ### Tier 2: LLM Transform Executor
@@ -91,7 +104,7 @@ max_output_bytes = 10_485_760
 ```
 
 The executor receives input artifacts via the standard executor protocol
-(push or pull model) and returns structured output.  This enables:
+(push or pull model) and returns structured output. This enables:
 
 - Server-side LLM execution with centralized API key management
 - Build QoS admission control (token budget instead of byte budget)
@@ -127,7 +140,7 @@ Copilot-style integration in the notebook UI:
 - **Cell refactoring** -- "split this cell into two", "add error handling"
 
 This is a frontend/UX feature that calls an LLM API directly from the UI layer
-or via a lightweight backend endpoint.  It does not participate in the compute
+or via a lightweight backend endpoint. It does not participate in the compute
 graph -- the generated code becomes a normal Python cell.
 
 ## Architecture
@@ -162,11 +175,13 @@ class LLMProvider(Protocol):
 ```
 
 Built-in providers:
+
 - `anthropic` -- Claude models via the Anthropic API
 - `openai` -- GPT models via the OpenAI API
 - `http` -- Generic OpenAI-compatible endpoint (vLLM, Ollama, etc.)
 
 Provider configuration in `notebook.toml`:
+
 ```toml
 [ai.provider]
 type = "anthropic"
@@ -176,44 +191,45 @@ type = "anthropic"
 ### Token Budget and Cost Tracking
 
 Each AI cell execution records:
+
 - `input_tokens` -- tokens sent (prompt + context)
 - `output_tokens` -- tokens received
 - `model` -- model identifier
 - `cost_estimate_usd` -- estimated cost based on model pricing
 
 These are stored in the artifact's `transform_spec.params` and surfaced in the
-profiling panel.  Cache hits show the cost that was *avoided*.
+profiling panel. Cache hits show the cost that was _avoided_.
 
 ## Provenance and Caching Details
 
 ### What Participates in the Hash
 
-| Component | In provenance hash? | Rationale |
-|---|---|---|
-| Prompt template text | Yes | Different prompt = different result |
-| Model identifier | Yes | Different model = different result |
-| Temperature | Yes | Different temperature = potentially different result |
-| max_tokens | No | Affects truncation, not content identity |
-| Input artifact hashes | Yes | Different data = different result |
-| API key | No | Authentication, not computation |
-| Provider endpoint | No | Same model at different endpoints = same result |
+| Component             | In provenance hash? | Rationale                                            |
+| --------------------- | ------------------- | ---------------------------------------------------- |
+| Prompt template text  | Yes                 | Different prompt = different result                  |
+| Model identifier      | Yes                 | Different model = different result                   |
+| Temperature           | Yes                 | Different temperature = potentially different result |
+| max_tokens            | No                  | Affects truncation, not content identity             |
+| Input artifact hashes | Yes                 | Different data = different result                    |
+| API key               | No                  | Authentication, not computation                      |
+| Provider endpoint     | No                  | Same model at different endpoints = same result      |
 
 ### Temperature = 0 Special Case
 
-When `temperature=0`, the LLM output is (approximately) deterministic.  The
-cache hit rate should be high.  When `temperature > 0`, the same inputs can
-produce different outputs.  Two options:
+When `temperature=0`, the LLM output is (approximately) deterministic. The
+cache hit rate should be high. When `temperature > 0`, the same inputs can
+produce different outputs. Two options:
 
 1. **Cache anyway** (default) -- first execution wins, subsequent identical
-   requests return the cached result.  This is correct for iterative workflows
+   requests return the cached result. This is correct for iterative workflows
    where you want stability.
-2. **`refresh=True`** -- force re-execution.  Uses the existing refresh
+2. **`refresh=True`** -- force re-execution. Uses the existing refresh
    mechanism that generates a unique provenance hash.
 
 ### Structured Output Caching
 
 When `output_type=json`, the parsed JSON object is stored as a `json/object`
-artifact.  Downstream Python cells receive it as a dict:
+artifact. Downstream Python cells receive it as a dict:
 
 ```python
 # AI cell (output_type=json)
@@ -266,20 +282,20 @@ Downstream cells receive a pandas DataFrame.
 ## Open Questions
 
 1. **Jinja2 vs simpler syntax?** Jinja2 is powerful but adds a dependency and
-   complexity (loops, conditionals in prompts).  A simpler `{{ var }}` regex
+   complexity (loops, conditionals in prompts). A simpler `{{ var }}` regex
    replacement may be sufficient for v1.
 
 2. **System prompt management?** Should there be a notebook-level system prompt
-   that applies to all AI cells?  Or per-cell only?
+   that applies to all AI cells? Or per-cell only?
 
-3. **Streaming?** LLM responses stream token-by-token.  Should the notebook UI
-   show streaming output, or wait for completion?  Streaming is better UX but
+3. **Streaming?** LLM responses stream token-by-token. Should the notebook UI
+   show streaming output, or wait for completion? Streaming is better UX but
    complicates artifact storage (can't hash until complete).
 
-4. **Image/multimodal inputs?** Claude and GPT-4V support image inputs.  Should
-   AI cells accept image artifacts from upstream cells?  This affects the
+4. **Image/multimodal inputs?** Claude and GPT-4V support image inputs. Should
+   AI cells accept image artifacts from upstream cells? This affects the
    variable-to-text rendering pipeline.
 
 5. **Tool use / function calling?** Should AI cells support tool use, where the
-   LLM can call back into Python cells?  This creates cycles in the DAG and
+   LLM can call back into Python cells? This creates cycles in the DAG and
    needs careful design.

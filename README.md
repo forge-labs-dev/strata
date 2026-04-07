@@ -326,6 +326,7 @@ Operational limitations:
 See also:
 
 - [CHANGELOG.md](CHANGELOG.md)
+- [docs/design-status.md](docs/design-status.md)
 - [docs/core-quickstart.md](docs/core-quickstart.md)
 - [docs/notebook-quickstart.md](docs/notebook-quickstart.md)
 - [docs/service-mode-deployment.md](docs/service-mode-deployment.md)

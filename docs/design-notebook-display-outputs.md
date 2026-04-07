@@ -2,6 +2,9 @@
 
 ## Overview
 
+See [docs/design-status.md](design-status.md) for the consolidated shipped vs
+roadmap view.
+
 Strata notebooks currently have a narrow visible-output model:
 
 - console output (`stdout` / `stderr`)
@@ -24,6 +27,13 @@ The key design decision is:
 Today the runtime mostly infers visible output from the special `_` variable during
 live execution. That is too narrow for images and too implicit for long-term growth.
 The next implementation should introduce display outputs as a first-class concept.
+
+Current status:
+
+- image outputs, markdown outputs, side-effect display capture, and ordered
+  multiple visible outputs per cell are implemented
+- this document now mainly serves as the detailed design and forward roadmap for
+  renderer breadth and output UX polish
 
 ---
 

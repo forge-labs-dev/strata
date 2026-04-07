@@ -1,20 +1,30 @@
 # Strata Notebook — Implementation Plan
 
+## Status (April 2026)
+
+See [docs/design-status.md](design-status.md) for the consolidated shipped vs
+roadmap view.
+
+This document is now primarily **historical**. It was the original milestone
+plan for the notebook build-out. Much of the M1-M6 scope has since landed in
+some form, so this file is most useful as implementation history rather than
+the current roadmap source of truth.
+
 This plan breaks the v1 scope into six milestones. Each milestone delivers a
 runnable increment — you can demo at the end of every milestone, not just at
 the end.
 
 **What already exists:**
 
-| Layer | Status | Reusable? |
-|-------|--------|-----------|
-| Artifact store (`artifact_store.py`) | Production-ready, SQLite + pluggable blob backends | **Yes** — provenance dedup, versioning, name pointers |
-| Blob store (`blob_store.py`) | Local + S3/GCS/Azure | **Yes** — local backend is all we need for v1 |
-| FastAPI server (`server.py`) | 4900 lines, `/v1/materialize` endpoint | **Partially** — reuse app skeleton, add notebook routes |
-| Config (`config.py`) | Pydantic-based, env vars | **Yes** — extend with notebook-specific settings |
-| Types (`types.py`) | `TransformSpec`, `MaterializeRequest/Response` | **Yes** — use directly for cell execution |
-| Vue frontend prototype | Cells, CodeMirror, DAG sidebar, mock execution | **Yes** — build on top of it |
-| TypeScript types (`notebook.ts`) | Full type definitions for cells, DAG, WS protocol | **Yes** — already aligned with design doc |
+| Layer                                | Status                                             | Reusable?                                               |
+| ------------------------------------ | -------------------------------------------------- | ------------------------------------------------------- |
+| Artifact store (`artifact_store.py`) | Production-ready, SQLite + pluggable blob backends | **Yes** — provenance dedup, versioning, name pointers   |
+| Blob store (`blob_store.py`)         | Local + S3/GCS/Azure                               | **Yes** — local backend is all we need for v1           |
+| FastAPI server (`server.py`)         | 4900 lines, `/v1/materialize` endpoint             | **Partially** — reuse app skeleton, add notebook routes |
+| Config (`config.py`)                 | Pydantic-based, env vars                           | **Yes** — extend with notebook-specific settings        |
+| Types (`types.py`)                   | `TransformSpec`, `MaterializeRequest/Response`     | **Yes** — use directly for cell execution               |
+| Vue frontend prototype               | Cells, CodeMirror, DAG sidebar, mock execution     | **Yes** — build on top of it                            |
+| TypeScript types (`notebook.ts`)     | Full type definitions for cells, DAG, WS protocol  | **Yes** — already aligned with design doc               |
 
 **What does NOT exist yet:**
 
@@ -37,25 +47,25 @@ to disk. No execution. This proves the on-disk format works end-to-end.
 
 Create `src/strata/notebook/` package:
 
-| File | Responsibility |
-|------|---------------|
-| `src/strata/notebook/__init__.py` | Package init |
-| `src/strata/notebook/models.py` | Pydantic models for `notebook.toml` (NotebookMeta, CellMeta) |
-| `src/strata/notebook/parser.py` | Parse `notebook.toml` + read cell `.py` files → NotebookState |
-| `src/strata/notebook/writer.py` | Write changes back: update `notebook.toml`, write cell files |
-| `src/strata/notebook/session.py` | NotebookSession class — holds state for one open notebook |
+| File                              | Responsibility                                                |
+| --------------------------------- | ------------------------------------------------------------- |
+| `src/strata/notebook/__init__.py` | Package init                                                  |
+| `src/strata/notebook/models.py`   | Pydantic models for `notebook.toml` (NotebookMeta, CellMeta)  |
+| `src/strata/notebook/parser.py`   | Parse `notebook.toml` + read cell `.py` files → NotebookState |
+| `src/strata/notebook/writer.py`   | Write changes back: update `notebook.toml`, write cell files  |
+| `src/strata/notebook/session.py`  | NotebookSession class — holds state for one open notebook     |
 
 Add routes to FastAPI (new router, mounted at `/v1/notebooks`):
 
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /v1/notebooks/open` | Open a notebook directory → returns full state |
-| `GET /v1/notebooks/{id}/cells` | List cells with source |
-| `PUT /v1/notebooks/{id}/cells/{cell_id}` | Update cell source |
-| `POST /v1/notebooks/{id}/cells` | Add a new cell |
-| `DELETE /v1/notebooks/{id}/cells/{cell_id}` | Remove a cell |
-| `PUT /v1/notebooks/{id}/cells/reorder` | Reorder cells |
-| `PUT /v1/notebooks/{id}/name` | Rename notebook |
+| Endpoint                                    | Purpose                                        |
+| ------------------------------------------- | ---------------------------------------------- |
+| `POST /v1/notebooks/open`                   | Open a notebook directory → returns full state |
+| `GET /v1/notebooks/{id}/cells`              | List cells with source                         |
+| `PUT /v1/notebooks/{id}/cells/{cell_id}`    | Update cell source                             |
+| `POST /v1/notebooks/{id}/cells`             | Add a new cell                                 |
+| `DELETE /v1/notebooks/{id}/cells/{cell_id}` | Remove a cell                                  |
+| `PUT /v1/notebooks/{id}/cells/reorder`      | Reorder cells                                  |
+| `PUT /v1/notebooks/{id}/name`               | Rename notebook                                |
 
 Add `src/strata/notebook/routes.py` for the FastAPI router.
 
@@ -93,11 +103,11 @@ stdout and output data in the UI. No DAG yet — each cell runs independently.
 
 ### Backend
 
-| File | Responsibility |
-|------|---------------|
-| `src/strata/notebook/executor.py` | `CellExecutor` — spawns `uv run python` in the notebook dir, sends cell source via a wrapper script, captures stdout/stderr and output variables |
-| `src/strata/notebook/harness.py` | The Python script that runs inside the subprocess: receives cell source + inputs, executes it, serializes outputs to stdout as JSON/Arrow IPC |
-| `src/strata/notebook/serializer.py` | Three-tier serialization: detect type → Arrow IPC / JSON / msgpack / pickle; deserialization counterpart |
+| File                                | Responsibility                                                                                                                                   |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/strata/notebook/executor.py`   | `CellExecutor` — spawns `uv run python` in the notebook dir, sends cell source via a wrapper script, captures stdout/stderr and output variables |
+| `src/strata/notebook/harness.py`    | The Python script that runs inside the subprocess: receives cell source + inputs, executes it, serializes outputs to stdout as JSON/Arrow IPC    |
+| `src/strata/notebook/serializer.py` | Three-tier serialization: detect type → Arrow IPC / JSON / msgpack / pickle; deserialization counterpart                                         |
 
 The `harness.py` script is the bridge between the notebook server and the cell
 code. For M2 it receives no inputs (no DAG yet). It:
@@ -111,8 +121,8 @@ code. For M2 it receives no inputs (no DAG yet). It:
 
 Add execution route:
 
-| Endpoint | Purpose |
-|----------|---------|
+| Endpoint                                          | Purpose           |
+| ------------------------------------------------- | ----------------- |
 | `POST /v1/notebooks/{id}/cells/{cell_id}/execute` | Run a single cell |
 
 The response streams stdout incrementally (SSE or chunked), then returns the
@@ -152,10 +162,10 @@ and outputs.
 
 ### Backend
 
-| File | Responsibility |
-|------|---------------|
+| File                              | Responsibility                                                                                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `src/strata/notebook/analyzer.py` | AST-based variable analysis: extract `defines` and `references` per cell; identify leaf nodes; handle edge cases (`_private`, builtins, imports) |
-| `src/strata/notebook/dag.py` | Build the variable-level DAG, project to cell-level edges, topological sort, detect cycles |
+| `src/strata/notebook/dag.py`      | Build the variable-level DAG, project to cell-level edges, topological sort, detect cycles                                                       |
 
 Integrate into the session lifecycle:
 
@@ -201,12 +211,12 @@ cached results instantly.
 This milestone wires the existing `artifact_store.py` and `blob_store.py`
 into the notebook execution path.
 
-| File | Changes |
-|------|---------|
-| `src/strata/notebook/executor.py` | After execution: compute provenance hash → call `artifact_store.create_version()` → store blob via `blob_store.put()`. Before execution: check `artifact_store.find_by_provenance()` → if hit, skip execution |
-| `src/strata/notebook/provenance.py` | `compute_provenance_hash(input_hashes, source_hash, env_hash)` — the core hashing function |
-| `src/strata/notebook/env.py` | Parse `pyproject.toml` + `uv.lock` → compute runtime lockfile hash (only runtime deps, not dev) |
-| `src/strata/notebook/session.py` | On open: compute provenance for all cells (topological order) → compare with stored artifacts → set status (ready/stale/idle) |
+| File                                | Changes                                                                                                                                                                                                       |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/strata/notebook/executor.py`   | After execution: compute provenance hash → call `artifact_store.create_version()` → store blob via `blob_store.put()`. Before execution: check `artifact_store.find_by_provenance()` → if hit, skip execution |
+| `src/strata/notebook/provenance.py` | `compute_provenance_hash(input_hashes, source_hash, env_hash)` — the core hashing function                                                                                                                    |
+| `src/strata/notebook/env.py`        | Parse `pyproject.toml` + `uv.lock` → compute runtime lockfile hash (only runtime deps, not dev)                                                                                                               |
+| `src/strata/notebook/session.py`    | On open: compute provenance for all cells (topological order) → compare with stored artifacts → set status (ready/stale/idle)                                                                                 |
 
 Input injection for execution (this is where DAG meets execution):
 
@@ -258,14 +268,15 @@ upstream inputs triggers a cascade prompt, then executes the dependency chain.
 
 ### Backend
 
-| File | Responsibility |
-|------|---------------|
-| `src/strata/notebook/ws.py` | WebSocket handler: accept connections, dispatch messages, manage per-notebook rooms |
+| File                             | Responsibility                                                                                                                                                  |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/strata/notebook/ws.py`      | WebSocket handler: accept connections, dispatch messages, manage per-notebook rooms                                                                             |
 | `src/strata/notebook/cascade.py` | `plan_cascade(cell_id)` — walk DAG backwards, find cells that need to run, compute estimated duration; `execute_cascade(plan)` — run cells in topological order |
 
 WebSocket message flow (implement the protocol from the design doc):
 
 **Client → server:**
+
 - `cell_execute` — run a cell (triggers cascade check)
 - `cell_execute_cascade` — user confirmed cascade plan
 - `cell_execute_force` — "Run this only" with stale inputs
@@ -274,6 +285,7 @@ WebSocket message flow (implement the protocol from the design doc):
 - `notebook_sync` — reconnection, request full state
 
 **Server → client:**
+
 - `cell_status` — status changed (idle/running/ready/stale/error)
 - `cell_output` — cell produced output data
 - `cell_console` — incremental stdout/stderr
@@ -283,6 +295,7 @@ WebSocket message flow (implement the protocol from the design doc):
 - `cascade_progress` — during cascade, reports which cell is running
 
 Replace the REST execution endpoint with WebSocket-driven execution:
+
 - `POST .../execute` becomes `cell_execute` WS message
 - Stdout streams as `cell_console` messages
 - Final output arrives as `cell_output` message
@@ -333,11 +346,11 @@ order with real-time console output → all cells show `ready`.
 
 ### Backend
 
-| File | Responsibility |
-|------|---------------|
-| `src/strata/notebook/pool.py` | `WarmProcessPool` — pre-spawns 1-2 Python processes with common imports; hands them to executor; replaces after use; drains on env change |
-| `src/strata/notebook/inspect.py` | Inspect REPL session — spawns a process with a cell's inputs loaded; accepts eval expressions via WS; lazy artifact loading via `ArtifactProxy` |
-| `src/strata/notebook/immutability.py` | Defensive copy on input injection (by tier); runtime mutation detection heuristic; warning generation |
+| File                                  | Responsibility                                                                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/strata/notebook/pool.py`         | `WarmProcessPool` — pre-spawns 1-2 Python processes with common imports; hands them to executor; replaces after use; drains on env change       |
+| `src/strata/notebook/inspect.py`      | Inspect REPL session — spawns a process with a cell's inputs loaded; accepts eval expressions via WS; lazy artifact loading via `ArtifactProxy` |
+| `src/strata/notebook/immutability.py` | Defensive copy on input injection (by tier); runtime mutation detection heuristic; warning generation                                           |
 
 Warm process pool integration:
 
@@ -401,14 +414,14 @@ can proceed in parallel once the API contract is agreed.
 
 These are rough estimates assuming one developer working full-time:
 
-| Milestone | Effort | Cumulative |
-|-----------|--------|------------|
-| M1: Static notebook | 3-4 days | ~1 week |
-| M2: Cell execution | 4-5 days | ~2 weeks |
-| M3: AST + DAG | 3-4 days | ~2.5 weeks |
-| M4: Artifacts + provenance | 5-6 days | ~3.5 weeks |
-| M5: WebSocket + cascade | 5-6 days | ~5 weeks |
-| M6: Warm pool + inspect + immutability | 5-6 days | ~6 weeks |
+| Milestone                              | Effort   | Cumulative |
+| -------------------------------------- | -------- | ---------- |
+| M1: Static notebook                    | 3-4 days | ~1 week    |
+| M2: Cell execution                     | 4-5 days | ~2 weeks   |
+| M3: AST + DAG                          | 3-4 days | ~2.5 weeks |
+| M4: Artifacts + provenance             | 5-6 days | ~3.5 weeks |
+| M5: WebSocket + cascade                | 5-6 days | ~5 weeks   |
+| M6: Warm pool + inspect + immutability | 5-6 days | ~6 weeks   |
 
 M4 and M5 are the heaviest — they integrate the most pieces. M1-M3 are
 comparatively fast because they don't touch the artifact store.
