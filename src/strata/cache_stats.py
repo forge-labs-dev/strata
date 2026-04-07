@@ -8,7 +8,49 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any
+from typing import TypedDict
+
+
+class WindowStatsDict(TypedDict):
+    """JSON-serializable cache statistics for a single time window."""
+
+    window_seconds: int
+    hits: int
+    misses: int
+    total: int
+    hit_rate: float
+    miss_rate: float
+    bytes_from_cache: int
+    bytes_from_storage: int
+
+
+class LifetimeStatsDict(TypedDict):
+    """JSON-serializable cache lifetime statistics."""
+
+    hits: int
+    misses: int
+    total: int
+    hit_rate: float
+    bytes_from_cache: int
+    bytes_from_storage: int
+
+
+class TableStatsDict(TypedDict):
+    """JSON-serializable per-table cache statistics."""
+
+    table_id: str
+    hits: int
+    misses: int
+    total: int
+    hit_rate: float
+
+
+class CacheSummaryDict(TypedDict):
+    """Top-level cache metrics payload."""
+
+    lifetime: LifetimeStatsDict
+    windows: list[WindowStatsDict]
+    top_tables: list[TableStatsDict]
 
 
 @dataclass
@@ -47,7 +89,7 @@ class WindowStats:
             return 0.0
         return self.misses / self.total
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> WindowStatsDict:
         return {
             "window_seconds": self.window_seconds,
             "hits": self.hits,
@@ -165,7 +207,7 @@ class CacheStatsHistogram:
         """Get statistics for all configured windows."""
         return [self.get_window_stats(w) for w in self.windows]
 
-    def get_lifetime_stats(self) -> dict[str, Any]:
+    def get_lifetime_stats(self) -> LifetimeStatsDict:
         """Get lifetime statistics."""
         with self._lock:
             total = self._total_hits + self._total_misses
@@ -179,10 +221,10 @@ class CacheStatsHistogram:
                 "bytes_from_storage": self._total_bytes_storage,
             }
 
-    def get_table_stats(self, limit: int = 10) -> list[dict[str, Any]]:
+    def get_table_stats(self, limit: int = 10) -> list[TableStatsDict]:
         """Get per-table statistics, sorted by total accesses."""
         with self._lock:
-            table_list = []
+            table_list: list[TableStatsDict] = []
             for table_id, stats in self._table_stats.items():
                 total = stats["hits"] + stats["misses"]
                 hit_rate = stats["hits"] / total if total > 0 else 0.0
@@ -197,10 +239,10 @@ class CacheStatsHistogram:
                 )
 
         # Sort by total accesses descending
-        table_list.sort(key=lambda x: x["total"], reverse=True)
+        table_list.sort(key=lambda stats: stats["total"], reverse=True)
         return table_list[:limit]
 
-    def get_summary(self) -> dict[str, Any]:
+    def get_summary(self) -> CacheSummaryDict:
         """Get a comprehensive summary of cache statistics."""
         return {
             "lifetime": self.get_lifetime_stats(),

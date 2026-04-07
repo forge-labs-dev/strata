@@ -11,10 +11,112 @@ These are exposed via /v1/debug/memory for operational diagnostics.
 """
 
 import gc
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict
 
 import pyarrow as pa
+
+
+class ArrowSnapshotDict(TypedDict):
+    """Arrow memory snapshot payload."""
+
+    bytes_allocated: int
+    max_memory: int
+    pool_backend: str
+    allocated_mb: float
+    max_mb: float
+
+
+class PythonSnapshotDict(TypedDict):
+    """Python GC snapshot payload."""
+
+    gc_tracked_objects: int
+    gc_objects_by_gen: list[int]
+
+
+class ProcessSnapshotDict(TypedDict):
+    """Process memory snapshot payload."""
+
+    rss_bytes: int | None
+    vms_bytes: int | None
+    rss_mb: float | None
+    vms_mb: float | None
+
+
+class MemorySnapshotDict(TypedDict):
+    """Top-level memory snapshot payload."""
+
+    arrow: ArrowSnapshotDict
+    python: PythonSnapshotDict
+    process: ProcessSnapshotDict
+
+
+class DefaultArrowPoolDict(TypedDict):
+    """Default Arrow pool allocation payload."""
+
+    backend: str
+    bytes_allocated: int
+    max_memory: int
+
+
+class AvailableArrowPoolDict(TypedDict):
+    """Available Arrow pool allocation payload."""
+
+    name: str
+    bytes_allocated: int
+    max_memory: int
+
+
+class ArrowAllocationsDict(TypedDict):
+    """Detailed Arrow allocation payload."""
+
+    default_pool: DefaultArrowPoolDict
+    available_pools: list[AvailableArrowPoolDict]
+
+
+class GcThresholdsDict(TypedDict):
+    """GC thresholds payload."""
+
+    gen0: int
+    gen1: int
+    gen2: int
+
+
+class GcGenerationStatsDict(TypedDict):
+    """GC generation statistics payload."""
+
+    generation: int
+    collections: int
+    collected: int
+    uncollectable: int
+
+
+class TopObjectTypeDict(TypedDict):
+    """Top Python object type count payload."""
+
+    type: str
+    count: int
+
+
+class PythonMemoryStatsDict(TypedDict):
+    """Detailed Python memory payload."""
+
+    gc_thresholds: GcThresholdsDict
+    gc_stats: list[GcGenerationStatsDict]
+    gc_is_enabled: bool
+    gc_freeze_count: int | None
+    top_object_types: list[TopObjectTypeDict]
+    total_objects: int
+
+
+class DetailedMemoryReportDict(TypedDict):
+    """Top-level detailed memory report payload."""
+
+    snapshot: MemorySnapshotDict
+    arrow_details: ArrowAllocationsDict
+    python_details: PythonMemoryStatsDict
+    recommendations: list[str]
 
 
 @dataclass
@@ -34,7 +136,7 @@ class MemorySnapshot:
     process_rss_bytes: int | None
     process_vms_bytes: int | None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> MemorySnapshotDict:
         return {
             "arrow": {
                 "bytes_allocated": self.arrow_bytes_allocated,
@@ -115,13 +217,13 @@ def get_memory_snapshot() -> MemorySnapshot:
     )
 
 
-def get_arrow_allocations() -> dict[str, Any]:
+def get_arrow_allocations() -> ArrowAllocationsDict:
     """Get detailed Arrow memory allocation information.
 
     Returns information about all available Arrow memory pools
     and their current allocation state.
     """
-    result = {
+    result: ArrowAllocationsDict = {
         "default_pool": {
             "backend": pa.default_memory_pool().backend_name,
             "bytes_allocated": pa.default_memory_pool().bytes_allocated(),
@@ -149,20 +251,18 @@ def get_arrow_allocations() -> dict[str, Any]:
     for name, pool_fn in pools_to_check:
         try:
             pool = pool_fn()
-            result["available_pools"].append(
-                {
-                    "name": name,
-                    "bytes_allocated": pool.bytes_allocated(),
-                    "max_memory": pool.max_memory(),
-                }
-            )
+            result["available_pools"].append({
+                "name": name,
+                "bytes_allocated": pool.bytes_allocated(),
+                "max_memory": pool.max_memory(),
+            })
         except Exception:
             pass
 
     return result
 
 
-def get_python_memory_stats() -> dict[str, Any]:
+def get_python_memory_stats() -> PythonMemoryStatsDict:
     """Get detailed Python memory statistics.
 
     Includes information about:
@@ -186,7 +286,7 @@ def get_python_memory_stats() -> dict[str, Any]:
     # Get top 20 types by count
     top_types = sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[:20]
 
-    return {
+    result: PythonMemoryStatsDict = {
         "gc_thresholds": {
             "gen0": thresholds[0],
             "gen1": thresholds[1],
@@ -206,9 +306,10 @@ def get_python_memory_stats() -> dict[str, Any]:
         "top_object_types": [{"type": t, "count": c} for t, c in top_types],
         "total_objects": sum(type_counts.values()),
     }
+    return result
 
 
-def get_detailed_memory_report() -> dict[str, Any]:
+def get_detailed_memory_report() -> DetailedMemoryReportDict:
     """Get comprehensive memory report for debugging.
 
     This is more expensive than get_memory_snapshot() and should
@@ -220,7 +321,6 @@ def get_detailed_memory_report() -> dict[str, Any]:
     snapshot = get_memory_snapshot()
     arrow_details = get_arrow_allocations()
     python_details = get_python_memory_stats()
-
     return {
         "snapshot": snapshot.to_dict(),
         "arrow_details": arrow_details,
@@ -229,9 +329,17 @@ def get_detailed_memory_report() -> dict[str, Any]:
     }
 
 
-def _get_memory_recommendations(snapshot: MemorySnapshot, python_stats: dict) -> list[str]:
+def _get_memory_recommendations(
+    snapshot: MemorySnapshot,
+    python_stats: Mapping[str, object] | int,
+) -> list[str]:
     """Generate memory-related recommendations based on current state."""
     recommendations = []
+    total_objects = (
+        python_stats
+        if isinstance(python_stats, int)
+        else _read_int_value(python_stats.get("total_objects"))
+    )
 
     # Check Arrow memory
     if snapshot.arrow_bytes_allocated > 1024 * 1024 * 1024:  # > 1GB
@@ -249,7 +357,6 @@ def _get_memory_recommendations(snapshot: MemorySnapshot, python_stats: dict) ->
         )
 
     # Check GC objects
-    total_objects = python_stats.get("total_objects", 0)
     if total_objects > 1_000_000:
         recommendations.append(
             f"Python GC is tracking {total_objects:,} objects. "
@@ -267,3 +374,8 @@ def _get_memory_recommendations(snapshot: MemorySnapshot, python_stats: dict) ->
         recommendations.append("Memory usage looks healthy.")
 
     return recommendations
+
+
+def _read_int_value(value: object | None) -> int:
+    """Safely read an integer from a loosely typed payload."""
+    return value if isinstance(value, int) else 0

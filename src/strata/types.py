@@ -3,14 +3,33 @@
 import hashlib
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
+from datetime import time as time_of_day
+from decimal import Decimal
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     import pyarrow as pa
+
+
+type FilterValue = (
+    str | bool | int | float | bytes | uuid.UUID | Decimal | datetime | date | time_of_day
+)
+
+
+class SupportsOrdering(Protocol):
+    """Structural protocol for values that support rich ordering."""
+
+    def __lt__(self, other: object, /) -> bool: ...
+
+    def __le__(self, other: object, /) -> bool: ...
+
+    def __gt__(self, other: object, /) -> bool: ...
+
+    def __ge__(self, other: object, /) -> bool: ...
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +178,9 @@ class Filter:
 
     column: str
     op: FilterOp
-    value: Any
+    value: FilterValue
 
-    def matches_stats(self, min_val: Any, max_val: Any) -> bool:
+    def matches_stats(self, min_val: FilterValue | None, max_val: FilterValue | None) -> bool:
         """Check if this filter could match given min/max statistics.
 
         Returns True if the row group might contain matching rows.
@@ -169,19 +188,23 @@ class Filter:
         if min_val is None or max_val is None:
             return True  # No stats, can't prune
 
+        min_orderable = cast(SupportsOrdering, min_val)
+        max_orderable = cast(SupportsOrdering, max_val)
+        filter_value = cast(SupportsOrdering, self.value)
+
         match self.op:
             case FilterOp.EQ:
-                return min_val <= self.value <= max_val
+                return min_orderable <= filter_value <= max_orderable
             case FilterOp.NE:
                 return not (min_val == max_val == self.value)
             case FilterOp.LT:
-                return min_val < self.value
+                return min_orderable < filter_value
             case FilterOp.LE:
-                return min_val <= self.value
+                return min_orderable <= filter_value
             case FilterOp.GT:
-                return max_val > self.value
+                return max_orderable > filter_value
             case FilterOp.GE:
-                return max_val >= self.value
+                return max_orderable >= filter_value
 
 
 def compute_filter_fingerprint(filters: list[Filter] | None) -> str:
@@ -521,14 +544,14 @@ class WarmAsyncResponse(BaseModel):
     message: str  # Human-readable status message
 
 
-def _deserialize_value(value: Any) -> Any:
+def _deserialize_value(value: FilterValue) -> FilterValue:
     """Deserialize filter values from JSON."""
     if isinstance(value, str) and value.startswith("__datetime__:"):
         return datetime.fromisoformat(value.replace("__datetime__:", ""))
     return value
 
 
-def serialize_filter(f: Filter) -> dict[str, Any]:
+def serialize_filter(f: Filter) -> dict[str, FilterValue]:
     """Serialize a Filter for JSON transport."""
     value = f.value
     if isinstance(value, datetime):
@@ -553,7 +576,7 @@ class TransformSpec(BaseModel):
     """
 
     executor: str  # "scan@v1", "duckdb_sql@v1", etc.
-    params: dict[str, Any] = {}  # Executor-specific parameters
+    params: dict[str, object] = {}  # Executor-specific parameters
 
 
 class FilterSpec(BaseModel):
@@ -567,7 +590,7 @@ class FilterSpec(BaseModel):
 
     column: str
     op: str  # "=", "!=", "<", "<=", ">", ">="
-    value: Any
+    value: FilterValue
 
 
 class IdentityParams(BaseModel):
@@ -658,7 +681,7 @@ class MaterializeResponse(BaseModel):
     hit: bool  # True = artifact exists, False = building
     artifact_uri: str  # "strata://artifact/{id}@v={version}"
     state: str = "ready"  # "ready", "building"
-    build_spec: dict[str, Any] | None = None  # Present if hit=False (personal mode)
+    build_spec: dict[str, object] | None = None  # Present if hit=False (personal mode)
     build_id: str | None = None  # Present if hit=False (server/artifact mode)
     stream_id: str | None = None  # Present for stream mode
     stream_url: str | None = None  # "/v1/streams/{stream_id}"
@@ -683,7 +706,7 @@ class BuildSpec(BaseModel):
     artifact_id: str
     version: int
     executor: str
-    params: dict[str, Any]
+    params: dict[str, object]
     input_uris: list[str]  # Resolved URIs for inputs
 
 
@@ -740,7 +763,7 @@ class PutArtifactRequest(BaseModel):
 
     inputs: list[str]  # Input URIs: "strata://artifact/..." or "file:///..."
     transform: TransformSpec  # Opaque transform spec for provenance
-    data: dict[str, Any]  # JSON data to persist
+    data: dict[str, object]  # JSON data to persist
     name: str | None = None  # Optional name pointer
 
 
@@ -1139,7 +1162,7 @@ class ExecutorTransformSpec(BaseModel):
 
     ref: str
     code_hash: str
-    params: dict[str, Any]
+    params: dict[str, object]
 
 
 class ExecutorRequestMetadata(BaseModel):
@@ -1230,7 +1253,7 @@ class ExecutorManifest(BaseModel):
 
     protocol_version: str = EXECUTOR_PROTOCOL_VERSION
     build_id: str
-    metadata: dict[str, Any]
+    metadata: dict[str, object]
     inputs: list[ExecutorManifestInput]
     upload_url: str
     finalize_url: str
@@ -1257,7 +1280,7 @@ class ExecutorCapabilities(BaseModel):
     max_input_bytes: int | None = None
     max_output_bytes: int | None = None
     max_concurrent_executions: int | None = None
-    features: dict[str, Any] | None = None
+    features: dict[str, object] | None = None
 
 
 class ExecutorHealthResponse(BaseModel):

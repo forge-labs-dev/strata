@@ -14,7 +14,39 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TypedDict
+
+
+class ThreadPoolStatsDict(TypedDict):
+    """JSON-serializable thread pool statistics."""
+
+    name: str
+    max_workers: int
+    active_workers: int
+    queue_depth: int
+    utilization_pct: float
+    tasks_completed: int
+    tasks_submitted: int
+
+
+class PoolMetricsSummaryDict(TypedDict):
+    """Summary payload for all registered thread pools."""
+
+    thread_pools: dict[str, ThreadPoolStatsDict]
+    total_pools: int
+
+
+class ConnectionStatsDict(TypedDict):
+    """JSON-serializable HTTP connection metrics."""
+
+    active_requests: int
+    total_requests: int
+    max_concurrent_requests: int
+    request_rate_per_sec: float
+    uptime_seconds: float
+    keepalive_pct: float
+    requests_with_keepalive: int
+    requests_without_keepalive: int
 
 
 @dataclass
@@ -29,7 +61,7 @@ class ThreadPoolStats:
     tasks_completed: int = 0
     tasks_submitted: int = 0
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> ThreadPoolStatsDict:
         return {
             "name": self.name,
             "max_workers": self.max_workers,
@@ -142,7 +174,7 @@ class PoolMetricsTracker:
 
         return result
 
-    def get_summary(self) -> dict[str, Any]:
+    def get_summary(self) -> PoolMetricsSummaryDict:
         """Get a summary of all pool metrics for the /metrics endpoint.
 
         Returns:
@@ -201,7 +233,7 @@ class ConnectionMetrics:
         with self._lock:
             self._active_requests = max(0, self._active_requests - 1)
 
-    def get_stats(self) -> dict[str, Any]:
+    def get_stats(self) -> ConnectionStatsDict:
         """Get connection statistics."""
         with self._lock:
             elapsed = time.time() - self._start_time

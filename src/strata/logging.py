@@ -28,11 +28,23 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from types import TracebackType
+from typing import cast
+
+from strata.json_types import JsonObject, JsonValue
+
+type ExcInfo = (
+    bool
+    | BaseException
+    | tuple[type[BaseException], BaseException, TracebackType | None]
+    | tuple[None, None, None]
+    | None
+)
 
 # Context variable for request-scoped data
-_request_context: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
+_request_context: contextvars.ContextVar[JsonObject] = contextvars.ContextVar(
     "request_context", default={}
 )
 
@@ -42,12 +54,12 @@ def generate_request_id() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def get_request_context() -> dict[str, Any]:
+def get_request_context() -> JsonObject:
     """Get the current request context."""
     return _request_context.get()
 
 
-def set_request_context(**kwargs: Any) -> contextvars.Token:
+def set_request_context(**kwargs: JsonValue) -> contextvars.Token[JsonObject]:
     """Set request context values. Returns token for reset."""
     current = _request_context.get().copy()
     current.update(kwargs)
@@ -60,7 +72,7 @@ def clear_request_context() -> None:
 
 
 @contextmanager
-def RequestContext(**kwargs: Any):
+def RequestContext(**kwargs: JsonValue) -> Iterator[None]:
     """Context manager for request-scoped logging context.
 
     Usage:
@@ -80,8 +92,8 @@ def BuildContext(
     tenant_id: str | None = None,
     transform_ref: str | None = None,
     provenance_hash: str | None = None,
-    **kwargs: Any,
-):
+    **kwargs: JsonValue,
+) -> Iterator[None]:
     """Context manager for build-scoped logging context.
 
     Adds build context to all log entries within the context manager.
@@ -103,7 +115,7 @@ def BuildContext(
         provenance_hash: Provenance hash for the build
         **kwargs: Additional context to include
     """
-    ctx = {"build_id": build_id}
+    ctx: JsonObject = {"build_id": build_id}
     if tenant_id:
         ctx["tenant_id"] = tenant_id
     if transform_ref:
@@ -149,6 +161,27 @@ def get_trace_context() -> dict[str, str]:
         return {}
 
 
+def _normalize_exc_info(
+    exc_info: ExcInfo,
+) -> (
+    tuple[type[BaseException], BaseException, TracebackType | None]
+    | tuple[None, None, None]
+    | None
+):
+    """Normalize logging exc_info into the stdlib makeRecord shape."""
+    if exc_info is True:
+        return cast(
+            tuple[type[BaseException], BaseException, TracebackType | None]
+            | tuple[None, None, None],
+            sys.exc_info(),
+        )
+    if exc_info in (False, None):
+        return None
+    if isinstance(exc_info, BaseException):
+        return (type(exc_info), exc_info, exc_info.__traceback__)
+    return exc_info
+
+
 class StructuredFormatter(logging.Formatter):
     """JSON formatter that includes request context and trace IDs."""
 
@@ -158,7 +191,7 @@ class StructuredFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         # Base log entry
-        log_entry: dict[str, Any] = {
+        log_entry: JsonObject = {
             "level": record.levelname.lower(),
             "logger": record.name,
             "message": record.getMessage(),
@@ -179,8 +212,9 @@ class StructuredFormatter(logging.Formatter):
 
         # Add extra attributes passed via logger.info("msg", extra={...})
         # or via our custom logging methods
-        if hasattr(record, "structured_data"):
-            log_entry.update(record.structured_data)
+        structured_data = getattr(record, "structured_data", None)
+        if isinstance(structured_data, dict):
+            log_entry.update(cast(JsonObject, structured_data))
 
         # Add exception info if present
         if record.exc_info:
@@ -206,16 +240,21 @@ class TextFormatter(logging.Formatter):
 
         # Request context
         ctx = get_request_context()
-        if "request_id" in ctx:
-            ctx_parts.append(f"req={ctx['request_id'][:8]}")
-        if "scan_id" in ctx:
-            ctx_parts.append(f"scan={ctx['scan_id'][:8]}")
-        if "build_id" in ctx:
-            ctx_parts.append(f"build={ctx['build_id'][:8]}")
-        if "tenant_id" in ctx:
-            ctx_parts.append(f"tenant={ctx['tenant_id']}")
-        if "transform_ref" in ctx:
-            ctx_parts.append(f"transform={ctx['transform_ref']}")
+        request_id = ctx.get("request_id")
+        if isinstance(request_id, str):
+            ctx_parts.append(f"req={request_id[:8]}")
+        scan_id = ctx.get("scan_id")
+        if isinstance(scan_id, str):
+            ctx_parts.append(f"scan={scan_id[:8]}")
+        build_id = ctx.get("build_id")
+        if isinstance(build_id, str):
+            ctx_parts.append(f"build={build_id[:8]}")
+        tenant_id = ctx.get("tenant_id")
+        if isinstance(tenant_id, str):
+            ctx_parts.append(f"tenant={tenant_id}")
+        transform_ref = ctx.get("transform_ref")
+        if isinstance(transform_ref, str):
+            ctx_parts.append(f"transform={transform_ref}")
 
         # Trace context
         trace_ctx = get_trace_context()
@@ -226,8 +265,9 @@ class TextFormatter(logging.Formatter):
 
         # Structured data
         data_str = ""
-        if hasattr(record, "structured_data") and record.structured_data:
-            data_parts = [f"{k}={v}" for k, v in record.structured_data.items()]
+        structured_data = getattr(record, "structured_data", None)
+        if isinstance(structured_data, dict) and structured_data:
+            data_parts = [f"{k}={v}" for k, v in structured_data.items()]
             data_str = " | " + ", ".join(data_parts)
 
         return f"{record.levelname:7} {ctx_str}{record.name}: {record.getMessage()}{data_str}"
@@ -243,16 +283,18 @@ class StructuredLogger(logging.Logger):
     def _log_with_data(
         self,
         level: int,
-        msg: str,
-        args: tuple,
-        exc_info: Any = None,
+        msg: object,
+        args: tuple[object, ...],
+        exc_info: ExcInfo = None,
         stack_info: bool = False,
         stacklevel: int = 2,
-        **kwargs: Any,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
     ) -> None:
         """Internal method to log with structured data."""
         if self.isEnabledFor(level):
             # Create record with extra structured data
+            normalized_exc_info = _normalize_exc_info(exc_info)
             record = self.makeRecord(
                 self.name,
                 level,
@@ -260,32 +302,145 @@ class StructuredLogger(logging.Logger):
                 0,
                 msg,
                 args,
-                exc_info,
+                normalized_exc_info,
                 func=None,
                 extra=None,
-                sinfo=stack_info,
+                sinfo=None,
             )
             # Attach structured data to the record
-            record.structured_data = kwargs  # type: ignore
+            structured_data: JsonObject = {}
+            if extra is not None:
+                structured_data.update(cast(JsonObject, dict(extra)))
+            structured_data.update(kwargs)
+            if structured_data:
+                setattr(record, "structured_data", structured_data)
             self.handle(record)
 
-    def debug(self, msg: str, *args, **kwargs) -> None:
-        self._log_with_data(logging.DEBUG, msg, args, **kwargs)
+    def debug(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.DEBUG,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
-    def info(self, msg: str, *args, **kwargs) -> None:
-        self._log_with_data(logging.INFO, msg, args, **kwargs)
+    def info(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.INFO,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
-    def warning(self, msg: str, *args, **kwargs) -> None:
-        self._log_with_data(logging.WARNING, msg, args, **kwargs)
+    def warning(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.WARNING,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
-    def error(self, msg: str, *args, exc_info: Any = None, **kwargs) -> None:
-        self._log_with_data(logging.ERROR, msg, args, exc_info=exc_info, **kwargs)
+    def error(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.ERROR,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
-    def critical(self, msg: str, *args, exc_info: Any = None, **kwargs) -> None:
-        self._log_with_data(logging.CRITICAL, msg, args, exc_info=exc_info, **kwargs)
+    def critical(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = None,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.CRITICAL,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
-    def exception(self, msg: str, *args, **kwargs) -> None:
-        self._log_with_data(logging.ERROR, msg, args, exc_info=True, **kwargs)
+    def exception(
+        self,
+        msg: object,
+        *args: object,
+        exc_info: ExcInfo = True,
+        stack_info: bool = False,
+        stacklevel: int = 1,
+        extra: Mapping[str, object] | None = None,
+        **kwargs: JsonValue,
+    ) -> None:
+        self._log_with_data(
+            logging.ERROR,
+            msg,
+            args,
+            exc_info=exc_info,
+            stack_info=stack_info,
+            stacklevel=stacklevel,
+            extra=extra,
+            **kwargs,
+        )
 
 
 # Register our custom logger class
@@ -351,7 +506,7 @@ def get_logger(name: str) -> StructuredLogger:
     if not _configured:
         configure_logging()
 
-    return logging.getLogger(name)  # type: ignore
+    return cast(StructuredLogger, logging.getLogger(name))
 
 
 # FastAPI middleware for request context

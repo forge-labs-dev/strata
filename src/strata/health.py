@@ -13,9 +13,11 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TypedDict
 
 import pyarrow as pa
+
+from strata.json_types import JsonObject
 
 
 class HealthStatus(str, Enum):
@@ -26,6 +28,35 @@ class HealthStatus(str, Enum):
     UNHEALTHY = "unhealthy"
 
 
+class DependencyCheckDict(TypedDict, total=False):
+    """Serialized dependency check payload."""
+
+    name: str
+    status: str
+    latency_ms: float
+    message: str
+    details: JsonObject
+
+
+class HealthSummaryDict(TypedDict):
+    """Serialized health summary payload."""
+
+    total: int
+    healthy: int
+    degraded: int
+    unhealthy: int
+
+
+class HealthReportDict(TypedDict):
+    """Serialized top-level health report payload."""
+
+    status: str
+    timestamp: float
+    version: str
+    checks: list[DependencyCheckDict]
+    summary: HealthSummaryDict
+
+
 @dataclass
 class DependencyCheck:
     """Result of a single dependency health check."""
@@ -34,10 +65,10 @@ class DependencyCheck:
     status: HealthStatus
     latency_ms: float
     message: str | None = None
-    details: dict[str, Any] = field(default_factory=dict)
+    details: JsonObject = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
-        result = {
+    def to_dict(self) -> DependencyCheckDict:
+        result: DependencyCheckDict = {
             "name": self.name,
             "status": self.status.value,
             "latency_ms": round(self.latency_ms, 2),
@@ -58,7 +89,7 @@ class HealthReport:
     timestamp: float
     version: str = "0.1.0"
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> HealthReportDict:
         return {
             "status": self.status.value,
             "timestamp": self.timestamp,
@@ -106,7 +137,7 @@ def check_disk_cache(cache_dir: Path, max_size_bytes: int) -> DependencyCheck:
         total_bytes = stat.f_blocks * stat.f_frsize
         usage_percent = ((total_bytes - available_bytes) / total_bytes) * 100
 
-        details = {
+        details: JsonObject = {
             "path": str(cache_dir),
             "available_bytes": available_bytes,
             "total_bytes": total_bytes,
@@ -178,7 +209,7 @@ def check_arrow_memory() -> DependencyCheck:
         bytes_allocated = pool.bytes_allocated()
         max_memory = pool.max_memory()
 
-        details = {
+        details: JsonObject = {
             "backend": pool.backend_name,
             "bytes_allocated": bytes_allocated,
             "max_memory": max_memory,
@@ -220,10 +251,10 @@ def check_thread_pools(planning_executor, fetch_executor) -> DependencyCheck:
         tracker = get_pool_tracker()
         summary = tracker.get_summary()
 
-        pools = summary.get("pools", {})
+        pools = summary.get("thread_pools", {})
         total_active = 0
         total_max = 0
-        pool_details = {}
+        pool_details: JsonObject = {}
 
         for name, stats in pools.items():
             active = stats.get("active_workers", 0)
@@ -233,12 +264,12 @@ def check_thread_pools(planning_executor, fetch_executor) -> DependencyCheck:
             pool_details[name] = {
                 "active": active,
                 "max": max_workers,
-                "utilization": round(stats.get("utilization", 0), 2),
+                "utilization": round(stats.get("utilization_pct", 0), 2),
             }
 
         overall_utilization = (total_active / total_max * 100) if total_max > 0 else 0
 
-        details = {
+        details: JsonObject = {
             "pools": pool_details,
             "overall_utilization": round(overall_utilization, 1),
         }
@@ -297,7 +328,7 @@ def check_rate_limiter() -> DependencyCheck:
         )
         rejection_rate = (rejected / total * 100) if total > 0 else 0
 
-        details = {
+        details: JsonObject = {
             "enabled": stats.get("enabled", False),
             "active_clients": stats.get("active_clients", 0),
             "total_requests": total,
@@ -341,7 +372,7 @@ def check_cache_evictions() -> DependencyCheck:
         tracker = get_eviction_tracker()
         stats = tracker.get_stats()
 
-        details = {
+        details: JsonObject = {
             "total_evictions": stats.total_evictions,
             "evictions_last_hour": stats.evictions_last_hour,
             "eviction_rate_per_minute": stats.eviction_rate_per_minute,

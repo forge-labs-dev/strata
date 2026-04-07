@@ -49,8 +49,9 @@ Retry Behavior:
 import asyncio
 import random
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TypedDict, cast
 
 import httpx
 import pyarrow as pa
@@ -58,6 +59,37 @@ import pyarrow.ipc as ipc
 
 from strata.config import StrataConfig
 from strata.types import Filter, FilterOp
+
+type TransformSpec = Mapping[str, object]
+type JsonArtifactInput = Mapping[str, object]
+type JsonArtifactData = dict[str, object]
+type PutData = JsonArtifactInput | pa.Table | bytes
+
+
+class MaterializeRequestBody(TypedDict, total=False):
+    """Request payload for /v1/materialize."""
+
+    inputs: list[str]
+    transform: dict[str, object]
+    mode: str
+    name: str
+    refresh: bool
+
+
+class ExplainMaterializeRequestBody(TypedDict, total=False):
+    """Request payload for /v1/artifacts/explain-materialize."""
+
+    inputs: list[str]
+    transform: dict[str, object]
+    name: str
+
+
+class ArtifactUploadMetadata(TypedDict, total=False):
+    """Multipart metadata payload for direct artifact upload."""
+
+    inputs: list[str]
+    transform: dict[str, object]
+    name: str
 
 
 @dataclass
@@ -373,7 +405,7 @@ class StrataClient:
     def materialize(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
+        transform: TransformSpec,
         name: str | None = None,
         mode: str = "stream",
         refresh: bool = False,
@@ -444,7 +476,7 @@ class StrataClient:
     def _materialize_server(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
+        transform: TransformSpec,
         name: str | None,
         mode: str,
         refresh: bool,
@@ -458,7 +490,7 @@ class StrataClient:
         if "ref" in server_transform:
             server_transform["executor"] = server_transform.pop("ref")
 
-        request_body: dict[str, Any] = {
+        request_body: MaterializeRequestBody = {
             "inputs": inputs,
             "transform": server_transform,
             "mode": mode,
@@ -659,15 +691,11 @@ class StrataClient:
     # Direct Artifact Upload (for local execution)
     # -------------------------------------------------------------------------
 
-    # Type alias for supported data types
-    # Using string annotations to avoid import issues
-    PutData = "dict[str, Any] | pa.Table | bytes"
-
     def put(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
-        data: "dict[str, Any] | pa.Table | bytes",
+        transform: TransformSpec,
+        data: PutData,
         name: str | None = None,
     ) -> Artifact:
         """Directly upload and persist an artifact with provenance tracking.
@@ -729,7 +757,7 @@ class StrataClient:
         # Send as multipart form data
         import json
 
-        metadata: dict[str, Any] = {
+        metadata: ArtifactUploadMetadata = {
             "inputs": inputs,
             "transform": server_transform,
         }
@@ -758,7 +786,7 @@ class StrataClient:
             name=name,
         )
 
-    def _convert_to_arrow_ipc(self, data: "dict[str, Any] | pa.Table | bytes") -> bytes:
+    def _convert_to_arrow_ipc(self, data: PutData) -> bytes:
         """Convert various data types to Arrow IPC bytes.
 
         Args:
@@ -814,7 +842,7 @@ class StrataClient:
             writer.write_table(table)
         return sink.getvalue().to_pybytes()
 
-    def _dict_to_ipc(self, data: dict[str, Any]) -> bytes:
+    def _dict_to_ipc(self, data: JsonArtifactInput) -> bytes:
         """Convert dict to Arrow IPC stream bytes.
 
         If all values are lists of the same length, treats as columnar data.
@@ -823,26 +851,27 @@ class StrataClient:
         import json
 
         # Check if columnar (all values are lists of same length)
-        if data and all(isinstance(v, list) for v in data.values()):
-            lengths = [len(v) for v in data.values()]
+        list_values = [value for value in data.values() if isinstance(value, list)]
+        if data and len(list_values) == len(data):
+            lengths = [len(value) for value in list_values]
             if len(set(lengths)) == 1:
                 # Columnar data - convert directly
                 try:
-                    table = pa.Table.from_pydict(data)
+                    table = pa.Table.from_pydict(dict(data))
                     return self._table_to_ipc(table)
                 except Exception:
                     pass  # Fall through to JSON storage
 
         # Non-columnar or conversion failed - store as single JSON column
-        json_str = json.dumps(data)
+        json_str = json.dumps(dict(data))
         table = pa.Table.from_pydict({"data": [json_str]})
         return self._table_to_ipc(table)
 
     def put_json(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
-        data: dict[str, Any],
+        transform: TransformSpec,
+        data: JsonArtifactInput,
         name: str | None = None,
     ) -> Artifact:
         """Directly upload and persist a JSON artifact with provenance tracking.
@@ -861,7 +890,7 @@ class StrataClient:
         """
         return self.put(inputs=inputs, transform=transform, data=data, name=name)
 
-    def get_json(self, artifact_uri: str) -> dict[str, Any]:
+    def get_json(self, artifact_uri: str) -> JsonArtifactData:
         """Get JSON data from an artifact.
 
         Fetches the artifact data and returns it as a Python dict.
@@ -885,10 +914,10 @@ class StrataClient:
             import json
 
             json_str = table.column("data")[0].as_py()
-            return json.loads(json_str)
+            return cast(JsonArtifactData, json.loads(json_str))
 
         # Otherwise return as columnar dict
-        return table.to_pydict()
+        return cast(JsonArtifactData, table.to_pydict())
 
     # -------------------------------------------------------------------------
     # Artifact Lifecycle Management
@@ -912,7 +941,7 @@ class StrataClient:
         Returns:
             Dict with 'artifacts' list and pagination info
         """
-        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        params: dict[str, str | int | float | None] = {"limit": limit, "offset": offset}
         if state is not None:
             params["state"] = state
         if name_prefix is not None:
@@ -1008,7 +1037,7 @@ class StrataClient:
     def explain_materialize(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
+        transform: TransformSpec,
         name: str | None = None,
     ) -> dict:
         """Explain what materialize would do without doing it (dry run).
@@ -1045,11 +1074,12 @@ class StrataClient:
         if "ref" in server_transform:
             server_transform["executor"] = server_transform.pop("ref")
 
-        request_body = {
+        request_body: ExplainMaterializeRequestBody = {
             "inputs": inputs,
             "transform": server_transform,
-            "name": name,
         }
+        if name:
+            request_body["name"] = name
         response = self._client.post("/v1/artifacts/explain-materialize", json=request_body)
         response.raise_for_status()
         return response.json()
@@ -1259,7 +1289,7 @@ class AsyncStrataClient:
     async def materialize(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
+        transform: TransformSpec,
         name: str | None = None,
         mode: str = "stream",
         refresh: bool = False,
@@ -1299,7 +1329,7 @@ class AsyncStrataClient:
         if "ref" in server_transform:
             server_transform["executor"] = server_transform.pop("ref")
 
-        request_body: dict[str, Any] = {
+        request_body: MaterializeRequestBody = {
             "inputs": inputs,
             "transform": server_transform,
             "mode": mode,
@@ -1463,8 +1493,8 @@ class AsyncStrataClient:
     async def put(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
-        data: "dict[str, Any] | pa.Table | bytes",
+        transform: TransformSpec,
+        data: PutData,
         name: str | None = None,
     ) -> "AsyncArtifact":
         """Directly upload and persist an artifact with provenance tracking.
@@ -1516,7 +1546,7 @@ class AsyncStrataClient:
         # Send as multipart form data
         import json
 
-        metadata: dict[str, Any] = {
+        metadata: ArtifactUploadMetadata = {
             "inputs": inputs,
             "transform": server_transform,
         }
@@ -1545,7 +1575,7 @@ class AsyncStrataClient:
             name=name,
         )
 
-    def _convert_to_arrow_ipc(self, data: "dict[str, Any] | pa.Table | bytes") -> bytes:
+    def _convert_to_arrow_ipc(self, data: PutData) -> bytes:
         """Convert various data types to Arrow IPC bytes.
 
         Args:
@@ -1601,7 +1631,7 @@ class AsyncStrataClient:
             writer.write_table(table)
         return sink.getvalue().to_pybytes()
 
-    def _dict_to_ipc(self, data: dict[str, Any]) -> bytes:
+    def _dict_to_ipc(self, data: JsonArtifactInput) -> bytes:
         """Convert dict to Arrow IPC stream bytes.
 
         If all values are lists of the same length, treats as columnar data.
@@ -1610,26 +1640,27 @@ class AsyncStrataClient:
         import json
 
         # Check if columnar (all values are lists of same length)
-        if data and all(isinstance(v, list) for v in data.values()):
-            lengths = [len(v) for v in data.values()]
+        list_values = [value for value in data.values() if isinstance(value, list)]
+        if data and len(list_values) == len(data):
+            lengths = [len(value) for value in list_values]
             if len(set(lengths)) == 1:
                 # Columnar data - convert directly
                 try:
-                    table = pa.Table.from_pydict(data)
+                    table = pa.Table.from_pydict(dict(data))
                     return self._table_to_ipc(table)
                 except Exception:
                     pass  # Fall through to JSON storage
 
         # Non-columnar or conversion failed - store as single JSON column
-        json_str = json.dumps(data)
+        json_str = json.dumps(dict(data))
         table = pa.Table.from_pydict({"data": [json_str]})
         return self._table_to_ipc(table)
 
     async def put_json(
         self,
         inputs: list[str],
-        transform: dict[str, Any],
-        data: dict[str, Any],
+        transform: TransformSpec,
+        data: JsonArtifactInput,
         name: str | None = None,
     ) -> "AsyncArtifact":
         """Directly upload and persist a JSON artifact with provenance tracking.
@@ -1648,7 +1679,7 @@ class AsyncStrataClient:
         """
         return await self.put(inputs=inputs, transform=transform, data=data, name=name)
 
-    async def get_json(self, artifact_uri: str) -> dict[str, Any]:
+    async def get_json(self, artifact_uri: str) -> JsonArtifactData:
         """Get JSON data from an artifact.
 
         Fetches the artifact data and returns it as a Python dict.
@@ -1672,10 +1703,10 @@ class AsyncStrataClient:
             import json
 
             json_str = table.column("data")[0].as_py()
-            return json.loads(json_str)
+            return cast(JsonArtifactData, json.loads(json_str))
 
         # Otherwise return as columnar dict
-        return table.to_pydict()
+        return cast(JsonArtifactData, table.to_pydict())
 
 
 @dataclass
@@ -1769,31 +1800,31 @@ class AsyncArtifact:
         return response.json()
 
 
-def eq(column: str, value: Any) -> Filter:
+def eq(column: str, value: object) -> Filter:
     """Create an equality filter."""
     return Filter(column=column, op=FilterOp.EQ, value=value)
 
 
-def ne(column: str, value: Any) -> Filter:
+def ne(column: str, value: object) -> Filter:
     """Create a not-equal filter."""
     return Filter(column=column, op=FilterOp.NE, value=value)
 
 
-def lt(column: str, value: Any) -> Filter:
+def lt(column: str, value: object) -> Filter:
     """Create a less-than filter."""
     return Filter(column=column, op=FilterOp.LT, value=value)
 
 
-def le(column: str, value: Any) -> Filter:
+def le(column: str, value: object) -> Filter:
     """Create a less-than-or-equal filter."""
     return Filter(column=column, op=FilterOp.LE, value=value)
 
 
-def gt(column: str, value: Any) -> Filter:
+def gt(column: str, value: object) -> Filter:
     """Create a greater-than filter."""
     return Filter(column=column, op=FilterOp.GT, value=value)
 
 
-def ge(column: str, value: Any) -> Filter:
+def ge(column: str, value: object) -> Filter:
     """Create a greater-than-or-equal filter."""
     return Filter(column=column, op=FilterOp.GE, value=value)
