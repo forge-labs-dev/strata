@@ -25,6 +25,9 @@ const emit = defineEmits<{
   run: [cellId: string]
   delete: [cellId: string]
   addBelow: [cellId: string]
+  duplicate: [cellId: string]
+  moveUp: [cellId: string]
+  moveDown: [cellId: string]
 }>()
 
 const {
@@ -106,9 +109,10 @@ const statusLabel = computed(() => {
 
 const durationLabel = computed(() => {
   if (!props.cell.durationMs) return ''
-  return props.cell.durationMs < 1000
-    ? `${props.cell.durationMs}ms`
-    : `${(props.cell.durationMs / 1000).toFixed(1)}s`
+  const ms = props.cell.durationMs
+  const time = ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`
+  if (props.cell.output?.cacheHit) return time
+  return `${time}`
 })
 
 const canExplainStaleness = computed(() =>
@@ -427,7 +431,10 @@ function outputKey(output: CellOutput, index: number): string {
         >
           &#x25B6;
         </button>
+        <button title="Move up" @click="emit('moveUp', cell.id)">&#x25B2;</button>
+        <button title="Move down" @click="emit('moveDown', cell.id)">&#x25BC;</button>
         <button title="Add cell below" @click="emit('addBelow', cell.id)">+</button>
+        <button title="Duplicate cell" @click="emit('duplicate', cell.id)">&#x2398;</button>
         <button title="Delete cell" @click="emit('delete', cell.id)">&times;</button>
         <button title="Inspect inputs" :class="{ active: isInspecting }" @click="toggleInspect">
           &#x1F50D;
@@ -505,8 +512,16 @@ function outputKey(output: CellOutput, index: number): string {
           >
             +{{ hiddenAnnotationSummaryCount }}
           </span>
-          <span v-if="cell.output?.cacheHit" class="cache-badge" title="Result loaded from cache">
-            &#x26A1; cached
+          <span
+            v-if="cell.output?.cacheHit"
+            class="cache-badge"
+            :title="
+              cell.output?.cacheLoadMs
+                ? `Result loaded from cache in ${cell.output.cacheLoadMs}ms`
+                : 'Result loaded from cache'
+            "
+          >
+            &#x26A1; cached{{ cell.output?.cacheLoadMs ? ` · ${cell.output.cacheLoadMs}ms` : '' }}
           </span>
           <span
             v-if="executionMethodLabel && !cell.output?.cacheHit"

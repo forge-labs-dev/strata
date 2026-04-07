@@ -996,15 +996,45 @@ function loadNotebookStateFromBackend(data: any) {
   }
 }
 
-function moveCell(id: CellId, direction: 'up' | 'down') {
+async function moveCell(id: CellId, direction: 'up' | 'down') {
   const sorted = orderedCells.value
   const idx = sorted.findIndex((c) => c.id === id)
   const swapIdx = direction === 'up' ? idx - 1 : idx + 1
   if (swapIdx < 0 || swapIdx >= sorted.length) return
+
+  // Swap locally for instant feedback
   const tmp = sorted[idx].order
   sorted[idx].order = sorted[swapIdx].order
   sorted[swapIdx].order = tmp
   notebook.updatedAt = Date.now()
+
+  // Persist to backend
+  const sid = sessionId()
+  if (!sid) return
+  try {
+    const newOrder = orderedCells.value.map((c) => c.id)
+    await useStrata().reorderCells(sid, newOrder)
+  } catch (err) {
+    // Revert on failure
+    const revertTmp = sorted[idx].order
+    sorted[idx].order = sorted[swapIdx].order
+    sorted[swapIdx].order = revertTmp
+    console.error('Failed to reorder cells:', err)
+  }
+}
+
+async function duplicateCell(id: CellId) {
+  const cell = cellMap.value.get(id)
+  if (!cell) return
+  const source = cell.source
+  await addCell(id)
+  // Find the newly added cell (right after the original)
+  const sorted = orderedCells.value
+  const idx = sorted.findIndex((c) => c.id === id)
+  const newCell = sorted[idx + 1]
+  if (newCell && source) {
+    await updateSource(newCell.id, source)
+  }
 }
 
 // --- DAG helpers -----------------------------------------------------------
@@ -2564,6 +2594,7 @@ export function useNotebook() {
     setCellStatus,
     setCellOutput,
     moveCell,
+    duplicateCell,
     // WebSocket
     cleanupWebSocket,
     executeCellWebSocket,

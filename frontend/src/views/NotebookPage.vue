@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import CellEditor from '../components/CellEditor.vue'
+import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal.vue'
 import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
 
 const DagView = defineAsyncComponent(() => import('../components/DagView.vue'))
@@ -33,6 +34,8 @@ const {
   deleteNotebookAction,
   addCell,
   removeCell,
+  moveCell,
+  duplicateCell,
   executeCellWebSocket,
   executeNotebookRunAllWebSocket,
   cleanupWebSocket,
@@ -49,6 +52,7 @@ const deleteError = ref<string | null>(null)
 const reconnectError = ref<string | null>(null)
 const recoveryPath = ref<string | null>(null)
 const sidebarWidth = ref(340)
+const showShortcuts = ref(false)
 let skipNextSessionReconnect: string | null = null
 
 function isServiceModeSessionRestriction(message: string | null | undefined): boolean {
@@ -99,7 +103,20 @@ function clampSidebarWidth(width: number): number {
   return Math.min(560, Math.max(280, width))
 }
 
+function handleGlobalKeydown(e: KeyboardEvent) {
+  const tag = (e.target as HTMLElement)?.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.closest('.cm-editor')) return
+  if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+    e.preventDefault()
+    showShortcuts.value = !showShortcuts.value
+  }
+  if (e.key === 'Escape') {
+    showShortcuts.value = false
+  }
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleGlobalKeydown)
   markNotebookPerf('notebook_page_mount')
   measureNotebookPerf('create_route_ms', 'create_route_start', 'notebook_page_mount')
   measureNotebookPerf('open_route_ms', 'open_route_start', 'notebook_page_mount')
@@ -262,6 +279,7 @@ function startSidebarResize(event: PointerEvent) {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleGlobalKeydown)
   stopSidebarResize()
   cleanupWebSocket()
 })
@@ -392,6 +410,13 @@ function goHome() {
         >
           {{ deletingNotebook ? 'Deleting…' : 'Delete Notebook' }}
         </button>
+        <button
+          class="btn btn-secondary btn-shortcuts"
+          title="Keyboard shortcuts (?)"
+          @click="showShortcuts = true"
+        >
+          ?
+        </button>
       </div>
     </header>
 
@@ -438,6 +463,9 @@ function goHome() {
           @run="runCell"
           @delete="removeCell"
           @add-below="addCell"
+          @duplicate="duplicateCell"
+          @move-up="(id) => moveCell(id, 'up')"
+          @move-down="(id) => moveCell(id, 'down')"
         />
         <button class="add-cell-btn" :disabled="!connected" @click="addCell()">+ Add cell</button>
       </div>
@@ -463,6 +491,7 @@ function goHome() {
 
     <!-- v1.1: Impact preview dialog -->
     <ImpactPreview />
+    <KeyboardShortcutsModal :visible="showShortcuts" @close="showShortcuts = false" />
   </div>
 </template>
 
