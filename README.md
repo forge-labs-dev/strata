@@ -21,6 +21,30 @@ different maturity levels.
 
 **Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev)
 
+## Docker Quick Start
+
+If you want to try Strata locally without setting up the Python and Rust
+toolchain first, start with Docker:
+
+```bash
+docker compose up -d --build
+```
+
+Then open:
+
+```text
+http://localhost:8765/#/
+```
+
+To stop it:
+
+```bash
+docker compose down
+```
+
+This path starts the local **personal-mode notebook** stack from
+[docker-compose.yml](docker-compose.yml).
+
 ## Choose Your Path
 
 - **Strata Core**
