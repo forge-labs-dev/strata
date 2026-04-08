@@ -96,7 +96,7 @@ def minio_container():
 
     Using module scope to avoid repeated container startup overhead.
     """
-    with MinioContainer() as minio:
+    with MinioContainer("minio/minio:RELEASE.2024-11-07T00-52-20Z") as minio:
         # Wait for MinIO to be ready
         client = minio.get_client()
         # Create test bucket
