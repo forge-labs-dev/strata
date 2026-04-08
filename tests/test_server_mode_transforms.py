@@ -29,6 +29,7 @@ def server_mode_config(tmp_path):
         deployment_mode="service",  # Server mode
         cache_dir=tmp_path / "cache",
         artifact_dir=artifact_dir,
+        notebook_storage_dir=tmp_path,
         transforms_config={
             "enabled": True,
             "registry": [
@@ -75,6 +76,7 @@ def server_mode_auth_config(tmp_path):
         proxy_token="test-token",
         cache_dir=tmp_path / "cache",
         artifact_dir=artifact_dir,
+        notebook_storage_dir=tmp_path,
         transforms_config={
             "enabled": True,
             "registry": [

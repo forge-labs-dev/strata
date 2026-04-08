@@ -41,6 +41,7 @@ def service_mode_notebook_client(tmp_path):
         deployment_mode="service",
         cache_dir=tmp_path / "cache",
         artifact_dir=artifact_dir,
+        notebook_storage_dir=tmp_path,
         transforms_config={"enabled": True},
     )
 

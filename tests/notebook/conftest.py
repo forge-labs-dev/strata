@@ -158,6 +158,7 @@ def notebook_build_server(tmp_path: Path):
         port=port,
         cache_dir=tmp_path / "service-cache",
         artifact_dir=artifact_dir,
+        notebook_storage_dir=tmp_path,
         deployment_mode="service",
         transforms_config={"enabled": True},
     )
