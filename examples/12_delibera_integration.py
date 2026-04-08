@@ -187,7 +187,7 @@ def lineage_tracking():
 
         # All artifacts form a DAG with explicit lineage
         print("\nLineage chain:")
-        print(f"  protocol + constraints -> planner -> proposer")
+        print("  protocol + constraints -> planner -> proposer")
 
 
 # =============================================================================
@@ -329,11 +329,13 @@ def put_with_arrow_table():
 
     with StrataClient(base_url="http://127.0.0.1:8765") as client:
         # Create an Arrow Table with computed results
-        table = pa.table({
-            "feature_id": [1, 2, 3, 4, 5],
-            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8], [0.9, 1.0]],
-            "score": [0.95, 0.87, 0.72, 0.91, 0.88],
-        })
+        table = pa.table(
+            {
+                "feature_id": [1, 2, 3, 4, 5],
+                "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8], [0.9, 1.0]],
+                "score": [0.95, 0.87, 0.72, 0.91, 0.88],
+            }
+        )
 
         artifact = client.put(
             inputs=[],
@@ -363,11 +365,13 @@ def put_with_pandas():
 
     with StrataClient(base_url="http://127.0.0.1:8765") as client:
         # Create a Pandas DataFrame with analysis results
-        df = pd.DataFrame({
-            "metric": ["accuracy", "precision", "recall", "f1"],
-            "value": [0.95, 0.92, 0.89, 0.90],
-            "threshold": [0.5, 0.5, 0.5, 0.5],
-        })
+        df = pd.DataFrame(
+            {
+                "metric": ["accuracy", "precision", "recall", "f1"],
+                "value": [0.95, 0.92, 0.89, 0.90],
+                "threshold": [0.5, 0.5, 0.5, 0.5],
+            }
+        )
 
         artifact = client.put(
             inputs=[],
@@ -401,10 +405,12 @@ def mixed_data_pipeline():
         print(f"Config: {config.uri}")
 
         # Stage 2: Arrow Table of input data
-        input_data = pa.table({
-            "id": [1, 2, 3],
-            "text": ["Query 1", "Query 2", "Query 3"],
-        })
+        input_data = pa.table(
+            {
+                "id": [1, 2, 3],
+                "text": ["Query 1", "Query 2", "Query 3"],
+            }
+        )
         inputs_artifact = client.put(
             inputs=[config.uri],
             transform={"executor": "prepare@v1", "params": {}},

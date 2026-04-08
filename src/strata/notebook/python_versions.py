@@ -27,9 +27,7 @@ def normalize_python_minor(version: str) -> str:
     normalized = version.strip()
     match = _MINOR_VERSION_RE.fullmatch(normalized)
     if match is None:
-        raise ValueError(
-            "Python version must use major.minor format like '3.12' or '3.13'"
-        )
+        raise ValueError("Python version must use major.minor format like '3.12' or '3.13'")
     return f"{int(match.group('major'))}.{int(match.group('minor'))}"
 
 

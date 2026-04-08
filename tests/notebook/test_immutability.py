@@ -149,6 +149,7 @@ class TestMutationDetection:
 
     def test_defensive_copy_pickle(self):
         """Test defensive copy for pickle content type."""
+
         class CustomClass:
             def __init__(self, value):
                 self.value = value

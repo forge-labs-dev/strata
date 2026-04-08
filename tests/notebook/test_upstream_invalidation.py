@@ -286,9 +286,7 @@ class TestUpstreamInvalidation:
         staleness = session.compute_staleness()
         assert staleness["c2"].status == "idle"
         assert session.causality_map["c2"].reason == "upstream"
-        assert any(
-            detail.type == "input_changed" for detail in session.causality_map["c2"].details
-        )
+        assert any(detail.type == "input_changed" for detail in session.causality_map["c2"].details)
 
     @pytest.mark.asyncio
     async def test_missing_one_multi_output_artifact_marks_downstream_idle(self, tmp_path):
@@ -418,11 +416,7 @@ class TestUpstreamInvalidationE2E:
     def test_edit_c1_via_rest_then_run_c2_produces_correct_value(self, setup):
         """After editing c1 from x=1 to x=100 via REST, c2 should produce y=101."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:

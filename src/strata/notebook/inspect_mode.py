@@ -31,9 +31,7 @@ class ArtifactProxy:
     across process boundaries is complex. This is documented for future enhancement.
     """
 
-    def __init__(
-        self, artifact_uri: str, content_type: str, artifact_manager: Any
-    ):
+    def __init__(self, artifact_uri: str, content_type: str, artifact_manager: Any):
         """Initialize artifact proxy.
 
         Args:
@@ -57,9 +55,7 @@ class ArtifactProxy:
                 if len(parts) == 2:
                     artifact_id = parts[0].split("/")[-1]
                     version = int(parts[1])
-                    self._data = self._artifact_manager.fetch_artifact(
-                        artifact_id, version
-                    )
+                    self._data = self._artifact_manager.fetch_artifact(artifact_id, version)
                 else:
                     self._data = None
                 self._loaded = True
@@ -97,9 +93,7 @@ class InspectSession:
     Accepts eval expressions via WebSocket.
     """
 
-    def __init__(
-        self, session: NotebookSession, cell_id: str, artifact_manager: Any
-    ):
+    def __init__(self, session: NotebookSession, cell_id: str, artifact_manager: Any):
         """Initialize inspect session.
 
         Args:
@@ -164,9 +158,7 @@ class InspectSession:
 
         # Wait for ready signal
         try:
-            ready_line = await asyncio.wait_for(
-                self.process.stdout.readline(), timeout=10.0
-            )
+            ready_line = await asyncio.wait_for(self.process.stdout.readline(), timeout=10.0)
             if not (ready_line and b"ready" in ready_line.lower()):
                 raise RuntimeError("Inspect worker did not send ready signal")
         except TimeoutError:
@@ -196,9 +188,7 @@ class InspectSession:
             await self.process.stdin.drain()
 
             # Read response
-            result_line = await asyncio.wait_for(
-                self.process.stdout.readline(), timeout=30.0
-            )
+            result_line = await asyncio.wait_for(self.process.stdout.readline(), timeout=30.0)
 
             if result_line:
                 result = json.loads(result_line.decode())
@@ -234,9 +224,7 @@ class InspectSession:
         if self.process and self.process.returncode is None:
             self.process.kill()
             try:
-                await asyncio.wait_for(
-                    self.process.wait(), timeout=2.0
-                )
+                await asyncio.wait_for(self.process.wait(), timeout=2.0)
             except TimeoutError:
                 logger.warning("Inspect process kill timeout")
 
@@ -273,17 +261,13 @@ class InspectSessionManager:
             await self._sessions[key].close()
 
         # Create and start new session
-        inspect_session = InspectSession(
-            notebook_session, cell_id, artifact_manager
-        )
+        inspect_session = InspectSession(notebook_session, cell_id, artifact_manager)
         await inspect_session.start()
 
         self._sessions[key] = inspect_session
         return inspect_session
 
-    async def get_inspect(
-        self, session_id: str, cell_id: str
-    ) -> InspectSession | None:
+    async def get_inspect(self, session_id: str, cell_id: str) -> InspectSession | None:
         """Get an open inspect session.
 
         Args:
@@ -296,9 +280,7 @@ class InspectSessionManager:
         key = f"{session_id}:{cell_id}"
         return self._sessions.get(key)
 
-    async def close_inspect(
-        self, session_id: str, cell_id: str
-    ) -> None:
+    async def close_inspect(self, session_id: str, cell_id: str) -> None:
         """Close an inspect session.
 
         Args:

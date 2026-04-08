@@ -179,9 +179,7 @@ class TestDuckDBSQLTransform:
 
         result = transform.execute(
             [table],
-            DuckDBSQLParams(
-                sql="SELECT category, SUM(value) as total FROM input0 GROUP BY 1"
-            ),
+            DuckDBSQLParams(sql="SELECT category, SUM(value) as total FROM input0 GROUP BY 1"),
         )
 
         assert result.num_rows == 2
@@ -296,8 +294,7 @@ class TestRunLocal:
             "executor": "duckdb_sql@v1",
             "params": {
                 "sql": (
-                    "SELECT e.event_id, u.name FROM input0 e "
-                    "JOIN input1 u ON e.user_id = u.user_id"
+                    "SELECT e.event_id, u.name FROM input0 e JOIN input1 u ON e.user_id = u.user_id"
                 )
             },
             "input_uris": [uri1, uri2],
@@ -346,8 +343,7 @@ class TestRunLocal:
             "executor": "duckdb_sql@v1",
             "params": {
                 "sql": (
-                    "SELECT (SELECT val FROM input0) as first, "
-                    "(SELECT val FROM input1) as second"
+                    "SELECT (SELECT val FROM input0) as first, (SELECT val FROM input1) as second"
                 )
             },
             "input_uris": ["uri://first", "uri://second"],

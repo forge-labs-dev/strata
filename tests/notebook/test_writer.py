@@ -356,9 +356,7 @@ def test_update_notebook_workers():
         ]
         assert notebook_state.workers[1].backend == WorkerBackendType.EXECUTOR
         assert notebook_state.workers[1].runtime_id == "cuda-12.4"
-        assert notebook_state.workers[1].config == {
-            "url": "https://executor.internal/gpu-a100"
-        }
+        assert notebook_state.workers[1].config == {"url": "https://executor.internal/gpu-a100"}
 
 
 def test_update_notebook_timeout_and_env():
@@ -421,8 +419,6 @@ def test_create_notebook_preserves_existing_id():
         assert nb_dir_2 == nb_dir
 
         reopened = parse_notebook(nb_dir)
-        assert reopened.id == original_id, (
-            "create_notebook must preserve the existing notebook_id"
-        )
+        assert reopened.id == original_id, "create_notebook must preserve the existing notebook_id"
         assert len(reopened.cells) == 1
         assert reopened.cells[0].id == "c1"

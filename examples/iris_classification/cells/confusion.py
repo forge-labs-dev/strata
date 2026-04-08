@@ -1,14 +1,22 @@
 # Confusion matrix heatmap
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
 import matplotlib
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 cm = confusion_matrix(y_test, y_pred, labels=model.classes_)
 fig, ax = plt.subplots(figsize=(6, 5))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-            xticklabels=model.classes_, yticklabels=model.classes_, ax=ax)
+sns.heatmap(
+    cm,
+    annot=True,
+    fmt="d",
+    cmap="Blues",
+    xticklabels=model.classes_,
+    yticklabels=model.classes_,
+    ax=ax,
+)
 ax.set_xlabel("Predicted")
 ax.set_ylabel("Actual")
 ax.set_title("Confusion Matrix")

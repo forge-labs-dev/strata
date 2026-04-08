@@ -126,9 +126,9 @@ def test_cascade_plan_topological_order(temp_pipeline):
                 # All upstream cells should appear before this cell
                 for upstream_id in cell.upstream_ids:
                     if upstream_id in step_indices:
-                        assert (
-                            step_indices[upstream_id] < i
-                        ), f"{upstream_id} should come before {step.cell_id}"
+                        assert step_indices[upstream_id] < i, (
+                            f"{upstream_id} should come before {step.cell_id}"
+                        )
 
 
 def test_cascade_plan_includes_target(temp_pipeline):
@@ -145,9 +145,7 @@ def test_cascade_plan_includes_target(temp_pipeline):
 
     assert plan is not None, "Expected cascade plan for stale upstream"
     cell_ids = [step.cell_id for step in plan.steps]
-    assert (
-        target_cell_id in cell_ids
-    ), "Target cell should be included in cascade plan"
+    assert target_cell_id in cell_ids, "Target cell should be included in cascade plan"
 
     # Target should have reason='target'
     target_step = next((s for s in plan.steps if s.cell_id == target_cell_id), None)

@@ -47,12 +47,14 @@ class WebSocketTestHelper:
     def send(self, msg_type: str, payload: dict[str, Any] | None = None) -> None:
         """Send a typed message with auto-incrementing seq."""
         self._seq += 1
-        self.ws.send_json({
-            "type": msg_type,
-            "seq": self._seq,
-            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-            "payload": payload or {},
-        })
+        self.ws.send_json(
+            {
+                "type": msg_type,
+                "seq": self._seq,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": payload or {},
+            }
+        )
 
     def receive(self, timeout: float = 5.0) -> dict[str, Any]:
         """Receive one message and store it."""
@@ -89,9 +91,7 @@ class WebSocketTestHelper:
             f"Got: {[m['type'] for m in self.messages[-10:]]}"
         )
 
-    def receive_all_of_type(
-        self, msg_type: str, max_messages: int = 20
-    ) -> list[dict[str, Any]]:
+    def receive_all_of_type(self, msg_type: str, max_messages: int = 20) -> list[dict[str, Any]]:
         """Receive messages, collecting all of a given type.
 
         WARNING: This blocks until max_messages are consumed or an
@@ -275,10 +275,7 @@ def run_all_and_wait(
         msg = helper.receive()
         if msg["type"] == "cell_status":
             payload = msg["payload"]
-            if (
-                payload.get("cell_id") == terminal_cell_id
-                and payload.get("status") == "running"
-            ):
+            if payload.get("cell_id") == terminal_cell_id and payload.get("status") == "running":
                 saw_terminal_running = True
             if (
                 payload.get("cell_id") == terminal_cell_id

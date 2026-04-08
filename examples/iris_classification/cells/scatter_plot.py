@@ -1,6 +1,7 @@
 # Pairwise scatter plot colored by species
-import seaborn as sns
 import matplotlib
+import seaborn as sns
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 

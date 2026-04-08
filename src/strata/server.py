@@ -432,10 +432,7 @@ def _input_version_to_artifact_ref(
     input_version: str,
 ) -> tuple[str, str, int] | None:
     """Resolve stored input version metadata back to a concrete artifact URI."""
-    if not (
-        input_uri.startswith("strata://artifact/")
-        or input_uri.startswith("strata://name/")
-    ):
+    if not (input_uri.startswith("strata://artifact/") or input_uri.startswith("strata://name/")):
         return None
     if "@v=" not in input_version:
         return None
@@ -1742,9 +1739,7 @@ async def _serialize_admin_notebook_workers(
             }
             for record in get_server_managed_worker_records()
         ],
-        "workers": await build_server_worker_catalog_with_health(
-            force_refresh=force_refresh
-        ),
+        "workers": await build_server_worker_catalog_with_health(force_refresh=force_refresh),
         "definitions_editable": False,
         "health_checked_at": int(time.time() * 1000),
     }
@@ -3431,8 +3426,7 @@ def _validate_transform_allowed(executor_ref: str, principal=None):
                 detail={
                     "error": "insufficient_scope",
                     "message": (
-                        f"Transform '{executor_ref}' requires scope "
-                        f"'{defn.requires_scope}'."
+                        f"Transform '{executor_ref}' requires scope '{defn.requires_scope}'."
                     ),
                     "required_scope": defn.requires_scope,
                     "executor": executor_ref,
@@ -5639,8 +5633,7 @@ async def _handle_identity_materialize(
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Query would read {len(plan.tasks)} row groups, "
-                f"exceeding limit of {max_tasks}."
+                f"Query would read {len(plan.tasks)} row groups, exceeding limit of {max_tasks}."
             ),
         )
 

@@ -109,8 +109,7 @@ def unpack_notebook_output_bundle(
 
         if manifest_data.get("schema_version") != SCHEMA_VERSION:
             raise ValueError(
-                "Unsupported notebook bundle schema: "
-                f"{manifest_data.get('schema_version')!r}"
+                f"Unsupported notebook bundle schema: {manifest_data.get('schema_version')!r}"
             )
 
         stdout_text = ""
@@ -179,8 +178,7 @@ def _validate_bundle_manifest(
     """Validate bundle manifest shape and referenced members."""
     if manifest_data.get("schema_version") != SCHEMA_VERSION:
         raise ValueError(
-            "Unsupported notebook bundle schema: "
-            f"{manifest_data.get('schema_version')!r}"
+            f"Unsupported notebook bundle schema: {manifest_data.get('schema_version')!r}"
         )
 
     variables = manifest_data.get("variables", {})

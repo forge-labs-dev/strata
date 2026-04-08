@@ -130,10 +130,7 @@ def _exec_with_display(source: str, namespace: dict) -> Any | None:
 @contextmanager
 def _apply_env_overrides(manifest: dict):
     """Apply manifest-scoped environment overrides for one worker execution."""
-    overrides = {
-        str(key): str(value)
-        for key, value in manifest.get("env", {}).items()
-    }
+    overrides = {str(key): str(value) for key, value in manifest.get("env", {}).items()}
     previous = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
     try:
@@ -249,6 +246,7 @@ def execute_harness(manifest: dict) -> dict:
 
     except Exception as e:
         import traceback
+
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         return {
@@ -286,14 +284,19 @@ def main() -> None:
                 result = execute_harness(manifest)
                 print(json.dumps(result), flush=True)
             except Exception as e:
-                print(json.dumps({
-                    "success": False,
-                    "variables": {},
-                    "stdout": "",
-                    "stderr": "",
-                    "error": f"Pool worker error: {e}",
-                    "mutation_warnings": [],
-                }), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "success": False,
+                            "variables": {},
+                            "stdout": "",
+                            "stderr": "",
+                            "error": f"Pool worker error: {e}",
+                            "mutation_warnings": [],
+                        }
+                    ),
+                    flush=True,
+                )
 
     except Exception as e:
         print(f"fatal: {e}", file=sys.stderr, flush=True)

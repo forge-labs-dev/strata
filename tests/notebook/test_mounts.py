@@ -102,9 +102,7 @@ async def test_local_mount_pin_controls_fingerprint(tmp_path: Path) -> None:
 
     resolved = await resolver.prepare_mounts([mount])
 
-    assert resolved["raw_data"].fingerprint == hashlib.sha256(
-        b"pin:snapshot-123"
-    ).hexdigest()
+    assert resolved["raw_data"].fingerprint == hashlib.sha256(b"pin:snapshot-123").hexdigest()
 
 
 @pytest.mark.asyncio
@@ -145,16 +143,19 @@ async def test_remote_ro_mount_materializes_nested_files_recursively(
 
     assert (local_path / "a.txt").read_bytes() == b"a"
     assert (local_path / "nested" / "b.txt").read_bytes() == b"b"
-    assert resolved["raw_data"].fingerprint == hashlib.sha256(
-        "\n".join(
-            sorted(
-                [
-                    "bucket/prefix/a.txt:1:etag-a:1",
-                    "bucket/prefix/nested/b.txt:1:etag-b:2",
-                ]
-            )
-        ).encode()
-    ).hexdigest()
+    assert (
+        resolved["raw_data"].fingerprint
+        == hashlib.sha256(
+            "\n".join(
+                sorted(
+                    [
+                        "bucket/prefix/a.txt:1:etag-a:1",
+                        "bucket/prefix/nested/b.txt:1:etag-b:2",
+                    ]
+                )
+            ).encode()
+        ).hexdigest()
+    )
 
 
 @pytest.mark.asyncio

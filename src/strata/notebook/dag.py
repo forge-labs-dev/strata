@@ -97,8 +97,7 @@ def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
                 if producer_id == cell.id:
                     # Self-cycle: cell references its own output
                     raise ValueError(
-                        f"Cycle detected in DAG: cell {cell.id} "
-                        f"references its own variable {var}"
+                        f"Cycle detected in DAG: cell {cell.id} references its own variable {var}"
                     )
                 else:
                     # Add edge from producer to consumer

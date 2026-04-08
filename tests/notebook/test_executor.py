@@ -21,9 +21,9 @@ from strata.notebook.pool import WarmProcessPool
 from strata.notebook.session import NotebookSession
 
 _MINIMAL_PNG_LITERAL = (
-    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    'b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01'
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
-    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+    '\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82"'
 )
 _MARKDOWN_LITERAL = '"# Title\\n\\nA **markdown** cell."'
 
@@ -1159,9 +1159,7 @@ class Person:
         cell = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
         cell.worker = "gpu-http-signed"
 
-        task = asyncio.create_task(
-            CellExecutor(sample_notebook).execute_cell("cell1", "x = 1")
-        )
+        task = asyncio.create_task(CellExecutor(sample_notebook).execute_cell("cell1", "x = 1"))
         assert await asyncio.to_thread(started.wait, 2.0)
 
         task.cancel()
@@ -1203,8 +1201,7 @@ class Person:
 
         assert result.success is False
         assert result.error == (
-            "Execution failed: Remote executor workers do not support file:// mounts: "
-            "'raw_data'"
+            "Execution failed: Remote executor workers do not support file:// mounts: 'raw_data'"
         )
 
     @pytest.mark.asyncio
@@ -1389,9 +1386,7 @@ def add(y):
         assert "top-level runtime state" in result.error
 
     @pytest.mark.asyncio
-    async def test_execute_rejects_cross_cell_export_with_top_level_lambda(
-        self, sample_notebook
-    ):
+    async def test_execute_rejects_cross_cell_export_with_top_level_lambda(self, sample_notebook):
         """Top-level lambdas should fail with a targeted exportability error."""
         cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
         cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
@@ -1594,9 +1589,7 @@ class Person:
     @pytest.mark.asyncio
     @pytest.mark.integration
     @pytest.mark.warm_pool
-    async def test_warm_execution_reports_same_mutation_warnings_as_cold(
-        self, sample_notebook
-    ):
+    async def test_warm_execution_reports_same_mutation_warnings_as_cold(self, sample_notebook):
         """Warm workers should preserve mutation warnings emitted by cold execution."""
         cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
         cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
@@ -1605,9 +1598,7 @@ class Person:
         sample_notebook.re_analyze_cell("cell1")
         sample_notebook.re_analyze_cell("cell2")
 
-        cold_result = await CellExecutor(sample_notebook).execute_cell(
-            "cell2", cell2.source
-        )
+        cold_result = await CellExecutor(sample_notebook).execute_cell("cell2", cell2.source)
         assert cold_result.success is True
         assert cold_result.mutation_warnings
         assert cold_result.mutation_warnings[0]["var_name"] == "x"

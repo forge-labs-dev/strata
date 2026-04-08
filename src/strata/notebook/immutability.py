@@ -29,9 +29,7 @@ class MutationWarning:
     suggestion: str | None = None
 
 
-def snapshot_inputs(
-    namespace: dict[str, Any], input_names: list[str]
-) -> list[InputSnapshot]:
+def snapshot_inputs(namespace: dict[str, Any], input_names: list[str]) -> list[InputSnapshot]:
     """Take snapshots of input variables before cell execution.
 
     Args:
@@ -111,9 +109,7 @@ def detect_mutations(
             continue
 
         # Same identity — check if the object was mutated
-        mutation_detected = _check_object_mutation(
-            current_value, snapshot
-        )
+        mutation_detected = _check_object_mutation(current_value, snapshot)
 
         if mutation_detected:
             message, suggestion = mutation_detected
@@ -128,9 +124,7 @@ def detect_mutations(
     return warnings
 
 
-def _check_object_mutation(
-    value: Any, snapshot: InputSnapshot
-) -> tuple[str, str | None] | None:
+def _check_object_mutation(value: Any, snapshot: InputSnapshot) -> tuple[str, str | None] | None:
     """Check if an object was mutated.
 
     Returns (message, suggestion) if mutation detected, None otherwise.
@@ -210,9 +204,7 @@ def _hash_dataframe_sample(df: Any) -> str:
         return ""
 
 
-def apply_defensive_copy(
-    value: Any, content_type: str
-) -> Any:
+def apply_defensive_copy(value: Any, content_type: str) -> Any:
     """Apply defensive copy based on tier.
 
     Tier strategy:

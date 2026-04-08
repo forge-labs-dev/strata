@@ -109,9 +109,7 @@ class ContentType(StrEnum):
 class CellStaleness(BaseModel):
     """Staleness status for a cell."""
 
-    status: CellStatus = Field(
-        ..., description="Status: ready, stale, idle, running, error"
-    )
+    status: CellStatus = Field(..., description="Status: ready, stale, idle, running, error")
     reasons: list[StalenessReason] = Field(
         default_factory=list, description="List of staleness reasons"
     )
@@ -198,12 +196,8 @@ class CellOutput(BaseModel):
     content_type: str = Field(
         ..., description="Type of content (arrow/ipc, json/object, pickle/object, error)"
     )
-    rows: int | None = Field(
-        default=None, description="Number of rows (for tables)"
-    )
-    columns: list[str] | None = Field(
-        default=None, description="Column names (for tables)"
-    )
+    rows: int | None = Field(default=None, description="Number of rows (for tables)")
+    columns: list[str] | None = Field(default=None, description="Column names (for tables)")
     bytes: int = Field(default=0, description="Size in bytes")
     artifact_uri: str | None = Field(
         default=None,
@@ -223,9 +217,7 @@ class CellOutput(BaseModel):
     )
     width: int | None = Field(default=None, description="Display width in pixels")
     height: int | None = Field(default=None, description="Display height in pixels")
-    error: str | None = Field(
-        default=None, description="Error message if serialization failed"
-    )
+    error: str | None = Field(default=None, description="Error message if serialization failed")
 
 
 class CellState(BaseModel):
@@ -289,9 +281,7 @@ class CellState(BaseModel):
         default=False,
         description="Whether this is a leaf node (no downstream consumers)",
     )
-    staleness: CellStaleness | None = Field(
-        default=None, description="Staleness status"
-    )
+    staleness: CellStaleness | None = Field(default=None, description="Staleness status")
     artifact_uri: str | None = Field(
         default=None, description="URI of last stored artifact (legacy single-var)"
     )

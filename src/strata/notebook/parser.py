@@ -57,16 +57,9 @@ def parse_notebook(directory: Path) -> NotebookState:
         worker=toml_data.get("worker"),
         timeout=toml_data.get("timeout"),
         env=toml_data.get("env", {}),
-        workers=[
-            WorkerSpec(**worker) for worker in toml_data.get("workers", [])
-        ],
-        cells=[
-            CellMeta(**cell_meta)
-            for cell_meta in toml_data.get("cells", [])
-        ],
-        mounts=[
-            MountSpec(**m) for m in toml_data.get("mounts", [])
-        ],
+        workers=[WorkerSpec(**worker) for worker in toml_data.get("workers", [])],
+        cells=[CellMeta(**cell_meta) for cell_meta in toml_data.get("cells", [])],
+        mounts=[MountSpec(**m) for m in toml_data.get("mounts", [])],
         artifacts=toml_data.get("artifacts", {}),
         environment=toml_data.get("environment", {}),
         cache=toml_data.get("cache", {}),
@@ -78,9 +71,7 @@ def parse_notebook(directory: Path) -> NotebookState:
 
     # Build notebook-level mount defaults (keyed by name for cell overrides)
     notebook_mounts = {m.name: m for m in notebook_toml.mounts}
-    artifact_entries = (
-        notebook_toml.artifacts if isinstance(notebook_toml.artifacts, dict) else {}
-    )
+    artifact_entries = notebook_toml.artifacts if isinstance(notebook_toml.artifacts, dict) else {}
 
     for cell_meta in notebook_toml.cells:
         cell_file = cells_dir / cell_meta.file
@@ -96,9 +87,7 @@ def parse_notebook(directory: Path) -> NotebookState:
             resolved_mounts[m.name] = m
         resolved_worker = cell_meta.worker or notebook_toml.worker
         resolved_timeout = (
-            cell_meta.timeout
-            if cell_meta.timeout is not None
-            else notebook_toml.timeout
+            cell_meta.timeout if cell_meta.timeout is not None else notebook_toml.timeout
         )
         resolved_env = dict(notebook_toml.env)
         resolved_env.update(cell_meta.env)

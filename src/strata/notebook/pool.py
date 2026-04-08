@@ -95,9 +95,7 @@ class WarmProcessPool:
         """
         self._warming += 1
         try:
-            worker_script = (
-                Path(__file__).parent / "pool_worker.py"
-            )
+            worker_script = Path(__file__).parent / "pool_worker.py"
 
             # Spawn the pool worker process
             process = await asyncio.create_subprocess_exec(
@@ -113,9 +111,7 @@ class WarmProcessPool:
             # Wait for the 'ready' signal
             try:
                 assert process.stdout is not None
-                ready_line = await asyncio.wait_for(
-                    process.stdout.readline(), timeout=10.0
-                )
+                ready_line = await asyncio.wait_for(process.stdout.readline(), timeout=10.0)
                 if ready_line and b"ready" in ready_line.lower():
                     warm_proc = WarmProcess(
                         process=process,
@@ -123,29 +119,19 @@ class WarmProcessPool:
                         ready=True,
                     )
                     await self._available.put(warm_proc)
-                    logger.debug(
-                        f"Warm process spawned and ready (pid={process.pid})"
-                    )
+                    logger.debug(f"Warm process spawned and ready (pid={process.pid})")
                 else:
-                    logger.warning(
-                        "Warm process did not send ready signal, killing"
-                    )
+                    logger.warning("Warm process did not send ready signal, killing")
                     process.kill()
                     try:
-                        await asyncio.wait_for(
-                            process.wait(), timeout=2.0
-                        )
+                        await asyncio.wait_for(process.wait(), timeout=2.0)
                     except TimeoutError:
                         pass
             except TimeoutError:
-                logger.warning(
-                    "Warm process startup timed out, killing process"
-                )
+                logger.warning("Warm process startup timed out, killing process")
                 process.kill()
                 try:
-                    await asyncio.wait_for(
-                        process.wait(), timeout=2.0
-                    )
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
                 except TimeoutError:
                     pass
 
@@ -176,9 +162,7 @@ class WarmProcessPool:
         if process.process and process.process.returncode is None:
             process.process.kill()
             try:
-                await asyncio.wait_for(
-                    process.process.wait(), timeout=2.0
-                )
+                await asyncio.wait_for(process.process.wait(), timeout=2.0)
             except TimeoutError:
                 logger.warning("Warm process kill timeout")
 
@@ -210,9 +194,7 @@ class WarmProcessPool:
                 if proc.process and proc.process.returncode is None:
                     proc.process.kill()
                     try:
-                        await asyncio.wait_for(
-                            proc.process.wait(), timeout=2.0
-                        )
+                        await asyncio.wait_for(proc.process.wait(), timeout=2.0)
                     except TimeoutError:
                         pass
             except asyncio.QueueEmpty:

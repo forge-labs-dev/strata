@@ -1,6 +1,5 @@
 """Tests for staleness detection."""
 
-
 import pytest
 
 from strata.notebook.models import CellState, NotebookState

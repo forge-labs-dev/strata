@@ -41,9 +41,7 @@ class NotebookArtifactManager:
 
         # Default artifact directory
         if artifact_dir is None:
-            artifact_dir = (
-                Path.home() / ".strata" / "notebook_artifacts" / notebook_id
-            )
+            artifact_dir = Path.home() / ".strata" / "notebook_artifacts" / notebook_id
 
         artifact_dir = Path(artifact_dir)
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -155,24 +153,22 @@ class NotebookArtifactManager:
                         row_count = ?, byte_size = ?
                     WHERE id = ? AND version = ? AND state = 'failed'
                     """,
-                    (schema_str, row_count or 0, byte_size,
-                     artifact_id, version),
+                    (schema_str, row_count or 0, byte_size, artifact_id, version),
                 )
                 conn.commit()
             finally:
                 conn.close()
             # Re-read the canonical artifact so we return the right one.
             canonical = self.artifact_store.get_artifact(
-                artifact_id, version,
+                artifact_id,
+                version,
             )
             if canonical is not None:
                 artifact_version = canonical
 
         return artifact_version
 
-    def load_artifact_data(
-        self, artifact_id: str, version: int
-    ) -> bytes:
+    def load_artifact_data(self, artifact_id: str, version: int) -> bytes:
         """Load artifact blob data.
 
         Args:
@@ -187,18 +183,14 @@ class NotebookArtifactManager:
         """
         artifact = self.artifact_store.get_artifact(artifact_id, version)
         if artifact is None or artifact.state != "ready":
-            raise ValueError(
-                f"Artifact {artifact_id}@v={version} not found or not ready"
-            )
+            raise ValueError(f"Artifact {artifact_id}@v={version} not found or not ready")
 
         blob_data = self.artifact_store.blob_store.read_blob(artifact_id, version)
         if blob_data is None:
             raise ValueError(f"Blob data not found for {artifact_id}@v={version}")
         return blob_data
 
-    def get_artifact_preview(
-        self, artifact_id: str, version: int
-    ) -> dict[str, Any]:
+    def get_artifact_preview(self, artifact_id: str, version: int) -> dict[str, Any]:
         """Get artifact metadata and a data preview.
 
         Args:
@@ -233,9 +225,7 @@ class NotebookArtifactManager:
             "created_at": artifact.created_at,
         }
 
-    def list_cell_artifacts(
-        self, cell_id: str
-    ) -> list[tuple[str, ArtifactVersion]]:
+    def list_cell_artifacts(self, cell_id: str) -> list[tuple[str, ArtifactVersion]]:
         """List all artifacts for a cell (all variables, all versions).
 
         Args:
@@ -247,13 +237,9 @@ class NotebookArtifactManager:
         Raises:
             NotImplementedError: ArtifactStore does not yet support prefix queries.
         """
-        raise NotImplementedError(
-            "list_cell_artifacts requires ArtifactStore prefix query support"
-        )
+        raise NotImplementedError("list_cell_artifacts requires ArtifactStore prefix query support")
 
-    def get_artifact_info(
-        self, artifact_id: str, version: int
-    ) -> ArtifactInfo | None:
+    def get_artifact_info(self, artifact_id: str, version: int) -> ArtifactInfo | None:
         """Get lightweight artifact info for API responses.
 
         Args:

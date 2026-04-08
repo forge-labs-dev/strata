@@ -86,9 +86,7 @@ class ImpactPreview:
         If False, the UI should skip the preview and just run the cell.
         """
         # Filter out the target cell itself from upstream
-        upstream_non_target = [
-            s for s in self.upstream if s.cell_id != self.target_cell_id
-        ]
+        upstream_non_target = [s for s in self.upstream if s.cell_id != self.target_cell_id]
         return len(upstream_non_target) > 0 or len(self.downstream) > 0
 
 
@@ -123,9 +121,7 @@ class ImpactAnalyzer:
         downstream = self._compute_downstream(cell_id)
 
         # Estimate total time
-        estimated_ms = sum(
-            s.estimated_ms for s in upstream_steps if not s.skip
-        )
+        estimated_ms = sum(s.estimated_ms for s in upstream_steps if not s.skip)
 
         return ImpactPreview(
             target_cell_id=cell_id,
@@ -193,9 +189,7 @@ class ImpactAnalyzer:
                 )
 
             # Continue walking downstream
-            for downstream_id in self.session.dag.cell_downstream.get(
-                current, []
-            ):
+            for downstream_id in self.session.dag.cell_downstream.get(current, []):
                 if downstream_id not in visited:
                     queue.append(downstream_id)
 

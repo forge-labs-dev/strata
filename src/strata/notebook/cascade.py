@@ -94,9 +94,7 @@ class CascadePlanner:
             return None
 
         # Find the target cell
-        target_cell = next(
-            (c for c in self.session.notebook_state.cells if c.id == cell_id), None
-        )
+        target_cell = next((c for c in self.session.notebook_state.cells if c.id == cell_id), None)
         if not target_cell:
             return None
 
@@ -160,11 +158,7 @@ class CascadePlanner:
 
         # Sort by topological order
         if self.session.dag.topological_order:
-            step_cells = [
-                cid
-                for cid in self.session.dag.topological_order
-                if cid in visited
-            ]
+            step_cells = [cid for cid in self.session.dag.topological_order if cid in visited]
 
         # Build steps for each cell
         steps: list[CascadeStep] = []

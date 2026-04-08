@@ -251,11 +251,13 @@ def get_arrow_allocations() -> ArrowAllocationsDict:
     for name, pool_fn in pools_to_check:
         try:
             pool = pool_fn()
-            result["available_pools"].append({
-                "name": name,
-                "bytes_allocated": pool.bytes_allocated(),
-                "max_memory": pool.max_memory(),
-            })
+            result["available_pools"].append(
+                {
+                    "name": name,
+                    "bytes_allocated": pool.bytes_allocated(),
+                    "max_memory": pool.max_memory(),
+                }
+            )
         except Exception:
             pass
 

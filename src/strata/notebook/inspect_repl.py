@@ -250,9 +250,7 @@ class InspectSession:
         # Materialise upstreams then load input blobs for this cell
         executor = CellExecutor(session, session.warm_pool)
         await executor._materialize_upstreams(self.cell_id)
-        input_specs = executor._load_input_blobs(
-            self.cell_id, self._manifest_dir
-        )
+        input_specs = executor._load_input_blobs(self.cell_id, self._manifest_dir)
 
         # Write manifest
         manifest = {
@@ -265,6 +263,7 @@ class InspectSession:
 
         # Copy serializer.py alongside the harness so the harness can load it
         import shutil
+
         _serializer_src = Path(__file__).parent / "serializer.py"
         shutil.copy2(_serializer_src, self._manifest_dir / "serializer.py")
 
@@ -308,9 +307,7 @@ class InspectSession:
             await self.close()
             return f"Inspect startup failed: {e}"
 
-    async def evaluate(
-        self, expr: str, timeout_seconds: float = 10
-    ) -> dict[str, Any]:
+    async def evaluate(self, expr: str, timeout_seconds: float = 10) -> dict[str, Any]:
         """Evaluate an expression in the inspect subprocess.
 
         Args:
@@ -380,6 +377,7 @@ class InspectSession:
         # Clean up temp dir
         if self._manifest_dir and self._manifest_dir.exists():
             import shutil
+
             try:
                 shutil.rmtree(self._manifest_dir)
             except Exception:

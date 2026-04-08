@@ -176,13 +176,17 @@ class MountResolver:
                 resolved[mount.name] = await self._resolve_local(mount, path)
             else:
                 resolved[mount.name] = await self._resolve_remote(
-                    mount, scheme, path,
+                    mount,
+                    scheme,
+                    path,
                 )
 
         return resolved
 
     async def _resolve_local(
-        self, mount: MountSpec, local_path: str,
+        self,
+        mount: MountSpec,
+        local_path: str,
     ) -> ResolvedMount:
         """Resolve a local file:// mount."""
         p = Path(local_path)
@@ -193,9 +197,7 @@ class MountResolver:
             return ResolvedMount(spec=mount, local_path=p, fingerprint=None)
 
         if not p.exists():
-            raise ValueError(
-                f"Local mount '{mount.name}' path does not exist: {p}"
-            )
+            raise ValueError(f"Local mount '{mount.name}' path does not exist: {p}")
 
         fingerprint = await MountFingerprinter.fingerprint_mount(mount)
         assert fingerprint is not None
@@ -221,12 +223,18 @@ class MountResolver:
         if mount.mode == MountMode.READ_ONLY:
             # Use fsspec's filecache for read-only mounts
             return await self._resolve_remote_ro(
-                mount, scheme, remote_path, local_dir,
+                mount,
+                scheme,
+                remote_path,
+                local_dir,
             )
         else:
             # RW: stage locally, sync back after execution
             return await self._resolve_remote_rw(
-                mount, scheme, remote_path, local_dir,
+                mount,
+                scheme,
+                remote_path,
+                local_dir,
             )
 
     async def _resolve_remote_ro(
@@ -309,7 +317,8 @@ class MountResolver:
         )
 
     async def sync_back(
-        self, resolved: dict[str, ResolvedMount],
+        self,
+        resolved: dict[str, ResolvedMount],
     ) -> None:
         """Sync read-write mounts back to their remote URIs.
 
@@ -327,9 +336,7 @@ class MountResolver:
                 continue
 
             if not self._check_fsspec():
-                raise ImportError(
-                    f"Cannot sync-back RW mount '{name}': fsspec not available"
-                )
+                raise ImportError(f"Cannot sync-back RW mount '{name}': fsspec not available")
 
             import fsspec
 
@@ -341,7 +348,9 @@ class MountResolver:
                 remote_uri = f"{protocol}://{remote_path}"
                 fs.put(str(rm.staging_dir), remote_uri, recursive=True)
                 logger.info(
-                    "Synced RW mount '%s' back to %s", name, rm.spec.uri,
+                    "Synced RW mount '%s' back to %s",
+                    name,
+                    rm.spec.uri,
                 )
             except Exception as e:
                 raise RuntimeError(
@@ -549,7 +558,7 @@ def _relative_remote_path(
         return Path(Path(normalized).name)
     prefix = f"{base}/"
     if normalized.startswith(prefix):
-        return Path(normalized[len(prefix):])
+        return Path(normalized[len(prefix) :])
     return Path(Path(normalized).name)
 
 

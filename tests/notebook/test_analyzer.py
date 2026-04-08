@@ -1,6 +1,5 @@
 """Tests for AST-based variable analysis."""
 
-
 from strata.notebook.analyzer import analyze_cell
 
 

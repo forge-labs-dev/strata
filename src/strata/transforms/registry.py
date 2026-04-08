@@ -150,9 +150,7 @@ class TransformRegistry:
             for ref in embedded_transforms
         ]
 
-        logger.info(
-            f"Created embedded registry with transforms: {embedded_transforms}"
-        )
+        logger.info(f"Created embedded registry with transforms: {embedded_transforms}")
 
         return cls(enabled=True, definitions=definitions)
 

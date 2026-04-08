@@ -74,8 +74,7 @@ def add(y):
                 assert result["type"] == "cell_error"
                 assert "cannot be shared across cells yet" in result["payload"]["error"]
                 assert (
-                    "top-level lambdas are not shareable across cells"
-                    in result["payload"]["error"]
+                    "top-level lambdas are not shareable across cells" in result["payload"]["error"]
                 )
 
                 state = ws.sync()

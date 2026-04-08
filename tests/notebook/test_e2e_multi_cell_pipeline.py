@@ -86,11 +86,7 @@ class TestLinearCascade:
     def test_no_cascade_when_upstream_ready(self, setup):
         """If upstream cells are already ready, no cascade is triggered."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -157,11 +153,7 @@ class TestForceExecution:
     def test_force_skips_cascade(self, setup):
         """Force-executing a downstream cell does not trigger or run upstreams."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -182,7 +174,8 @@ class TestForceExecution:
 
                 # Upstream cell should not have been materialized as a side effect.
                 c1_outputs = [
-                    m for m in ws.messages_of_type("cell_output")
+                    m
+                    for m in ws.messages_of_type("cell_output")
                     if m["payload"].get("cell_id") == "c1"
                 ]
                 assert c1_outputs == []

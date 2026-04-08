@@ -554,9 +554,7 @@ class TestNotebookWorkerAdminApi:
         workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
         assert workers.status_code == 200
         before_disable = next(
-            worker
-            for worker in workers.json()["workers"]
-            if worker["name"] == "gpu-a100"
+            worker for worker in workers.json()["workers"] if worker["name"] == "gpu-a100"
         )
         assert before_disable["enabled"] is True
         assert before_disable["allowed"] is True
@@ -570,9 +568,7 @@ class TestNotebookWorkerAdminApi:
         workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
         assert workers.status_code == 200
         after_disable = next(
-            worker
-            for worker in workers.json()["workers"]
-            if worker["name"] == "gpu-a100"
+            worker for worker in workers.json()["workers"] if worker["name"] == "gpu-a100"
         )
         assert after_disable["enabled"] is False
         assert after_disable["allowed"] is False
@@ -594,9 +590,7 @@ class TestNotebookWorkerAdminApi:
         workers = server_mode_app.get(f"/v1/notebooks/{session_id}/workers")
         assert workers.status_code == 200
         after_enable = next(
-            worker
-            for worker in workers.json()["workers"]
-            if worker["name"] == "gpu-a100"
+            worker for worker in workers.json()["workers"] if worker["name"] == "gpu-a100"
         )
         assert after_enable["enabled"] is True
         assert after_enable["allowed"] is True
@@ -769,10 +763,7 @@ class TestNotebookWorkerAdminApi:
             },
         )
         assert created.status_code == 200
-        assert any(
-            worker["name"] == "gpu-http"
-            for worker in created.json()["configured_workers"]
-        )
+        assert any(worker["name"] == "gpu-http" for worker in created.json()["configured_workers"])
 
         replaced = server_mode_auth_app.put(
             "/v1/admin/notebook-workers/gpu-http",
@@ -789,8 +780,7 @@ class TestNotebookWorkerAdminApi:
         )
         assert replaced.status_code == 200
         assert any(
-            worker["name"] == "gpu-http-renamed"
-            for worker in replaced.json()["configured_workers"]
+            worker["name"] == "gpu-http-renamed" for worker in replaced.json()["configured_workers"]
         )
 
         deleted = server_mode_auth_app.delete(

@@ -59,9 +59,9 @@ class TestCascadeAfterEdit:
                 assert result3["type"] == "cell_output" or result3["type"] == "cell_status"
                 # Check stdout from c3 messages
                 c3_outputs = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 if c3_outputs:
                     assert "2" in c3_outputs[-1]["payload"].get("stdout", "")
@@ -86,9 +86,9 @@ class TestCascadeAfterEdit:
 
                 # 5. Verify c3's output is now "3" (x=2, y=x+1=3)
                 c3_outputs = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert len(c3_outputs) > 0, (
                     f"Expected cell_output for c3 but got none. "
@@ -122,9 +122,9 @@ class TestCascadeAfterEdit:
                 # Step 2: Run c3 — first run of c3, should resolve y
                 execute_cell_and_wait(ws, "c3")
                 c3_out = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_out, "Expected cell_output for c3"
                 assert "2" in c3_out[-1]["payload"].get("stdout", ""), (
@@ -146,9 +146,9 @@ class TestCascadeAfterEdit:
                 )
 
                 c3_out = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_out, (
                     f"Expected cell_output for c3. Types: {[m['type'] for m in ws.messages]}"
@@ -157,13 +157,8 @@ class TestCascadeAfterEdit:
                 assert "3" in stdout, f"Expected '3' in stdout but got: {stdout!r}"
 
                 # Also verify no cell_error messages
-                errors = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_error"
-                ]
-                assert not errors, (
-                    f"Unexpected errors during cascade: {errors}"
-                )
+                errors = [m for m in ws.messages if m["type"] == "cell_error"]
+                assert not errors, f"Unexpected errors during cascade: {errors}"
 
     def test_cascade_from_cold_start(self, setup):
         """After server restart (no prior execution), edit c1, run c3.
@@ -190,9 +185,9 @@ class TestCascadeAfterEdit:
                 )
 
                 c3_out = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_out, (
                     f"Expected cell_output for c3. Types: {[m['type'] for m in ws.messages]}"
@@ -269,8 +264,7 @@ class TestCascadeAfterEdit:
 
                 art_x_v1 = artifact_mgr.artifact_store.get_latest_version(c1_x_id)
                 assert art_x_v1 is not None, (
-                    f"Expected artifact for c1:x after initial run. "
-                    f"artifact_id={c1_x_id}"
+                    f"Expected artifact for c1:x after initial run. artifact_id={c1_x_id}"
                 )
                 assert art_x_v1.state == "ready", (
                     f"Expected c1:x artifact to be ready, got {art_x_v1.state}"
@@ -278,8 +272,7 @@ class TestCascadeAfterEdit:
 
                 art_y_v1 = artifact_mgr.artifact_store.get_latest_version(c2_y_id)
                 assert art_y_v1 is not None, (
-                    f"Expected artifact for c2:y after initial run. "
-                    f"artifact_id={c2_y_id}"
+                    f"Expected artifact for c2:y after initial run. artifact_id={c2_y_id}"
                 )
 
                 # 2. Edit c1 and trigger cascade
@@ -292,19 +285,15 @@ class TestCascadeAfterEdit:
 
                 # 4. Verify no errors
                 errors = [m for m in ws.messages if m["type"] == "cell_error"]
-                assert not errors, (
-                    f"Unexpected errors during cascade: {errors}"
-                )
+                assert not errors, f"Unexpected errors during cascade: {errors}"
 
                 # 5. Verify artifact store has UPDATED c1:x artifact
                 art_x_v2 = artifact_mgr.artifact_store.get_latest_version(c1_x_id)
                 assert art_x_v2 is not None, (
-                    f"Expected artifact for c1:x after cascade. "
-                    f"artifact_id={c1_x_id}"
+                    f"Expected artifact for c1:x after cascade. artifact_id={c1_x_id}"
                 )
                 assert art_x_v2.state == "ready", (
-                    f"Expected c1:x artifact to be ready after cascade, "
-                    f"got {art_x_v2.state}"
+                    f"Expected c1:x artifact to be ready after cascade, got {art_x_v2.state}"
                 )
                 # Should be a NEW version (different provenance from v1)
                 assert art_x_v2.version >= art_x_v1.version, (
@@ -315,25 +304,20 @@ class TestCascadeAfterEdit:
                 # 6. Verify c2:y also has updated artifact
                 art_y_v2 = artifact_mgr.artifact_store.get_latest_version(c2_y_id)
                 assert art_y_v2 is not None, (
-                    f"Expected artifact for c2:y after cascade. "
-                    f"artifact_id={c2_y_id}"
+                    f"Expected artifact for c2:y after cascade. artifact_id={c2_y_id}"
                 )
 
                 # 7. Verify cell artifact_uri fields are set
                 c1 = next(c for c in session.notebook_state.cells if c.id == "c1")
                 c2 = next(c for c in session.notebook_state.cells if c.id == "c2")
-                assert c1.artifact_uri is not None, (
-                    "c1.artifact_uri should be set after cascade"
-                )
-                assert c2.artifact_uri is not None, (
-                    "c2.artifact_uri should be set after cascade"
-                )
+                assert c1.artifact_uri is not None, "c1.artifact_uri should be set after cascade"
+                assert c2.artifact_uri is not None, "c2.artifact_uri should be set after cascade"
 
                 # 8. Verify c3 printed "3"
                 c3_outputs = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_outputs, "Expected cell_output for c3"
                 stdout = c3_outputs[-1]["payload"].get("stdout", "")
@@ -380,21 +364,14 @@ class TestCascadeAfterEdit:
                 execute_cell_and_wait(ws, "c2")
 
                 # c2 should be ready (not error)
-                c2 = next(
-                    c for c in session.notebook_state.cells if c.id == "c2"
-                )
+                c2 = next(c for c in session.notebook_state.cells if c.id == "c2")
                 assert c2.status == "ready", (
-                    f"c2 should be ready after auto-rerun of c1, "
-                    f"got {c2.status}"
+                    f"c2 should be ready after auto-rerun of c1, got {c2.status}"
                 )
 
                 # c1:x artifact should now exist again (re-created by retry)
-                art_after = artifact_mgr.artifact_store.get_latest_version(
-                    c1_x_id
-                )
-                assert art_after is not None, (
-                    "c1:x artifact should exist after auto-rerun"
-                )
+                art_after = artifact_mgr.artifact_store.get_latest_version(c1_x_id)
+                assert art_after is not None, "c1:x artifact should exist after auto-rerun"
 
     def test_provenance_dedup_does_not_break_cascade(self, setup):
         """Provenance dedup must not poison the canonical artifact ID.
@@ -440,9 +417,7 @@ class TestCascadeAfterEdit:
                 source_hash = compute_source_hash("x = 1")
                 env_hash = compute_lockfile_hash(session.path)
                 cell_prov = compute_provenance_hash([], source_hash, env_hash)
-                var_prov = hashlib.sha256(
-                    f"{cell_prov}:x".encode()
-                ).hexdigest()
+                var_prov = hashlib.sha256(f"{cell_prov}:x".encode()).hexdigest()
 
                 # Store a foreign artifact with matching provenance.
                 from strata.artifact_store import TransformSpec
@@ -458,20 +433,23 @@ class TestCascadeAfterEdit:
                     ),
                 )
                 artifact_mgr.artifact_store.blob_store.write_blob(
-                    foreign_id, fv, b"1",
+                    foreign_id,
+                    fv,
+                    b"1",
                 )
                 artifact_mgr.artifact_store.finalize_artifact(
-                    foreign_id, fv, "", 0, 1,
+                    foreign_id,
+                    fv,
+                    "",
+                    0,
+                    1,
                 )
 
                 # Confirm the foreign artifact is findable by provenance.
                 assert artifact_mgr.find_cached(var_prov) is not None
                 # Confirm canonical ID does NOT exist yet.
                 canonical_id = f"nb_{notebook_id}_cell_c1_var_x"
-                assert (
-                    artifact_mgr.artifact_store.get_latest_version(canonical_id)
-                    is None
-                )
+                assert artifact_mgr.artifact_store.get_latest_version(canonical_id) is None
 
                 # --- Now run c3 — should cascade c1→c2→c3 ---
                 execute_cell_and_wait(ws, "c3")
@@ -483,33 +461,27 @@ class TestCascadeAfterEdit:
 
                 # c3 should print 2 (x=1, y=x+1=2)
                 c3_out = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_out, (
-                    f"Expected cell_output for c3. "
-                    f"Types: {[m['type'] for m in ws.messages]}"
+                    f"Expected cell_output for c3. Types: {[m['type'] for m in ws.messages]}"
                 )
                 stdout = c3_out[-1]["payload"].get("stdout", "")
-                assert "2" in stdout, (
-                    f"Expected '2' in stdout but got: {stdout!r}"
-                )
+                assert "2" in stdout, f"Expected '2' in stdout but got: {stdout!r}"
 
                 # Canonical artifact must now be ready.
                 art = artifact_mgr.artifact_store.get_latest_version(
                     canonical_id,
                 )
                 assert art is not None, (
-                    f"Canonical artifact {canonical_id} must be ready "
-                    f"after cascade execution."
+                    f"Canonical artifact {canonical_id} must be ready after cascade execution."
                 )
                 assert art.state == "ready"
 
                 # No errors should have occurred.
-                errors = [
-                    m for m in ws.messages if m["type"] == "cell_error"
-                ]
+                errors = [m for m in ws.messages if m["type"] == "cell_error"]
                 assert not errors, f"Unexpected errors: {errors}"
 
     def test_rest_edit_then_ws_run_triggers_cascade(self, setup):
@@ -548,35 +520,26 @@ class TestCascadeAfterEdit:
                 rest_data = resp.json()
 
                 # Verify the REST response includes updated cell statuses
-                assert "cells" in rest_data, (
-                    "REST response should include 'cells' with statuses"
-                )
+                assert "cells" in rest_data, "REST response should include 'cells' with statuses"
 
                 # Verify c1 is no longer "ready" on the backend
-                c1 = next(
-                    c for c in session.notebook_state.cells if c.id == "c1"
-                )
-                assert c1.status != "ready", (
-                    f"c1 should be stale after REST edit, got {c1.status}"
-                )
+                c1 = next(c for c in session.notebook_state.cells if c.id == "c1")
+                assert c1.status != "ready", f"c1 should be stale after REST edit, got {c1.status}"
 
                 # 3. Run c3 via WebSocket — should trigger cascade
                 execute_cell_and_wait(ws, "c3")
 
                 cascade_msgs = ws.messages_of_type("cascade_prompt")
                 assert len(cascade_msgs) > 0, (
-                    f"Expected cascade after REST edit. "
-                    f"Types: {[m['type'] for m in ws.messages]}"
+                    f"Expected cascade after REST edit. Types: {[m['type'] for m in ws.messages]}"
                 )
 
                 # 4. Verify c3 prints "3"
                 c3_out = [
-                    m for m in ws.messages
-                    if m["type"] == "cell_output"
-                    and m["payload"].get("cell_id") == "c3"
+                    m
+                    for m in ws.messages
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c3"
                 ]
                 assert c3_out, "Expected cell_output for c3"
                 stdout = c3_out[-1]["payload"].get("stdout", "")
-                assert "3" in stdout, (
-                    f"Expected '3' in stdout but got: {stdout!r}"
-                )
+                assert "3" in stdout, f"Expected '3' in stdout but got: {stdout!r}"

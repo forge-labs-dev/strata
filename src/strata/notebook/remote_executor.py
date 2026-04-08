@@ -39,7 +39,8 @@ async def _run_harness(
     )
     try:
         _stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=timeout_seconds,
+            proc.communicate(),
+            timeout=timeout_seconds,
         )
     except TimeoutError:
         proc.kill()
@@ -48,9 +49,7 @@ async def _run_harness(
 
     result_path = manifest_path.parent / "manifest.json"
     if not result_path.exists():
-        raise RuntimeError(
-            f"Harness did not produce manifest.json: {stderr.decode()}"
-        )
+        raise RuntimeError(f"Harness did not produce manifest.json: {stderr.decode()}")
 
     with open(result_path, encoding="utf-8") as f:
         return json.load(f)
@@ -105,10 +104,7 @@ def create_notebook_executor_app() -> FastAPI:
             if scheme == "file":
                 raise HTTPException(
                     status_code=400,
-                    detail=(
-                        f"Remote execution does not support file:// mount "
-                        f"'{mount.name}'"
-                    ),
+                    detail=(f"Remote execution does not support file:// mount '{mount.name}'"),
                 )
 
         nonlocal active_executions
@@ -437,8 +433,7 @@ def create_notebook_executor_app() -> FastAPI:
                 raise HTTPException(
                     status_code=502,
                     detail=(
-                        f"Failed to download notebook input {input_uri}: "
-                        f"{response.status_code}"
+                        f"Failed to download notebook input {input_uri}: {response.status_code}"
                     ),
                 )
             return response.content

@@ -338,10 +338,7 @@ class CellExecutor:
                 cell_id=cell_id,
                 success=False,
                 error=policy_error
-                or (
-                    f"Execution failed: worker '{effective_worker}' is not "
-                    "implemented yet"
-                ),
+                or (f"Execution failed: worker '{effective_worker}' is not implemented yet"),
             )
 
         start_time = time.time()
@@ -521,7 +518,9 @@ class CellExecutor:
             # from s3://bucket/data invalidates when the data changes.
             all_hashes = input_hashes + mount_fingerprints
             provenance_hash = compute_provenance_hash(
-                all_hashes, source_hash, env_hash,
+                all_hashes,
+                source_hash,
+                env_hash,
             )
 
             logger.info(
@@ -562,9 +561,7 @@ class CellExecutor:
             if use_cache:
                 if consumed_vars:
                     first_var = sorted(consumed_vars)[0]
-                    var_prov = hashlib.sha256(
-                        f"{provenance_hash}:{first_var}".encode()
-                    ).hexdigest()
+                    var_prov = hashlib.sha256(f"{provenance_hash}:{first_var}".encode()).hexdigest()
                     cached_artifact = artifact_mgr.find_cached(var_prov)
                 else:
                     cached_artifact = artifact_mgr.find_cached(provenance_hash)
@@ -578,21 +575,12 @@ class CellExecutor:
             notebook_id = self.session.notebook_state.id
             if use_cache and cached_artifact is not None and consumed_vars:
                 for var_name in consumed_vars:
-                    canonical_id = (
-                        f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+                    canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+                    var_prov = hashlib.sha256(f"{provenance_hash}:{var_name}".encode()).hexdigest()
+                    canonical_art = artifact_mgr.artifact_store.get_latest_version(
+                        canonical_id,
                     )
-                    var_prov = hashlib.sha256(
-                        f"{provenance_hash}:{var_name}".encode()
-                    ).hexdigest()
-                    canonical_art = (
-                        artifact_mgr.artifact_store.get_latest_version(
-                            canonical_id,
-                        )
-                    )
-                    if (
-                        canonical_art is None
-                        or canonical_art.provenance_hash != var_prov
-                    ):
+                    if canonical_art is None or canonical_art.provenance_hash != var_prov:
                         logger.info(
                             "Cache hit for cell %s invalidated: "
                             "canonical artifact %s %s "
@@ -618,9 +606,7 @@ class CellExecutor:
                 cached_artifact is not None or bool(cached_display_outputs),
             )
 
-            if cached_artifact is not None or (
-                not consumed_vars and cached_display_outputs
-            ):
+            if cached_artifact is not None or (not consumed_vars and cached_display_outputs):
                 if remote_metadata.get("remote_transport") == "signed":
                     remote_metadata.setdefault("remote_build_state", "ready")
                 # Cache hit — update cell state and return.
@@ -633,40 +619,26 @@ class CellExecutor:
                     )
                     # Populate per-variable URIs from canonical artifacts
                     for var_name in consumed_vars:
-                        canonical_id = (
-                            f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
-                        )
-                        canonical_art = (
-                            artifact_mgr.artifact_store.get_latest_version(
-                                canonical_id,
-                            )
+                        canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+                        canonical_art = artifact_mgr.artifact_store.get_latest_version(
+                            canonical_id,
                         )
                         if canonical_art:
-                            uri = (
-                                f"strata://artifact/{canonical_art.id}"
-                                f"@v={canonical_art.version}"
-                            )
+                            uri = f"strata://artifact/{canonical_art.id}@v={canonical_art.version}"
                             cell.artifact_uris[var_name] = uri
                             cell.artifact_uri = uri  # backward compat
                 cached_result = CellExecutionResult(
                     cell_id=cell_id,
                     success=True,
                     outputs={},
-                    display_outputs=[
-                        output.model_dump() for output in cached_display_outputs
-                    ],
+                    display_outputs=[output.model_dump() for output in cached_display_outputs],
                     display_output=(
-                        cached_display_outputs[-1].model_dump()
-                        if cached_display_outputs
-                        else None
+                        cached_display_outputs[-1].model_dump() if cached_display_outputs else None
                     ),
                     duration_ms=duration_ms,
                     cache_hit=True,
                     artifact_uri=(
-                        (
-                            f"strata://artifact/{cached_artifact.id}"
-                            f"@v={cached_artifact.version}"
-                        )
+                        (f"strata://artifact/{cached_artifact.id}@v={cached_artifact.version}")
                         if cached_artifact is not None
                         else (
                             cached_display_outputs[-1].artifact_uri
@@ -690,8 +662,7 @@ class CellExecutor:
                 output_dir = Path(tmpdir)
                 remote_build_id = (
                     f"nbbuild-{uuid.uuid4().hex[:12]}"
-                    if worker_spec is not None
-                    and worker_transport(worker_spec) == "signed"
+                    if worker_spec is not None and worker_transport(worker_spec) == "signed"
                     else None
                 )
                 remote_metadata = self._remote_execution_metadata(
@@ -727,7 +698,10 @@ class CellExecutor:
 
                 duration_ms = (time.time() - start_time) * 1000
                 exec_result = self._parse_result(
-                    cell_id, result, duration_ms, execution_method,
+                    cell_id,
+                    result,
+                    duration_ms,
+                    execution_method,
                 ).apply_remote_metadata(**remote_metadata)
 
                 # ⑤ Store output artifacts for consumed variables.
@@ -784,7 +758,7 @@ class CellExecutor:
                                 "store output artifacts. Check server logs."
                             ),
                             execution_method=exec_result.execution_method,
-                            ).apply_remote_metadata(**remote_metadata)
+                        ).apply_remote_metadata(**remote_metadata)
 
                     if exec_result.success:
                         exec_result.display_outputs = self._store_display_outputs(
@@ -797,9 +771,7 @@ class CellExecutor:
                             env_hash=env_hash,
                         )
                         exec_result.display_output = (
-                            exec_result.display_outputs[-1]
-                            if exec_result.display_outputs
-                            else None
+                            exec_result.display_outputs[-1] if exec_result.display_outputs else None
                         )
 
                     # ⑥ Sync-back read-write mounts after successful execution.
@@ -961,7 +933,9 @@ class CellExecutor:
 
         if result is None:
             result = await self._run_harness(
-                manifest_path, venv_path, timeout_seconds,
+                manifest_path,
+                venv_path,
+                timeout_seconds,
             )
 
         return result, output_dir, execution_method, resolved_mounts
@@ -1009,15 +983,12 @@ class CellExecutor:
         for mount in mount_specs:
             if mount.uri.startswith("file://"):
                 raise RuntimeError(
-                    "Remote executor workers do not support file:// mounts: "
-                    f"'{mount.name}'"
+                    f"Remote executor workers do not support file:// mounts: '{mount.name}'"
                 )
 
         executor_url = str(worker_spec.config.get("url", "")).strip()
         if not executor_url:
-            raise RuntimeError(
-                f"Executor worker '{worker_spec.name}' is missing config.url"
-            )
+            raise RuntimeError(f"Executor worker '{worker_spec.name}' is missing config.url")
 
         transport = str(worker_spec.config.get("transport", "direct")).strip().lower()
         if transport in {"signed", "manifest", "build"}:
@@ -1100,8 +1071,7 @@ class CellExecutor:
             ) from exc
         except httpx.HTTPError as exc:
             raise RemoteExecutionError(
-                f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
-                ,
+                f"Remote executor request failed for worker '{worker_spec.name}': {exc}",
                 remote_error_code="REQUEST_FAILED",
             ) from exc
 
@@ -1113,9 +1083,7 @@ class CellExecutor:
         if response.status_code != 200:
             detail = self._extract_remote_error(response)
             raise RemoteExecutionError(
-                f"Remote executor '{worker_spec.name}' returned "
-                f"{response.status_code}: {detail}"
-                ,
+                f"Remote executor '{worker_spec.name}' returned {response.status_code}: {detail}",
                 remote_error_code="EXECUTOR_HTTP_ERROR",
             )
 
@@ -1123,16 +1091,14 @@ class CellExecutor:
         if protocol and protocol != EXECUTOR_PROTOCOL_VERSION:
             raise RemoteExecutionError(
                 f"Remote executor '{worker_spec.name}' returned unsupported "
-                f"protocol version {protocol!r}"
-                ,
+                f"protocol version {protocol!r}",
                 remote_error_code="PROTOCOL_ERROR",
             )
         notebook_protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
         if notebook_protocol and notebook_protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
             raise RemoteExecutionError(
                 f"Remote executor '{worker_spec.name}' returned unsupported "
-                f"notebook protocol version {notebook_protocol!r}"
-                ,
+                f"notebook protocol version {notebook_protocol!r}",
                 remote_error_code="PROTOCOL_ERROR",
             )
 
@@ -1179,9 +1145,7 @@ class CellExecutor:
 
         executor_url = str(worker_spec.config.get("url", "")).strip()
         if not executor_url:
-            raise RuntimeError(
-                f"Executor worker '{worker_spec.name}' is missing config.url"
-            )
+            raise RuntimeError(f"Executor worker '{worker_spec.name}' is missing config.url")
 
         base_url = str(worker_spec.config.get("strata_url", "")).strip() or state.config.server_url
         principal = get_principal()
@@ -1189,9 +1153,7 @@ class CellExecutor:
         principal_id = principal.id if principal is not None else None
 
         build_id = build_id or f"nbbuild-{uuid.uuid4().hex[:12]}"
-        artifact_id = (
-            f"nb_remote_{self.session.notebook_state.id}_{build_id}"
-        )
+        artifact_id = f"nb_remote_{self.session.notebook_state.id}_{build_id}"
         artifact_version: int | None = None
         failure_recorded = False
 
@@ -1227,11 +1189,7 @@ class CellExecutor:
             principal_id=principal_id,
         )
         input_uris = sorted(
-            {
-                str(spec["uri"])
-                for spec in staged_input_specs.values()
-                if spec.get("uri")
-            }
+            {str(spec["uri"]) for spec in staged_input_specs.values() if spec.get("uri")}
         )
 
         build_params = {
@@ -1305,9 +1263,7 @@ class CellExecutor:
             ).to_dict()
 
             manifest_execute_url = self._manifest_execute_url(executor_url)
-            async with httpx.AsyncClient(
-                timeout=max(timeout_seconds + 10.0, 30.0)
-            ) as client:
+            async with httpx.AsyncClient(timeout=max(timeout_seconds + 10.0, 30.0)) as client:
                 response = await client.post(manifest_execute_url, json=manifest)
         except asyncio.CancelledError:
             _mark_failed("Notebook manifest execution cancelled", "CANCELLED")
@@ -1325,16 +1281,14 @@ class CellExecutor:
                 "REQUEST_FAILED",
             )
             raise RemoteExecutionError(
-                f"Remote executor request failed for worker '{worker_spec.name}': {exc}"
-                ,
+                f"Remote executor request failed for worker '{worker_spec.name}': {exc}",
                 remote_build_state="failed",
                 remote_error_code="REQUEST_FAILED",
             ) from exc
         except Exception as exc:
             _mark_failed(str(exc), "SETUP_FAILED")
             raise RemoteExecutionError(
-                f"Remote executor setup failed for worker '{worker_spec.name}': {exc}"
-                ,
+                f"Remote executor setup failed for worker '{worker_spec.name}': {exc}",
                 remote_build_state="failed",
                 remote_error_code="SETUP_FAILED",
             ) from exc
@@ -1383,9 +1337,7 @@ class CellExecutor:
 
             build = build_store.get_build(build_id)
             if build is None or build.state != "ready":
-                build_error_message = (
-                    build.error_message if build is not None else None
-                )
+                build_error_message = build.error_message if build is not None else None
                 build_error_code = (
                     build.error_code if build is not None and build.error_code else None
                 )
@@ -1579,7 +1531,9 @@ class CellExecutor:
 
         # Merge with priority
         merged = resolve_cell_mounts(
-            [], cell_mounts_spec, annotation_mounts,
+            [],
+            cell_mounts_spec,
+            annotation_mounts,
         )
 
         return merged
@@ -1696,12 +1650,12 @@ class CellExecutor:
             # return immediately on cache hit (provenance matches),
             # or re-execute if the upstream is stale.
             result = await self.execute_cell(
-                upstream_id, upstream_cell.source,
+                upstream_id,
+                upstream_cell.source,
             )
             if not result.success:
                 raise RuntimeError(
-                    f"Failed to materialise upstream cell {upstream_id}: "
-                    f"{result.error}"
+                    f"Failed to materialise upstream cell {upstream_id}: {result.error}"
                 )
             executed_upstreams.add(upstream_id)
 
@@ -1745,7 +1699,8 @@ class CellExecutor:
                     artifact_id = parts[-1].split("@")[0]
                     version = int(parts[-1].split("@v=")[1])
                     artifact = artifact_mgr.artifact_store.get_artifact(
-                        artifact_id, version,
+                        artifact_id,
+                        version,
                     )
                     if artifact:
                         hashes.append(artifact.provenance_hash)
@@ -1759,7 +1714,9 @@ class CellExecutor:
     # ------------------------------------------------------------------
 
     def _load_input_blobs(
-        self, cell_id: str, output_dir: Path,
+        self,
+        cell_id: str,
+        output_dir: Path,
     ) -> dict[str, dict[str, str]]:
         """Load upstream variable blobs from the artifact store.
 
@@ -1786,14 +1743,10 @@ class CellExecutor:
             if upstream_cell is None:
                 continue
 
-            referenced_vars = [
-                v for v in cell.references if v in upstream_cell.defines
-            ]
+            referenced_vars = [v for v in cell.references if v in upstream_cell.defines]
 
             for var_name in referenced_vars:
-                artifact_id = (
-                    f"nb_{notebook_id}_cell_{upstream_id}_var_{var_name}"
-                )
+                artifact_id = f"nb_{notebook_id}_cell_{upstream_id}_var_{var_name}"
                 try:
                     artifact = artifact_mgr.artifact_store.get_latest_version(
                         artifact_id,
@@ -1810,7 +1763,8 @@ class CellExecutor:
                         continue
 
                     blob_data = artifact_mgr.load_artifact_data(
-                        artifact_id, artifact.version,
+                        artifact_id,
+                        artifact.version,
                     )
 
                     # Determine content type.
@@ -1840,14 +1794,10 @@ class CellExecutor:
                     input_specs[var_name] = {
                         "content_type": content_type,
                         "file": f"{var_name}{ext}",
-                        "uri": (
-                            f"strata://artifact/{artifact.id}"
-                            f"@v={artifact.version}"
-                        ),
+                        "uri": (f"strata://artifact/{artifact.id}@v={artifact.version}"),
                     }
                     logger.info(
-                        "Loaded input %s from artifact store "
-                        "(%s@v=%d, %d bytes, %s)",
+                        "Loaded input %s from artifact store (%s@v=%d, %d bytes, %s)",
                         var_name,
                         artifact_id,
                         artifact.version,
@@ -1949,14 +1899,12 @@ class CellExecutor:
                             env_hash=env_hash,
                         )
                         uri = (
-                            f"strata://artifact/{artifact_version.id}"
-                            f"@v={artifact_version.version}"
+                            f"strata://artifact/{artifact_version.id}@v={artifact_version.version}"
                         )
                         cell.artifact_uris[var_name] = uri
                         cell.artifact_uri = uri  # backward compat
                         logger.info(
-                            "Stored output %s for cell %s as %s@v=%d "
-                            "(%d bytes, %s)",
+                            "Stored output %s for cell %s as %s@v=%d (%d bytes, %s)",
                             var_name,
                             cell_id,
                             artifact_version.id,
@@ -2033,9 +1981,7 @@ class CellExecutor:
                 source_hash=source_hash,
                 env_hash=env_hash,
             )
-            display_uri = (
-                f"strata://artifact/{artifact_version.id}@v={artifact_version.version}"
-            )
+            display_uri = f"strata://artifact/{artifact_version.id}@v={artifact_version.version}"
             stored_display = dict(display_output)
             stored_display["artifact_uri"] = display_uri
             stored_displays.append(stored_display)
@@ -2082,9 +2028,7 @@ class CellExecutor:
         for var_name in exportable_vars:
             symbol = export_plan.exported_symbols[var_name]
             descriptor = {
-                "module_name": (
-                    f"nb_{notebook_id}_{cell_id}_{var_name}_{source_hash[:12]}"
-                ),
+                "module_name": (f"nb_{notebook_id}_{cell_id}_{var_name}_{source_hash[:12]}"),
                 "symbol_name": var_name,
                 "kind": symbol.kind,
                 "source": export_plan.module_source,
@@ -2111,7 +2055,10 @@ class CellExecutor:
     # ------------------------------------------------------------------
 
     async def _run_harness(
-        self, manifest_path: Path, venv_python: Path, timeout_seconds: float,
+        self,
+        manifest_path: Path,
+        venv_python: Path,
+        timeout_seconds: float,
     ) -> dict[str, Any]:
         """Run the harness script via uv."""
         cmd = [
@@ -2133,7 +2080,8 @@ class CellExecutor:
 
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds,
+                proc.communicate(),
+                timeout=timeout_seconds,
             )
         except asyncio.CancelledError:
             logger.info(
@@ -2156,9 +2104,7 @@ class CellExecutor:
 
         result_path = manifest_path.parent / "manifest.json"
         if not result_path.exists():
-            raise RuntimeError(
-                f"Harness did not produce manifest.json: {stderr.decode()}"
-            )
+            raise RuntimeError(f"Harness did not produce manifest.json: {stderr.decode()}")
 
         with open(result_path) as f:
             return json.load(f)

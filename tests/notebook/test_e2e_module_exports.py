@@ -74,9 +74,7 @@ class TestLocalModuleExports:
             NotebookBuilder(tmp)
             .add_cell(
                 "c1",
-                "class Box:\n"
-                "    def __init__(self, value):\n"
-                "        self.value = value\n",
+                "class Box:\n    def __init__(self, value):\n        self.value = value\n",
             )
             .add_cell("c2", "result = Box(7).value", after="c1")
         )

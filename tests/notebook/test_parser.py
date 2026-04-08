@@ -85,9 +85,7 @@ def test_parse_notebook_missing_cells_directory():
             name="Missing Cell Notebook",
             created_at=now,
             updated_at=now,
-            cells=[
-                CellMeta(id="cell-1", file="missing.py", language="python", order=0)
-            ],
+            cells=[CellMeta(id="cell-1", file="missing.py", language="python", order=0)],
         )
         write_notebook_toml(notebook_dir, notebook_toml)
 
@@ -172,9 +170,7 @@ def test_parse_notebook_merges_notebook_and_cell_mounts():
         notebook_state = parse_notebook(notebook_dir)
         assert len(notebook_state.mounts) == 2
         mounts = {mount.name: mount for mount in notebook_state.cells[0].mounts}
-        overrides = {
-            mount.name: mount for mount in notebook_state.cells[0].mount_overrides
-        }
+        overrides = {mount.name: mount for mount in notebook_state.cells[0].mount_overrides}
 
         assert set(mounts) == {"raw_data", "scratch"}
         assert mounts["raw_data"].uri == "s3://bucket/raw"
@@ -257,9 +253,7 @@ def test_parse_notebook_preserves_worker_registry():
         ]
         assert notebook_state.workers[1].backend == WorkerBackendType.EXECUTOR
         assert notebook_state.workers[1].runtime_id == "cuda-12.4"
-        assert notebook_state.workers[1].config == {
-            "url": "https://executor.internal/gpu-a100"
-        }
+        assert notebook_state.workers[1].config == {"url": "https://executor.internal/gpu-a100"}
 
 
 def test_parse_notebook_resolves_notebook_and_cell_runtime_settings():

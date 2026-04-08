@@ -39,9 +39,7 @@ def test_remote_bundle_round_trip_success(tmp_path):
     assert unpacked["success"] is True
     assert unpacked["stdout"] == "hello\n"
     assert unpacked["variables"]["x"]["file"] == "x.json"
-    assert json.loads((unpacked_dir / "x.json").read_text(encoding="utf-8")) == {
-        "value": 1
-    }
+    assert json.loads((unpacked_dir / "x.json").read_text(encoding="utf-8")) == {"value": 1}
 
 
 def test_remote_bundle_round_trip_failure(tmp_path):

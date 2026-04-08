@@ -94,8 +94,7 @@ def _resolve_object_codec(codec_name: str | None = None) -> ObjectCodec:
     if selected == "cloudpickle":
         return _CloudPickleObjectCodec()
     raise ValueError(
-        f"Unknown notebook object codec '{selected}'. "
-        "Supported codecs: pickle, cloudpickle"
+        f"Unknown notebook object codec '{selected}'. Supported codecs: pickle, cloudpickle"
     )
 
 
@@ -118,6 +117,7 @@ def _unwrap_codec_payload(obj: Any) -> tuple[str, bytes] | None:
         raise ValueError("Invalid notebook object codec envelope")
     return codec_name, payload
 
+
 # ---------------------------------------------------------------------------
 # Content-type detection
 # ---------------------------------------------------------------------------
@@ -133,6 +133,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
 
     try:
         import pyarrow as pa
+
         if isinstance(value, (pa.Table, pa.RecordBatch)):
             return "arrow/ipc"
     except ImportError:
@@ -140,6 +141,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
 
     try:
         import pandas as pd
+
         if isinstance(value, (pd.DataFrame, pd.Series)):
             return "arrow/ipc"
     except ImportError:
@@ -147,6 +149,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
 
     try:
         import numpy as np
+
         if isinstance(value, np.ndarray):
             return "arrow/ipc"
     except ImportError:
@@ -186,9 +189,7 @@ def _is_display_variable_name(variable_name: str | None) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def serialize_value(
-    value: Any, output_dir: Path | str, variable_name: str
-) -> dict[str, Any]:
+def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> dict[str, Any]:
     """Serialize *value* to *output_dir* and return a metadata dict.
 
     The metadata dict always contains:
@@ -223,9 +224,7 @@ def serialize_value(
         return _serialize_pickle(value, output_dir, variable_name)
 
 
-def _serialize_arrow(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     import pyarrow as pa
 
     if isinstance(value, pa.RecordBatch):
@@ -235,10 +234,12 @@ def _serialize_arrow(
     else:
         try:
             import pandas as pd
+
             if isinstance(value, (pd.DataFrame, pd.Series)):
                 table = pa.Table.from_pandas(value)
             else:
                 import numpy as np
+
                 if isinstance(value, np.ndarray):
                     table = pa.table({"array": value})
                 else:
@@ -310,9 +311,7 @@ def _coerce_markdown_text(value: Any) -> str:
     raise ValueError("_repr_markdown_() must return str or UTF-8 bytes")
 
 
-def _serialize_markdown(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_markdown(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     markdown_text = _coerce_markdown_text(value)
     filename = f"{variable_name}.md"
     filepath = output_dir / filename
@@ -326,9 +325,7 @@ def _serialize_markdown(
     }
 
 
-def _serialize_image_png(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_image_png(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     png_bytes: bytes | None = None
     width: int | None = None
     height: int | None = None
@@ -390,18 +387,14 @@ def _serialize_image_png(
         "content_type": "image/png",
         "file": filename,
         "bytes": filepath.stat().st_size,
-        "inline_data_url": (
-            f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"
-        ),
+        "inline_data_url": (f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"),
         "width": width,
         "height": height,
         "preview": None,
     }
 
 
-def _serialize_dataframe_json(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_dataframe_json(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     """JSON fallback for DataFrames when pyarrow is unavailable.
 
     Produces the same metadata shape as ``_serialize_arrow`` so the
@@ -409,6 +402,7 @@ def _serialize_dataframe_json(
     """
     try:
         import pandas as pd
+
         if isinstance(value, pd.Series):
             value = value.to_frame()
         columns = list(value.columns)
@@ -436,9 +430,7 @@ def _serialize_dataframe_json(
     }
 
 
-def _serialize_json(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_json(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     filename = f"{variable_name}.json"
     filepath = output_dir / filename
     with open(filepath, "w", encoding="utf-8") as f:
@@ -451,9 +443,7 @@ def _serialize_json(
     }
 
 
-def _serialize_module(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_module(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     module_name = getattr(value, "__name__", variable_name)
     filename = f"{variable_name}.module.json"
     filepath = output_dir / filename
@@ -467,9 +457,7 @@ def _serialize_module(
     }
 
 
-def _serialize_cell_instance(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_cell_instance(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     module = sys.modules.get(type(value).__module__)
     module_source = getattr(module, "__strata_cell_module_source__", None)
     if not isinstance(module_source, str) or not module_source:
@@ -504,9 +492,7 @@ def _serialize_cell_instance(
     }
 
 
-def _serialize_pickle(
-    value: Any, output_dir: Path, variable_name: str
-) -> dict[str, Any]:
+def _serialize_pickle(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
     filename = f"{variable_name}.pickle"
     filepath = output_dir / filename
     type_name = type(value).__name__
@@ -683,9 +669,7 @@ def _deserialize_cell_instance(file_path: Path) -> Any:
     if not isinstance(module_name, str) or not isinstance(class_name, str):
         raise ValueError("Invalid notebook-exported instance descriptor")
     if not isinstance(module_source, str):
-        raise ValueError(
-            f"Exported notebook instance '{class_name}' has invalid module source"
-        )
+        raise ValueError(f"Exported notebook instance '{class_name}' has invalid module source")
 
     module = _ensure_cell_module(module_name, module_source, file_path)
     try:

@@ -369,11 +369,13 @@ class TestPutMultipleTypes:
 
         try:
             # Create Arrow table
-            table = pa.table({
-                "id": [1, 2, 3],
-                "value": [10.0, 20.0, 30.0],
-                "name": ["a", "b", "c"],
-            })
+            table = pa.table(
+                {
+                    "id": [1, 2, 3],
+                    "value": [10.0, 20.0, 30.0],
+                    "name": ["a", "b", "c"],
+                }
+            )
 
             artifact = client.put(
                 inputs=[],
@@ -400,11 +402,13 @@ class TestPutMultipleTypes:
 
         try:
             # Create Pandas DataFrame
-            df = pd.DataFrame({
-                "x": [1, 2, 3, 4],
-                "y": [10, 20, 30, 40],
-                "label": ["cat", "dog", "bird", "fish"],
-            })
+            df = pd.DataFrame(
+                {
+                    "x": [1, 2, 3, 4],
+                    "y": [10, 20, 30, 40],
+                    "label": ["cat", "dog", "bird", "fish"],
+                }
+            )
 
             artifact = client.put(
                 inputs=[],
@@ -595,10 +599,12 @@ class TestAsyncPut:
         """Test async client put() with Arrow Table."""
         import pyarrow as pa
 
-        table = pa.table({
-            "id": [1, 2, 3],
-            "value": [10.0, 20.0, 30.0],
-        })
+        table = pa.table(
+            {
+                "id": [1, 2, 3],
+                "value": [10.0, 20.0, 30.0],
+            }
+        )
 
         artifact = await async_client.put(
             inputs=[],
@@ -619,10 +625,12 @@ class TestAsyncPut:
         """Test async client put() with Pandas DataFrame."""
         import pandas as pd
 
-        df = pd.DataFrame({
-            "x": [1, 2],
-            "y": [3, 4],
-        })
+        df = pd.DataFrame(
+            {
+                "x": [1, 2],
+                "y": [3, 4],
+            }
+        )
 
         artifact = await async_client.put(
             inputs=[],

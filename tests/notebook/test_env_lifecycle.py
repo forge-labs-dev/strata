@@ -221,9 +221,7 @@ class TestSessionVenvPython:
         assert session.environment_sync_notice is None
         assert session.environment_interpreter_source == "venv"
 
-    def test_refresh_environment_runtime_reuses_persisted_python_metadata(
-        self, tmp_path: Path
-    ):
+    def test_refresh_environment_runtime_reuses_persisted_python_metadata(self, tmp_path: Path):
         """Refreshing runtime should trust persisted notebook metadata before probing."""
         nb_dir = create_notebook(tmp_path, "refresh_runtime_metadata")
         from strata.notebook.parser import parse_notebook
@@ -270,9 +268,7 @@ class TestSessionVenvPython:
         assert session.environment_sync_state == "ready"
         assert session.environment_interpreter_source == "venv"
 
-    def test_refresh_environment_runtime_falls_back_when_venv_missing(
-        self, tmp_path: Path
-    ):
+    def test_refresh_environment_runtime_falls_back_when_venv_missing(self, tmp_path: Path):
         """If the notebook venv is missing, refresh should fall back to uv sync."""
         import shutil
 
@@ -388,9 +384,7 @@ class TestDependencyChangeRefresh:
         assert current_job["status"] == "completed"
 
     @pytest.mark.asyncio
-    async def test_submit_environment_import_job_emits_warnings(
-        self, tmp_path: Path, monkeypatch
-    ):
+    async def test_submit_environment_import_job_emits_warnings(self, tmp_path: Path, monkeypatch):
         """Async environment imports should surface warnings on the finished job payload."""
         nb_dir = create_notebook(tmp_path, "dependency_import_job")
         from strata.notebook.parser import parse_notebook

@@ -29,15 +29,17 @@ def _fake_uv_sync(
     lockfile = notebook_dir / "uv.lock"
     if not lockfile.exists():
         lockfile.write_text(
-            '\n'.join([
-                "version = 1",
-                'requires-python = ">=3.12"',
-                "",
-                "[[package]]",
-                'name = "pyarrow"',
-                'version = "0.0.0"',
-                "",
-            ]),
+            "\n".join(
+                [
+                    "version = 1",
+                    'requires-python = ">=3.12"',
+                    "",
+                    "[[package]]",
+                    'name = "pyarrow"',
+                    'version = "0.0.0"',
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -45,10 +47,7 @@ def _fake_uv_sync(
     venv_python.parent.mkdir(parents=True, exist_ok=True)
     if not venv_python.exists():
         venv_python.write_text(
-            (
-                "#!/bin/sh\n"
-                f'exec {shlex.quote(sys.executable)} "$@"\n'
-            ),
+            (f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n'),
             encoding="utf-8",
         )
         venv_python.chmod(0o755)
@@ -59,6 +58,7 @@ def _fake_uv_sync(
 @pytest.fixture(autouse=True)
 def fast_notebook_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
     """Stub notebook env setup unless a test explicitly opts into integration."""
+
     async def _noop_start(self):
         self._started = True
 
@@ -103,9 +103,7 @@ def fast_notebook_env(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRe
 
         result_path = manifest_path.parent / "manifest.json"
         if not result_path.exists():
-            raise RuntimeError(
-                f"Harness did not produce manifest.json: {stderr.decode()}"
-            )
+            raise RuntimeError(f"Harness did not produce manifest.json: {stderr.decode()}")
 
         with open(result_path) as f:
             return json.load(f)

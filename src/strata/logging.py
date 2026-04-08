@@ -164,9 +164,7 @@ def get_trace_context() -> dict[str, str]:
 def _normalize_exc_info(
     exc_info: ExcInfo,
 ) -> (
-    tuple[type[BaseException], BaseException, TracebackType | None]
-    | tuple[None, None, None]
-    | None
+    tuple[type[BaseException], BaseException, TracebackType | None] | tuple[None, None, None] | None
 ):
     """Normalize logging exc_info into the stdlib makeRecord shape."""
     if exc_info is True:

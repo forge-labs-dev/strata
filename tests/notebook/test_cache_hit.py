@@ -4,7 +4,6 @@ Note: Full integration tests require a complete notebook environment.
 These tests are simplified unit tests for the artifact caching logic.
 """
 
-
 from strata.notebook.artifact_integration import NotebookArtifactManager
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 

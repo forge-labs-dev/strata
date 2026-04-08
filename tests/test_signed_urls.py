@@ -291,7 +291,9 @@ class TestBuildManifest:
         assert manifest.input_urls[1].version == 3
         assert manifest.output_url.build_id == "build-123"
         assert manifest.output_url.max_bytes == 10 * 1024 * 1024
-        assert manifest.finalize_url.startswith("http://localhost:8765/v1/builds/build-123/finalize?")
+        assert manifest.finalize_url.startswith(
+            "http://localhost:8765/v1/builds/build-123/finalize?"
+        )
         assert "signature=" in manifest.finalize_url
 
     def test_build_manifest_to_dict(self):

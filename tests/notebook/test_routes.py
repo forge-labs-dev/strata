@@ -105,10 +105,7 @@ def test_open_notebook():
         notebook_dir = create_notebook(tmpdir_path, "Test Notebook")
 
         # Open it via API
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
 
         assert response.status_code == 200
         data = response.json()
@@ -223,10 +220,7 @@ def test_open_notebook_rehydrates_cached_status():
 
         asyncio.run(_prime())
 
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
 
         assert response.status_code == 200
         cells = {cell["id"]: cell for cell in response.json()["cells"]}
@@ -310,10 +304,7 @@ def test_open_notebook_not_found():
     """Test opening a non-existent notebook."""
     client = TestClient(create_test_app())
 
-    response = client.post(
-        "/v1/notebooks/open",
-        json={"path": "/nonexistent/notebook"}
-    )
+    response = client.post("/v1/notebooks/open", json={"path": "/nonexistent/notebook"})
 
     assert response.status_code == 404
 
@@ -355,8 +346,7 @@ def test_create_notebook_endpoint():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         response = client.post(
-            "/v1/notebooks/create",
-            json={"parent_path": tmpdir, "name": "New Notebook"}
+            "/v1/notebooks/create", json={"parent_path": tmpdir, "name": "New Notebook"}
         )
 
         assert response.status_code == 200
@@ -1008,10 +998,7 @@ def test_list_cells():
         write_cell(notebook_dir, cell1_id, "x = 1")
 
         # Open notebook to get session ID
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # List cells
@@ -1595,17 +1582,13 @@ def test_update_cell_source():
         add_cell_to_notebook(notebook_dir, cell_id)
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Update cell
         new_source = "x = 2 + 2"
         response = client.put(
-            f"/v1/notebooks/{session_id}/cells/{cell_id}",
-            json={"source": new_source}
+            f"/v1/notebooks/{session_id}/cells/{cell_id}", json={"source": new_source}
         )
         assert response.status_code == 200
         data = response.json()
@@ -1628,17 +1611,11 @@ def test_add_cell():
         notebook_dir = create_notebook(tmpdir_path, "Add Cell Test")
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Add cell
-        response = client.post(
-            f"/v1/notebooks/{session_id}/cells",
-            json={}
-        )
+        response = client.post(f"/v1/notebooks/{session_id}/cells", json={})
         assert response.status_code == 200
         data = response.json()
         assert "id" in data
@@ -1658,16 +1635,11 @@ def test_delete_cell():
         add_cell_to_notebook(notebook_dir, cell_id)
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Delete cell
-        response = client.delete(
-            f"/v1/notebooks/{session_id}/cells/{cell_id}"
-        )
+        response = client.delete(f"/v1/notebooks/{session_id}/cells/{cell_id}")
         assert response.status_code == 200
 
         # Verify it's deleted
@@ -1693,16 +1665,12 @@ def test_reorder_cells():
         add_cell_to_notebook(notebook_dir, cell2_id)
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Reorder
         response = client.put(
-            f"/v1/notebooks/{session_id}/cells/reorder",
-            json={"cell_ids": [cell2_id, cell1_id]}
+            f"/v1/notebooks/{session_id}/cells/reorder", json={"cell_ids": [cell2_id, cell1_id]}
         )
         assert response.status_code == 200
         data = response.json()
@@ -1721,17 +1689,11 @@ def test_rename_notebook():
         notebook_dir = create_notebook(tmpdir_path, "Original Name")
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Rename
-        response = client.put(
-            f"/v1/notebooks/{session_id}/name",
-            json={"name": "New Name"}
-        )
+        response = client.put(f"/v1/notebooks/{session_id}/name", json={"name": "New Name"})
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "New Name"
@@ -1771,16 +1733,11 @@ def test_execute_cell():
         write_cell(notebook_dir, cell_id, "x = 1 + 1\ny = 'hello'")
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Execute cell
-        response = client.post(
-            f"/v1/notebooks/{session_id}/cells/{cell_id}/execute"
-        )
+        response = client.post(f"/v1/notebooks/{session_id}/cells/{cell_id}/execute")
         assert response.status_code == 200
         data = response.json()
 
@@ -1810,15 +1767,10 @@ def test_execute_cell_updates_session_state_and_history():
         add_cell_to_notebook(notebook_dir, "consumer", after_cell_id=cell_id)
         write_cell(notebook_dir, "consumer", "y = x + 1")
 
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
-        response = client.post(
-            f"/v1/notebooks/{session_id}/cells/{cell_id}/execute"
-        )
+        response = client.post(f"/v1/notebooks/{session_id}/cells/{cell_id}/execute")
         assert response.status_code == 200
         assert response.json()["status"] == "ready"
 
@@ -1846,14 +1798,9 @@ def test_execute_cell_not_found():
         notebook_dir = create_notebook(tmpdir_path, "Execute Test")
 
         # Open notebook
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)}
-        )
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         session_id = response.json()["session_id"]
 
         # Try to execute non-existent cell
-        response = client.post(
-            f"/v1/notebooks/{session_id}/cells/nonexistent/execute"
-        )
+        response = client.post(f"/v1/notebooks/{session_id}/cells/nonexistent/execute")
         assert response.status_code == 404

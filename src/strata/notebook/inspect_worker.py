@@ -56,18 +56,21 @@ def main() -> None:
         # Try to add common imports
         try:
             import pandas as pd
+
             namespace["pd"] = pd
         except ImportError:
             pass
 
         try:
             import numpy as np
+
             namespace["np"] = np
         except ImportError:
             pass
 
         try:
             import pyarrow as pa
+
             namespace["pa"] = pa
         except ImportError:
             pass

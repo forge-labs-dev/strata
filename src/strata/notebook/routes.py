@@ -163,7 +163,7 @@ def validate_package_name(package: str) -> str:
     """
     if len(package) > 200:
         raise ValueError("Package specifier too long")
-    if any(c in package for c in ';&|`$(){}!<>"\'\n\r\t'):
+    if any(c in package for c in ";&|`$(){}!<>\"'\n\r\t"):
         raise ValueError("Package specifier contains invalid characters")
     return package.strip()
 
@@ -172,15 +172,11 @@ def _validate_notebook_path(user_path: str, label: str = "path") -> Path:
     """Validate that a notebook path is safe and confined to the storage root."""
     path = Path(user_path)
     if ".." in path.parts:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid {label}: path traversal not allowed"
-        )
+        raise HTTPException(status_code=400, detail=f"Invalid {label}: path traversal not allowed")
 
     root = _get_notebook_storage_root()
     resolved = (
-        (root / path).resolve()
-        if root is not None and not path.is_absolute()
-        else path.resolve()
+        (root / path).resolve() if root is not None and not path.is_absolute() else path.resolve()
     )
 
     if root is not None and resolved != root and root not in resolved.parents:
@@ -194,8 +190,8 @@ def _validate_notebook_path(user_path: str, label: str = "path") -> Path:
 
 def _safe_filename(name: str) -> str:
     """Sanitize a string for use in Content-Disposition."""
-    safe = re.sub(r'[^\w\s.-]', '', name)
-    safe = re.sub(r'\s+', '_', safe).strip('_') or 'notebook'
+    safe = re.sub(r"[^\w\s.-]", "", name)
+    safe = re.sub(r"\s+", "_", safe).strip("_") or "notebook"
     return safe
 
 
@@ -222,9 +218,7 @@ async def _serialize_worker_catalog(
             session.notebook_state,
             force_refresh=force_refresh,
         ),
-        "definitions_editable": notebook_worker_definitions_editable(
-            session.notebook_state
-        ),
+        "definitions_editable": notebook_worker_definitions_editable(session.notebook_state),
         "health_checked_at": int(time.time() * 1000),
     }
 
@@ -325,9 +319,7 @@ def _serialize_environment_operation_log(raw: object | None) -> dict | None:
 
 def _serialize_result_operation_log(result: object) -> dict:
     """Serialize operation log details from a dependency/import result."""
-    operation_log = _serialize_environment_operation_log(
-        getattr(result, "operation_log", None)
-    )
+    operation_log = _serialize_environment_operation_log(getattr(result, "operation_log", None))
     if operation_log is None:
         return {}
     return {"operation_log": operation_log}
@@ -336,9 +328,7 @@ def _serialize_result_operation_log(result: object) -> dict:
 def _serialize_operation_error_detail(message: str, result: object) -> dict:
     """Build a structured HTTP error detail payload with optional command logs."""
     detail: dict[str, object] = {"message": message}
-    operation_log = _serialize_environment_operation_log(
-        getattr(result, "operation_log", None)
-    )
+    operation_log = _serialize_environment_operation_log(getattr(result, "operation_log", None))
     if operation_log is not None:
         detail["operation_log"] = operation_log
     return detail
@@ -632,8 +622,7 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
                 )
                 session.environment_sync_state = "failed"
                 session.environment_sync_error = (
-                    "Failed to start notebook environment initialization: "
-                    f"{exc}"
+                    f"Failed to start notebook environment initialization: {exc}"
                 )
                 session.environment_sync_notice = None
 
@@ -777,9 +766,7 @@ async def submit_environment_job(notebook_id: str, req: EnvironmentJobRequest) -
             detail=f"Package is required for {req.action} environment jobs",
         )
     if req.action == "sync" and (
-        req.package is not None
-        or req.requirements is not None
-        or req.environment_yaml is not None
+        req.package is not None or req.requirements is not None or req.environment_yaml is not None
     ):
         raise HTTPException(
             status_code=400,
@@ -840,9 +827,7 @@ async def export_environment_requirements(notebook_id: str) -> PlainTextResponse
 
 
 @router.post("/{notebook_id}/environment/requirements.txt")
-async def import_environment_requirements(
-    notebook_id: str, req: ImportRequirementsRequest
-) -> dict:
+async def import_environment_requirements(notebook_id: str, req: ImportRequirementsRequest) -> dict:
     """Replace direct notebook dependencies from ``requirements.txt`` text."""
     session = _session_manager.get_session(notebook_id)
     if not session:
@@ -903,9 +888,7 @@ async def preview_environment_requirements(
 
 
 @router.post("/{notebook_id}/environment/environment.yaml")
-async def import_environment_yaml(
-    notebook_id: str, req: ImportEnvironmentYamlRequest
-) -> dict:
+async def import_environment_yaml(notebook_id: str, req: ImportEnvironmentYamlRequest) -> dict:
     """Best-effort import of Conda-style ``environment.yaml`` text."""
     session = _session_manager.get_session(notebook_id)
     if not session:
@@ -947,9 +930,7 @@ async def import_environment_yaml(
 
 
 @router.post("/{notebook_id}/environment/environment.yaml/preview")
-async def preview_environment_yaml(
-    notebook_id: str, req: PreviewEnvironmentYamlRequest
-) -> dict:
+async def preview_environment_yaml(notebook_id: str, req: PreviewEnvironmentYamlRequest) -> dict:
     """Preview best-effort import of Conda-style ``environment.yaml`` text."""
     session = _session_manager.get_session(notebook_id)
     if not session:
@@ -1033,9 +1014,7 @@ async def get_session(session_id: str) -> JSONResponse:
 
 
 @router.put("/{notebook_id}/cells/reorder")
-async def reorder_notebook_cells(
-    notebook_id: str, req: ReorderCellsRequest
-) -> dict:
+async def reorder_notebook_cells(notebook_id: str, req: ReorderCellsRequest) -> dict:
     """Reorder cells in the notebook."""
     session = _session_manager.get_session(notebook_id)
     if not session:
@@ -1074,9 +1053,7 @@ async def list_cells(notebook_id: str) -> dict:
 
 
 @router.put("/{notebook_id}/cells/{cell_id}")
-async def update_cell_source(
-    notebook_id: str, cell_id: str, req: UpdateCellSourceRequest
-) -> dict:
+async def update_cell_source(notebook_id: str, cell_id: str, req: UpdateCellSourceRequest) -> dict:
     """Update cell source code.
 
     Args:
@@ -1096,9 +1073,7 @@ async def update_cell_source(
         write_cell(session.path, cell_id, req.source)
 
         # Update source in session
-        cell_in_session = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id), None
-        )
+        cell_in_session = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
         if cell_in_session:
             cell_in_session.source = req.source
 
@@ -1460,9 +1435,7 @@ async def delete_cell(notebook_id: str, cell_id: str) -> dict:
 
 
 @router.put("/{notebook_id}/name")
-async def rename_notebook_endpoint(
-    notebook_id: str, req: RenameNotebookRequest
-) -> dict:
+async def rename_notebook_endpoint(notebook_id: str, req: RenameNotebookRequest) -> dict:
     """Rename the notebook.
 
     Args:
@@ -1525,9 +1498,7 @@ async def get_dependencies(notebook_id: str) -> dict:
 
 
 @router.post("/{notebook_id}/dependencies")
-async def add_notebook_dependency(
-    notebook_id: str, req: AddDependencyRequest
-) -> dict:
+async def add_notebook_dependency(notebook_id: str, req: AddDependencyRequest) -> dict:
     """Add a dependency to the notebook.
 
     Runs ``uv add``, updates pyproject.toml + uv.lock, syncs venv.
@@ -1569,9 +1540,7 @@ async def add_notebook_dependency(
 
 
 @router.delete("/{notebook_id}/dependencies/{package_name}")
-async def remove_notebook_dependency(
-    notebook_id: str, package_name: str
-) -> dict:
+async def remove_notebook_dependency(notebook_id: str, package_name: str) -> dict:
     """Remove a dependency from the notebook.
 
     Runs ``uv remove``, updates pyproject.toml + uv.lock, syncs venv.
@@ -1677,9 +1646,7 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
         )
 
     # Find the cell
-    cell = next(
-        (c for c in session.notebook_state.cells if c.id == cell_id), None
-    )
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
     if not cell:
         raise HTTPException(status_code=404, detail="Cell not found")
 
@@ -1700,9 +1667,7 @@ async def execute_cell(notebook_id: str, cell_id: str) -> dict:
     except Exception:
         cell.status = CellStatus.ERROR
         logger.exception("Cell execution failed")
-        raise HTTPException(
-            status_code=500, detail="Execution failed"
-        )
+        raise HTTPException(status_code=500, detail="Execution failed")
 
 
 @router.get("/{notebook_id}/export")

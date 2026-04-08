@@ -142,10 +142,7 @@ def inject_mounts(manifest: dict, namespace: dict) -> None:
 @contextmanager
 def apply_env_overrides(manifest: dict):
     """Apply manifest-scoped environment overrides for one execution."""
-    overrides = {
-        str(key): str(value)
-        for key, value in manifest.get("env", {}).items()
-    }
+    overrides = {str(key): str(value) for key, value in manifest.get("env", {}).items()}
     previous = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
     try:
@@ -158,9 +155,7 @@ def apply_env_overrides(manifest: dict):
                 os.environ[key] = value
 
 
-def execute_cell(
-    source: str, inputs: dict
-) -> tuple[dict, list[Any], str, str, list[dict]]:
+def execute_cell(source: str, inputs: dict) -> tuple[dict, list[Any], str, str, list[dict]]:
     """Execute a cell and return (outputs, displays, stdout, stderr, mutation_warnings)."""
     namespace = dict(inputs)
     display_capture = _display.DisplayCapture()

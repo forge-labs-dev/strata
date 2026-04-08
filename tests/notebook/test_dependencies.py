@@ -511,6 +511,7 @@ class TestDependencyRESTEndpoints:
         nb.add_cell("c3", "print(y)", after="c2")
 
         with open_notebook_session(client, nb.path) as (sid, session):
+
             async def _prime_cells():
                 executor = CellExecutor(session)
                 result1 = await executor.execute_cell("c1", "x = 1")
@@ -520,9 +521,7 @@ class TestDependencyRESTEndpoints:
 
             asyncio.run(_prime_cells())
             session.compute_staleness()
-            statuses_before = {
-                cell.id: cell.status for cell in session.notebook_state.cells
-            }
+            statuses_before = {cell.id: cell.status for cell in session.notebook_state.cells}
             assert statuses_before["c1"] == CellStatus.READY
             assert statuses_before["c2"] == CellStatus.READY
 
@@ -794,9 +793,7 @@ class TestDependencyWebSocket:
                 assert "environment" in msg["payload"]
                 assert "declared_package_count" in msg["payload"]["environment"]
 
-    def test_dependency_add_via_ws_broadcasts_cell_status_updates(
-        self, setup, monkeypatch
-    ):
+    def test_dependency_add_via_ws_broadcasts_cell_status_updates(self, setup, monkeypatch):
         """Lockfile-changing dependency updates broadcast refreshed cell status."""
         client, tmp = setup
         nb = NotebookBuilder(tmp)
@@ -804,6 +801,7 @@ class TestDependencyWebSocket:
         nb.add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
+
             async def fake_mutate_dependency(self, package, *, action):
                 assert action == "add"
                 result = DependencyChangeResult(

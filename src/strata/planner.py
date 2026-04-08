@@ -189,15 +189,11 @@ class ReadPlanner:
         # Parse table URI and build canonical TableIdentity
         # table_uri is treated as input only; table_identity is the canonical ID
         warehouse_path, table_id = self.catalog.parse_table_uri(table_uri)
-        identity_catalog_name = (
-            self.config.catalog_name if warehouse_path is None else "strata"
-        )
+        identity_catalog_name = self.config.catalog_name if warehouse_path is None else "strata"
         manifest_catalog_name = (
             self.config.catalog_name if warehouse_path is None else warehouse_path
         )
-        table_identity = TableIdentity.from_table_id(
-            table_id, catalog=identity_catalog_name
-        )
+        table_identity = TableIdentity.from_table_id(table_id, catalog=identity_catalog_name)
 
         # Load table and resolve snapshot
         table = self.catalog.load_table(table_uri)

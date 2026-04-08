@@ -568,9 +568,7 @@ async def import_requirements_text_streaming(
             with open(pyproject_path, "wb") as f:
                 tomli_w.dump(data, f)
         except Exception as exc:
-            _restore_dependency_files(
-                pyproject_path, old_pyproject, lockfile_path, old_lockfile
-            )
+            _restore_dependency_files(pyproject_path, old_pyproject, lockfile_path, old_lockfile)
             return RequirementsImportResult(
                 success=False,
                 error=f"Failed to write pyproject.toml: {exc}",
@@ -803,9 +801,7 @@ def parse_requirements_text(requirements_text: str) -> list[str]:
         if not line or line.startswith("#"):
             continue
         if line.startswith("-"):
-            raise ValueError(
-                "Unsupported requirements entry. Use plain package specifiers only."
-            )
+            raise ValueError("Unsupported requirements entry. Use plain package specifiers only.")
         if " #" in line:
             line = line.split(" #", 1)[0].strip()
 
@@ -878,9 +874,7 @@ def parse_environment_yaml_text(environment_yaml_text: str) -> tuple[list[str], 
                     add_requirement(pip_entry.strip())
                 continue
 
-            warnings.append(
-                "Ignored unsupported mapping entry in environment.yaml dependencies."
-            )
+            warnings.append("Ignored unsupported mapping entry in environment.yaml dependencies.")
             continue
 
         warnings.append("Ignored unsupported dependency entry in environment.yaml.")
@@ -972,7 +966,7 @@ def _validate_requirement_specifier(requirement: str) -> str:
         raise ValueError("Requirement cannot be empty")
     if len(normalized) > 200:
         raise ValueError("Requirement specifier too long")
-    if any(c in normalized for c in ';&|`$(){}"\'\n\r\t'):
+    if any(c in normalized for c in ";&|`$(){}\"'\n\r\t"):
         raise ValueError("Requirement specifier contains invalid characters")
     return normalized
 
@@ -986,9 +980,7 @@ def _translate_conda_dependency(dependency: str) -> tuple[str | None, str | None
     warning: str | None = None
     if "::" in normalized:
         _, normalized = normalized.split("::", 1)
-        warning = (
-            "Ignored conda channel prefixes in environment.yaml; using package names only."
-        )
+        warning = "Ignored conda channel prefixes in environment.yaml; using package names only."
 
     lowered = normalized.lower()
     if lowered == "pip":

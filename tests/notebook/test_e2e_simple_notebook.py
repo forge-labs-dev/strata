@@ -83,9 +83,7 @@ class TestSingleCellExecution:
 
                 statuses = ws.messages_of_type("cell_status")
                 c1_statuses = [
-                    m["payload"]["status"]
-                    for m in statuses
-                    if m["payload"]["cell_id"] == "c1"
+                    m["payload"]["status"] for m in statuses if m["payload"]["cell_id"] == "c1"
                 ]
                 assert "running" in c1_statuses
                 assert c1_statuses[-1] == "ready"
@@ -107,11 +105,7 @@ class TestTwoCellDirect:
     def test_sequential_execution(self, setup):
         """Execute c1 then c2 sequentially — c2 sees c1's output."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 10")
-            .add_cell("c2", "y = x + 5", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 10").add_cell("c2", "y = x + 5", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -148,11 +142,7 @@ class TestNotebookSync:
     def test_sync_returns_state(self, setup):
         """notebook_sync returns full notebook state with cells and DAG."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:

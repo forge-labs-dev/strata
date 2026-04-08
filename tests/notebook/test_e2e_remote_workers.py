@@ -122,9 +122,7 @@ def test_admin_managed_http_worker_executes_over_websocket(
 
     workers = client.get(f"/v1/notebooks/{session_id}/workers")
     assert workers.status_code == 200
-    worker = next(
-        item for item in workers.json()["workers"] if item["name"] == "gpu-http"
-    )
+    worker = next(item for item in workers.json()["workers"] if item["name"] == "gpu-http")
     assert worker["source"] == "server"
     assert worker["allowed"] is True
 
@@ -183,9 +181,7 @@ def test_admin_disabled_worker_blocks_existing_notebook_execution_over_websocket
 
     workers = client.get(f"/v1/notebooks/{session_id}/workers")
     assert workers.status_code == 200
-    worker = next(
-        item for item in workers.json()["workers"] if item["name"] == "gpu-http"
-    )
+    worker = next(item for item in workers.json()["workers"] if item["name"] == "gpu-http")
     assert worker["enabled"] is False
     assert worker["allowed"] is False
 
@@ -366,9 +362,7 @@ def test_admin_worker_rename_and_delete_drift_propagates_into_existing_notebook(
     assert workers.status_code == 200
     payload = workers.json()["workers"]
     old_entry = next(worker for worker in payload if worker["name"] == "gpu-http")
-    renamed_entry = next(
-        worker for worker in payload if worker["name"] == "gpu-http-renamed"
-    )
+    renamed_entry = next(worker for worker in payload if worker["name"] == "gpu-http-renamed")
     assert old_entry["source"] == "referenced"
     assert old_entry["allowed"] is False
     assert renamed_entry["source"] == "server"
@@ -397,9 +391,7 @@ def test_admin_worker_rename_and_delete_drift_propagates_into_existing_notebook(
     workers = client.get(f"/v1/notebooks/{session_id}/workers")
     assert workers.status_code == 200
     deleted_entry = next(
-        worker
-        for worker in workers.json()["workers"]
-        if worker["name"] == "gpu-http-renamed"
+        worker for worker in workers.json()["workers"] if worker["name"] == "gpu-http-renamed"
     )
     assert deleted_entry["source"] == "referenced"
     assert deleted_entry["allowed"] is False

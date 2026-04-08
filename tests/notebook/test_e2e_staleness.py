@@ -35,11 +35,7 @@ class TestStalenessDetection:
     def test_source_edit_sends_dag_update(self, setup):
         """Edit c1 source → dag_update message is sent."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -54,11 +50,7 @@ class TestStalenessDetection:
     def test_re_execution_after_edit(self, setup):
         """After editing c1, re-executing c2 should use new c1 value."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -84,11 +76,7 @@ class TestStalenessDetection:
     def test_edit_and_cascade(self, setup):
         """After editing c1, executing c2 triggers cascade to re-run c1."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -132,11 +120,7 @@ class TestStalenessDetection:
                 assert resp.status_code == 200
 
                 data = resp.json()
-                c2_status = next(
-                    cell["status"]
-                    for cell in data["cells"]
-                    if cell["id"] == "c2"
-                )
+                c2_status = next(cell["status"] for cell in data["cells"] if cell["id"] == "c2")
                 assert c2_status == "idle"
 
                 ws.clear()
@@ -167,7 +151,8 @@ class TestDAGRestructuring:
                 # DAG should show edges from c1 to c2 for both x and z
                 edges = dag_msg["payload"]["edges"]
                 c1_to_c2_vars = [
-                    e["variable"] for e in edges
+                    e["variable"]
+                    for e in edges
                     if e["from_cell_id"] == "c1" and e["to_cell_id"] == "c2"
                 ]
                 assert "x" in c1_to_c2_vars
@@ -176,11 +161,7 @@ class TestDAGRestructuring:
     def test_remove_dependency(self, setup):
         """Edit c2 to no longer reference c1's variable."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -191,7 +172,6 @@ class TestDAGRestructuring:
                 # No edge from c1 to c2 anymore
                 edges = dag_msg["payload"]["edges"]
                 c1_to_c2 = [
-                    e for e in edges
-                    if e["from_cell_id"] == "c1" and e["to_cell_id"] == "c2"
+                    e for e in edges if e["from_cell_id"] == "c1" and e["to_cell_id"] == "c2"
                 ]
                 assert len(c1_to_c2) == 0

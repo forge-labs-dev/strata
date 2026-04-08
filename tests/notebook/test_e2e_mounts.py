@@ -232,7 +232,8 @@ class TestMountInvalidation:
                 assert rerun["payload"]["outputs"]["result"]["preview"] == "GOODBYE"
 
                 upstream = next(
-                    message for message in ws.messages
+                    message
+                    for message in ws.messages
                     if message["type"] == "cell_output"
                     and message["payload"].get("cell_id") == "c1"
                 )

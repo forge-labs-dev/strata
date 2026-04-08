@@ -1,6 +1,6 @@
 # Load the Iris dataset into a pandas DataFrame
-from sklearn.datasets import load_iris
 import pandas as pd
+from sklearn.datasets import load_iris
 
 iris_bunch = load_iris()
 df = pd.DataFrame(iris_bunch.data, columns=iris_bunch.feature_names)

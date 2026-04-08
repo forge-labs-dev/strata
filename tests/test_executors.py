@@ -219,8 +219,7 @@ class TestRunLocalWithBuildSpec:
             "executor": "duckdb_sql@v1",
             "params": {
                 "sql": (
-                    "SELECT (SELECT val FROM input0) as first, "
-                    "(SELECT val FROM input1) as second"
+                    "SELECT (SELECT val FROM input0) as first, (SELECT val FROM input1) as second"
                 )
             },
             "input_uris": ["uri://first", "uri://second"],

@@ -154,9 +154,7 @@ class CausalityInspector:
 
             # If upstream has run since our last run and produced new artifacts
             if upstream.artifact_uri:
-                stored_input_uri = self._get_stored_input_uri(
-                    cell_id, upstream_id
-                )
+                stored_input_uri = self._get_stored_input_uri(cell_id, upstream_id)
                 if stored_input_uri and stored_input_uri != upstream.artifact_uri:
                     details.append(
                         CausalityDetail(
@@ -207,9 +205,7 @@ class CausalityInspector:
         """
         return self._get_artifact_metadata(cell_id, "env_hash")
 
-    def _get_stored_input_uri(
-        self, cell_id: str, upstream_id: str
-    ) -> str | None:
+    def _get_stored_input_uri(self, cell_id: str, upstream_id: str) -> str | None:
         """Get the artifact URI of an upstream cell as stored in our artifact.
 
         Args:
@@ -223,9 +219,7 @@ class CausalityInspector:
         # For v1.1, we use a simpler heuristic: check if provenance matches.
         return None
 
-    def _get_artifact_metadata(
-        self, cell_id: str, key: str
-    ) -> str | None:
+    def _get_artifact_metadata(self, cell_id: str, key: str) -> str | None:
         """Get metadata from a cell's stored artifact.
 
         Reads component hashes (source_hash, env_hash) from the
@@ -254,6 +248,7 @@ class CausalityInspector:
             )
             if artifact and artifact.transform_spec:
                 import json as _json
+
                 spec = _json.loads(artifact.transform_spec)
                 return spec.get("params", {}).get(key)
         except (IndexError, ValueError, KeyError):
@@ -311,9 +306,7 @@ def compute_causality_on_staleness(
         source_hash = compute_source_hash(cell.source)
         runtime_env = dict(cell.env)
         runtime_env.update(annotations.env)
-        effective_worker = (
-            annotations.worker or cell.worker or session.notebook_state.worker
-        )
+        effective_worker = annotations.worker or cell.worker or session.notebook_state.worker
         env_hash = compute_execution_env_hash(
             session.path,
             runtime_env,
@@ -406,14 +399,8 @@ def compute_causality_on_staleness(
             if stored_env_hash is None:
                 stored_env_hash = cell.last_env_hash
 
-            source_changed = (
-                stored_source_hash is not None
-                and stored_source_hash != source_hash
-            )
-            env_changed_flag = (
-                stored_env_hash is not None
-                and stored_env_hash != env_hash
-            )
+            source_changed = stored_source_hash is not None and stored_source_hash != source_hash
+            env_changed_flag = stored_env_hash is not None and stored_env_hash != env_hash
 
             if env_changed_flag:
                 details.append(
@@ -472,16 +459,12 @@ def compute_causality_on_staleness(
         else:
             reason = "self"
 
-        causality_map[cell_id] = CausalityChain(
-            reason=reason, details=details
-        )
+        causality_map[cell_id] = CausalityChain(reason=reason, details=details)
 
     return causality_map
 
 
-def _get_stored_hash(
-    session: NotebookSession, cell_id: str, key: str
-) -> str | None:
+def _get_stored_hash(session: NotebookSession, cell_id: str, key: str) -> str | None:
     """Read a component hash from a cell's stored artifact metadata.
 
     Args:
@@ -505,9 +488,7 @@ def _get_stored_hash(
         parts = cell.artifact_uri.split("/")
         artifact_id = parts[-1].split("@")[0]
         version = int(parts[-1].split("@v=")[1])
-        artifact = session.artifact_manager.artifact_store.get_artifact(
-            artifact_id, version
-        )
+        artifact = session.artifact_manager.artifact_store.get_artifact(artifact_id, version)
         if artifact and artifact.transform_spec:
             spec = _json.loads(artifact.transform_spec)
             return spec.get("params", {}).get(key)

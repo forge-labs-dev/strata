@@ -66,16 +66,12 @@ class TestRapidExecution:
                 run_all_and_wait(ws, "c3")
 
                 output_cells = [
-                    msg["payload"]["cell_id"]
-                    for msg in ws.messages
-                    if msg["type"] == "cell_output"
+                    msg["payload"]["cell_id"] for msg in ws.messages if msg["type"] == "cell_output"
                 ]
                 assert output_cells == ["c0", "c2", "c3"]
 
                 synced = ws.sync()
-                cells = {
-                    cell["id"]: cell for cell in synced["payload"]["cells"]
-                }
+                cells = {cell["id"]: cell for cell in synced["payload"]["cells"]}
                 assert cells["c0"]["status"] == "ready"
                 assert cells["c1"]["status"] == "idle"
                 assert cells["c2"]["status"] == "ready"
@@ -93,9 +89,7 @@ class TestRapidExecution:
             with ws_connect(client, sid) as ws:
                 for i in range(5):
                     result = execute_cell_and_wait(ws, f"c{i}")
-                    assert result["type"] == "cell_output", (
-                        f"Cell c{i} failed: {result}"
-                    )
+                    assert result["type"] == "cell_output", f"Cell c{i} failed: {result}"
 
     def test_reexecute_same_cell_multiple_times(self, setup):
         """Execute the same cell 3 times in a row."""

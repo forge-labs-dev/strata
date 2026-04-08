@@ -1,15 +1,14 @@
 # Merge with region metadata
-region_info = pd.DataFrame({
-    "region": ["North", "South", "East", "West"],
-    "manager": ["Alice", "Bob", "Carol", "Dave"],
-    "target_revenue": [50000, 45000, 55000, 40000],
-})
+region_info = pd.DataFrame(
+    {
+        "region": ["North", "South", "East", "West"],
+        "manager": ["Alice", "Bob", "Carol", "Dave"],
+        "target_revenue": [50000, 45000, 55000, 40000],
+    }
+)
 
 region_summary = (
-    sales.groupby("region")["revenue"]
-    .sum()
-    .reset_index()
-    .merge(region_info, on="region")
+    sales.groupby("region")["revenue"].sum().reset_index().merge(region_info, on="region")
 )
 
 region_summary["pct_of_target"] = (

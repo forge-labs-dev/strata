@@ -291,9 +291,7 @@ dependencies = [
 _logger = logging.getLogger(__name__)
 
 
-def _uv_sync(
-    notebook_dir: Path, *, timeout: int = 60, python_version: str | None = None
-) -> bool:
+def _uv_sync(notebook_dir: Path, *, timeout: int = 60, python_version: str | None = None) -> bool:
     """Run ``uv sync`` in *notebook_dir*.
 
     Returns True on success, False on failure (logged, never raised).

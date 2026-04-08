@@ -20,9 +20,9 @@ from strata.notebook.writer import (
 )
 
 _MINIMAL_PNG_LITERAL = (
-    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    'b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01'
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
-    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+    '\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82"'
 )
 _MARKDOWN_LITERAL = '"# Title\\n\\nRendered over websocket."'
 
@@ -289,9 +289,7 @@ Display()
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "root"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "root")
 
         assert output_message["type"] == "cell_output"
         assert output_message["payload"]["display"]["content_type"] == "image/png"
@@ -332,9 +330,7 @@ Display()
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "root"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "root")
 
         assert output_message["type"] == "cell_output"
         assert output_message["payload"]["display"]["content_type"] == "text/markdown"
@@ -372,9 +368,7 @@ display(Markdown("# Side effect\\n\\nVia websocket."))
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "root"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "root")
 
         assert output_message["type"] == "cell_output"
         assert output_message["payload"]["display"]["content_type"] == "text/markdown"
@@ -413,9 +407,7 @@ display(Markdown("# First"))
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "root"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "root")
 
         assert output_message["type"] == "cell_output"
         assert len(output_message["payload"]["displays"]) == 2
@@ -463,24 +455,11 @@ def test_cell_execute_refreshes_downstream_staleness(client, temp_notebook, app)
         )
 
         messages = [websocket.receive_json() for _ in range(5)]
-        status_updates = [
-            msg["payload"]
-            for msg in messages
-            if msg["type"] == "cell_status"
-        ]
+        status_updates = [msg["payload"] for msg in messages if msg["type"] == "cell_status"]
 
-        assert any(
-            p["cell_id"] == "root" and p["status"] == "ready"
-            for p in status_updates
-        )
-        assert any(
-            p["cell_id"] == "middle" and p["status"] == "idle"
-            for p in status_updates
-        )
-        assert any(
-            p["cell_id"] == "leaf" and p["status"] == "idle"
-            for p in status_updates
-        )
+        assert any(p["cell_id"] == "root" and p["status"] == "ready" for p in status_updates)
+        assert any(p["cell_id"] == "middle" and p["status"] == "idle" for p in status_updates)
+        assert any(p["cell_id"] == "leaf" and p["status"] == "idle" for p in status_updates)
 
 
 def test_cell_execute_surfaces_module_export_error(client, temp_notebook, app):
@@ -563,9 +542,7 @@ def test_cell_execute_surfaces_module_export_lambda_error(client, temp_notebook,
         assert terminal["payload"]["status"] == "error"
 
 
-def test_cell_execute_uses_warm_pool_when_available(
-    client, temp_notebook, app, monkeypatch
-):
+def test_cell_execute_uses_warm_pool_when_available(client, temp_notebook, app, monkeypatch):
     """Test the WebSocket path is wired to use the session warm pool."""
     notebook_dir, _ = temp_notebook
 
@@ -636,10 +613,10 @@ def test_cell_execute_uses_warm_pool_when_available(
             response = websocket.receive_json()
             if response["type"] in ["cell_output", "cell_error"]:
                 output_message = response
-            if (
-                response["type"] == "cell_status"
-                and response["payload"]["status"] in ["ready", "error"]
-            ):
+            if response["type"] == "cell_status" and response["payload"]["status"] in [
+                "ready",
+                "error",
+            ]:
                 final_status = response
                 break
 
@@ -703,9 +680,7 @@ display(Markdown("# First"))
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "root"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "root")
 
         assert output_message["type"] == "cell_output"
         assert len(output_message["payload"]["displays"]) == 2
@@ -718,9 +693,7 @@ display(Markdown("# First"))
         assert terminal_status["payload"]["status"] == "ready"
 
 
-def test_cell_execute_cascade_emits_multiple_display_payloads_in_order(
-    client, temp_notebook, app
-):
+def test_cell_execute_cascade_emits_multiple_display_payloads_in_order(client, temp_notebook, app):
     """Cascade execution should preserve ordered display payloads for the target cell."""
     notebook_dir, _ = temp_notebook
 
@@ -760,9 +733,7 @@ y + 1
             }
         )
 
-        output_message, terminal_status = _receive_execution_terminal_messages(
-            websocket, "leaf"
-        )
+        output_message, terminal_status = _receive_execution_terminal_messages(websocket, "leaf")
 
         assert output_message["type"] == "cell_output"
         assert len(output_message["payload"]["displays"]) == 2
@@ -775,9 +746,7 @@ y + 1
         assert terminal_status["payload"]["status"] == "ready"
 
 
-def test_cell_execute_blocked_when_environment_runtime_is_unavailable(
-    client, temp_notebook, app
-):
+def test_cell_execute_blocked_when_environment_runtime_is_unavailable(client, temp_notebook, app):
     """Execution should be blocked when no notebook runtime is available after bootstrap failure."""
     notebook_dir, _ = temp_notebook
 
@@ -790,9 +759,7 @@ def test_cell_execute_blocked_when_environment_runtime_is_unavailable(
     session.venv_python = None
     session.environment_interpreter_source = "unknown"
     session.environment_sync_state = "failed"
-    session.environment_sync_error = (
-        "Failed to start notebook environment initialization: boom"
-    )
+    session.environment_sync_error = "Failed to start notebook environment initialization: boom"
     session.environment_sync_notice = None
 
     with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
@@ -811,9 +778,7 @@ def test_cell_execute_blocked_when_environment_runtime_is_unavailable(
         assert "environment" in response["payload"]["error"].lower()
 
 
-def test_environment_job_submission_rejects_execution_already_accepted(
-    monkeypatch, temp_notebook
-):
+def test_environment_job_submission_rejects_execution_already_accepted(monkeypatch, temp_notebook):
     """Execution acceptance should block env jobs before the task starts."""
     notebook_dir, _ = temp_notebook
 
@@ -969,9 +934,7 @@ def test_ws_execute_supports_signed_http_executor_worker(
             }
         )
 
-        first_output, first_terminal = _receive_execution_terminal_messages(
-            websocket, root_cell.id
-        )
+        first_output, first_terminal = _receive_execution_terminal_messages(websocket, root_cell.id)
 
         assert first_output["type"] == "cell_output"
         assert first_output["payload"]["execution_method"] == "executor"
@@ -1105,9 +1068,7 @@ class Person:
             assert cell3["status"] == "ready"
 
 
-def test_ws_execute_reports_unavailable_http_executor_worker(
-    client, temp_notebook, app
-):
+def test_ws_execute_reports_unavailable_http_executor_worker(client, temp_notebook, app):
     """The live WS path should surface unreachable HTTP executor workers."""
     notebook_dir, _ = temp_notebook
 
@@ -1357,9 +1318,7 @@ def test_ws_cancelled_signed_http_executor_marks_build_failed(
     assert stats["building"] == 0
 
 
-def test_cascade_prompt_is_sent_only_to_requesting_websocket(
-    client, temp_notebook, app
-):
+def test_cascade_prompt_is_sent_only_to_requesting_websocket(client, temp_notebook, app):
     """A cascade prompt should not fan out to other clients on the notebook."""
     notebook_dir, _ = temp_notebook
 
@@ -1387,9 +1346,7 @@ def test_cascade_prompt_is_sent_only_to_requesting_websocket(
                 ws2.receive_json(timeout=0.1)
 
 
-def test_impact_preview_is_sent_only_to_requesting_websocket(
-    client, temp_notebook, app
-):
+def test_impact_preview_is_sent_only_to_requesting_websocket(client, temp_notebook, app):
     """Impact preview responses should stay scoped to the requesting client."""
     notebook_dir, _ = temp_notebook
 
@@ -1483,9 +1440,7 @@ def test_active_websocket_session_is_not_evicted(client, temp_notebook, app):
 
     session_manager = get_session_manager()
     session = session_manager.open_notebook(notebook_dir)
-    session.last_accessed = (
-        time.time() - session_manager.SESSION_TTL_SECONDS - 60
-    )
+    session.last_accessed = time.time() - session_manager.SESSION_TTL_SECONDS - 60
 
     with client.websocket_connect(f"/v1/notebooks/ws/{session.id}") as websocket:
         session_manager._evict_stale()

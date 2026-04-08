@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 
 _MINIMAL_PNG_LITERAL = (
-    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    'b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01'
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
-    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+    '\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82"'
 )
 _MARKDOWN_LITERAL = '"# Title\\n\\n- one\\n- two"'
 
@@ -248,8 +248,7 @@ display(Markdown("# Via helper\\n\\nRendered from display()."))
         assert "_" in result["variables"]
         assert result["variables"]["_"]["content_type"] == "text/markdown"
         assert (
-            result["variables"]["_"]["markdown_text"]
-            == "# Via helper\n\nRendered from display()."
+            result["variables"]["_"]["markdown_text"] == "# Via helper\n\nRendered from display()."
         )
 
     def test_harness_captures_pyplot_show_png_output(self, harness_script):

@@ -51,10 +51,7 @@ class TestMessageOrdering:
                         and m["payload"].get("status") == "running"
                     ):
                         running_idx = i
-                    if (
-                        m["type"] == "cell_output"
-                        and m["payload"].get("cell_id") == "c1"
-                    ):
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c1":
                         output_idx = i
 
                 assert running_idx is not None, "No running status found"
@@ -75,10 +72,7 @@ class TestMessageOrdering:
                 output_idx = None
                 ready_idx = None
                 for i, m in enumerate(ws.messages):
-                    if (
-                        m["type"] == "cell_output"
-                        and m["payload"].get("cell_id") == "c1"
-                    ):
+                    if m["type"] == "cell_output" and m["payload"].get("cell_id") == "c1":
                         output_idx = i
                     if (
                         m["type"] == "cell_status"
@@ -108,10 +102,7 @@ class TestMessageOrdering:
                 # Extract the order cells went to "running"
                 running_order = []
                 for m in ws.messages:
-                    if (
-                        m["type"] == "cell_status"
-                        and m["payload"].get("status") == "running"
-                    ):
+                    if m["type"] == "cell_status" and m["payload"].get("status") == "running":
                         running_order.append(m["payload"]["cell_id"])
 
                 # c1 should run before c2, c2 before c3
@@ -178,11 +169,7 @@ class TestSourceUpdate:
     def test_source_update_returns_dag(self, setup):
         """cell_source_update → dag_update with edges."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1")
-            .add_cell("c2", "y = x + 1", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1").add_cell("c2", "y = x + 1", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:

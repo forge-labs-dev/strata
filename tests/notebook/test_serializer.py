@@ -142,9 +142,7 @@ class TestArrowSerialization:
 
     def test_roundtrip_dataframe(self):
         """Test round-trip: serialize and deserialize a DataFrame."""
-        df_orig = pd.DataFrame(
-            {"id": [1, 2, 3], "value": [1.5, 2.5, 3.5], "name": ["a", "b", "c"]}
-        )
+        df_orig = pd.DataFrame({"id": [1, 2, 3], "value": [1.5, 2.5, 3.5], "name": ["a", "b", "c"]})
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -361,7 +359,7 @@ class TestPickleSerialization:
             "    age = 20\n"
             "\n"
             "    def __str__(self):\n"
-            "        return f\"{self.name}:{self.age}\"\n"
+            '        return f"{self.name}:{self.age}"\n',
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -385,7 +383,7 @@ class TestPickleSerialization:
             "        self.age = age\n"
             "\n"
             "    def __str__(self):\n"
-            "        return f\"{self.name}:{self.age}\"\n",
+            '        return f"{self.name}:{self.age}"\n',
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -414,7 +412,7 @@ class TestPickleSerialization:
             "        self.age = age\n"
             "\n"
             "    def __str__(self):\n"
-            "        return f\"{self.name}:{self.age}\"\n",
+            '        return f"{self.name}:{self.age}"\n',
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -444,7 +442,7 @@ class TestPickleSerialization:
             "        self.restored = True\n"
             "\n"
             "    def __str__(self):\n"
-            "        return f\"{self.name}:{self.age}:{self.restored}\"\n",
+            '        return f"{self.name}:{self.age}:{self.restored}"\n',
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -456,6 +454,7 @@ class TestPickleSerialization:
 
     def test_serialize_unpicklable_returns_error(self):
         """Test that unpicklable objects return an error result."""
+
         # Lambdas defined locally can't be pickled
         def func(x):
             return x + 1
@@ -520,9 +519,7 @@ class TestPickleSerialization:
                         "module_name": "broken_state_module",
                         "class_name": "_SerializerNoStatePerson",
                         "source": (
-                            "class _SerializerNoStatePerson:\n"
-                            "    name = 'John'\n"
-                            "    age = 20\n"
+                            "class _SerializerNoStatePerson:\n    name = 'John'\n    age = 20\n"
                         ),
                         "state_codec": 123,
                         "state_payload": b"broken",

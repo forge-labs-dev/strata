@@ -42,8 +42,7 @@ class TestSyntaxErrors:
                 result = execute_cell_and_wait(ws, "c1")
                 # Should be an error
                 assert result["type"] == "cell_error" or (
-                    result["type"] == "cell_status"
-                    and result["payload"]["status"] == "error"
+                    result["type"] == "cell_status" and result["payload"]["status"] == "error"
                 )
 
     def test_syntax_error_status(self, setup):
@@ -65,9 +64,7 @@ class TestSyntaxErrors:
 
                 statuses = ws.messages_of_type("cell_status")
                 c1_statuses = [
-                    m["payload"]["status"]
-                    for m in statuses
-                    if m["payload"]["cell_id"] == "c1"
+                    m["payload"]["status"] for m in statuses if m["payload"]["cell_id"] == "c1"
                 ]
                 assert "error" in c1_statuses
 
@@ -144,11 +141,7 @@ class TestErrorRecovery:
     def test_error_does_not_block_other_cells(self, setup):
         """Error in c1 doesn't prevent executing independent c2."""
         client, tmp = setup
-        nb = (
-            NotebookBuilder(tmp)
-            .add_cell("c1", "x = 1 / 0")
-            .add_cell("c2", "y = 42", after="c1")
-        )
+        nb = NotebookBuilder(tmp).add_cell("c1", "x = 1 / 0").add_cell("c2", "y = 42", after="c1")
 
         with open_notebook_session(client, nb.path) as (sid, session):
             with ws_connect(client, sid) as ws:
@@ -192,7 +185,6 @@ class TestCascadeWithError:
 
                 # c1 should have errored
                 c1_errors = [
-                    m for m in ws.messages_of_type("cell_error")
-                    if m["payload"]["cell_id"] == "c1"
+                    m for m in ws.messages_of_type("cell_error") if m["payload"]["cell_id"] == "c1"
                 ]
                 assert len(c1_errors) >= 1

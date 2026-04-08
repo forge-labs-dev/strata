@@ -25,16 +25,14 @@ from strata.notebook.writer import (
 )
 
 _MINIMAL_PNG_LITERAL = (
-    "b\"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01"
+    'b"\\x89PNG\\r\\n\\x1a\\n\\x00\\x00\\x00\\rIHDR\\x00\\x00\\x00\\x01\\x00\\x00\\x00\\x01'
     "\\x08\\x04\\x00\\x00\\x00\\xb5\\x1c\\x0c\\x02\\x00\\x00\\x00\\x0bIDATx\\xdac\\xfc\\xff"
-    "\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82\""
+    '\\x1f\\x00\\x03\\x03\\x02\\x00\\xef\\x9b\\xe0M\\x00\\x00\\x00\\x00IEND\\xaeB`\\x82"'
 )
 _MARKDOWN_LITERAL = '"# Reopened\\n\\nRendered after refresh."'
 
 
-def test_close_session_without_running_loop_uses_nowait_pool_shutdown(
-    monkeypatch, tmp_path: Path
-):
+def test_close_session_without_running_loop_uses_nowait_pool_shutdown(monkeypatch, tmp_path: Path):
     """Sync close_session should still trigger warm-pool cleanup."""
     manager = SessionManager()
     notebook_dir = create_notebook(tmp_path, "session_close")

@@ -33,51 +33,49 @@ class TestDetectMissingModule:
 
     def test_simple_module(self):
         """Standard module name extraction."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'requests'", ""
-        ) == "requests"
+        assert (
+            _detect_missing_module("ModuleNotFoundError: No module named 'requests'", "")
+            == "requests"
+        )
 
     def test_submodule(self):
         """Submodule import extracts top-level."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'numpy.core'", ""
-        ) == "numpy"
+        assert (
+            _detect_missing_module("ModuleNotFoundError: No module named 'numpy.core'", "")
+            == "numpy"
+        )
 
     def test_double_quotes(self):
         """Double-quoted module name."""
-        assert _detect_missing_module(
-            'ModuleNotFoundError: No module named "pandas"', ""
-        ) == "pandas"
+        assert (
+            _detect_missing_module('ModuleNotFoundError: No module named "pandas"', "") == "pandas"
+        )
 
     def test_from_stderr(self):
         """Extraction from stderr."""
-        assert _detect_missing_module(
-            "", "ModuleNotFoundError: No module named 'flask'"
-        ) == "flask"
+        assert _detect_missing_module("", "ModuleNotFoundError: No module named 'flask'") == "flask"
 
     def test_pil_to_pillow(self):
         """PIL maps to Pillow."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'PIL'", ""
-        ) == "Pillow"
+        assert _detect_missing_module("ModuleNotFoundError: No module named 'PIL'", "") == "Pillow"
 
     def test_sklearn_to_scikit(self):
         """sklearn maps to scikit-learn."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'sklearn'", ""
-        ) == "scikit-learn"
+        assert (
+            _detect_missing_module("ModuleNotFoundError: No module named 'sklearn'", "")
+            == "scikit-learn"
+        )
 
     def test_cv2_to_opencv(self):
         """cv2 maps to opencv-python."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'cv2'", ""
-        ) == "opencv-python"
+        assert (
+            _detect_missing_module("ModuleNotFoundError: No module named 'cv2'", "")
+            == "opencv-python"
+        )
 
     def test_yaml_to_pyyaml(self):
         """yaml maps to pyyaml."""
-        assert _detect_missing_module(
-            "ModuleNotFoundError: No module named 'yaml'", ""
-        ) == "pyyaml"
+        assert _detect_missing_module("ModuleNotFoundError: No module named 'yaml'", "") == "pyyaml"
 
     def test_no_match(self):
         """Non-matching error returns None."""

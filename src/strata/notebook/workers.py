@@ -127,11 +127,7 @@ def _load_worker_policy(notebook_state: NotebookState) -> WorkerPolicy:
     if service_mode:
         effective_workers = {
             "local": builtin,
-            **{
-                name: record.worker
-                for name, record in server_workers.items()
-                if record.enabled
-            },
+            **{name: record.worker for name, record in server_workers.items() if record.enabled},
         }
     else:
         effective_workers = {
@@ -235,9 +231,7 @@ def replace_server_managed_worker_records(
     from strata.server import get_state
 
     state = get_state()
-    state.config.transforms_config["notebook_workers"] = _serialize_managed_worker_records(
-        records
-    )
+    state.config.transforms_config["notebook_workers"] = _serialize_managed_worker_records(records)
     return get_server_managed_worker_records()
 
 
@@ -266,9 +260,7 @@ def set_server_managed_worker_enabled(
 def delete_server_managed_worker_record(worker_name: str) -> list[ManagedWorkerRecord]:
     """Delete one service-managed worker by name."""
     records = get_server_managed_worker_records()
-    next_records = [
-        record for record in records if record.worker.name != worker_name
-    ]
+    next_records = [record for record in records if record.worker.name != worker_name]
     if len(next_records) == len(records):
         raise KeyError(worker_name)
     return replace_server_managed_worker_records(next_records)
@@ -453,8 +445,7 @@ def build_worker_catalog(notebook_state: NotebookState) -> list[dict[str, Any]]:
             worker = record.worker
             health = (
                 "healthy"
-                if worker.backend == WorkerBackendType.LOCAL
-                or is_embedded_executor_worker(worker)
+                if worker.backend == WorkerBackendType.LOCAL or is_embedded_executor_worker(worker)
                 else "unknown"
             )
             add_worker(
@@ -477,8 +468,7 @@ def build_worker_catalog(notebook_state: NotebookState) -> list[dict[str, Any]]:
         for worker in notebook_state.workers:
             health = (
                 "healthy"
-                if worker.backend == WorkerBackendType.LOCAL
-                or is_embedded_executor_worker(worker)
+                if worker.backend == WorkerBackendType.LOCAL or is_embedded_executor_worker(worker)
                 else "unknown"
             )
             add_worker(
@@ -542,17 +532,14 @@ def _record_worker_health_snapshot(
     history = (snapshot, *(existing.history if existing is not None else ()))
     previous_health = existing.latest.health if existing is not None else None
     probe_count = (existing.probe_count if existing is not None else 0) + 1
-    healthy_probe_count = (
-        (existing.healthy_probe_count if existing is not None else 0)
-        + (1 if snapshot.health == "healthy" else 0)
+    healthy_probe_count = (existing.healthy_probe_count if existing is not None else 0) + (
+        1 if snapshot.health == "healthy" else 0
     )
-    unavailable_probe_count = (
-        (existing.unavailable_probe_count if existing is not None else 0)
-        + (1 if snapshot.health == "unavailable" else 0)
+    unavailable_probe_count = (existing.unavailable_probe_count if existing is not None else 0) + (
+        1 if snapshot.health == "unavailable" else 0
     )
-    unknown_probe_count = (
-        (existing.unknown_probe_count if existing is not None else 0)
-        + (1 if snapshot.health == "unknown" else 0)
+    unknown_probe_count = (existing.unknown_probe_count if existing is not None else 0) + (
+        1 if snapshot.health == "unknown" else 0
     )
     record = WorkerHealthRecord(
         latest=snapshot,

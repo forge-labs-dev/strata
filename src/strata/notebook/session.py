@@ -159,9 +159,7 @@ class EnvironmentJobSnapshot:
         return cls(
             id=str(raw_dict.get("id") or uuid.uuid4()),
             action=action,
-            package=(
-                str(raw_dict["package"]) if raw_dict.get("package") is not None else None
-            ),
+            package=(str(raw_dict["package"]) if raw_dict.get("package") is not None else None),
             command=command,
             status=status,
             phase=str(raw_dict["phase"]) if raw_dict.get("phase") is not None else None,
@@ -175,9 +173,7 @@ class EnvironmentJobSnapshot:
             lockfile_changed=raw_dict.get("lockfile_changed") is True,
             stale_cell_count=int(raw_dict.get("stale_cell_count") or 0),
             stale_cell_ids=[
-                str(value)
-                for value in stale_cell_ids
-                if isinstance(value, str) and value
+                str(value) for value in stale_cell_ids if isinstance(value, str) and value
             ]
             if isinstance(stale_cell_ids, list)
             else None,
@@ -255,12 +251,9 @@ class NotebookSession:
         self.environment_interpreter_source = "unknown"
         self.environment_sync_state = "pending"
         self.environment_sync_error = None
-        self.environment_sync_notice = (
-            notice
-            or (
-                "Notebook environment is being created in the background. "
-                "Running cells is disabled until it finishes."
-            )
+        self.environment_sync_notice = notice or (
+            "Notebook environment is being created in the background. "
+            "Running cells is disabled until it finishes."
         )
         self.environment_last_synced_at = None
         self.environment_last_sync_duration_ms = None
@@ -418,18 +411,14 @@ class NotebookSession:
 
         # Walk cells in topological order
         for cell_id in self.dag.topological_order:
-            cell = next(
-                (c for c in self.notebook_state.cells if c.id == cell_id), None
-            )
+            cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
             if cell is None:
                 continue
 
             # If ANY upstream cell is stale, this cell is also stale —
             # its inputs will change once the upstream re-runs, so its
             # cached artifact (based on old inputs) is invalid.
-            has_stale_upstream = any(
-                uid in stale_cells for uid in cell.upstream_ids
-            )
+            has_stale_upstream = any(uid in stale_cells for uid in cell.upstream_ids)
 
             if has_stale_upstream:
                 staleness_map[cell_id] = CellStaleness(status=CellStatus.IDLE, reasons=[])
@@ -508,9 +497,7 @@ class NotebookSession:
                     cell.artifact_uris[var_name] = uri
                     cell.artifact_uri = uri  # backward compat
                 cell.display_outputs = cached_display_outputs or []
-                cell.display_output = (
-                    cached_display_outputs[-1] if cached_display_outputs else None
-                )
+                cell.display_output = cached_display_outputs[-1] if cached_display_outputs else None
 
         self._apply_staleness_map(staleness_map)
 
@@ -519,9 +506,7 @@ class NotebookSession:
 
         return staleness_map
 
-    def _apply_staleness_map(
-        self, staleness_map: dict[str, CellStaleness]
-    ) -> None:
+    def _apply_staleness_map(self, staleness_map: dict[str, CellStaleness]) -> None:
         """Persist computed staleness back onto in-memory cell state."""
         for cell in self.notebook_state.cells:
             staleness = staleness_map.get(cell.id)
@@ -641,9 +626,7 @@ class NotebookSession:
         """Persist display metadata to notebook.toml for reopen/refresh restoration."""
         update_cell_display_outputs(self.path, cell_id, display_outputs)
 
-    def persist_display_output(
-        self, cell_id: str, display_output: dict[str, Any] | None
-    ) -> None:
+    def persist_display_output(self, cell_id: str, display_output: dict[str, Any] | None) -> None:
         """Backward-compatible single-display wrapper."""
         self.persist_display_outputs(cell_id, [display_output] if display_output else None)
 
@@ -711,9 +694,7 @@ class NotebookSession:
         except Exception:
             return raw
 
-        raw["inline_data_url"] = (
-            f"data:image/png;base64,{base64.b64encode(blob).decode('ascii')}"
-        )
+        raw["inline_data_url"] = f"data:image/png;base64,{base64.b64encode(blob).decode('ascii')}"
         return raw
 
     @staticmethod
@@ -878,9 +859,7 @@ class NotebookSession:
             json.dumps(
                 [
                     job.to_dict()
-                    for job in self.environment_job_history[
-                        :_ENVIRONMENT_JOB_HISTORY_LIMIT
-                    ]
+                    for job in self.environment_job_history[:_ENVIRONMENT_JOB_HISTORY_LIMIT]
                 ],
                 indent=2,
                 sort_keys=True,
@@ -891,9 +870,7 @@ class NotebookSession:
         """Add a finished job to recent history and persist it."""
         with self._environment_state_lock:
             remaining = [
-                existing
-                for existing in self.environment_job_history
-                if existing.id != job.id
+                existing for existing in self.environment_job_history if existing.id != job.id
             ]
             self.environment_job_history = [job, *remaining][:_ENVIRONMENT_JOB_HISTORY_LIMIT]
             try:
@@ -911,8 +888,7 @@ class NotebookSession:
         """Return whether an environment change is currently in progress."""
         with self._environment_state_lock:
             return (
-                self.environment_job is not None
-                and self.environment_job.status == "running"
+                self.environment_job is not None and self.environment_job.status == "running"
             ) or self._synchronous_environment_mutation is not None
 
     def _active_environment_mutation_label(self) -> str | None:
@@ -953,27 +929,19 @@ class NotebookSession:
                 and self.environment_sync_state in {"failed", "unknown"}
             ):
                 if self.environment_sync_error:
-                    return (
-                        "Notebook environment is not ready. "
-                        f"{self.environment_sync_error}"
-                    )
+                    return f"Notebook environment is not ready. {self.environment_sync_error}"
                 return (
                     "Notebook environment is not ready. Running cells is disabled "
                     "until it finishes initializing."
                 )
             return None
-        return (
-            "Environment update in progress. Running cells is disabled until "
-            f"{label} finishes."
-        )
+        return f"Environment update in progress. Running cells is disabled until {label} finishes."
 
     def _assert_environment_job_can_start(self, action_label: str) -> None:
         """Reject starting a new environment update when the notebook is busy."""
         if self.has_active_environment_mutation():
             active_label = self._active_environment_mutation_label() or "environment update"
-            raise RuntimeError(
-                f"Another environment update is already in progress: {active_label}"
-            )
+            raise RuntimeError(f"Another environment update is already in progress: {active_label}")
         if self._has_active_execution():
             raise RuntimeError(
                 "Notebook execution is currently running. Wait for execution to "
@@ -1004,16 +972,10 @@ class NotebookSession:
         has a canonical artifact in this notebook whose provenance matches the
         per-variable hash used by the executor.
         """
-        consumed_vars = (
-            self.dag.consumed_variables.get(cell_id, set())
-            if self.dag
-            else set()
-        )
+        consumed_vars = self.dag.consumed_variables.get(cell_id, set()) if self.dag else set()
         if consumed_vars:
             first_var = sorted(consumed_vars)[0]
-            lookup_hash = hashlib.sha256(
-                f"{provenance_hash}:{first_var}".encode()
-            ).hexdigest()
+            lookup_hash = hashlib.sha256(f"{provenance_hash}:{first_var}".encode()).hexdigest()
         else:
             lookup_hash = provenance_hash
 
@@ -1027,12 +989,8 @@ class NotebookSession:
         notebook_id = self.notebook_state.id
         cached_outputs: dict[str, tuple[str, int]] = {}
         for var_name in sorted(consumed_vars):
-            canonical_id = (
-                f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
-            )
-            expected_hash = hashlib.sha256(
-                f"{provenance_hash}:{var_name}".encode()
-            ).hexdigest()
+            canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{var_name}"
+            expected_hash = hashlib.sha256(f"{provenance_hash}:{var_name}".encode()).hexdigest()
             canonical = self.artifact_manager.artifact_store.get_latest_version(
                 canonical_id,
             )
@@ -1123,9 +1081,7 @@ class NotebookSession:
             self._effective_worker_name(cell),
         )
 
-    def record_execution(
-        self, cell_id: str, duration_ms: float, cache_hit: bool
-    ) -> None:
+    def record_execution(self, cell_id: str, duration_ms: float, cache_hit: bool) -> None:
         """Record a cell execution for profiling (v1.1).
 
         Args:
@@ -1172,22 +1128,22 @@ class NotebookSession:
             last_duration = history[-1].duration_ms if history else 0
             is_cached = history[-1].cache_hit if history else cell.cache_hit
 
-            total_execution_ms += int(
-                sum(sample.duration_ms for sample in history)
-            )
+            total_execution_ms += int(sum(sample.duration_ms for sample in history))
             cache_hits += sum(1 for sample in history if sample.cache_hit)
             cache_misses += sum(1 for sample in history if not sample.cache_hit)
 
             cell_name = cell.defines[0] if cell.defines else cell.id
-            cell_profiles.append({
-                "cell_id": cell.id,
-                "cell_name": cell_name,
-                "status": cell.status,
-                "duration_ms": int(last_duration),
-                "cache_hit": is_cached,
-                "artifact_uri": cell.artifact_uri,
-                "execution_count": len(history),
-            })
+            cell_profiles.append(
+                {
+                    "cell_id": cell.id,
+                    "cell_name": cell_name,
+                    "status": cell.status,
+                    "duration_ms": int(last_duration),
+                    "cache_hit": is_cached,
+                    "artifact_uri": cell.artifact_uri,
+                    "execution_count": len(history),
+                }
+            )
 
         # Estimate cache savings: sum of historical durations for cached cells
         cache_savings_ms = 0
@@ -1300,8 +1256,7 @@ class NotebookSession:
                 self.mark_environment_pending()
                 return
             logger.warning(
-                "Notebook venv missing after dependency change for %s; "
-                "falling back to uv sync",
+                "Notebook venv missing after dependency change for %s; falling back to uv sync",
                 self.path,
             )
             self.ensure_venv_synced()
@@ -1363,9 +1318,7 @@ class NotebookSession:
         if self.warm_pool is None:
             return
         try:
-            self.warm_pool.python_executable = str(
-                self.venv_python or Path("python")
-            )
+            self.warm_pool.python_executable = str(self.venv_python or Path("python"))
             await self.warm_pool.invalidate()
             logger.info("Warm pool invalidated after environment change")
         except Exception:
@@ -1405,9 +1358,7 @@ class NotebookSession:
 
         # 2. Recompute lockfile hash (triggers cache invalidation on next exec)
         new_hash = compute_lockfile_hash(self.path)
-        logger.info(
-            "Lockfile hash updated to %.12s after dependency change", new_hash
-        )
+        logger.info("Lockfile hash updated to %.12s after dependency change", new_hash)
 
         # 3. Persist environment metadata in notebook.toml
         try:
@@ -1415,9 +1366,7 @@ class NotebookSession:
         except Exception:
             logger.exception("Failed to update environment metadata")
 
-    async def mutate_dependency(
-        self, package: str, *, action: str
-    ) -> DependencyMutationOutcome:
+    async def mutate_dependency(self, package: str, *, action: str) -> DependencyMutationOutcome:
         """Apply a dependency mutation without blocking the event loop."""
         from strata.notebook.dependencies import add_dependency, remove_dependency
 
@@ -1440,9 +1389,7 @@ class NotebookSession:
             staleness_map=staleness_map,
         )
 
-    async def import_requirements(
-        self, requirements_text: str
-    ) -> RequirementsImportOutcome:
+    async def import_requirements(self, requirements_text: str) -> RequirementsImportOutcome:
         """Replace direct notebook dependencies from requirements text."""
         result = await asyncio.to_thread(
             import_requirements_text,
@@ -1896,20 +1843,12 @@ class NotebookSession:
 
         for cell_id in cell_ids:
             cell = next(
-                (
-                    candidate
-                    for candidate in self.notebook_state.cells
-                    if candidate.id == cell_id
-                ),
+                (candidate for candidate in self.notebook_state.cells if candidate.id == cell_id),
                 None,
             )
             if cell is None:
                 continue
-            status = (
-                cell.status.value
-                if isinstance(cell.status, CellStatus)
-                else str(cell.status)
-            )
+            status = cell.status.value if isinstance(cell.status, CellStatus) else str(cell.status)
             payload: dict[str, Any] = {
                 "cell_id": cell.id,
                 "status": status,
@@ -2071,9 +2010,7 @@ class SessionManager:
                         import asyncio
 
                         try:
-                            task = asyncio.get_running_loop().create_task(
-                                session.warm_pool.start()
-                            )
+                            task = asyncio.get_running_loop().create_task(session.warm_pool.start())
                             session.warm_pool.track_background_task(task)
                         except RuntimeError:
                             pass  # No running loop; pool stays cold until first acquire
@@ -2128,19 +2065,14 @@ class SessionManager:
 
         # Enforce max count — evict oldest if over limit
         while len(self._sessions) >= self.MAX_SESSIONS:
-            evictable = [
-                sid for sid in self._sessions
-                if not self._has_active_websocket(sid)
-            ]
+            evictable = [sid for sid in self._sessions if not self._has_active_websocket(sid)]
             if not evictable:
                 logger.warning(
                     "Session limit exceeded (%d) but all sessions have active websockets",
                     len(self._sessions),
                 )
                 break
-            oldest_id = min(
-                evictable, key=lambda sid: self._sessions[sid].last_accessed
-            )
+            oldest_id = min(evictable, key=lambda sid: self._sessions[sid].last_accessed)
             logger.info("Evicting oldest session %s (max %d reached)", oldest_id, self.MAX_SESSIONS)
             self.close_session(oldest_id)
 

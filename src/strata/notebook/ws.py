@@ -43,6 +43,7 @@ _notebook_inspect_managers: dict[str, InspectManager] = {}
 def _get_session_manager() -> SessionManager:
     """Get the session manager from routes module."""
     from strata.notebook.routes import get_session_manager
+
     return get_session_manager()
 
 
@@ -181,9 +182,7 @@ async def _broadcast_staleness_updates(
             "cell_id": cell_id,
             "status": staleness.status,
             "staleness_reasons": (
-                [reason.value for reason in staleness.reasons]
-                if staleness.reasons
-                else []
+                [reason.value for reason in staleness.reasons] if staleness.reasons else []
             ),
         }
         causality = session.causality_map.get(cell_id)
@@ -208,11 +207,7 @@ def _capture_cell_state_snapshot(
     snapshot: dict[str, tuple[str, tuple[str, ...], dict[str, Any] | None]] = {}
     for cell in session.notebook_state.cells:
         causality = session.causality_map.get(cell.id)
-        status = (
-            cell.status.value
-            if isinstance(cell.status, CellStatus)
-            else str(cell.status)
-        )
+        status = cell.status.value if isinstance(cell.status, CellStatus) else str(cell.status)
         reasons = tuple(
             reason.value for reason in (cell.staleness.reasons if cell.staleness else [])
         )
@@ -311,10 +306,7 @@ async def _schedule_execution(
             "requested_cell"
         )
         if task is not None:
-            busy_cell = (
-                execution_state.get("running_cell")
-                or execution_state.get("requested_cell")
-            )
+            busy_cell = execution_state.get("running_cell") or execution_state.get("requested_cell")
         elif active_request not in {None, requested_cell}:
             busy_cell = active_request
         else:
@@ -356,9 +348,7 @@ async def _reserve_execution_request(
     """Reserve execution for a cell before validation/scheduling."""
     async with execution_state["control_lock"]:
         task = _get_active_execution_task(execution_state)
-        busy_cell = execution_state.get("running_cell") or execution_state.get(
-            "requested_cell"
-        )
+        busy_cell = execution_state.get("running_cell") or execution_state.get("requested_cell")
         if task is not None or busy_cell is not None:
             return busy_cell
         execution_state["requested_cell"] = requested_cell
@@ -475,9 +465,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                     websocket, session, payload, execution_state, notebook_id
                 )
             elif msg_type == "notebook_run_all":
-                await _handle_notebook_run_all(
-                    websocket, session, execution_state, notebook_id
-                )
+                await _handle_notebook_run_all(websocket, session, execution_state, notebook_id)
             elif msg_type == "cell_execute_cascade":
                 await _handle_cell_execute_cascade(
                     websocket, session, payload, execution_state, notebook_id
@@ -487,9 +475,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                     websocket, session, payload, execution_state, notebook_id
                 )
             elif msg_type == "cell_cancel":
-                await _handle_cell_cancel(
-                    websocket, session, payload, execution_state, notebook_id
-                )
+                await _handle_cell_cancel(websocket, session, payload, execution_state, notebook_id)
             elif msg_type == "cell_source_update":
                 await _handle_cell_source_update(
                     websocket, session, payload, execution_state, notebook_id
@@ -501,9 +487,7 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                     websocket, session, payload, execution_state, notebook_id
                 )
             elif msg_type == "profiling_request":
-                await _handle_profiling_request(
-                    websocket, session, execution_state, notebook_id
-                )
+                await _handle_profiling_request(websocket, session, execution_state, notebook_id)
             elif msg_type == "inspect_open":
                 await _handle_inspect_open(
                     websocket, session, payload, execution_state, notebook_id
@@ -693,9 +677,7 @@ async def _handle_notebook_run_all(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    runnable_cells = [
-        cell.id for cell in session.notebook_state.cells if cell.source.strip()
-    ]
+    runnable_cells = [cell.id for cell in session.notebook_state.cells if cell.source.strip()]
     if not runnable_cells:
         return
 
@@ -833,9 +815,7 @@ async def _handle_cell_execute_cascade(
         notebook_id,
         cell_id,
         seq,
-        lambda: _execute_cascade(
-            websocket, session, plan, execution_state, notebook_id
-        ),
+        lambda: _execute_cascade(websocket, session, plan, execution_state, notebook_id),
     )
     if not scheduled:
         await _release_execution_request(execution_state, cell_id)
@@ -1002,9 +982,7 @@ async def _handle_cell_source_update(
         write_cell(session.path, cell_id, source)
 
         # Update source in session (must happen before re-analysis)
-        cell_in_session = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id), None
-        )
+        cell_in_session = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
         if cell_in_session:
             cell_in_session.source = source
 
@@ -1037,16 +1015,12 @@ async def _handle_cell_source_update(
                     "edges": dag_edges,
                     "roots": list(session.dag.roots) if session.dag else [],
                     "leaves": list(session.dag.leaves) if session.dag else [],
-                    "topological_order": (
-                        session.dag.topological_order if session.dag else []
-                    ),
+                    "topological_order": (session.dag.topological_order if session.dag else []),
                 },
             },
         )
 
-        await _broadcast_staleness_updates(
-            session, notebook_id, seq, staleness_map
-        )
+        await _broadcast_staleness_updates(session, notebook_id, seq, staleness_map)
 
     except Exception as e:
         await websocket.send_text(
@@ -1082,13 +1056,11 @@ async def _handle_notebook_sync(
 
     state = session.serialize_notebook_state()
     state["dag"] = {
-            "edges": dag_edges,
-            "roots": list(session.dag.roots) if session.dag else [],
-            "leaves": list(session.dag.leaves) if session.dag else [],
-            "topological_order": (
-                session.dag.topological_order if session.dag else []
-            ),
-        }
+        "edges": dag_edges,
+        "roots": list(session.dag.roots) if session.dag else [],
+        "leaves": list(session.dag.leaves) if session.dag else [],
+        "topological_order": (session.dag.topological_order if session.dag else []),
+    }
 
     await websocket.send_text(
         _json_encode(
@@ -1127,9 +1099,7 @@ async def _execute_cell_directly(
 
     # Mark as running — update backend state AND broadcast
     execution_state["running_cell"] = cell_id
-    run_cell = next(
-        (c for c in session.notebook_state.cells if c.id == cell_id), None
-    )
+    run_cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
     if run_cell:
         run_cell.status = CellStatus.RUNNING
     await _broadcast_message(
@@ -1182,9 +1152,7 @@ async def _execute_cell_directly(
             )
 
         # v1.1: Record execution for profiling
-        session.record_execution(
-            cell_id, result.duration_ms, result.cache_hit
-        )
+        session.record_execution(cell_id, result.duration_ms, result.cache_hit)
         session.apply_execution_result_metadata(cell_id, result)
 
         # Send output with v1.1 profiling data
@@ -1194,9 +1162,7 @@ async def _execute_cell_directly(
                 {
                     "type": "cell_output",
                     "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                     "payload": {
                         "cell_id": cell_id,
                         "outputs": result.outputs,
@@ -1210,11 +1176,7 @@ async def _execute_cell_directly(
                         # v1.1: Profiling data
                         "execution_method": result.execution_method,
                         "mutation_warnings": result.mutation_warnings,
-                        **(
-                            {"remote_worker": result.remote_worker}
-                            if result.remote_worker
-                            else {}
-                        ),
+                        **({"remote_worker": result.remote_worker} if result.remote_worker else {}),
                         **(
                             {"remote_transport": result.remote_transport}
                             if result.remote_transport
@@ -1244,17 +1206,11 @@ async def _execute_cell_directly(
                 {
                     "type": "cell_error",
                     "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                     "payload": {
                         "cell_id": cell_id,
                         "error": result.error,
-                        **(
-                            {"remote_worker": result.remote_worker}
-                            if result.remote_worker
-                            else {}
-                        ),
+                        **({"remote_worker": result.remote_worker} if result.remote_worker else {}),
                         **(
                             {"remote_transport": result.remote_transport}
                             if result.remote_transport
@@ -1275,8 +1231,11 @@ async def _execute_cell_directly(
                             if result.remote_error_code
                             else {}
                         ),
-                        **({"suggest_install": result.suggest_install}
-                           if result.suggest_install else {}),
+                        **(
+                            {"suggest_install": result.suggest_install}
+                            if result.suggest_install
+                            else {}
+                        ),
                     },
                 },
             )
@@ -1291,9 +1250,7 @@ async def _execute_cell_directly(
                 preserve_ready_cell_id=cell_id,
             )
         else:
-            cell = next(
-                (c for c in session.notebook_state.cells if c.id == cell_id), None
-            )
+            cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
             if cell:
                 cell.status = CellStatus.ERROR
             await _broadcast_message(
@@ -1310,9 +1267,7 @@ async def _execute_cell_directly(
         await _set_cell_idle(session, notebook_id, seq, cell_id)
         raise
     except Exception as e:
-        cell = next(
-            (c for c in session.notebook_state.cells if c.id == cell_id), None
-        )
+        cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
         if cell:
             cell.status = CellStatus.ERROR
         await _broadcast_message(
@@ -1367,9 +1322,7 @@ async def _execute_cascade(
                 continue
 
             cell_id = step.cell_id
-            cell = next(
-                (c for c in session.notebook_state.cells if c.id == cell_id), None
-            )
+            cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
             if not cell:
                 continue
 
@@ -1377,7 +1330,8 @@ async def _execute_cascade(
             if cascade_failed:
                 logger.warning(
                     "Cascade %s: skipping cell %s (earlier step failed)",
-                    plan.plan_id, cell_id,
+                    plan.plan_id,
+                    cell_id,
                 )
                 # Use "stale" (not "idle") so the client can distinguish a
                 # cascade-abort from a normal staleness notification.
@@ -1437,9 +1391,7 @@ async def _execute_cascade(
                 result = await executor.execute_cell(cell_id, cell.source)
 
                 # v1.1: Record execution for profiling
-                session.record_execution(
-                    cell_id, result.duration_ms, result.cache_hit
-                )
+                session.record_execution(cell_id, result.duration_ms, result.cache_hit)
                 session.apply_execution_result_metadata(cell_id, result)
 
                 # Send console output for cascade cells
@@ -1449,9 +1401,7 @@ async def _execute_cascade(
                         {
                             "type": "cell_console",
                             "seq": seq,
-                            "ts": datetime.now(tz=UTC).isoformat().replace(
-                                "+00:00", "Z"
-                            ),
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                             "payload": {
                                 "cell_id": cell_id,
                                 "stream": "stdout",
@@ -1467,9 +1417,7 @@ async def _execute_cascade(
                         {
                             "type": "cell_output",
                             "seq": seq,
-                            "ts": datetime.now(tz=UTC).isoformat().replace(
-                                "+00:00", "Z"
-                            ),
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                             "payload": {
                                 "cell_id": cell_id,
                                 "outputs": result.outputs,
@@ -1524,9 +1472,7 @@ async def _execute_cascade(
                         {
                             "type": "cell_error",
                             "seq": seq,
-                            "ts": datetime.now(tz=UTC).isoformat().replace(
-                                "+00:00", "Z"
-                            ),
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                             "payload": {
                                 "cell_id": cell_id,
                                 "error": result.error,
@@ -1555,8 +1501,11 @@ async def _execute_cascade(
                                     if result.remote_error_code
                                     else {}
                                 ),
-                                **({"suggest_install": result.suggest_install}
-                                   if result.suggest_install else {}),
+                                **(
+                                    {"suggest_install": result.suggest_install}
+                                    if result.suggest_install
+                                    else {}
+                                ),
                             },
                         },
                     )
@@ -1574,19 +1523,17 @@ async def _execute_cascade(
                     {
                         "type": "cell_status",
                         "seq": seq,
-                        "ts": datetime.now(tz=UTC).isoformat().replace(
-                            "+00:00", "Z"
-                        ),
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                         "payload": {"cell_id": cell_id, "status": status},
                     },
                 )
 
                 logger.info(
-                    "Cascade %s: cell %s finished status=%s "
-                    "artifact_uri=%s cache_hit=%s",
-                    plan.plan_id, cell_id, status,
-                    getattr(cascade_cell, "artifact_uri", None)
-                    if cascade_cell else None,
+                    "Cascade %s: cell %s finished status=%s artifact_uri=%s cache_hit=%s",
+                    plan.plan_id,
+                    cell_id,
+                    status,
+                    getattr(cascade_cell, "artifact_uri", None) if cascade_cell else None,
                     result.cache_hit,
                 )
 
@@ -1724,9 +1671,7 @@ async def _execute_run_all(
                         {
                             "type": "cell_output",
                             "seq": seq,
-                            "ts": datetime.now(tz=UTC).isoformat().replace(
-                                "+00:00", "Z"
-                            ),
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                             "payload": {
                                 "cell_id": cell_id,
                                 "outputs": result.outputs,
@@ -1792,9 +1737,7 @@ async def _execute_run_all(
                     {
                         "type": "cell_error",
                         "seq": seq,
-                        "ts": datetime.now(tz=UTC).isoformat().replace(
-                            "+00:00", "Z"
-                        ),
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                         "payload": {
                             "cell_id": cell_id,
                             "error": result.error,
@@ -1870,7 +1813,6 @@ async def _execute_run_all(
         execution_state["running_cell"] = None
 
 
-
 def _get_inspect_manager(notebook_id: str) -> InspectManager:
     """Get or create an InspectManager for a notebook."""
     if notebook_id not in _notebook_inspect_managers:
@@ -1901,9 +1843,7 @@ async def _handle_inspect_open(
             {
                 "type": "inspect_result",
                 "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                 "payload": {
                     "cell_id": cell_id,
                     "action": "open",
@@ -1941,9 +1881,7 @@ async def _handle_inspect_eval(
                 {
                     "type": "inspect_result",
                     "seq": seq,
-                    "ts": datetime.now(tz=UTC).isoformat().replace(
-                        "+00:00", "Z"
-                    ),
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                     "payload": {
                         "cell_id": cell_id,
                         "action": "eval",
@@ -1962,9 +1900,7 @@ async def _handle_inspect_eval(
             {
                 "type": "inspect_result",
                 "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                 "payload": {
                     "cell_id": cell_id,
                     "action": "eval",
@@ -1999,9 +1935,7 @@ async def _handle_inspect_close(
             {
                 "type": "inspect_result",
                 "seq": seq,
-                "ts": datetime.now(tz=UTC).isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
                 "payload": {
                     "cell_id": cell_id,
                     "action": "close",
@@ -2080,12 +2014,14 @@ async def _handle_dependency_add(
     if not package:
         execution_state["sequence"] += 1
         await websocket.send_text(
-            _json_encode({
-                "type": "error",
-                "seq": execution_state["sequence"],
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"error": "Missing 'package' in payload"},
-            })
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": "Missing 'package' in payload"},
+                }
+            )
         )
         return
 
@@ -2094,12 +2030,14 @@ async def _handle_dependency_add(
     except ValueError as e:
         execution_state["sequence"] += 1
         await websocket.send_text(
-            _json_encode({
-                "type": "error",
-                "seq": execution_state["sequence"],
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"error": str(e)},
-            })
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": str(e)},
+                }
+            )
         )
         return
 
@@ -2133,12 +2071,14 @@ async def _handle_dependency_remove(
     if not package:
         execution_state["sequence"] += 1
         await websocket.send_text(
-            _json_encode({
-                "type": "error",
-                "seq": execution_state["sequence"],
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"error": "Missing 'package' in payload"},
-            })
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": "Missing 'package' in payload"},
+                }
+            )
         )
         return
 
@@ -2147,12 +2087,14 @@ async def _handle_dependency_remove(
     except ValueError as e:
         execution_state["sequence"] += 1
         await websocket.send_text(
-            _json_encode({
-                "type": "error",
-                "seq": execution_state["sequence"],
-                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                "payload": {"error": str(e)},
-            })
+            _json_encode(
+                {
+                    "type": "error",
+                    "seq": execution_state["sequence"],
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {"error": str(e)},
+                }
+            )
         )
         return
 
@@ -2172,9 +2114,7 @@ async def _handle_dependency_remove(
         )
 
 
-async def _broadcast_message(
-    notebook_id: str, message: dict[str, Any]
-) -> None:
+async def _broadcast_message(notebook_id: str, message: dict[str, Any]) -> None:
     """Broadcast a message to all connected clients for a notebook."""
     connections = _notebook_connections.get(notebook_id, [])
     if not connections:
