@@ -119,22 +119,38 @@ def _get_s3_endpoint(config: dict) -> str:
 
 
 @pytest.fixture(scope="module")
-def s3_config(minio_container, tmp_path_factory):
-    """Create StrataConfig for MinIO."""
+def s3_catalog_db(tmp_path_factory):
+    """Shared catalog DB path for S3 integration tests."""
+    return tmp_path_factory.mktemp("catalog") / "catalog.db"
+
+
+@pytest.fixture(scope="module")
+def s3_config(minio_container, s3_catalog_db, tmp_path_factory):
+    """Create StrataConfig for MinIO with shared catalog."""
     config = minio_container.get_config()
     cache_dir = tmp_path_factory.mktemp("cache")
+    endpoint = _get_s3_endpoint(config)
 
     return StrataConfig(
         cache_dir=cache_dir,
-        s3_endpoint_url=_get_s3_endpoint(config),
+        s3_endpoint_url=endpoint,
         s3_access_key=config["access_key"],
         s3_secret_key=config["secret_key"],
         s3_region="us-east-1",
+        catalog_properties={
+            "type": "sql",
+            "uri": f"sqlite:///{s3_catalog_db}",
+            "warehouse": "s3://test-warehouse/warehouse",
+            "s3.endpoint": endpoint,
+            "s3.access-key-id": config["access_key"],
+            "s3.secret-access-key": config["secret_key"],
+            "s3.region": "us-east-1",
+        },
     )
 
 
 @pytest.fixture(scope="module")
-def s3_table(minio_container, s3_config, tmp_path_factory):
+def s3_table(minio_container, s3_config, s3_catalog_db):
     """Create an Iceberg table in MinIO with test data.
 
     Returns the table URI in format: s3://bucket/warehouse#namespace.table
@@ -142,17 +158,14 @@ def s3_table(minio_container, s3_config, tmp_path_factory):
     config = minio_container.get_config()
     bucket = "test-warehouse"
     warehouse_path = f"s3://{bucket}/warehouse"
-
-    # Create catalog with S3 config
-    # Use a temporary file for catalog metadata (SQLite)
-    catalog_db = tmp_path_factory.mktemp("catalog") / "catalog.db"
+    endpoint = _get_s3_endpoint(config)
 
     catalog = SqlCatalog(
-        "test",
-        uri=f"sqlite:///{catalog_db}",
+        "default",
+        uri=f"sqlite:///{s3_catalog_db}",
         warehouse=warehouse_path,
         **{
-            "s3.endpoint": _get_s3_endpoint(config),
+            "s3.endpoint": endpoint,
             "s3.access-key-id": config["access_key"],
             "s3.secret-access-key": config["secret_key"],
             "s3.region": "us-east-1",
@@ -255,16 +268,15 @@ class TestS3EndToEnd:
             # (actual filtering happens at read time via Iceberg)
             assert table.num_rows >= 0  # May be 0 if properly pruned
 
-    def test_multiple_row_groups(self, minio_container, s3_config, tmp_path_factory):
+    def test_multiple_row_groups(self, minio_container, s3_config, s3_catalog_db):
         """Test reading a table with multiple row groups."""
         config = minio_container.get_config()
         bucket = "test-warehouse"
-        warehouse_path = f"s3://{bucket}/multi-rg-test"
+        warehouse_path = f"s3://{bucket}/warehouse"
 
-        catalog_db = tmp_path_factory.mktemp("catalog") / "catalog.db"
         catalog = SqlCatalog(
-            "test",
-            uri=f"sqlite:///{catalog_db}",
+            "default",
+            uri=f"sqlite:///{s3_catalog_db}",
             warehouse=warehouse_path,
             **{
                 "s3.endpoint": _get_s3_endpoint(config),
@@ -317,14 +329,15 @@ class TestS3PathHandling:
         bucket = "test-warehouse"
         # Path with hyphens and underscores (common in real warehouses)
         warehouse_path = f"s3://{bucket}/data-lake_v2/iceberg"
+        endpoint = _get_s3_endpoint(config)
 
-        catalog_db = tmp_path_factory.mktemp("catalog") / "catalog.db"
+        catalog_db = tmp_path_factory.mktemp("special_catalog") / "catalog.db"
         catalog = SqlCatalog(
-            "test",
+            "default",
             uri=f"sqlite:///{catalog_db}",
             warehouse=warehouse_path,
             **{
-                "s3.endpoint": _get_s3_endpoint(config),
+                "s3.endpoint": endpoint,
                 "s3.access-key-id": config["access_key"],
                 "s3.secret-access-key": config["secret_key"],
                 "s3.region": "us-east-1",
@@ -348,8 +361,26 @@ class TestS3PathHandling:
         data = create_test_data(num_rows=100)
         table.append(data)
 
+        # Use a config that points at this test's own catalog
+        special_config = StrataConfig(
+            cache_dir=tmp_path_factory.mktemp("special_cache"),
+            s3_endpoint_url=endpoint,
+            s3_access_key=config["access_key"],
+            s3_secret_key=config["secret_key"],
+            s3_region="us-east-1",
+            catalog_properties={
+                "type": "sql",
+                "uri": f"sqlite:///{catalog_db}",
+                "warehouse": warehouse_path,
+                "s3.endpoint": endpoint,
+                "s3.access-key-id": config["access_key"],
+                "s3.secret-access-key": config["secret_key"],
+                "s3.region": "us-east-1",
+            },
+        )
+
         table_uri = f"{warehouse_path}#{table_id}"
-        planner = ReadPlanner(s3_config)
+        planner = ReadPlanner(special_config)
         plan = planner.plan(table_uri)
 
         assert len(plan.tasks) > 0
