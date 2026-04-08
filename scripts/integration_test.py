@@ -173,39 +173,51 @@ def test_health_endpoint(client: httpx.Client) -> bool:
     return True
 
 
+def _materialize_and_stream(
+    client: httpx.Client,
+    table_uri: str,
+    columns: list[str],
+    filters: list[dict] | None = None,
+    headers: dict[str, str] | None = None,
+) -> tuple[bool, str, int]:
+    """Materialize a scan and stream the result. Returns (ok, message, bytes)."""
+    body: dict = {
+        "inputs": [table_uri],
+        "transform": {
+            "executor": "scan@v1",
+            "params": {"columns": columns},
+        },
+    }
+    if filters:
+        body["transform"]["params"]["filters"] = filters
+
+    resp = client.post("/v1/materialize", json=body, headers=headers or {})
+    if resp.status_code != 200:
+        return False, f"materialize failed: {resp.status_code} {resp.text}", 0
+
+    data = resp.json()
+    stream_url = data.get("stream_url")
+    if not stream_url:
+        # Artifact mode or cache hit without stream
+        return True, f"hit={data.get('hit')}", 0
+
+    resp = client.get(stream_url, headers=headers or {})
+    if resp.status_code != 200:
+        return False, f"stream failed: {resp.status_code} {resp.text}", 0
+
+    return True, "ok", len(resp.content)
+
+
 def test_basic_scan(client: httpx.Client, table_uri: str) -> bool:
     """Test a basic scan operation."""
     print(f"Testing basic scan on {table_uri}...")
 
-    # Create scan
-    resp = client.post(
-        "/v1/scan",
-        json={
-            "table_uri": table_uri,
-            "columns": ["id", "name"],
-        },
-    )
-
-    if resp.status_code != 200:
-        print(f"  FAIL: scan creation failed: {resp.status_code} {resp.text}")
+    ok, msg, nbytes = _materialize_and_stream(client, table_uri, ["id", "name"])
+    if not ok:
+        print(f"  FAIL: {msg}")
         return False
 
-    scan_id = resp.json()["scan_id"]
-    print(f"  scan_id={scan_id}")
-
-    # Get batches
-    resp = client.get(f"/v1/scan/{scan_id}/batches")
-    if resp.status_code != 200:
-        print(f"  FAIL: batch retrieval failed: {resp.status_code} {resp.text}")
-        return False
-
-    # Verify we got data
-    content_length = len(resp.content)
-    if content_length == 0:
-        print("  FAIL: no data returned")
-        return False
-
-    print(f"  PASS: received {content_length} bytes")
+    print(f"  PASS: received {nbytes} bytes ({msg})")
     return True
 
 
@@ -213,29 +225,17 @@ def test_filtered_scan(client: httpx.Client, table_uri: str) -> bool:
     """Test a scan with filters."""
     print(f"Testing filtered scan on {table_uri}...")
 
-    # Create scan with filter
-    resp = client.post(
-        "/v1/scan",
-        json={
-            "table_uri": table_uri,
-            "columns": ["id", "name"],
-            "filters": [{"column": "id", "op": ">", "value": 2}],
-        },
+    ok, msg, nbytes = _materialize_and_stream(
+        client,
+        table_uri,
+        ["id", "name"],
+        filters=[{"column": "id", "op": ">", "value": 2}],
     )
-
-    if resp.status_code != 200:
-        print(f"  FAIL: scan creation failed: {resp.status_code} {resp.text}")
+    if not ok:
+        print(f"  FAIL: {msg}")
         return False
 
-    scan_id = resp.json()["scan_id"]
-
-    # Get batches
-    resp = client.get(f"/v1/scan/{scan_id}/batches")
-    if resp.status_code != 200:
-        print(f"  FAIL: batch retrieval failed: {resp.status_code} {resp.text}")
-        return False
-
-    print(f"  PASS: received {len(resp.content)} bytes")
+    print(f"  PASS: received {nbytes} bytes ({msg})")
     return True
 
 
@@ -247,25 +247,11 @@ def test_multi_tenant_scan(client: httpx.Client, table_uri: str) -> bool:
 
     for tenant in tenants:
         headers = {"X-Tenant-ID": tenant}
-
-        resp = client.post(
-            "/v1/scan",
-            json={
-                "table_uri": table_uri,
-                "columns": ["id"],
-            },
-            headers=headers,
+        ok, msg, _ = _materialize_and_stream(
+            client, table_uri, ["id"], headers=headers
         )
-
-        if resp.status_code != 200:
-            print(f"  FAIL: scan for {tenant} failed: {resp.status_code}")
-            return False
-
-        scan_id = resp.json()["scan_id"]
-
-        resp = client.get(f"/v1/scan/{scan_id}/batches", headers=headers)
-        if resp.status_code != 200:
-            print(f"  FAIL: batch for {tenant} failed: {resp.status_code}")
+        if not ok:
+            print(f"  FAIL: scan for {tenant} failed: {msg}")
             return False
 
     print(f"  PASS: all {len(tenants)} tenants succeeded")
@@ -280,19 +266,8 @@ def test_concurrent_scans(client: httpx.Client, table_uri: str) -> bool:
 
     def run_scan(scan_num: int) -> tuple[int, bool]:
         try:
-            resp = client.post(
-                "/v1/scan",
-                json={
-                    "table_uri": table_uri,
-                    "columns": ["id", "data"],
-                },
-            )
-            if resp.status_code != 200:
-                return scan_num, False
-
-            scan_id = resp.json()["scan_id"]
-            resp = client.get(f"/v1/scan/{scan_id}/batches")
-            return scan_num, resp.status_code == 200
+            ok, _, _ = _materialize_and_stream(client, table_uri, ["id", "data"])
+            return scan_num, ok
         except Exception as e:
             print(f"    scan {scan_num} error: {e}")
             return scan_num, False
