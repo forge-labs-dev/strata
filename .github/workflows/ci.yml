@@ -69,6 +69,7 @@ jobs:
           uv run pytest tests/ \
             --ignore=tests/test_e2e_artifacts.py \
             --ignore=tests/test_lineage.py \
+            --ignore=tests/test_s3_integration.py \
             -v --tb=short
 
   # E2E and integration tests - run on Ubuntu only for speed
@@ -151,6 +152,10 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
+        working-directory: frontend
+
+      - name: Build frontend
+        run: npm run build
         working-directory: frontend
 
       - name: Install Playwright Chromium
