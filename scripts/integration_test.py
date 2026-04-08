@@ -247,9 +247,7 @@ def test_multi_tenant_scan(client: httpx.Client, table_uri: str) -> bool:
 
     for tenant in tenants:
         headers = {"X-Tenant-ID": tenant}
-        ok, msg, _ = _materialize_and_stream(
-            client, table_uri, ["id"], headers=headers
-        )
+        ok, msg, _ = _materialize_and_stream(client, table_uri, ["id"], headers=headers)
         if not ok:
             print(f"  FAIL: scan for {tenant} failed: {msg}")
             return False
