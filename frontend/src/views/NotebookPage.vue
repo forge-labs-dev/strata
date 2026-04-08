@@ -105,7 +105,8 @@ function clampSidebarWidth(width: number): number {
 
 function handleGlobalKeydown(e: KeyboardEvent) {
   const tag = (e.target as HTMLElement)?.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.closest('.cm-editor')) return
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.closest('.cm-editor'))
+    return
   if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
     e.preventDefault()
     showShortcuts.value = !showShortcuts.value
