@@ -4,27 +4,25 @@
 
 Strata provides a single primitive — `materialize(inputs, transform) → artifact` — that ensures results are immutable, versioned, deduplicated, and traceable. It sits below orchestration and outside execution.
 
-<div class="grid cards" markdown>
+**[Try it now](https://strata-notebook.fly.dev)** — a small hosted preview, no account needed.
 
--   :material-notebook:{ .lg .middle } **Strata Notebook**
+---
 
-    ---
+## Two Surfaces
 
-    Interactive notebook with content-addressed caching, automatic dependency tracking, and cascade execution.
+### Strata Notebook
 
-    [:octicons-arrow-right-24: Notebook Quickstart](getting-started/notebook.md)
+Interactive notebook with content-addressed caching, automatic dependency tracking, and cascade execution. Each cell output is an artifact. Change upstream code, and downstream cells automatically invalidate.
 
--   :material-cube-outline:{ .lg .middle } **Strata Core**
+[:octicons-arrow-right-24: Notebook Quickstart](getting-started/notebook.md){ .md-button }
 
-    ---
+### Strata Core
 
-    Programmatic `materialize()` API with artifact caching, lineage, and executor integration.
+Programmatic `materialize()` API with artifact caching, lineage, and executor integration. Same runtime as the notebook, exposed as a Python client and REST API.
 
-    [:octicons-arrow-right-24: Core Quickstart](getting-started/core.md)
+[:octicons-arrow-right-24: Core API Quickstart](getting-started/core.md){ .md-button }
 
-</div>
-
-**Try it now:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev) — a small hosted preview, no account needed.
+---
 
 ## Why Strata?
 
@@ -64,15 +62,24 @@ What breaks first is not compute — it's **state**. Strata makes state explicit
 
 ## Quick Start
 
-```bash
-# Docker (recommended)
-docker compose up -d --build
-# Then open http://localhost:8765
+=== "Docker"
 
-# Or from source
-uv sync
-uv run strata-server
-```
+    ```bash
+    docker compose up -d --build
+    ```
+
+    Then open [http://localhost:8765](http://localhost:8765).
+
+=== "From source"
+
+    ```bash
+    uv sync
+    uv run strata-server
+    ```
+
+    Then open [http://localhost:8765](http://localhost:8765).
+
+See [Installation](getting-started/installation.md) for full details.
 
 ## Status
 
