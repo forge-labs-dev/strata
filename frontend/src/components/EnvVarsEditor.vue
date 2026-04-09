@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
+const _SENSITIVE_PATTERNS = ['KEY', 'SECRET', 'TOKEN', 'PASSWORD', 'CREDENTIAL']
+
+function isSensitiveKey(key: string): boolean {
+  const upper = key.toUpperCase()
+  return _SENSITIVE_PATTERNS.some((p) => upper.includes(p))
+}
+
 interface EnvRow {
   localId: string
   key: string
@@ -83,7 +90,7 @@ function save() {
       <input
         v-model="row.value"
         class="env-input env-value"
-        type="text"
+        :type="isSensitiveKey(row.key) ? 'password' : 'text'"
         placeholder="value"
         :disabled="readOnly"
       />
@@ -146,9 +153,19 @@ function save() {
 }
 
 .env-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(180px, 2fr) 28px;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+}
+
+.env-key {
+  flex: 1 1 100px;
+  min-width: 80px;
+}
+
+.env-value {
+  flex: 2 1 140px;
+  min-width: 100px;
 }
 
 .env-input {
@@ -172,9 +189,4 @@ function save() {
   justify-content: flex-end;
 }
 
-@media (max-width: 920px) {
-  .env-row {
-    grid-template-columns: 1fr 1fr;
-  }
-}
 </style>
