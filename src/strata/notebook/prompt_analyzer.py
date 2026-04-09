@@ -13,12 +13,41 @@ _TEMPLATE_VAR_RE = re.compile(r"\{\{\s*([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*(?:\([^)]*\
 _ANNOTATION_RE = re.compile(r"^#\s*@(\w+)\s*(.*?)\s*$")
 
 # Python builtins that should not be treated as upstream references
-_BUILTINS = frozenset({
-    "True", "False", "None", "print", "len", "range", "str", "int",
-    "float", "list", "dict", "set", "tuple", "type", "isinstance",
-    "sorted", "enumerate", "zip", "map", "filter", "sum", "min", "max",
-    "abs", "round", "any", "all", "open", "input", "format", "repr",
-})
+_BUILTINS = frozenset(
+    {
+        "True",
+        "False",
+        "None",
+        "print",
+        "len",
+        "range",
+        "str",
+        "int",
+        "float",
+        "list",
+        "dict",
+        "set",
+        "tuple",
+        "type",
+        "isinstance",
+        "sorted",
+        "enumerate",
+        "zip",
+        "map",
+        "filter",
+        "sum",
+        "min",
+        "max",
+        "abs",
+        "round",
+        "any",
+        "all",
+        "open",
+        "input",
+        "format",
+        "repr",
+    }
+)
 
 
 @dataclass

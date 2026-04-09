@@ -80,9 +80,7 @@ class TestResolveLlmConfig:
     def test_notebook_env_provides_api_key(self):
         """Notebook-level env vars (Runtime panel) provide API keys."""
         with patch.dict(os.environ, {}, clear=True):
-            config = resolve_llm_config(
-                notebook_env={"OPENAI_API_KEY": "sk-from-runtime-panel"}
-            )
+            config = resolve_llm_config(notebook_env={"OPENAI_API_KEY": "sk-from-runtime-panel"})
             assert config is not None
             assert config.api_key == "sk-from-runtime-panel"
             assert "openai" in config.base_url
@@ -94,9 +92,7 @@ class TestResolveLlmConfig:
             {"OPENAI_API_KEY": "sk-process"},
             clear=True,
         ):
-            config = resolve_llm_config(
-                notebook_env={"ANTHROPIC_API_KEY": "sk-notebook-runtime"}
-            )
+            config = resolve_llm_config(notebook_env={"ANTHROPIC_API_KEY": "sk-notebook-runtime"})
             assert config is not None
             assert config.api_key == "sk-notebook-runtime"
             assert "anthropic" in config.base_url
@@ -132,9 +128,7 @@ class TestInferProviderName:
 
     def test_google(self):
         assert (
-            infer_provider_name(
-                "https://generativelanguage.googleapis.com/v1beta/openai"
-            )
+            infer_provider_name("https://generativelanguage.googleapis.com/v1beta/openai")
             == "google"
         )
 

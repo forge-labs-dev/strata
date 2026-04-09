@@ -475,7 +475,9 @@ class CellExecutor:
             # Prompt cells use a dedicated executor (LLM call, no subprocess)
             if cell is not None and cell.language == "prompt":
                 return await self._execute_prompt_cell(
-                    cell_id, source, start_time,
+                    cell_id,
+                    source,
+                    start_time,
                     materialize_upstreams=materialize_upstreams,
                     use_cache=use_cache,
                 )
@@ -1653,7 +1655,11 @@ class CellExecutor:
             )
 
         result_dict = await execute_prompt_cell(
-            self.session, cell_id, source, llm_config, use_cache=use_cache,
+            self.session,
+            cell_id,
+            source,
+            llm_config,
+            use_cache=use_cache,
         )
 
         return CellExecutionResult(

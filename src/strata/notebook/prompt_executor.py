@@ -21,7 +21,6 @@ from strata.notebook.llm import (
 from strata.notebook.prompt_analyzer import analyze_prompt_cell
 
 if TYPE_CHECKING:
-
     from strata.notebook.session import NotebookSession
 
 logger = logging.getLogger(__name__)
@@ -73,9 +72,7 @@ async def execute_prompt_cell(
         system_prompt or "",
         output_type,
     ]
-    provenance_hash = hashlib.sha256(
-        "\n".join(provenance_parts).encode()
-    ).hexdigest()
+    provenance_hash = hashlib.sha256("\n".join(provenance_parts).encode()).hexdigest()
 
     # Cache check
     artifact_mgr = session.get_artifact_manager()
@@ -132,7 +129,11 @@ async def execute_prompt_cell(
 
     logger.info(
         "prompt_cell_execute %s: model=%s temp=%s est_tokens=%d output_type=%s",
-        cell_id, model, temperature, input_tokens_est, output_type,
+        cell_id,
+        model,
+        temperature,
+        input_tokens_est,
+        output_type,
     )
 
     # Call LLM
@@ -171,28 +172,29 @@ async def execute_prompt_cell(
     blob = json.dumps(content, indent=2, default=str).encode()
 
     try:
-        var_provenance = hashlib.sha256(
-            f"{provenance_hash}:{output_name}".encode()
-        ).hexdigest()
+        var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
 
         version = artifact_mgr.artifact_store.create_artifact(
             artifact_id=canonical_id,
             provenance_hash=var_provenance,
-            transform_spec=json.dumps({
-                "executor": "prompt",
-                "params": {
-                    "content_type": content_type,
-                    "model": model,
-                    "temperature": temperature,
-                    "output_type": output_type,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                },
-            }),
+            transform_spec=json.dumps(
+                {
+                    "executor": "prompt",
+                    "params": {
+                        "content_type": content_type,
+                        "model": model,
+                        "temperature": temperature,
+                        "output_type": output_type,
+                        "input_tokens": result.input_tokens,
+                        "output_tokens": result.output_tokens,
+                    },
+                }
+            ),
         )
         artifact_mgr.artifact_store.write_blob(canonical_id, version, blob)
         artifact_mgr.artifact_store.finalize_artifact(
-            canonical_id, version,
+            canonical_id,
+            version,
             schema_json="{}",
             row_count=1,
             byte_size=len(blob),
@@ -230,9 +232,7 @@ def _load_upstream_variables(
 ) -> dict[str, Any]:
     """Load upstream variable values from artifacts."""
     variables: dict[str, Any] = {}
-    cell = next(
-        (c for c in session.notebook_state.cells if c.id == cell_id), None
-    )
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
     if cell is None:
         return variables
 
@@ -247,9 +247,7 @@ def _load_upstream_variables(
         if upstream_cell is None:
             continue
 
-        referenced_vars = [
-            v for v in cell.references if v in upstream_cell.defines
-        ]
+        referenced_vars = [v for v in cell.references if v in upstream_cell.defines]
 
         for var_name in referenced_vars:
             canonical_id = f"nb_{notebook_id}_cell_{upstream_id}_var_{var_name}"

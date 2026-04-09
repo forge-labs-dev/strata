@@ -92,10 +92,7 @@ def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
         for var in cell.defines:
             previous_producer = dag.variable_producer.get(var)
             if previous_producer is not None and previous_producer != cell.id:
-                warning = (
-                    f"Variable '{var}' shadows definition from cell "
-                    f"{previous_producer[:8]}"
-                )
+                warning = f"Variable '{var}' shadows definition from cell {previous_producer[:8]}"
                 dag.shadow_warnings.setdefault(cell.id, []).append(warning)
             dag.variable_producer[var] = cell.id
 

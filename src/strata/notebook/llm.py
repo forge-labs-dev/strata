@@ -136,9 +136,8 @@ def resolve_llm_config(
 
     # Also check the generic STRATA_AI_API_KEY (process env + notebook env)
     if not api_key:
-        api_key = (
-            (notebook_env or {}).get("STRATA_AI_API_KEY")
-            or os.environ.get("STRATA_AI_API_KEY")
+        api_key = (notebook_env or {}).get("STRATA_AI_API_KEY") or os.environ.get(
+            "STRATA_AI_API_KEY"
         )
 
     if not api_key:

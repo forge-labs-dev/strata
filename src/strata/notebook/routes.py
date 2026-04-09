@@ -1387,7 +1387,10 @@ async def add_cell(notebook_id: str, req: AddCellRequest) -> dict:
 
         # Add to notebook
         add_cell_to_notebook(
-            session.path, cell_id, req.after_cell_id, language=req.language,
+            session.path,
+            cell_id,
+            req.after_cell_id,
+            language=req.language,
         )
 
         # Reload notebook state
@@ -1859,9 +1862,7 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
                     cell_error = getattr(output, "error", None)
                     break
 
-    messages = build_messages(
-        req.action, req.message, notebook_context, cell_source, cell_error
-    )
+    messages = build_messages(req.action, req.message, notebook_context, cell_source, cell_error)
 
     try:
         result = await chat_completion(config, messages)
@@ -1869,9 +1870,7 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
         status = e.response.status_code
         if status == 429:
             raise HTTPException(status_code=429, detail="LLM provider rate limited")
-        raise HTTPException(
-            status_code=502, detail=f"LLM provider error: {status}"
-        )
+        raise HTTPException(status_code=502, detail=f"LLM provider error: {status}")
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="LLM provider timed out")
     except Exception:
