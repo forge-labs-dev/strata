@@ -10,8 +10,9 @@ import time
 import uuid
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -1740,3 +1741,145 @@ async def export_notebook(notebook_id: str) -> StreamingResponse:
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ============================================================================
+# LLM Assistant
+# ============================================================================
+
+
+class LlmCompleteRequest(BaseModel):
+    """Request for LLM assistant completion."""
+
+    action: Literal["generate", "explain", "describe", "chat"] = Field(
+        ..., description="Action type"
+    )
+    message: str = Field(..., max_length=10_000, description="User message")
+    cell_id: str | None = Field(default=None, description="Target cell ID for context")
+
+
+def _read_notebook_ai_config(session) -> dict | None:
+    """Read [ai] section from notebook.toml if present."""
+    notebook_toml = session.path / "notebook.toml"
+    if not notebook_toml.exists():
+        return None
+    try:
+        import tomllib
+
+        with open(notebook_toml, "rb") as f:
+            data = tomllib.load(f)
+        ai_section = data.get("ai")
+        return ai_section if isinstance(ai_section, dict) else None
+    except Exception:
+        return None
+
+
+def _get_llm_config(session):
+    """Resolve LLM config for a notebook session."""
+    from strata.notebook.llm import resolve_llm_config
+
+    notebook_ai = _read_notebook_ai_config(session)
+
+    server_config = None
+    try:
+        from strata.server import get_state
+
+        server_config = get_state().config
+    except RuntimeError:
+        pass
+
+    # Notebook-level env vars (set via Runtime panel)
+    notebook_env = getattr(session.notebook_state, "env", None) or {}
+
+    return resolve_llm_config(notebook_ai, server_config, notebook_env)
+
+
+@router.get("/{notebook_id}/ai/status")
+async def llm_status(notebook_id: str) -> dict:
+    """Check if the LLM assistant is configured and available."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    from strata.notebook.llm import infer_provider_name
+
+    config = _get_llm_config(session)
+    if config is None:
+        return {"available": False, "model": None, "provider": None}
+
+    return {
+        "available": True,
+        "model": config.model,
+        "provider": infer_provider_name(config.base_url),
+    }
+
+
+@router.post("/{notebook_id}/ai/complete")
+async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
+    """Run an LLM assistant completion."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    from strata.notebook.llm import (
+        build_messages,
+        build_notebook_context,
+        chat_completion,
+    )
+
+    config = _get_llm_config(session)
+    if config is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM assistant not configured. "
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY."
+            ),
+        )
+
+    # Build notebook context
+    notebook_context = build_notebook_context(session, max_tokens=config.max_context_tokens // 4)
+
+    # Get cell-specific context
+    cell_source = None
+    cell_error = None
+    if req.cell_id:
+        cell = next(
+            (c for c in session.notebook_state.cells if c.id == req.cell_id),
+            None,
+        )
+        if cell:
+            cell_source = cell.source
+            # Extract error from display outputs
+            for output in reversed(getattr(cell, "display_outputs", []) or []):
+                if getattr(output, "content_type", None) == "error":
+                    cell_error = getattr(output, "error", None)
+                    break
+
+    messages = build_messages(
+        req.action, req.message, notebook_context, cell_source, cell_error
+    )
+
+    try:
+        result = await chat_completion(config, messages)
+    except httpx.HTTPStatusError as e:
+        status = e.response.status_code
+        if status == 429:
+            raise HTTPException(status_code=429, detail="LLM provider rate limited")
+        raise HTTPException(
+            status_code=502, detail=f"LLM provider error: {status}"
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="LLM provider timed out")
+    except Exception:
+        logger.exception("LLM completion failed")
+        raise HTTPException(status_code=502, detail="LLM completion failed")
+
+    return {
+        "content": result.content,
+        "model": result.model,
+        "tokens": {
+            "input": result.input_tokens,
+            "output": result.output_tokens,
+        },
+    }

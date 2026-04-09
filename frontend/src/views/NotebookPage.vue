@@ -13,6 +13,7 @@ const MountsPanel = defineAsyncComponent(() => import('../components/MountsPanel
 const RuntimePanel = defineAsyncComponent(() => import('../components/RuntimePanel.vue'))
 const WorkersPanel = defineAsyncComponent(() => import('../components/WorkersPanel.vue'))
 const ProfilingPanel = defineAsyncComponent(() => import('../components/ProfilingPanel.vue'))
+const LlmPanel = defineAsyncComponent(() => import('../components/LlmPanel.vue'))
 const ImpactPreview = defineAsyncComponent(() => import('../components/ImpactPreview.vue'))
 
 const props = defineProps<{ sessionId: string }>()
@@ -487,6 +488,7 @@ function goHome() {
         <RuntimePanel />
         <EnvironmentPanel />
         <ProfilingPanel />
+        <LlmPanel />
       </aside>
     </div>
 

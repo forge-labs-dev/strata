@@ -898,6 +898,51 @@ async function getSession(sessionId: string): Promise<NotebookSessionPayload> {
 }
 
 // ---------------------------------------------------------------------------
+// LLM Assistant
+// ---------------------------------------------------------------------------
+
+interface LlmStatusResponse {
+  available: boolean
+  model: string | null
+  provider: string | null
+}
+
+interface LlmCompleteResponse {
+  content: string
+  model: string
+  tokens: { input: number; output: number }
+}
+
+async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/status`)
+  if (!resp.ok) {
+    return { available: false, model: null, provider: null }
+  }
+  return readJson<LlmStatusResponse>(resp)
+}
+
+async function llmComplete(
+  notebookId: string,
+  action: 'generate' | 'explain' | 'describe' | 'chat',
+  message: string,
+  cellId?: string,
+): Promise<LlmCompleteResponse> {
+  const resp = await fetchWithTimeout(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/ai/complete`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, message, cell_id: cellId ?? null }),
+      timeoutMs: 90_000,
+    },
+  )
+  if (!resp.ok) {
+    await throwApiError(resp, 'LLM completion failed')
+  }
+  return readJson<LlmCompleteResponse>(resp)
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -945,5 +990,7 @@ export function useStrata() {
     importEnvironmentYaml,
     listSessions,
     getSession,
+    getLlmStatus,
+    llmComplete,
   }
 }

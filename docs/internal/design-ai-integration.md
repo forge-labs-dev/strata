@@ -2,12 +2,6 @@
 
 ## Status (April 2026)
 
-See [docs/design-status.md](design-status.md) for the consolidated status
-across all design docs.
-
-This area is still **roadmap / exploratory**. None of the AI-specific execution
-or authoring features in this document are shipped yet.
-
 This document describes how AI/LLM capabilities integrate into Strata Notebook.
 The design follows Strata's layering model: orchestration decides what to run,
 executors decide how to compute, and Strata decides whether the result already
@@ -26,276 +20,225 @@ The insight is that `materialize(inputs, transform) -> artifact` already handles
 all of this. An LLM call with the same prompt, same model, and same input data
 should return the cached result -- not bill you again.
 
-## Integration Tiers
+## Design Decisions
 
-### Tier 1: AI Cell Type
+### 1. No SDK dependencies — OpenAI-compatible API only
 
-A cell where `source` is a prompt template instead of Python code. Upstream
-variables are injected as context. The LLM response becomes the output artifact.
-
-```
-# Cell source (prompt template)
-Summarize the following dataset in 3 bullet points:
-
-{{ df.describe() }}
-```
-
-**Provenance hashing**:
-
-```
-sha256(prompt_template_hash + model_config_hash + sorted(input_artifact_hashes))
-```
-
-Same prompt + same model + same inputs = cache hit. Change the prompt or the
-upstream data, and it re-executes.
-
-**Model configuration** lives in `notebook.toml` or cell annotations:
-
-```toml
-[ai]
-default_model = "claude-sonnet-4-20250514"
-default_temperature = 0.0
-```
+All major providers (Anthropic, OpenAI, Google, Mistral) and local servers
+(Ollama, vLLM, LMStudio, llama.cpp) expose the OpenAI chat completions format.
+One `httpx` call covers all of them. No `anthropic`, `openai`, or `litellm`
+dependency needed.
 
 ```python
-# @model claude-sonnet-4-20250514
-# @temperature 0.0
-# @max_tokens 4096
-Summarize {{ df }} by category.
-```
-
-**Output types**:
-
-- `text` -- raw string (default)
-- `json` -- parsed JSON object, stored as `json/object` artifact
-- `code` -- generated Python code (can feed into downstream Python cells)
-- `arrow` -- structured extraction into a table
-
-The output type is either inferred from the prompt or set via annotation:
-
-```python
-# @output json
-Extract entities from {{ text }} as a JSON array.
-```
-
-**Variable injection** uses Jinja2-style `{{ var }}` syntax. Before sending
-the prompt, the executor:
-
-1. Resolves each referenced variable from upstream artifacts
-2. Converts to a text representation (DataFrame -> `.describe()` or `.head()`,
-   scalar -> `str()`, dict -> JSON)
-3. Renders the template
-4. Sends to the model API
-
-**DAG integration**: The analyzer treats `{{ var }}` references the same as
-Python variable references for DAG building. An AI cell that uses `{{ df }}`
-depends on the cell that defines `df`.
-
-### Tier 2: LLM Transform Executor
-
-Register LLM providers as transform executors in the server-mode registry:
-
-```toml
-[[transforms]]
-ref = "llm@v1"
-executor_url = "http://localhost:9000/v1/execute"
-timeout_seconds = 120
-max_output_bytes = 10_485_760
-```
-
-The executor receives input artifacts via the standard executor protocol
-(push or pull model) and returns structured output. This enables:
-
-- Server-side LLM execution with centralized API key management
-- Build QoS admission control (token budget instead of byte budget)
-- Multi-tenant isolation (each tenant's LLM calls are tracked separately)
-
-**Executor protocol** (extends `notebook-cell-v1`):
-
-```
-POST /v1/execute
-Content-Type: application/json
-
+POST {base_url}/v1/chat/completions
 {
   "model": "claude-sonnet-4-20250514",
-  "prompt_template": "Summarize {{ input0 }}",
-  "parameters": {
-    "temperature": 0.0,
-    "max_tokens": 4096
-  },
-  "output_type": "json",
-  "inputs": {
-    "input0": {"artifact_uri": "strata://artifact/abc@v=1", "content_type": "arrow/ipc"}
-  }
+  "messages": [{"role": "user", "content": "..."}],
+  "temperature": 0.0,
+  "max_tokens": 4096
 }
 ```
 
-### Tier 3: AI-Assisted Authoring
+### 2. Token-aware variable injection
 
-Copilot-style integration in the notebook UI:
+Variables injected into prompts via `{{ var }}` are converted to text with size
+limits to prevent context window blowouts and runaway costs. Users see estimated
+token count before execution.
 
-- **Cell generation** -- natural language to Python cell
-- **Error explanation** -- parse traceback, suggest fix
-- **Data exploration** -- "describe this dataframe", "suggest a visualization"
-- **Cell refactoring** -- "split this cell into two", "add error handling"
+### 3. Phase 1 is the AI assistant panel, not prompt cells
 
-This is a frontend/UX feature that calls an LLM API directly from the UI layer
-or via a lightweight backend endpoint. It does not participate in the compute
-graph -- the generated code becomes a normal Python cell.
+Highest-impact, lowest-effort: a chat panel that generates Python cells. No new
+execution model needed. Prompt cells come in Phase 2.
 
-## Architecture
+## Provider Configuration
 
-### AI Cell Execution Flow
-
-```
-1. User writes prompt template in AI cell
-2. Analyzer extracts {{ var }} references -> DAG edges
-3. Cascade planner ensures upstream cells are ready
-4. Executor resolves upstream artifacts -> text representations
-5. Render prompt template with resolved variables
-6. Compute provenance hash (template + model + inputs)
-7. Check artifact cache -> return on hit
-8. Call LLM API (via configured provider)
-9. Parse response according to output_type
-10. Store result as artifact (text, json, or arrow)
-11. Downstream cells can consume the output as a normal variable
-```
-
-### Provider Abstraction
-
-```python
-class LLMProvider(Protocol):
-    async def complete(
-        self,
-        model: str,
-        messages: list[dict],
-        temperature: float = 0.0,
-        max_tokens: int = 4096,
-    ) -> str: ...
-```
-
-Built-in providers:
-
-- `anthropic` -- Claude models via the Anthropic API
-- `openai` -- GPT models via the OpenAI API
-- `http` -- Generic OpenAI-compatible endpoint (vLLM, Ollama, etc.)
-
-Provider configuration in `notebook.toml`:
+In `notebook.toml`:
 
 ```toml
-[ai.provider]
-type = "anthropic"
-# API key from environment: ANTHROPIC_API_KEY
+[ai]
+base_url = "https://api.anthropic.com"  # or any OpenAI-compatible endpoint
+model = "claude-sonnet-4-20250514"
+temperature = 0.0
+max_tokens = 4096
 ```
 
-### Token Budget and Cost Tracking
+Or a local model:
 
-Each AI cell execution records:
-
-- `input_tokens` -- tokens sent (prompt + context)
-- `output_tokens` -- tokens received
-- `model` -- model identifier
-- `cost_estimate_usd` -- estimated cost based on model pricing
-
-These are stored in the artifact's `transform_spec.params` and surfaced in the
-profiling panel. Cache hits show the cost that was _avoided_.
-
-## Provenance and Caching Details
-
-### What Participates in the Hash
-
-| Component             | In provenance hash? | Rationale                                            |
-| --------------------- | ------------------- | ---------------------------------------------------- |
-| Prompt template text  | Yes                 | Different prompt = different result                  |
-| Model identifier      | Yes                 | Different model = different result                   |
-| Temperature           | Yes                 | Different temperature = potentially different result |
-| max_tokens            | No                  | Affects truncation, not content identity             |
-| Input artifact hashes | Yes                 | Different data = different result                    |
-| API key               | No                  | Authentication, not computation                      |
-| Provider endpoint     | No                  | Same model at different endpoints = same result      |
-
-### Temperature = 0 Special Case
-
-When `temperature=0`, the LLM output is (approximately) deterministic. The
-cache hit rate should be high. When `temperature > 0`, the same inputs can
-produce different outputs. Two options:
-
-1. **Cache anyway** (default) -- first execution wins, subsequent identical
-   requests return the cached result. This is correct for iterative workflows
-   where you want stability.
-2. **`refresh=True`** -- force re-execution. Uses the existing refresh
-   mechanism that generates a unique provenance hash.
-
-### Structured Output Caching
-
-When `output_type=json`, the parsed JSON object is stored as a `json/object`
-artifact. Downstream Python cells receive it as a dict:
-
-```python
-# AI cell (output_type=json)
-# @output json
-Extract the top 5 entities from {{ text }}.
-
-# Python cell (downstream)
-for entity in ai_result:
-    print(entity["name"], entity["score"])
+```toml
+[ai]
+base_url = "http://localhost:11434/v1"  # Ollama
+model = "llama3"
 ```
 
-When `output_type=arrow`, the executor parses the LLM response into a PyArrow
-table (e.g., from CSV or JSON array output) and stores it as `arrow/ipc`.
-Downstream cells receive a pandas DataFrame.
+API key from environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
+`STRATA_AI_API_KEY` (checked in that order).
 
-## Implementation Plan
+### Known provider base URLs
 
-### Phase 1: AI Cell Type (MVP)
+| Provider | Base URL | Env var |
+|----------|----------|---------|
+| Anthropic | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
+| OpenAI | `https://api.openai.com` | `OPENAI_API_KEY` |
+| Google AI | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
+| Mistral | `https://api.mistral.ai` | `MISTRAL_API_KEY` |
+| Ollama | `http://localhost:11434/v1` | (none) |
+| vLLM | `http://localhost:8000/v1` | (none) |
+| LMStudio | `http://localhost:1234/v1` | (none) |
 
-- [ ] New `language="prompt"` cell type in `notebook.toml`
-- [ ] `PromptAnalyzer` -- extract `{{ var }}` references for DAG
-- [ ] `PromptRenderer` -- resolve upstream artifacts and render template
-- [ ] `LLMExecutor` -- call provider API, parse response, store artifact
-- [ ] Provenance hashing with model config
-- [ ] Frontend: prompt cell editor with model/temperature controls
-- [ ] Provider: Anthropic (Claude) as first implementation
+## Variable Injection and Token Management
 
-### Phase 2: Multi-Provider and Structured Output
+### Default text representations
 
-- [ ] OpenAI provider
-- [ ] Generic HTTP provider (vLLM, Ollama)
-- [ ] `output_type=json` with schema validation
-- [ ] `output_type=arrow` with CSV/JSON-to-table parsing
-- [ ] Token usage tracking and cost display in profiling panel
+| Python type | Default representation | If too large |
+|---|---|---|
+| DataFrame | `.head(20).to_markdown()` | `.describe().to_markdown()` |
+| dict / list | `json.dumps(v, indent=2)` | Truncated with `... (N items)` |
+| str | Raw text | First N chars + `... (truncated)` |
+| int / float / bool / None | `str(v)` | Always fits |
+| ndarray | Shape + dtype + first 5 rows | Shape + dtype only |
 
-### Phase 3: Server-Mode LLM Executor
+### Token estimation
 
-- [ ] Register `llm@v1` as a transform executor
-- [ ] Token budget QoS (per-tenant daily token limits)
-- [ ] Centralized API key management (server holds keys, not notebooks)
-- [ ] Audit log for LLM calls (model, tokens, cost, principal)
+Approximate: `len(text) / 4`. No tokenizer dependency. Good enough for budget
+display and truncation decisions. Shown in the UI before execution.
 
-### Phase 4: AI-Assisted Authoring
+### Per-variable token budget
 
-- [ ] `/ai generate` -- natural language to Python cell
-- [ ] `/ai explain` -- error explanation with fix suggestion
-- [ ] `/ai describe` -- dataset summary and visualization suggestions
-- [ ] Context-aware completions (knows upstream variables and types)
+Each `{{ var }}` gets a default budget of 2000 tokens (~8K chars). Configurable:
 
-## Open Questions
+```
+{{ df }}                  → default representation (head + truncate)
+{{ df.describe() }}       → user controls what's injected (Python expression)
+{{ df | tokens(4000) }}   → explicit per-variable token budget
+```
 
-1. **Jinja2 vs simpler syntax?** Jinja2 is powerful but adds a dependency and
-   complexity (loops, conditionals in prompts). A simpler `{{ var }}` regex
-   replacement may be sufficient for v1.
+The `{{ expr }}` syntax evaluates arbitrary Python expressions against the
+upstream namespace. `{{ df.describe() }}` just works.
 
-2. **System prompt management?** Should there be a notebook-level system prompt
-   that applies to all AI cells? Or per-cell only?
+### Provenance hashing
 
-3. **Streaming?** LLM responses stream token-by-token. Should the notebook UI
-   show streaming output, or wait for completion? Streaming is better UX but
-   complicates artifact storage (can't hash until complete).
+The **rendered text** (after truncation) participates in the provenance hash,
+not the raw variable. Same DataFrame truncated the same way = same hash = cache
+hit. This is correct because the LLM sees the rendered text.
 
-4. **Image/multimodal inputs?** Claude and GPT-4V support image inputs. Should
-   AI cells accept image artifacts from upstream cells? This affects the
-   variable-to-text rendering pipeline.
+```
+provenance = sha256(
+    rendered_prompt_text
+    + model_id
+    + str(temperature)
+    + system_prompt_text
+)
+```
 
-5. **Tool use / function calling?** Should AI cells support tool use, where the
-   LLM can call back into Python cells? This creates cycles in the DAG and
-   needs careful design.
+## Implementation Phases
+
+### Phase 1: AI Assistant Panel
+
+A chat sidebar where users can:
+- "Write a cell that joins df1 and df2 on user_id" → generates Python code
+- Select error → "Explain this" → explanation + fix suggestion
+- "Describe this data" → generates EDA code
+- "Suggest a visualization" → generates matplotlib/seaborn code
+
+The generated code becomes a normal Python cell. No new execution model.
+
+**Backend:**
+
+- `src/strata/notebook/ai.py` — provider abstraction (one function), prompt
+  templates for generate/explain/describe actions
+- `src/strata/notebook/routes.py` — `POST /v1/notebooks/{id}/ai/complete`
+  endpoint proxying to the configured provider
+- `src/strata/config.py` — AI config fields (`ai_base_url`, `ai_model`,
+  `ai_api_key`)
+
+**Frontend:**
+
+- `frontend/src/components/AiPanel.vue` — chat UI with action buttons
+- `frontend/src/composables/useStrata.ts` — `aiComplete()` API call
+- `frontend/src/stores/notebook.ts` — AI actions (generate cell, explain error)
+
+**Context sent to LLM:**
+
+The assistant receives notebook context so it can write relevant code:
+- Cell source code for all cells (truncated)
+- Variable defines/references from DAG
+- Current cell's error traceback (for explain action)
+- Installed packages list
+
+**Estimated effort:** 1-2 days.
+
+### Phase 2: Prompt Cells
+
+New `language="prompt"` cell type where source is a prompt template.
+
+**Backend:**
+
+- `src/strata/notebook/prompt_analyzer.py` — extract `{{ var }}` references
+  for DAG building, estimate token usage per variable
+- `src/strata/notebook/prompt_executor.py` — resolve upstream artifacts to text,
+  render template, call LLM, parse response, store as artifact
+- Variable-to-text conversion with per-variable token budgets
+- Provenance hashing: `sha256(rendered_prompt + model + temperature + system)`
+
+**Frontend:**
+
+- `frontend/src/components/PromptCellEditor.vue` — prompt editor with:
+  - Model selector dropdown
+  - Temperature slider
+  - Token budget display (estimated input tokens, per-variable breakdown)
+  - Output type selector (text/json/code)
+- Syntax highlighting for `{{ var }}` references
+
+**DAG integration:** `{{ var }}` references create the same DAG edges as Python
+variable references. An AI cell using `{{ df }}` depends on the cell defining `df`.
+
+**Output types:**
+
+- `text` (default) — raw string, stored as `json/object`
+- `json` — parsed JSON, stored as `json/object`, downstream gets dict
+- `code` — Python code string, can be executed by downstream Python cells
+
+**Estimated effort:** 2-3 days.
+
+### Phase 3: Token Tracking and Cost Visibility
+
+- Record per-execution: `input_tokens`, `output_tokens`, `model`, `cost_usd`
+- Store in artifact `transform_spec.params`
+- Profiling panel shows: tokens used, cost, cost saved by cache hits
+- Notebook-level token budget with warning when approaching limit
+
+**Estimated effort:** 1 day.
+
+### Phase 4: Server-Mode LLM Executor (Future)
+
+- Register `llm@v1` as a transform executor in the server registry
+- Centralized API key management (server holds keys, not notebooks)
+- Per-tenant token budget QoS
+- Audit log for all LLM calls
+
+## System Prompt Management
+
+- **Notebook-level:** `[ai] system_prompt = "..."` in `notebook.toml`
+- **Cell-level override:** `# @system_prompt You are a data analyst.`
+- Default system prompt provides notebook context (variables, packages, DAG)
+
+## Open Questions (Resolved)
+
+1. **Jinja2 vs simpler syntax?** → Simple `{{ expr }}` with Python eval. No
+   Jinja2. Expressions are evaluated against the upstream namespace.
+
+2. **System prompt?** → Notebook-level default + per-cell override via
+   annotation.
+
+3. **Streaming?** → No streaming for v1. Wait for completion, store artifact.
+   Streaming complicates provenance (can't hash partial output). Add in v2.
+
+4. **Multimodal?** → Defer to v2. Text-only for v1.
+
+5. **Tool use?** → Defer. Creates DAG cycles. Needs separate design.
+
+6. **SDK dependencies?** → None. OpenAI-compatible HTTP API via `httpx`. Works
+   with all providers out of the box.
+
+7. **Variable size?** → Per-variable token budget (default 2000). Token
+   estimation via `len(text) / 4`. UI shows budget before execution.

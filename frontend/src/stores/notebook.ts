@@ -1406,6 +1406,22 @@ const inspectCellId = ref<CellId | null>(null)
 const inspectReady = ref(false)
 const inspectHistory = ref<InspectEntry[]>([])
 
+// LLM assistant state
+interface LlmMessage {
+  role: 'user' | 'assistant'
+  content: string
+  action?: 'generate' | 'explain' | 'describe' | 'chat'
+  model?: string
+  tokens?: { input: number; output: number }
+  timestamp: number
+}
+const llmAvailable = ref(false)
+const llmModel = ref<string | null>(null)
+const llmProvider = ref<string | null>(null)
+const llmLoading = ref(false)
+const llmError = ref<string | null>(null)
+const llmMessages = ref<LlmMessage[]>([])
+
 let wsInstance: ReturnType<typeof useWebSocket> | null = null
 
 function initializeWebSocket() {
@@ -2571,6 +2587,77 @@ function closeInspect() {
   }
 }
 
+// --- LLM assistant ---------------------------------------------------------
+
+async function checkLlmStatus() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  try {
+    const status = await strata.getLlmStatus(sid)
+    llmAvailable.value = status.available
+    llmModel.value = status.model ?? null
+    llmProvider.value = status.provider ?? null
+  } catch {
+    llmAvailable.value = false
+  }
+}
+
+async function llmCompleteAction(
+  action: 'generate' | 'explain' | 'describe' | 'chat',
+  message: string,
+  cellId?: string,
+) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+
+  llmMessages.value.push({
+    role: 'user',
+    content: message,
+    action,
+    timestamp: Date.now(),
+  })
+
+  llmLoading.value = true
+  llmError.value = null
+  try {
+    const result = await strata.llmComplete(sid, action, message, cellId)
+    llmMessages.value.push({
+      role: 'assistant',
+      content: result.content,
+      model: result.model,
+      tokens: result.tokens,
+      timestamp: Date.now(),
+    })
+  } catch (err: any) {
+    llmError.value = err.message || 'LLM request failed'
+  } finally {
+    llmLoading.value = false
+  }
+}
+
+function clearLlmHistory() {
+  llmMessages.value = []
+  llmError.value = null
+}
+
+async function insertLlmCodeAsCell(code: string, afterCellId?: string) {
+  await addCell(afterCellId)
+  // Find the newly created cell (last one if no afterCellId, or after the target)
+  const sorted = orderedCells.value
+  let newCell: Cell | undefined
+  if (afterCellId) {
+    const idx = sorted.findIndex((c) => c.id === afterCellId)
+    newCell = sorted[idx + 1]
+  } else {
+    newCell = sorted[sorted.length - 1]
+  }
+  if (newCell) {
+    await updateSource(newCell.id, code)
+  }
+}
+
 // --- Public API ------------------------------------------------------------
 
 export function useNotebook() {
@@ -2669,5 +2756,16 @@ export function useNotebook() {
     updateCellEnvAction,
     updateNotebookMountsAction,
     updateCellMountsAction,
+    // LLM assistant
+    llmAvailable,
+    llmModel,
+    llmProvider,
+    llmLoading,
+    llmError,
+    llmMessages,
+    checkLlmStatus,
+    llmCompleteAction,
+    clearLlmHistory,
+    insertLlmCodeAsCell,
   }
 }

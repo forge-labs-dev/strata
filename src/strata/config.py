@@ -299,6 +299,14 @@ class StrataConfig(BaseSettings):
     notebook_storage_dir: Path = Field(default_factory=lambda: Path("/tmp/strata-notebooks"))
     notebook_python_versions: list[str] = Field(default_factory=lambda: [current_python_minor()])
 
+    # AI/LLM assistant settings (OpenAI-compatible API)
+    ai_base_url: str | None = None
+    ai_model: str | None = None
+    ai_api_key: str | None = None
+    ai_max_context_tokens: Annotated[int, Field(gt=0)] = 100_000
+    ai_max_output_tokens: Annotated[int, Field(gt=0)] = 4096
+    ai_timeout_seconds: Annotated[float, Field(gt=0)] = 60.0
+
     # Artifact blob storage backend configuration
     artifact_blob_backend: Literal["local", "s3", "gcs", "azure"] = "local"
     artifact_s3_bucket: str | None = None
