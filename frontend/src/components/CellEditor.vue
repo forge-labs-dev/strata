@@ -61,6 +61,7 @@ function toggleInspect() {
 const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
 const showInfra = ref(false)
+const folded = ref(false)
 const showAnnotationEditor = ref(false)
 const installRequestedPackage = ref<string | null>(null)
 
@@ -436,6 +437,13 @@ function outputKey(output: CellOutput, index: number): string {
         <button title="Add cell below" @click="emit('addBelow', cell.id)">+</button>
         <button title="Duplicate cell" @click="emit('duplicate', cell.id)">&#x2398;</button>
         <button title="Delete cell" @click="emit('delete', cell.id)">&times;</button>
+        <button
+          :title="folded ? 'Expand cell' : 'Collapse cell'"
+          :class="{ active: folded }"
+          @click="folded = !folded"
+        >
+          {{ folded ? '&#x25B7;' : '&#x25BD;' }}
+        </button>
         <button title="Inspect inputs" :class="{ active: isInspecting }" @click="toggleInspect">
           &#x1F50D;
         </button>
@@ -548,7 +556,7 @@ function outputKey(output: CellOutput, index: number): string {
       </div>
 
       <div
-        v-if="showRemoteExecutionSummary && remoteExecutionSummary"
+        v-if="!folded && showRemoteExecutionSummary && remoteExecutionSummary"
         class="remote-execution-summary"
         :class="`tone-${remoteExecutionSummary.tone}`"
       >
@@ -574,7 +582,7 @@ function outputKey(output: CellOutput, index: number): string {
         </span>
       </div>
 
-      <div v-if="showInfra" class="infra-panel">
+      <div v-if="!folded && showInfra" class="infra-panel">
         <div v-if="workerWarning" class="infra-warning">
           {{ workerWarning }}
         </div>
@@ -717,15 +725,23 @@ function outputKey(output: CellOutput, index: number): string {
         </ul>
       </div>
 
-      <div ref="editorEl" class="editor-container" />
+      <!-- Folded summary -->
+      <div v-if="folded" class="cell-folded-summary" @click="folded = false">
+        <span class="folded-source">{{ cell.source.split('\n')[0] || '(empty)' }}</span>
+        <span v-if="cell.source.split('\n').length > 1" class="folded-lines">
+          {{ cell.source.split('\n').length }} lines
+        </span>
+      </div>
+
+      <div v-show="!folded" ref="editorEl" class="editor-container" />
 
       <!-- Console output (stdout/stderr) -->
-      <div v-if="cell.output && consoleOutput(cell.output.scalar)" class="cell-console">
+      <div v-if="!folded && cell.output && consoleOutput(cell.output.scalar)" class="cell-console">
         <pre>{{ consoleOutput(cell.output.scalar) }}</pre>
       </div>
 
       <!-- Output -->
-      <div v-if="cell.output" class="cell-output">
+      <div v-if="!folded && cell.output" class="cell-output">
         <div v-if="cell.output.error" class="output-error">
           <div v-if="remoteExecutionIssueSummary" class="remote-error-summary">
             <span class="remote-error-label">Remote</span>
@@ -911,6 +927,38 @@ function outputKey(output: CellOutput, index: number): string {
 .cell-actions button.active {
   color: #89b4fa;
   background: #89b4fa22;
+}
+
+.cell-folded-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  color: #6c7086;
+  font-size: 12px;
+  font-family: monospace;
+  background: #11111b;
+  border-radius: 4px;
+}
+
+.cell-folded-summary:hover {
+  background: #1e1e2e;
+  color: #a6adc8;
+}
+
+.folded-source {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.folded-lines {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: #45475a;
 }
 
 .cell-body {
