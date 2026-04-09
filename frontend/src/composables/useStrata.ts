@@ -934,15 +934,12 @@ async function llmComplete(
   message: string,
   cellId?: string,
 ): Promise<LlmCompleteResponse> {
-  const resp = await fetchWithTimeout(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/ai/complete`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, message, cell_id: cellId ?? null }),
-      timeoutMs: 90_000,
-    },
-  )
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/complete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, message, cell_id: cellId ?? null }),
+    timeoutMs: 90_000,
+  })
   if (!resp.ok) {
     await throwApiError(resp, 'LLM completion failed')
   }

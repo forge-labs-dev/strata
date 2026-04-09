@@ -478,9 +478,7 @@ function goHome() {
           @move-down="(id) => moveCell(id, 'down')"
         />
         <div class="add-cell-row">
-          <button class="add-cell-btn" :disabled="!connected" @click="addCell()">
-            + Add cell
-          </button>
+          <button class="add-cell-btn" :disabled="!connected" @click="addCell()">+ Add cell</button>
           <button
             class="add-cell-btn add-prompt-btn"
             :disabled="!connected"

@@ -82,7 +82,6 @@ const totalTokens = computed(() => {
   }
   return { input, output, total: input + output }
 })
-
 </script>
 
 <template>
@@ -111,12 +110,7 @@ const totalTokens = computed(() => {
           <div v-if="llmMessages.length === 0" class="llm-empty">
             Ask me to generate code, explain errors, or describe cells.
           </div>
-          <div
-            v-for="(msg, idx) in llmMessages"
-            :key="idx"
-            class="llm-msg"
-            :class="msg.role"
-          >
+          <div v-for="(msg, idx) in llmMessages" :key="idx" class="llm-msg" :class="msg.role">
             <div class="msg-header">
               <span class="msg-role">{{ msg.role === 'user' ? 'You' : 'AI' }}</span>
               <span v-if="msg.tokens" class="msg-tokens">
@@ -124,7 +118,10 @@ const totalTokens = computed(() => {
               </span>
             </div>
             <pre class="msg-content">{{ msg.content }}</pre>
-            <div v-if="msg.role === 'assistant' && extractCodeBlocks(msg.content).length > 0" class="msg-actions">
+            <div
+              v-if="msg.role === 'assistant' && extractCodeBlocks(msg.content).length > 0"
+              class="msg-actions"
+            >
               <button
                 v-if="extractCodeBlocks(msg.content).length >= 2"
                 class="insert-btn insert-all"
@@ -158,12 +155,8 @@ const totalTokens = computed(() => {
 
         <!-- Quick actions -->
         <div class="llm-actions">
-          <button :disabled="llmLoading || !connected" @click="send('explain')">
-            Explain
-          </button>
-          <button :disabled="llmLoading || !connected" @click="send('describe')">
-            Describe
-          </button>
+          <button :disabled="llmLoading || !connected" @click="send('explain')">Explain</button>
+          <button :disabled="llmLoading || !connected" @click="send('describe')">Describe</button>
         </div>
 
         <!-- Input -->
@@ -190,11 +183,7 @@ const totalTokens = computed(() => {
             {{ totalTokens.total.toLocaleString() }} tokens
           </span>
           <span v-if="llmProvider" class="provider-label">{{ llmProvider }}</span>
-          <button
-            class="clear-btn"
-            :disabled="llmMessages.length === 0"
-            @click="clearLlmHistory"
-          >
+          <button class="clear-btn" :disabled="llmMessages.length === 0" @click="clearLlmHistory">
             Clear
           </button>
         </div>
