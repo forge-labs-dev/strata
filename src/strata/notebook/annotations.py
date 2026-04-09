@@ -34,6 +34,14 @@ class CellAnnotations:
     mounts: list[MountSpec] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
 
+    # Prompt cell annotations
+    name: str | None = None
+    model: str | None = None
+    temperature: float | None = None
+    output_type: str | None = None
+    max_tokens: int | None = None
+    system_prompt: str | None = None
+
 
 def parse_annotations(source: str) -> CellAnnotations:
     """Extract annotations from the leading comment block of a cell.
@@ -84,6 +92,31 @@ def parse_annotations(source: str) -> CellAnnotations:
                 env_key = value[:eq_idx].strip()
                 env_val = value[eq_idx + 1 :].strip()
                 result.env[env_key] = env_val
+
+        elif key == "name":
+            if value and value.isidentifier():
+                result.name = value
+
+        elif key == "model":
+            result.model = value or None
+
+        elif key == "temperature":
+            try:
+                result.temperature = float(value)
+            except ValueError:
+                pass
+
+        elif key == "output":
+            result.output_type = value or None
+
+        elif key == "max_tokens":
+            try:
+                result.max_tokens = int(value)
+            except ValueError:
+                pass
+
+        elif key == "system":
+            result.system_prompt = value or None
 
     return result
 

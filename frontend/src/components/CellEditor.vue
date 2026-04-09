@@ -420,7 +420,11 @@ function outputKey(output: CellOutput, index: number): string {
 </script>
 
 <template>
-  <div class="cell" :class="statusClass" data-testid="notebook-cell">
+  <div
+    class="cell"
+    :class="[statusClass, { 'cell-prompt': cell.language === 'prompt' }]"
+    data-testid="notebook-cell"
+  >
     <!-- Left gutter -->
     <div class="cell-gutter">
       <span class="status-dot" :title="cell.status">{{ statusLabel }}</span>
@@ -463,6 +467,13 @@ function outputKey(output: CellOutput, index: number): string {
           >
           <span v-if="cell.defines.length" class="cell-vars">
             defines: <code>{{ cell.defines.join(', ') }}</code>
+          </span>
+          <span
+            v-if="cell.shadowWarnings && cell.shadowWarnings.length"
+            class="shadow-badge"
+            :title="cell.shadowWarnings.join('\n')"
+          >
+            shadows
           </span>
           <span v-if="cell.upstreamIds.length" class="cell-vars">
             reads: <code>{{ cell.references.join(', ') }}</code>
@@ -959,6 +970,24 @@ function outputKey(output: CellOutput, index: number): string {
   flex-shrink: 0;
   font-size: 10px;
   color: #45475a;
+}
+
+.cell-prompt {
+  border-color: #89b4fa40;
+}
+
+.cell-prompt .cell-lang {
+  background: #89b4fa30;
+  color: #89b4fa;
+}
+
+.shadow-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: #f9e2af30;
+  color: #f9e2af;
+  border-radius: 4px;
+  cursor: help;
 }
 
 .cell-body {

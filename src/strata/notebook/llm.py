@@ -217,6 +217,80 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def variable_to_text(value: Any, max_tokens: int = 2000) -> str:
+    """Convert a Python value to a text representation for prompt injection.
+
+    Applies type-specific formatting with a per-variable token budget.
+    """
+    max_chars = max_tokens * 4
+
+    try:
+        import pandas as pd
+
+        if isinstance(value, pd.DataFrame):
+            text = value.head(20).to_markdown(index=False)
+            if len(text) > max_chars:
+                text = value.describe().to_markdown()
+            if len(text) > max_chars:
+                text = text[:max_chars] + "\n... (truncated)"
+            return text
+        if isinstance(value, pd.Series):
+            return str(value.head(20))
+    except ImportError:
+        pass
+
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            header = f"ndarray shape={value.shape} dtype={value.dtype}"
+            preview = str(value.flat[:10])
+            text = f"{header}\n{preview}"
+            return text[:max_chars]
+    except ImportError:
+        pass
+
+    if isinstance(value, dict):
+        import json as _json
+
+        text = _json.dumps(value, indent=2, default=str)
+    elif isinstance(value, (list, tuple)):
+        import json as _json
+
+        text = _json.dumps(value, indent=2, default=str)
+    else:
+        text = str(value)
+
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n... (truncated)"
+    return text
+
+
+def render_prompt_template(
+    template: str,
+    variables: dict[str, Any],
+    max_tokens_per_var: int = 2000,
+) -> str:
+    """Render a prompt template by replacing ``{{ var }}`` with text values."""
+    import re
+
+    def _replace(match: re.Match) -> str:
+        expr = match.group(1).strip()
+        root_var = expr.split(".")[0].split("(")[0]
+        if root_var in variables:
+            value = variables[root_var]
+            # If the expression has attribute access, try to evaluate it
+            if expr != root_var:
+                try:
+                    value = eval(expr, {"__builtins__": {}}, variables)  # noqa: S307
+                except Exception:
+                    pass
+            return variable_to_text(value, max_tokens=max_tokens_per_var)
+        return match.group(0)  # Leave unreplaced if variable not found
+
+    return re.sub(r"\{\{\s*([^}]+)\s*\}\}", _replace, template)
+
+
 # ---------------------------------------------------------------------------
 # Notebook context
 # ---------------------------------------------------------------------------

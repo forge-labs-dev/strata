@@ -280,20 +280,29 @@ class NotebookSession:
 
         Updates notebook_state with defines/references/upstream/downstream/isLeaf.
         """
-        # Analyze each cell
+        # Analyze each cell (dispatch by language)
+        from strata.notebook.prompt_analyzer import analyze_prompt_cell
+
         cell_analyses = []
         for cell in self.notebook_state.cells:
-            analysis = analyze_cell(cell.source)
+            if cell.language == "prompt":
+                prompt_analysis = analyze_prompt_cell(cell.source)
+                defines = prompt_analysis.defines
+                references = prompt_analysis.references
+            else:
+                analysis = analyze_cell(cell.source)
+                defines = analysis.defines
+                references = analysis.references
             cell_analyses.append(
                 CellAnalysisWithId(
                     id=cell.id,
-                    defines=analysis.defines,
-                    references=analysis.references,
+                    defines=defines,
+                    references=references,
                 )
             )
             # Update cell with analysis results
-            cell.defines = analysis.defines
-            cell.references = analysis.references
+            cell.defines = defines
+            cell.references = references
 
         # Build DAG
         try:
@@ -373,10 +382,17 @@ class NotebookSession:
         if not cell:
             return
 
-        # Re-analyze just this cell
-        analysis = analyze_cell(cell.source)
-        cell.defines = analysis.defines
-        cell.references = analysis.references
+        # Re-analyze just this cell (dispatch by language)
+        if cell.language == "prompt":
+            from strata.notebook.prompt_analyzer import analyze_prompt_cell
+
+            prompt_analysis = analyze_prompt_cell(cell.source)
+            cell.defines = prompt_analysis.defines
+            cell.references = prompt_analysis.references
+        else:
+            analysis = analyze_cell(cell.source)
+            cell.defines = analysis.defines
+            cell.references = analysis.references
 
         # Rebuild full DAG (since one cell changed, downstream may be affected)
         self._analyze_and_build_dag()
@@ -618,6 +634,11 @@ class NotebookSession:
         causality = self.causality_map.get(cell.id)
         if causality is not None:
             data["causality"] = causality.to_dict()
+
+        # Shadow warnings from DAG
+        if self.dag and cell.id in self.dag.shadow_warnings:
+            data["shadow_warnings"] = self.dag.shadow_warnings[cell.id]
+
         return data
 
     def persist_display_outputs(

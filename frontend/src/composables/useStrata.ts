@@ -434,11 +434,18 @@ async function updateCellSource(
   return readJson<CellUpdateResponse>(resp)
 }
 
-async function addCell(notebookId: string, afterCellId?: string): Promise<AddCellResponse> {
+async function addCell(
+  notebookId: string,
+  afterCellId?: string,
+  language?: string,
+): Promise<AddCellResponse> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/cells`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ after_cell_id: afterCellId || null }),
+    body: JSON.stringify({
+      after_cell_id: afterCellId || null,
+      ...(language ? { language } : {}),
+    }),
   })
   if (!resp.ok) {
     throw new Error(`Failed to add cell: ${resp.status}`)

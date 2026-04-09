@@ -47,6 +47,8 @@ class NotebookDag:
     topological_order: list[str] = field(default_factory=list)
     variable_producer: dict[str, str] = field(default_factory=dict)
     consumed_variables: dict[str, set[str]] = field(default_factory=dict)
+    shadow_warnings: dict[str, list[str]] = field(default_factory=dict)
+    """Maps cell_id -> list of warning messages about shadowed variables."""
 
 
 @dataclass
@@ -84,9 +86,17 @@ def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
 
     # Build variable → producer map (last definition wins)
     # This handles shadowing: if two cells define the same variable,
-    # the later one is the producer for downstream consumers
+    # the later one is the producer for downstream consumers.
+    # Track shadow warnings so the UI can alert the user.
     for cell in cells:
         for var in cell.defines:
+            previous_producer = dag.variable_producer.get(var)
+            if previous_producer is not None and previous_producer != cell.id:
+                warning = (
+                    f"Variable '{var}' shadows definition from cell "
+                    f"{previous_producer[:8]}"
+                )
+                dag.shadow_warnings.setdefault(cell.id, []).append(warning)
             dag.variable_producer[var] = cell.id
 
     # Build edges: for each reference, connect from the producer

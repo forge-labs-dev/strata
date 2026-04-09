@@ -113,12 +113,12 @@ function sessionId(): string | undefined {
 
 // --- Cell mutations (always go through backend when connected) -------------
 
-async function addCell(afterId?: CellId) {
+async function addCell(afterId?: CellId, language?: string) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
   try {
-    const data = await strata.addCell(sid, afterId)
+    const data = await strata.addCell(sid, afterId, language)
     const newCell: Cell = {
       id: data.id,
       source: data.source || '',
@@ -728,6 +728,9 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
     : []
   localCell.causality = supportsStalenessDetail(localCell.status)
     ? parseBackendCausality(serverCell.causality)
+    : undefined
+  localCell.shadowWarnings = Array.isArray(serverCell.shadow_warnings)
+    ? serverCell.shadow_warnings
     : undefined
   applyDisplayOutputsToCell(
     localCell,

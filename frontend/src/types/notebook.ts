@@ -2,7 +2,7 @@
 
 export type CellId = string
 
-export type CellLanguage = 'python'
+export type CellLanguage = 'python' | 'prompt'
 export type MountMode = 'ro' | 'rw'
 export type WorkerBackend = 'local' | 'executor'
 export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable'
@@ -202,6 +202,8 @@ export interface Cell {
   causality?: CausalityChain
   /** Suggested package to install (when execution fails with ModuleNotFoundError) */
   suggestInstall?: string
+  /** Shadow warnings from the DAG builder */
+  shadowWarnings?: string[]
 }
 
 /** Causality chain — explains why a cell is stale */

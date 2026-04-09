@@ -384,6 +384,7 @@ class AddCellRequest(BaseModel):
     """Request to add a new cell."""
 
     after_cell_id: str | None = None
+    language: str = "python"
 
 
 class MountConfigRequest(BaseModel):
@@ -1385,7 +1386,9 @@ async def add_cell(notebook_id: str, req: AddCellRequest) -> dict:
         cell_id = str(uuid.uuid4())[:8]
 
         # Add to notebook
-        add_cell_to_notebook(session.path, cell_id, req.after_cell_id)
+        add_cell_to_notebook(
+            session.path, cell_id, req.after_cell_id, language=req.language,
+        )
 
         # Reload notebook state
         session.reload()

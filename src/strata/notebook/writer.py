@@ -409,7 +409,10 @@ def update_environment_metadata(notebook_dir: Path) -> None:
 
 
 def add_cell_to_notebook(
-    notebook_dir: Path, cell_id: str, after_cell_id: str | None = None
+    notebook_dir: Path,
+    cell_id: str,
+    after_cell_id: str | None = None,
+    language: str = "python",
 ) -> None:
     """Add a new cell to the notebook.
 
@@ -417,6 +420,7 @@ def add_cell_to_notebook(
         notebook_dir: Path to notebook directory
         cell_id: New cell ID
         after_cell_id: Cell ID to add after (None = at end)
+        language: Cell language ("python" or "prompt")
     """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
@@ -448,7 +452,7 @@ def add_cell_to_notebook(
         {
             "id": cell_id,
             "file": cell_filename,
-            "language": "python",
+            "language": language,
             "order": order,
         }
     )

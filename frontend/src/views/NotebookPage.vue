@@ -400,6 +400,14 @@ function goHome() {
           + Cell
         </button>
         <button
+          class="btn btn-secondary"
+          :disabled="!connected"
+          title="Add a prompt cell (LLM-powered)"
+          @click="addCell(undefined, 'prompt')"
+        >
+          + Prompt
+        </button>
+        <button
           class="btn btn-danger"
           data-testid="notebook-delete"
           :disabled="deleteButtonDisabled"
@@ -469,7 +477,18 @@ function goHome() {
           @move-up="(id) => moveCell(id, 'up')"
           @move-down="(id) => moveCell(id, 'down')"
         />
-        <button class="add-cell-btn" :disabled="!connected" @click="addCell()">+ Add cell</button>
+        <div class="add-cell-row">
+          <button class="add-cell-btn" :disabled="!connected" @click="addCell()">
+            + Add cell
+          </button>
+          <button
+            class="add-cell-btn add-prompt-btn"
+            :disabled="!connected"
+            @click="addCell(undefined, 'prompt')"
+          >
+            + Add prompt cell
+          </button>
+        </div>
       </div>
 
       <div
@@ -499,6 +518,25 @@ function goHome() {
 </template>
 
 <style scoped>
+.add-cell-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.add-cell-row .add-cell-btn {
+  flex: 1;
+}
+
+.add-prompt-btn {
+  border-color: #89b4fa40;
+  color: #89b4fa;
+}
+
+.add-prompt-btn:hover {
+  border-color: #89b4fa;
+}
+
 .mode-badge {
   padding: 3px 10px;
   border-radius: 999px;

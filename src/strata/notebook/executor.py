@@ -472,6 +472,14 @@ class CellExecutor:
             if cell is not None:
                 cell.cache_hit = False
 
+            # Prompt cells use a dedicated executor (LLM call, no subprocess)
+            if cell is not None and cell.language == "prompt":
+                return await self._execute_prompt_cell(
+                    cell_id, source, start_time,
+                    materialize_upstreams=materialize_upstreams,
+                    use_cache=use_cache,
+                )
+
             # ① Materialise every upstream cell whose artifact is missing.
             #   This is the recursive ``materialize`` call — each upstream
             #   that is a cache miss will itself execute its own upstreams.
@@ -1607,6 +1615,59 @@ class CellExecutor:
             if isinstance(error, str) and error:
                 return error
         return "Unknown remote executor error"
+
+    # ------------------------------------------------------------------
+    # Prompt cell execution (LLM path)
+    # ------------------------------------------------------------------
+
+    async def _execute_prompt_cell(
+        self,
+        cell_id: str,
+        source: str,
+        start_time: float,
+        *,
+        materialize_upstreams: bool,
+        use_cache: bool,
+    ) -> CellExecutionResult:
+        """Execute a prompt cell via the LLM provider."""
+        from strata.notebook.prompt_executor import execute_prompt_cell
+        from strata.notebook.routes import _get_llm_config
+
+        if materialize_upstreams:
+            await self._materialize_upstreams(cell_id)
+
+        llm_config = _get_llm_config(self.session)
+        if llm_config is None:
+            return CellExecutionResult(
+                success=False,
+                outputs={},
+                stdout="",
+                stderr="",
+                error=(
+                    "LLM not configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                    "or STRATA_AI_API_KEY in the Runtime Panel env vars."
+                ),
+                cache_hit=False,
+                duration_ms=int((time.time() - start_time) * 1000),
+                execution_method="llm",
+            )
+
+        result_dict = await execute_prompt_cell(
+            self.session, cell_id, source, llm_config, use_cache=use_cache,
+        )
+
+        return CellExecutionResult(
+            success=result_dict["success"],
+            outputs=result_dict["outputs"],
+            stdout=result_dict.get("stdout", ""),
+            stderr=result_dict.get("stderr", ""),
+            error=result_dict.get("error"),
+            cache_hit=result_dict.get("cache_hit", False),
+            duration_ms=result_dict.get("duration_ms", 0),
+            execution_method=result_dict.get("execution_method", "llm"),
+            artifact_uri=result_dict.get("artifact_uri"),
+            mutation_warnings=result_dict.get("mutation_warnings", []),
+        )
 
     # ------------------------------------------------------------------
     # ① Materialise upstream cells
