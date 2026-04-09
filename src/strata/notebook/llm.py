@@ -461,8 +461,9 @@ For add_cell, set language to "python" or "prompt". Use "name" for a \
 human-readable label. Order matters — cells will be added sequentially.
 
 IMPORTANT: When referencing existing cells (modify_cell, delete_cell), \
-you MUST use the exact cell ID from the context below (e.g. "a1b2c3d4"). \
-Do NOT make up cell IDs.
+use EITHER the exact cell_id from the context (e.g. "a1b2c3d4") OR \
+set "cell_name" to the variable the cell defines (e.g. "df"). \
+Do NOT make up cell IDs — use only IDs that appear in the context.
 
 The user's notebook has these cells and variables:
 

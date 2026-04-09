@@ -1800,20 +1800,29 @@ def _get_llm_config(session):
     return resolve_llm_config(notebook_ai, server_config, notebook_env)
 
 
-def _resolve_cell_id(session, raw_id: str) -> str | None:
-    """Resolve a cell ID from LLM output, allowing prefix matches."""
-    raw_id = raw_id.strip()
+def _resolve_cell_id(session, change: dict) -> str | None:
+    """Resolve a cell from LLM output by ID, prefix, or defined variable name."""
     cells = session.notebook_state.cells
 
-    # Exact match
-    for c in cells:
-        if c.id == raw_id:
-            return c.id
+    raw_id = (change.get("cell_id") or "").strip()
+    cell_name = (change.get("cell_name") or "").strip()
 
-    # Prefix match (LLM might truncate IDs)
-    matches = [c for c in cells if c.id.startswith(raw_id)]
-    if len(matches) == 1:
-        return matches[0].id
+    if raw_id:
+        # Exact match
+        for c in cells:
+            if c.id == raw_id:
+                return c.id
+
+        # Prefix match (LLM might truncate IDs)
+        matches = [c for c in cells if c.id.startswith(raw_id)]
+        if len(matches) == 1:
+            return matches[0].id
+
+    # Resolve by variable name the cell defines
+    if cell_name:
+        matches = [c for c in cells if cell_name in c.defines]
+        if len(matches) == 1:
+            return matches[0].id
 
     return None
 
@@ -1965,32 +1974,29 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                 applied.append({"type": "add_cell", "cell_id": cell_id})
 
             elif change_type == "modify_cell":
-                raw_cell_id = change.get("cell_id", "")
                 source = change.get("source", "")
-                if raw_cell_id and source:
-                    resolved_id = _resolve_cell_id(session, raw_cell_id)
-                    if resolved_id is None:
-                        errors.append({
-                            "type": "modify_cell",
-                            "error": f"Cell '{raw_cell_id}' not found "
-                            f"(valid: {[c.id for c in session.notebook_state.cells]})",
-                        })
-                    else:
-                        write_cell(session.path, resolved_id, source)
-                        applied.append({"type": "modify_cell", "cell_id": resolved_id})
+                resolved_id = _resolve_cell_id(session, change)
+                if resolved_id is None:
+                    ref = change.get("cell_id") or change.get("cell_name") or "?"
+                    errors.append({
+                        "type": "modify_cell",
+                        "error": f"Cell '{ref}' not found "
+                        f"(valid: {[c.id for c in session.notebook_state.cells]})",
+                    })
+                elif source:
+                    write_cell(session.path, resolved_id, source)
+                    applied.append({"type": "modify_cell", "cell_id": resolved_id})
 
             elif change_type == "delete_cell":
-                raw_cell_id = change.get("cell_id", "")
-                if raw_cell_id:
-                    # Resolve cell ID: exact match, then prefix match
-                    resolved_id = _resolve_cell_id(session, raw_cell_id)
-                    if resolved_id is None:
-                        errors.append({
-                            "type": "delete_cell",
-                            "error": f"Cell '{raw_cell_id}' not found "
-                            f"(valid: {[c.id for c in session.notebook_state.cells]})",
-                        })
-                    else:
+                resolved_id = _resolve_cell_id(session, change)
+                if resolved_id is None:
+                    ref = change.get("cell_id") or change.get("cell_name") or "?"
+                    errors.append({
+                        "type": "delete_cell",
+                        "error": f"Cell '{ref}' not found "
+                        f"(valid: {[c.id for c in session.notebook_state.cells]})",
+                    })
+                else:
                         try:
                             remove_cell_from_notebook(session.path, resolved_id)
                             applied.append({"type": "delete_cell", "cell_id": resolved_id})
