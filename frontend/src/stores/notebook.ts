@@ -2644,7 +2644,6 @@ function clearLlmHistory() {
 
 async function insertLlmCodeAsCell(code: string, afterCellId?: string) {
   await addCell(afterCellId)
-  // Find the newly created cell (last one if no afterCellId, or after the target)
   const sorted = orderedCells.value
   let newCell: Cell | undefined
   if (afterCellId) {
@@ -2655,6 +2654,25 @@ async function insertLlmCodeAsCell(code: string, afterCellId?: string) {
   }
   if (newCell) {
     await updateSource(newCell.id, code)
+  }
+}
+
+async function insertLlmCodeAsCells(codes: string[], afterCellId?: string) {
+  let insertAfter = afterCellId
+  for (const code of codes) {
+    await addCell(insertAfter)
+    const sorted = orderedCells.value
+    let newCell: Cell | undefined
+    if (insertAfter) {
+      const idx = sorted.findIndex((c) => c.id === insertAfter)
+      newCell = sorted[idx + 1]
+    } else {
+      newCell = sorted[sorted.length - 1]
+    }
+    if (newCell) {
+      await updateSource(newCell.id, code)
+      insertAfter = newCell.id
+    }
   }
 }
 
@@ -2767,5 +2785,6 @@ export function useNotebook() {
     llmCompleteAction,
     clearLlmHistory,
     insertLlmCodeAsCell,
+    insertLlmCodeAsCells,
   }
 }

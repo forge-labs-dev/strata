@@ -15,6 +15,7 @@ const {
   llmCompleteAction,
   clearLlmHistory,
   insertLlmCodeAsCell,
+  insertLlmCodeAsCells,
 } = useNotebook()
 
 const showPanel = ref(false)
@@ -63,6 +64,11 @@ function extractCodeBlocks(content: string): string[] {
 function handleInsert(code: string) {
   const lastCell = orderedCells.value.at(-1)
   void insertLlmCodeAsCell(code, lastCell?.id)
+}
+
+function handleInsertAll(codes: string[]) {
+  const lastCell = orderedCells.value.at(-1)
+  void insertLlmCodeAsCells(codes, lastCell?.id)
 }
 
 const totalTokens = computed(() => {
@@ -118,14 +124,21 @@ const totalTokens = computed(() => {
               </span>
             </div>
             <pre class="msg-content">{{ msg.content }}</pre>
-            <div v-if="msg.role === 'assistant'" class="msg-actions">
+            <div v-if="msg.role === 'assistant' && extractCodeBlocks(msg.content).length > 0" class="msg-actions">
+              <button
+                v-if="extractCodeBlocks(msg.content).length >= 2"
+                class="insert-btn insert-all"
+                @click="handleInsertAll(extractCodeBlocks(msg.content))"
+              >
+                Insert All as Cells ({{ extractCodeBlocks(msg.content).length }})
+              </button>
               <button
                 v-for="(code, ci) in extractCodeBlocks(msg.content)"
                 :key="ci"
                 class="insert-btn"
                 @click="handleInsert(code)"
               >
-                Insert as Cell
+                Insert Cell {{ extractCodeBlocks(msg.content).length >= 2 ? ci + 1 : '' }}
               </button>
             </div>
           </div>
@@ -339,6 +352,15 @@ const totalTokens = computed(() => {
 
 .insert-btn:hover {
   background: #74c7ec;
+}
+
+.insert-btn.insert-all {
+  background: #a6e3a1;
+  color: #1e1e2e;
+}
+
+.insert-btn.insert-all:hover {
+  background: #94e2d5;
 }
 
 .llm-loading {
