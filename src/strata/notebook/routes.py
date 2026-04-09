@@ -1800,33 +1800,6 @@ def _get_llm_config(session):
     return resolve_llm_config(notebook_ai, server_config, notebook_env)
 
 
-def _resolve_cell_id(session, change: dict) -> str | None:
-    """Resolve a cell from LLM output by ID, prefix, or defined variable name."""
-    cells = session.notebook_state.cells
-
-    raw_id = (change.get("cell_id") or "").strip()
-    cell_name = (change.get("cell_name") or "").strip()
-
-    if raw_id:
-        # Exact match
-        for c in cells:
-            if c.id == raw_id:
-                return c.id
-
-        # Prefix match (LLM might truncate IDs)
-        matches = [c for c in cells if c.id.startswith(raw_id)]
-        if len(matches) == 1:
-            return matches[0].id
-
-    # Resolve by variable name the cell defines
-    if cell_name:
-        matches = [c for c in cells if cell_name in c.defines]
-        if len(matches) == 1:
-            return matches[0].id
-
-    return None
-
-
 @router.get("/{notebook_id}/ai/status")
 async def llm_status(notebook_id: str) -> dict:
     """Check if the LLM assistant is configured and available."""
@@ -1929,12 +1902,9 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
                             "source": c.source,
                             "language": c.language,
                             "name": c.name,
-                            "cell_id": c.cell_id,
-                            "reason": c.reason,
                             "package": c.package,
                             "key": c.key,
                             "value": c.value,
-                            "cell_ids": c.cell_ids,
                         }.items()
                         if v is not None
                     }
@@ -1973,65 +1943,20 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                     write_cell(session.path, cell_id, source)
                 applied.append({"type": "add_cell", "cell_id": cell_id})
 
-            elif change_type == "modify_cell":
-                source = change.get("source", "")
-                resolved_id = _resolve_cell_id(session, change)
-                if resolved_id is None:
-                    ref = change.get("cell_id") or change.get("cell_name") or "?"
-                    errors.append({
-                        "type": "modify_cell",
-                        "error": f"Cell '{ref}' not found "
-                        f"(valid: {[c.id for c in session.notebook_state.cells]})",
-                    })
-                elif source:
-                    write_cell(session.path, resolved_id, source)
-                    applied.append({"type": "modify_cell", "cell_id": resolved_id})
-
-            elif change_type == "delete_cell":
-                resolved_id = _resolve_cell_id(session, change)
-                if resolved_id is None:
-                    ref = change.get("cell_id") or change.get("cell_name") or "?"
-                    errors.append({
-                        "type": "delete_cell",
-                        "error": f"Cell '{ref}' not found "
-                        f"(valid: {[c.id for c in session.notebook_state.cells]})",
-                    })
-                else:
-                        try:
-                            remove_cell_from_notebook(session.path, resolved_id)
-                            applied.append({"type": "delete_cell", "cell_id": resolved_id})
-                        except Exception as e:
-                            errors.append({"type": "delete_cell", "error": str(e)})
-
             elif change_type == "add_package":
                 package = change.get("package", "")
                 if package:
                     try:
-                        outcome = await session.mutate_dependency(package, action="add")
-                        applied.append(
-                            {
-                                "type": "add_package",
-                                "package": package,
-                                "success": outcome.result.success,
-                            }
+                        outcome = await session.mutate_dependency(
+                            package, action="add"
                         )
+                        applied.append({
+                            "type": "add_package",
+                            "package": package,
+                            "success": outcome.result.success,
+                        })
                     except Exception as e:
                         errors.append({"type": "add_package", "error": str(e)})
-
-            elif change_type == "remove_package":
-                package = change.get("package", "")
-                if package:
-                    try:
-                        outcome = await session.mutate_dependency(package, action="remove")
-                        applied.append(
-                            {
-                                "type": "remove_package",
-                                "package": package,
-                                "success": outcome.result.success,
-                            }
-                        )
-                    except Exception as e:
-                        errors.append({"type": "remove_package", "error": str(e)})
 
             elif change_type == "set_env":
                 key = change.get("key", "")
@@ -2042,21 +1967,11 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                     update_notebook_env(session.path, env)
                     applied.append({"type": "set_env", "key": key})
 
-            elif change_type == "delete_all_cells":
-                for cell in list(session.notebook_state.cells):
-                    try:
-                        remove_cell_from_notebook(session.path, cell.id)
-                        applied.append({"type": "delete_cell", "cell_id": cell.id})
-                    except Exception as e:
-                        errors.append({"type": "delete_cell", "error": str(e)})
-
             else:
-                errors.append(
-                    {
-                        "type": change_type,
-                        "error": f"Unknown change type: {change_type}",
-                    }
-                )
+                errors.append({
+                    "type": change_type,
+                    "error": f"Unsupported change type: {change_type}",
+                })
 
         except Exception as e:
             errors.append({"type": change_type, "error": str(e)})

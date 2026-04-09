@@ -439,10 +439,6 @@ the JSON:
       "name": "Load data"}},
     {{"type": "add_cell", "language": "python",
       "source": "df.describe()", "name": "Explore"}},
-    {{"type": "modify_cell", "cell_id": "abc123",
-      "source": "new code", "reason": "Fixed bug"}},
-    {{"type": "delete_cell", "cell_id": "abc123",
-      "reason": "No longer needed"}},
     {{"type": "set_env", "key": "API_KEY", "value": "placeholder"}},
     {{"type": "add_cell", "language": "prompt",
       "source": "# @name summary\\nSummarize {{{{ df }}}}",
@@ -450,20 +446,14 @@ the JSON:
   ]
 }}
 
-Valid change types: add_cell, modify_cell, delete_cell, delete_all_cells, \
-add_package, remove_package, set_env.
-
-Use delete_all_cells (no arguments needed) when the user wants to clear \
-all cells. Use delete_cell with the exact cell_id only for removing \
-specific individual cells.
+Valid change types: add_cell, add_package, set_env.
 
 For add_cell, set language to "python" or "prompt". Use "name" for a \
-human-readable label. Order matters — cells will be added sequentially.
+human-readable label. Order matters — cells will be added sequentially. \
+When the task involves multiple steps, split into separate cells.
 
-IMPORTANT: When referencing existing cells (modify_cell, delete_cell), \
-use EITHER the exact cell_id from the context (e.g. "a1b2c3d4") OR \
-set "cell_name" to the variable the cell defines (e.g. "df"). \
-Do NOT make up cell IDs — use only IDs that appear in the context.
+Do NOT propose delete or modify operations — those are done by the user \
+directly in the notebook UI. Focus on generating new content.
 
 The user's notebook has these cells and variables:
 
@@ -474,16 +464,13 @@ The user's notebook has these cells and variables:
 class ProposedChange:
     """One proposed change to the notebook."""
 
-    type: str
+    type: str  # add_cell, add_package, set_env
     source: str | None = None
     language: str | None = None
     name: str | None = None
-    cell_id: str | None = None
-    reason: str | None = None
     package: str | None = None
     key: str | None = None
     value: str | None = None
-    cell_ids: list[str] | None = None
 
 
 @dataclass
@@ -532,12 +519,9 @@ def parse_change_plan(content: str) -> ChangePlan | None:
                 source=item.get("source"),
                 language=item.get("language"),
                 name=item.get("name"),
-                cell_id=item.get("cell_id"),
-                reason=item.get("reason"),
                 package=item.get("package"),
                 key=item.get("key"),
                 value=item.get("value"),
-                cell_ids=item.get("cell_ids"),
             )
         )
 
