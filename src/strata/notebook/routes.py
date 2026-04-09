@@ -1950,17 +1950,38 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                 cell_id = change.get("cell_id", "")
                 source = change.get("source", "")
                 if cell_id and source:
-                    write_cell(session.path, cell_id, source)
-                    applied.append({"type": "modify_cell", "cell_id": cell_id})
+                    cell_exists = any(
+                        c.id == cell_id for c in session.notebook_state.cells
+                    )
+                    if not cell_exists:
+                        errors.append({
+                            "type": "modify_cell",
+                            "error": f"Cell {cell_id} not found "
+                            f"(valid IDs: {[c.id for c in session.notebook_state.cells]})",
+                        })
+                    else:
+                        write_cell(session.path, cell_id, source)
+                        applied.append({"type": "modify_cell", "cell_id": cell_id})
 
             elif change_type == "delete_cell":
                 cell_id = change.get("cell_id", "")
                 if cell_id:
-                    try:
-                        remove_cell_from_notebook(session.path, cell_id)
-                        applied.append({"type": "delete_cell", "cell_id": cell_id})
-                    except Exception as e:
-                        errors.append({"type": "delete_cell", "error": str(e)})
+                    # Validate cell exists before attempting delete
+                    cell_exists = any(
+                        c.id == cell_id for c in session.notebook_state.cells
+                    )
+                    if not cell_exists:
+                        errors.append({
+                            "type": "delete_cell",
+                            "error": f"Cell {cell_id} not found "
+                            f"(valid IDs: {[c.id for c in session.notebook_state.cells]})",
+                        })
+                    else:
+                        try:
+                            remove_cell_from_notebook(session.path, cell_id)
+                            applied.append({"type": "delete_cell", "cell_id": cell_id})
+                        except Exception as e:
+                            errors.append({"type": "delete_cell", "error": str(e)})
 
             elif change_type == "add_package":
                 package = change.get("package", "")
