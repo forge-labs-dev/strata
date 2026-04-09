@@ -1877,7 +1877,7 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
         logger.exception("LLM completion failed")
         raise HTTPException(status_code=502, detail="LLM completion failed")
 
-    return {
+    response: dict = {
         "content": result.content,
         "model": result.model,
         "tokens": {
@@ -1885,3 +1885,138 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
             "output": result.output_tokens,
         },
     }
+
+    # For plan actions, try to parse as a structured change plan
+    if req.action == "plan":
+        from strata.notebook.llm import parse_change_plan
+
+        plan = parse_change_plan(result.content)
+        if plan is not None:
+            response["plan"] = {
+                "summary": plan.summary,
+                "changes": [
+                    {
+                        k: v
+                        for k, v in {
+                            "type": c.type,
+                            "source": c.source,
+                            "language": c.language,
+                            "name": c.name,
+                            "cell_id": c.cell_id,
+                            "reason": c.reason,
+                            "package": c.package,
+                            "key": c.key,
+                            "value": c.value,
+                            "cell_ids": c.cell_ids,
+                        }.items()
+                        if v is not None
+                    }
+                    for c in plan.changes
+                ],
+            }
+
+    return response
+
+
+class ApplyChangesRequest(BaseModel):
+    """Request to apply a set of proposed changes."""
+
+    changes: list[dict] = Field(..., description="List of changes to apply")
+
+
+@router.post("/{notebook_id}/ai/apply")
+async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> dict:
+    """Apply a set of LLM-proposed changes to the notebook."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    applied: list[dict] = []
+    errors: list[dict] = []
+
+    for change in req.changes:
+        change_type = change.get("type")
+        try:
+            if change_type == "add_cell":
+                cell_id = str(uuid.uuid4())[:8]
+                language = change.get("language", "python")
+                add_cell_to_notebook(session.path, cell_id, language=language)
+                source = change.get("source", "")
+                if source:
+                    write_cell(session.path, cell_id, source)
+                applied.append({"type": "add_cell", "cell_id": cell_id})
+
+            elif change_type == "modify_cell":
+                cell_id = change.get("cell_id", "")
+                source = change.get("source", "")
+                if cell_id and source:
+                    write_cell(session.path, cell_id, source)
+                    applied.append({"type": "modify_cell", "cell_id": cell_id})
+
+            elif change_type == "delete_cell":
+                cell_id = change.get("cell_id", "")
+                if cell_id:
+                    try:
+                        remove_cell_from_notebook(session.path, cell_id)
+                        applied.append({"type": "delete_cell", "cell_id": cell_id})
+                    except Exception as e:
+                        errors.append({"type": "delete_cell", "error": str(e)})
+
+            elif change_type == "add_package":
+                package = change.get("package", "")
+                if package:
+                    try:
+                        outcome = await session.mutate_dependency(package, action="add")
+                        applied.append(
+                            {
+                                "type": "add_package",
+                                "package": package,
+                                "success": outcome.result.success,
+                            }
+                        )
+                    except Exception as e:
+                        errors.append({"type": "add_package", "error": str(e)})
+
+            elif change_type == "remove_package":
+                package = change.get("package", "")
+                if package:
+                    try:
+                        outcome = await session.mutate_dependency(package, action="remove")
+                        applied.append(
+                            {
+                                "type": "remove_package",
+                                "package": package,
+                                "success": outcome.result.success,
+                            }
+                        )
+                    except Exception as e:
+                        errors.append({"type": "remove_package", "error": str(e)})
+
+            elif change_type == "set_env":
+                key = change.get("key", "")
+                value = change.get("value", "")
+                if key:
+                    env = dict(session.notebook_state.env or {})
+                    env[key] = value
+                    update_notebook_env(session.path, env)
+                    applied.append({"type": "set_env", "key": key})
+
+            else:
+                errors.append(
+                    {
+                        "type": change_type,
+                        "error": f"Unknown change type: {change_type}",
+                    }
+                )
+
+        except Exception as e:
+            errors.append({"type": change_type, "error": str(e)})
+
+    # Reload after all changes
+    session.reload()
+
+    data = session.serialize_notebook_state()
+    data["session_id"] = session.id
+    data["applied"] = applied
+    data["errors"] = errors
+    return data

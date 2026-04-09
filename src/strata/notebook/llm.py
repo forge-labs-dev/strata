@@ -33,7 +33,7 @@ _PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "MISTRAL_API_KEY": ("https://api.mistral.ai/v1", "mistral-large-latest"),
 }
 
-ActionType = Literal["generate", "explain", "describe", "chat"]
+ActionType = Literal["generate", "explain", "describe", "chat", "plan"]
 
 
 @dataclass(frozen=True)
@@ -393,11 +393,12 @@ def build_messages(
     cell_error: str | None = None,
 ) -> list[dict[str, str]]:
     """Build the chat messages list for a given action type."""
-    system_templates = {
+    system_templates: dict[str, str] = {
         "generate": _SYSTEM_GENERATE,
         "explain": _SYSTEM_EXPLAIN,
         "describe": _SYSTEM_DESCRIBE,
         "chat": _SYSTEM_CHAT,
+        "plan": _SYSTEM_PLAN,
     }
 
     system = system_templates[action].format(context=notebook_context)
@@ -418,3 +419,131 @@ def build_messages(
         messages.append({"role": "user", "content": user_message})
 
     return messages
+
+
+# ---------------------------------------------------------------------------
+# Plan prompt and parser
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PLAN = """\
+You are a notebook assistant that proposes structured changes. Return ONLY \
+a JSON object with this exact schema — no markdown, no explanation outside \
+the JSON:
+
+{{
+  "summary": "Brief description of what these changes do",
+  "changes": [
+    {{"type": "add_package", "package": "pandas>=2.0"}},
+    {{"type": "add_cell", "language": "python",
+      "source": "import pandas as pd\\ndf = pd.read_csv('data.csv')",
+      "name": "Load data"}},
+    {{"type": "add_cell", "language": "python",
+      "source": "df.describe()", "name": "Explore"}},
+    {{"type": "modify_cell", "cell_id": "abc123",
+      "source": "new code", "reason": "Fixed bug"}},
+    {{"type": "delete_cell", "cell_id": "abc123",
+      "reason": "No longer needed"}},
+    {{"type": "set_env", "key": "API_KEY", "value": "placeholder"}},
+    {{"type": "add_cell", "language": "prompt",
+      "source": "# @name summary\\nSummarize {{{{ df }}}}",
+      "name": "AI summary"}}
+  ]
+}}
+
+Valid change types: add_cell, modify_cell, delete_cell, add_package, \
+remove_package, set_env, reorder_cells.
+
+For add_cell, set language to "python" or "prompt". Use "name" for a \
+human-readable label. Order matters — cells will be added sequentially.
+
+The user's notebook has these cells and variables:
+
+{{context}}"""
+
+
+@dataclass
+class ProposedChange:
+    """One proposed change to the notebook."""
+
+    type: str
+    source: str | None = None
+    language: str | None = None
+    name: str | None = None
+    cell_id: str | None = None
+    reason: str | None = None
+    package: str | None = None
+    key: str | None = None
+    value: str | None = None
+    cell_ids: list[str] | None = None
+
+
+@dataclass
+class ChangePlan:
+    """A structured set of proposed changes from the LLM."""
+
+    summary: str
+    changes: list[ProposedChange]
+    raw_content: str = ""
+
+
+def parse_change_plan(content: str) -> ChangePlan | None:
+    """Parse an LLM response as a structured change plan.
+
+    Tries JSON directly, then extracts from a code block.
+    Returns None if parsing fails.
+    """
+    import re
+
+    raw = content.strip()
+
+    # Try direct JSON parse
+    parsed = _try_parse_json(raw)
+
+    # Try extracting from markdown code block
+    if parsed is None:
+        m = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", raw)
+        if m:
+            parsed = _try_parse_json(m.group(1).strip())
+
+    if parsed is None or not isinstance(parsed, dict):
+        return None
+
+    summary = parsed.get("summary", "")
+    raw_changes = parsed.get("changes", [])
+    if not isinstance(raw_changes, list):
+        return None
+
+    changes: list[ProposedChange] = []
+    for item in raw_changes:
+        if not isinstance(item, dict) or "type" not in item:
+            continue
+        changes.append(
+            ProposedChange(
+                type=item["type"],
+                source=item.get("source"),
+                language=item.get("language"),
+                name=item.get("name"),
+                cell_id=item.get("cell_id"),
+                reason=item.get("reason"),
+                package=item.get("package"),
+                key=item.get("key"),
+                value=item.get("value"),
+                cell_ids=item.get("cell_ids"),
+            )
+        )
+
+    if not changes:
+        return None
+
+    return ChangePlan(summary=summary, changes=changes, raw_content=content)
+
+
+def _try_parse_json(text: str) -> dict | None:
+    """Attempt to parse JSON, returning None on failure."""
+    import json
+
+    try:
+        result = json.loads(text)
+        return result if isinstance(result, dict) else None
+    except (json.JSONDecodeError, ValueError):
+        return None

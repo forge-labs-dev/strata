@@ -1413,7 +1413,7 @@ const inspectHistory = ref<InspectEntry[]>([])
 interface LlmMessage {
   role: 'user' | 'assistant'
   content: string
-  action?: 'generate' | 'explain' | 'describe' | 'chat'
+  action?: 'generate' | 'explain' | 'describe' | 'chat' | 'plan'
   model?: string
   tokens?: { input: number; output: number }
   timestamp: number
@@ -1424,6 +1424,30 @@ const llmProvider = ref<string | null>(null)
 const llmLoading = ref(false)
 const llmError = ref<string | null>(null)
 const llmMessages = ref<LlmMessage[]>([])
+
+// LLM proposal state
+interface ProposedChange {
+  type: string
+  source?: string
+  language?: string
+  name?: string
+  cell_id?: string
+  reason?: string
+  package?: string
+  key?: string
+  value?: string
+  cell_ids?: string[]
+  accepted: boolean
+}
+
+interface ChangePlan {
+  summary: string
+  changes: ProposedChange[]
+}
+
+const proposedPlan = ref<ChangePlan | null>(null)
+const applyingPlan = ref(false)
+const applyError = ref<string | null>(null)
 
 let wsInstance: ReturnType<typeof useWebSocket> | null = null
 
@@ -2607,7 +2631,7 @@ async function checkLlmStatus() {
 }
 
 async function llmCompleteAction(
-  action: 'generate' | 'explain' | 'describe' | 'chat',
+  action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan',
   message: string,
   cellId?: string,
 ) {
@@ -2633,6 +2657,14 @@ async function llmCompleteAction(
       tokens: result.tokens,
       timestamp: Date.now(),
     })
+
+    // If this was a plan action with a structured plan, open the proposal panel
+    if (action === 'plan' && result.plan) {
+      proposedPlan.value = {
+        summary: result.plan.summary || '',
+        changes: (result.plan.changes || []).map((c: any) => ({ ...c, accepted: true })),
+      }
+    }
   } catch (err: any) {
     llmError.value = err.message || 'LLM request failed'
   } finally {
@@ -2643,6 +2675,45 @@ async function llmCompleteAction(
 function clearLlmHistory() {
   llmMessages.value = []
   llmError.value = null
+}
+
+function discardPlan() {
+  proposedPlan.value = null
+  applyError.value = null
+}
+
+async function applyProposedChanges() {
+  const plan = proposedPlan.value
+  if (!plan) return
+  const sid = sessionId()
+  if (!sid) return
+
+  const accepted = plan.changes.filter((c) => c.accepted)
+  if (accepted.length === 0) {
+    discardPlan()
+    return
+  }
+
+  applyingPlan.value = true
+  applyError.value = null
+  const strata = useStrata()
+
+  try {
+    const data = await strata.applyLlmChanges(
+      sid,
+      accepted.map((c) => {
+        const { accepted: _, ...rest } = c
+        return rest
+      }),
+    )
+    // Reload notebook state from response
+    loadNotebookStateFromBackend(data)
+    proposedPlan.value = null
+  } catch (err: any) {
+    applyError.value = err.message || 'Failed to apply changes'
+  } finally {
+    applyingPlan.value = false
+  }
 }
 
 async function insertLlmCodeAsCell(code: string, afterCellId?: string) {
@@ -2789,5 +2860,10 @@ export function useNotebook() {
     clearLlmHistory,
     insertLlmCodeAsCell,
     insertLlmCodeAsCells,
+    proposedPlan,
+    applyingPlan,
+    applyError,
+    discardPlan,
+    applyProposedChanges,
   }
 }

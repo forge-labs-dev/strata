@@ -14,6 +14,7 @@ const RuntimePanel = defineAsyncComponent(() => import('../components/RuntimePan
 const WorkersPanel = defineAsyncComponent(() => import('../components/WorkersPanel.vue'))
 const ProfilingPanel = defineAsyncComponent(() => import('../components/ProfilingPanel.vue'))
 const LlmPanel = defineAsyncComponent(() => import('../components/LlmPanel.vue'))
+const ProposalPanel = defineAsyncComponent(() => import('../components/ProposalPanel.vue'))
 const ImpactPreview = defineAsyncComponent(() => import('../components/ImpactPreview.vue'))
 
 const props = defineProps<{ sessionId: string }>()
@@ -511,6 +512,7 @@ function goHome() {
 
     <!-- v1.1: Impact preview dialog -->
     <ImpactPreview />
+    <ProposalPanel />
     <KeyboardShortcutsModal :visible="showShortcuts" @close="showShortcuts = false" />
   </div>
 </template>

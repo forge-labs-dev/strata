@@ -918,6 +918,10 @@ interface LlmCompleteResponse {
   content: string
   model: string
   tokens: { input: number; output: number }
+  plan?: {
+    summary: string
+    changes: Record<string, unknown>[]
+  }
 }
 
 async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
@@ -930,7 +934,7 @@ async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
 
 async function llmComplete(
   notebookId: string,
-  action: 'generate' | 'explain' | 'describe' | 'chat',
+  action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan',
   message: string,
   cellId?: string,
 ): Promise<LlmCompleteResponse> {
@@ -944,6 +948,22 @@ async function llmComplete(
     await throwApiError(resp, 'LLM completion failed')
   }
   return readJson<LlmCompleteResponse>(resp)
+}
+
+async function applyLlmChanges(
+  notebookId: string,
+  changes: Record<string, unknown>[],
+): Promise<any> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ changes }),
+    timeoutMs: 120_000,
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to apply changes')
+  }
+  return resp.json()
 }
 
 // ---------------------------------------------------------------------------
@@ -996,5 +1016,6 @@ export function useStrata() {
     getSession,
     getLlmStatus,
     llmComplete,
+    applyLlmChanges,
   }
 }

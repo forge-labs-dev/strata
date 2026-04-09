@@ -41,9 +41,9 @@ watch(
   },
 )
 
-async function send(action: 'generate' | 'explain' | 'describe' | 'chat' = 'generate') {
+async function send(action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan' = 'generate') {
   const msg = userMessage.value.trim()
-  if (!msg && action === 'generate') return
+  if (!msg && (action === 'generate' || action === 'plan')) return
   const finalMessage =
     msg || (action === 'explain' ? 'Explain this cell' : 'Describe what this cell does')
   userMessage.value = ''
@@ -157,6 +157,9 @@ const totalTokens = computed(() => {
         <div class="llm-actions">
           <button :disabled="llmLoading || !connected" @click="send('explain')">Explain</button>
           <button :disabled="llmLoading || !connected" @click="send('describe')">Describe</button>
+          <button class="plan-btn" :disabled="llmLoading || !connected" @click="send('plan')">
+            Plan
+          </button>
         </div>
 
         <!-- Input -->
@@ -398,6 +401,16 @@ const totalTokens = computed(() => {
 
 .llm-actions button:hover:not(:disabled) {
   background: #45475a;
+}
+
+.llm-actions .plan-btn {
+  background: #89b4fa30;
+  color: #89b4fa;
+  border: 1px solid #89b4fa40;
+}
+
+.llm-actions .plan-btn:hover:not(:disabled) {
+  background: #89b4fa50;
 }
 
 .llm-actions button:disabled {
