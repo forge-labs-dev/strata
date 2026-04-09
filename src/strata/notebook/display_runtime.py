@@ -70,6 +70,9 @@ class DisplayCapture:
             import matplotlib.pyplot as plt  # type: ignore[import-not-found]
             from matplotlib.figure import Figure as figure_cls  # type: ignore[import-not-found]
         except ImportError:
+            plt = None  # type: ignore[assignment]
+
+        if plt is None:
             yield
             return
 
