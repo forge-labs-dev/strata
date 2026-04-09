@@ -1641,6 +1641,7 @@ class CellExecutor:
         llm_config = _get_llm_config(self.session)
         if llm_config is None:
             return CellExecutionResult(
+                cell_id=cell_id,
                 success=False,
                 outputs={},
                 stdout="",
@@ -1663,6 +1664,7 @@ class CellExecutor:
         )
 
         return CellExecutionResult(
+            cell_id=cell_id,
             success=result_dict["success"],
             outputs=result_dict["outputs"],
             stdout=result_dict.get("stdout", ""),
