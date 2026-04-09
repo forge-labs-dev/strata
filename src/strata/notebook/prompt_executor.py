@@ -172,23 +172,24 @@ async def execute_prompt_cell(
     blob = json.dumps(content, indent=2, default=str).encode()
 
     try:
+        from strata.artifact_store import TransformSpec
+
         var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
 
         version = artifact_mgr.artifact_store.create_artifact(
             artifact_id=canonical_id,
             provenance_hash=var_provenance,
-            transform_spec=json.dumps(
-                {
-                    "executor": "prompt",
-                    "params": {
-                        "content_type": content_type,
-                        "model": model,
-                        "temperature": temperature,
-                        "output_type": output_type,
-                        "input_tokens": result.input_tokens,
-                        "output_tokens": result.output_tokens,
-                    },
-                }
+            transform_spec=TransformSpec(
+                executor="prompt",
+                params={
+                    "content_type": content_type,
+                    "model": model,
+                    "temperature": temperature,
+                    "output_type": output_type,
+                    "input_tokens": result.input_tokens,
+                    "output_tokens": result.output_tokens,
+                },
+                inputs=[],
             ),
         )
         artifact_mgr.artifact_store.write_blob(canonical_id, version, blob)

@@ -1620,3 +1620,102 @@ class Person:
             assert warm_result.mutation_warnings == cold_result.mutation_warnings
         finally:
             await pool.drain()
+
+
+class TestPromptCellExecution:
+    """Tests for prompt cell execution via LLM."""
+
+    @pytest.mark.asyncio
+    async def test_prompt_cell_returns_error_when_llm_not_configured(self, tmp_path):
+        """Prompt cells should return a clear error when no LLM provider is set."""
+        import os
+        from unittest.mock import patch
+
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "prompt_test")
+        add_cell_to_notebook(notebook_dir, "p1", language="prompt")
+        write_cell(notebook_dir, "p1", "What is Python?")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        cell = next(c for c in session.notebook_state.cells if c.id == "p1")
+        assert cell.language == "prompt"
+
+        # Ensure no API keys are set
+        with patch.dict(os.environ, {}, clear=True):
+            executor = CellExecutor(session)
+            result = await executor.execute_cell("p1", cell.source)
+
+        assert result.success is False
+        assert result.cell_id == "p1"
+        assert "not configured" in (result.error or "").lower()
+        assert result.execution_method == "llm"
+
+    @pytest.mark.asyncio
+    async def test_prompt_cell_calls_llm_and_stores_artifact(self, tmp_path):
+        """Prompt cells should call the LLM and store the result as an artifact."""
+        import os
+        from unittest.mock import AsyncMock, patch
+
+        from strata.notebook.llm import LlmCompletionResult
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "prompt_exec_test")
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(notebook_dir, "c1", "x = 42")
+        add_cell_to_notebook(notebook_dir, "p1", after_cell_id="c1", language="prompt")
+        write_cell(notebook_dir, "p1", "# @name answer\nWhat is {{ x }}?")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+
+        # Execute c1 first so x has an artifact
+        executor = CellExecutor(session)
+        r1 = await executor.execute_cell("c1", "x = 42")
+        assert r1.success
+
+        # Mock the LLM call
+        mock_result = LlmCompletionResult(
+            content="42 is the answer to everything.",
+            model="test-model",
+            input_tokens=10,
+            output_tokens=8,
+        )
+
+        with (
+            patch.dict(os.environ, {"STRATA_AI_API_KEY": "sk-test"}, clear=True),
+            patch(
+                "strata.notebook.prompt_executor.chat_completion",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            result = await executor.execute_cell("p1", "# @name answer\nWhat is {{ x }}?")
+
+        assert result.success is True
+        assert result.cell_id == "p1"
+        assert "answer" in result.outputs
+        assert "42 is the answer" in str(result.outputs["answer"].get("preview", ""))
+        assert result.execution_method == "llm"
+        assert result.artifact_uri is not None
+
+    @pytest.mark.asyncio
+    async def test_prompt_cell_dag_connects_to_upstream(self, tmp_path):
+        """Prompt cell {{ var }} references create correct DAG edges."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "prompt_dag_test")
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(notebook_dir, "c1", "data = [1, 2, 3]")
+        add_cell_to_notebook(notebook_dir, "p1", after_cell_id="c1", language="prompt")
+        write_cell(notebook_dir, "p1", "# @name summary\nSummarize {{ data }}")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+
+        p1 = next(c for c in session.notebook_state.cells if c.id == "p1")
+        assert p1.language == "prompt"
+        assert "data" in p1.references
+        assert p1.defines == ["summary"]
+        assert "c1" in p1.upstream_ids
+
+        c1 = next(c for c in session.notebook_state.cells if c.id == "c1")
+        assert "p1" in c1.downstream_ids
