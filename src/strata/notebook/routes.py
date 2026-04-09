@@ -1800,6 +1800,24 @@ def _get_llm_config(session):
     return resolve_llm_config(notebook_ai, server_config, notebook_env)
 
 
+def _resolve_cell_id(session, raw_id: str) -> str | None:
+    """Resolve a cell ID from LLM output, allowing prefix matches."""
+    raw_id = raw_id.strip()
+    cells = session.notebook_state.cells
+
+    # Exact match
+    for c in cells:
+        if c.id == raw_id:
+            return c.id
+
+    # Prefix match (LLM might truncate IDs)
+    matches = [c for c in cells if c.id.startswith(raw_id)]
+    if len(matches) == 1:
+        return matches[0].id
+
+    return None
+
+
 @router.get("/{notebook_id}/ai/status")
 async def llm_status(notebook_id: str) -> dict:
     """Check if the LLM assistant is configured and available."""
@@ -1947,39 +1965,35 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                 applied.append({"type": "add_cell", "cell_id": cell_id})
 
             elif change_type == "modify_cell":
-                cell_id = change.get("cell_id", "")
+                raw_cell_id = change.get("cell_id", "")
                 source = change.get("source", "")
-                if cell_id and source:
-                    cell_exists = any(
-                        c.id == cell_id for c in session.notebook_state.cells
-                    )
-                    if not cell_exists:
+                if raw_cell_id and source:
+                    resolved_id = _resolve_cell_id(session, raw_cell_id)
+                    if resolved_id is None:
                         errors.append({
                             "type": "modify_cell",
-                            "error": f"Cell {cell_id} not found "
-                            f"(valid IDs: {[c.id for c in session.notebook_state.cells]})",
+                            "error": f"Cell '{raw_cell_id}' not found "
+                            f"(valid: {[c.id for c in session.notebook_state.cells]})",
                         })
                     else:
-                        write_cell(session.path, cell_id, source)
-                        applied.append({"type": "modify_cell", "cell_id": cell_id})
+                        write_cell(session.path, resolved_id, source)
+                        applied.append({"type": "modify_cell", "cell_id": resolved_id})
 
             elif change_type == "delete_cell":
-                cell_id = change.get("cell_id", "")
-                if cell_id:
-                    # Validate cell exists before attempting delete
-                    cell_exists = any(
-                        c.id == cell_id for c in session.notebook_state.cells
-                    )
-                    if not cell_exists:
+                raw_cell_id = change.get("cell_id", "")
+                if raw_cell_id:
+                    # Resolve cell ID: exact match, then prefix match
+                    resolved_id = _resolve_cell_id(session, raw_cell_id)
+                    if resolved_id is None:
                         errors.append({
                             "type": "delete_cell",
-                            "error": f"Cell {cell_id} not found "
-                            f"(valid IDs: {[c.id for c in session.notebook_state.cells]})",
+                            "error": f"Cell '{raw_cell_id}' not found "
+                            f"(valid: {[c.id for c in session.notebook_state.cells]})",
                         })
                     else:
                         try:
-                            remove_cell_from_notebook(session.path, cell_id)
-                            applied.append({"type": "delete_cell", "cell_id": cell_id})
+                            remove_cell_from_notebook(session.path, resolved_id)
+                            applied.append({"type": "delete_cell", "cell_id": resolved_id})
                         except Exception as e:
                             errors.append({"type": "delete_cell", "error": str(e)})
 
@@ -2021,6 +2035,14 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                     env[key] = value
                     update_notebook_env(session.path, env)
                     applied.append({"type": "set_env", "key": key})
+
+            elif change_type == "delete_all_cells":
+                for cell in list(session.notebook_state.cells):
+                    try:
+                        remove_cell_from_notebook(session.path, cell.id)
+                        applied.append({"type": "delete_cell", "cell_id": cell.id})
+                    except Exception as e:
+                        errors.append({"type": "delete_cell", "error": str(e)})
 
             else:
                 errors.append(

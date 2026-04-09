@@ -2708,12 +2708,13 @@ async function applyProposedChanges() {
     )
     // Reload notebook state from response
     loadNotebookStateFromBackend(data)
-    proposedPlan.value = null
 
-    // Surface any per-change errors
-    const errors = data.errors
-    if (Array.isArray(errors) && errors.length > 0) {
-      applyError.value = errors.map((e: any) => `${e.type}: ${e.error}`).join('; ')
+    // Surface any per-change errors — keep panel open so user sees them
+    const applyErrors = data.errors
+    if (Array.isArray(applyErrors) && applyErrors.length > 0) {
+      applyError.value = applyErrors.map((e: any) => `${e.type}: ${e.error}`).join('\n')
+    } else {
+      proposedPlan.value = null
     }
   } catch (err: any) {
     applyError.value = err.message || 'Failed to apply changes'

@@ -450,8 +450,12 @@ the JSON:
   ]
 }}
 
-Valid change types: add_cell, modify_cell, delete_cell, add_package, \
-remove_package, set_env, reorder_cells.
+Valid change types: add_cell, modify_cell, delete_cell, delete_all_cells, \
+add_package, remove_package, set_env.
+
+Use delete_all_cells (no arguments needed) when the user wants to clear \
+all cells. Use delete_cell with the exact cell_id only for removing \
+specific individual cells.
 
 For add_cell, set language to "python" or "prompt". Use "name" for a \
 human-readable label. Order matters — cells will be added sequentially.
