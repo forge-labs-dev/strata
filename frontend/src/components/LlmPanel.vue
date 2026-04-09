@@ -157,7 +157,12 @@ const totalTokens = computed(() => {
         <div class="llm-actions">
           <button :disabled="llmLoading || !connected" @click="send('explain')">Explain</button>
           <button :disabled="llmLoading || !connected" @click="send('describe')">Describe</button>
-          <button class="plan-btn" :disabled="llmLoading || !connected" @click="send('plan')">
+          <button
+            class="plan-btn"
+            :disabled="llmLoading || !connected || !userMessage.trim()"
+            title="Type what you want to build, then click Plan"
+            @click="send('plan')"
+          >
             Plan
           </button>
         </div>
@@ -166,7 +171,7 @@ const totalTokens = computed(() => {
         <div class="llm-input">
           <textarea
             v-model="userMessage"
-            placeholder="Ask the AI assistant..."
+            placeholder="Describe what you want to build..."
             :disabled="llmLoading || !connected"
             rows="2"
             @keydown.enter.exact.prevent="send('generate')"

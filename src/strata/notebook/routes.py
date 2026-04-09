@@ -1757,7 +1757,7 @@ async def export_notebook(notebook_id: str) -> StreamingResponse:
 class LlmCompleteRequest(BaseModel):
     """Request for LLM assistant completion."""
 
-    action: Literal["generate", "explain", "describe", "chat"] = Field(
+    action: Literal["generate", "explain", "describe", "chat", "plan"] = Field(
         ..., description="Action type"
     )
     message: str = Field(..., max_length=10_000, description="User message")
