@@ -2709,6 +2709,12 @@ async function applyProposedChanges() {
     // Reload notebook state from response
     loadNotebookStateFromBackend(data)
     proposedPlan.value = null
+
+    // Surface any per-change errors
+    const errors = data.errors
+    if (Array.isArray(errors) && errors.length > 0) {
+      applyError.value = errors.map((e: any) => `${e.type}: ${e.error}`).join('; ')
+    }
   } catch (err: any) {
     applyError.value = err.message || 'Failed to apply changes'
   } finally {

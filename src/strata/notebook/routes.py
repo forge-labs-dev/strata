@@ -2012,6 +2012,15 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
         except Exception as e:
             errors.append({"type": change_type, "error": str(e)})
 
+    logger.info(
+        "ai/apply: applied=%d errors=%d changes=%s",
+        len(applied),
+        len(errors),
+        [a.get("type") for a in applied],
+    )
+    if errors:
+        logger.warning("ai/apply errors: %s", errors)
+
     # Reload after all changes
     session.reload()
 
