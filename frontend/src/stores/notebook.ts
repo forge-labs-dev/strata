@@ -2707,6 +2707,12 @@ async function applyProposedChanges() {
       }),
     )
     // Reload notebook state from response
+    console.info(
+      'ai/apply response:',
+      'cells:', (data.cells || []).length,
+      'applied:', data.applied,
+      'errors:', data.errors,
+    )
     loadNotebookStateFromBackend(data)
     proposedPlan.value = null
 
