@@ -1820,11 +1820,6 @@ async def llm_status(notebook_id: str) -> dict:
 
     config = _get_llm_config(session)
     if config is None:
-        notebook_env = getattr(session.notebook_state, "env", None) or {}
-        logger.info(
-            "ai/status: not configured. notebook_env_keys=%s",
-            list(notebook_env.keys()),
-        )
         return {"available": False, "model": None, "provider": None}
 
     return {
