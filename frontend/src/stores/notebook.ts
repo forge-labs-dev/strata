@@ -1867,6 +1867,11 @@ function initializeWebSocket() {
       })
     })
 
+    wsInstance.onMessage('agent_done', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      _handleAgentDone(p)
+    })
+
     wsInstance.connect()
   }
 }
@@ -2770,30 +2775,44 @@ async function runAgentAction(message: string) {
   })
 
   try {
-    const result = await strata.agentRun(sid, message)
-    // Reload notebook state from agent result
-    if (result.notebook) {
-      loadNotebookStateFromBackend(result.notebook)
+    const resp = await strata.agentRun(sid, message)
+    // Agent now runs as a background task — resp just has { job_id, status }
+    // Completion arrives via WS agent_done message
+    if (resp.error) {
+      agentError.value = resp.error
+      agentRunning.value = false
     }
-    llmMessages.value.push({
-      role: 'assistant',
-      content: result.content || 'Agent completed.',
-      model: result.model,
-      tokens: { input: result.tokens?.input || 0, output: result.tokens?.output || 0 },
-      timestamp: Date.now(),
-    })
-    if (result.error) {
-      agentError.value = result.error
-    }
-
-    // Refresh dependencies and environment in case agent installed packages
-    fetchDependencies()
-    fetchEnvironment()
   } catch (err: any) {
-    agentError.value = err.message || 'Agent failed'
-  } finally {
+    agentError.value = err.message || 'Agent failed to start'
     agentRunning.value = false
   }
+}
+
+function _handleAgentDone(payload: Record<string, any>) {
+  agentRunning.value = false
+
+  const content = payload.content || ''
+  const error = payload.error || null
+
+  if (content) {
+    llmMessages.value.push({
+      role: 'assistant',
+      content,
+      model: payload.model,
+      tokens: payload.tokens
+        ? { input: payload.tokens.input || 0, output: payload.tokens.output || 0 }
+        : undefined,
+      timestamp: Date.now(),
+    })
+  }
+
+  if (error) {
+    agentError.value = error
+  }
+
+  // Refresh dependencies and environment in case agent installed packages
+  fetchDependencies()
+  fetchEnvironment()
 }
 
 function cancelAgent() {

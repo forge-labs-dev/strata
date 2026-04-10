@@ -2045,7 +2045,9 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
     cancel_event = asyncio.Event()
     _agent_cancel_events[notebook_id] = cancel_event
 
-    async def _progress(event: str, detail: str) -> None:
+    job_id = str(uuid.uuid4())[:8]
+
+    async def _progress(event_type: str, detail: str) -> None:
         from strata.notebook.ws import _broadcast_message
 
         try:
@@ -2055,62 +2057,85 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
                     "type": "agent_progress",
                     "seq": 0,
                     "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "payload": {"event": event, "detail": detail},
+                    "payload": {"event": event_type, "detail": detail, "job_id": job_id},
                 },
             )
         except Exception:
             pass
 
-    try:
-        result = await run_agent_loop(
-            config,
-            session,
-            req.message,
-            notebook_id=notebook_id,
-            max_iterations=10,
-            cancel_event=cancel_event,
-            progress_callback=_progress,
-        )
+    async def _run_agent_task() -> None:
+        from strata.notebook.ws import _broadcast_message, broadcast_notebook_sync
 
-        return {
-            "content": result.content,
-            "model": result.model,
-            "tokens": {
-                "input": result.total_input_tokens,
-                "output": result.total_output_tokens,
-            },
-            "iterations": result.iterations,
-            "tool_calls": [
-                {
-                    "tool": tc.tool_name,
-                    "args": tc.arguments,
-                    "result": tc.result,
-                    "duration_ms": int(tc.duration_ms),
-                }
-                for tc in result.tool_calls
-            ],
-            "cancelled": result.cancelled,
-            "error": result.error,
-            "notebook": session.serialize_notebook_state(),
-        }
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 429:
-            raise HTTPException(status_code=429, detail="LLM rate limited")
-        raise HTTPException(status_code=502, detail=f"LLM error: {e.response.status_code}")
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="LLM timed out")
-    except Exception:
-        logger.exception("Agent loop failed")
-        raise HTTPException(status_code=502, detail="Agent loop failed")
-    finally:
-        _agent_cancel_events.pop(notebook_id, None)
-        # Always broadcast final state so frontends reconcile
         try:
-            from strata.notebook.ws import broadcast_notebook_sync
+            result = await run_agent_loop(
+                config,
+                session,
+                req.message,
+                notebook_id=notebook_id,
+                max_iterations=10,
+                cancel_event=cancel_event,
+                progress_callback=_progress,
+            )
 
-            await broadcast_notebook_sync(notebook_id, session)
-        except Exception:
-            pass
+            # Broadcast completion via WS
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "agent_done",
+                    "seq": 0,
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "payload": {
+                        "job_id": job_id,
+                        "content": result.content,
+                        "model": result.model,
+                        "tokens": {
+                            "input": result.total_input_tokens,
+                            "output": result.total_output_tokens,
+                        },
+                        "iterations": result.iterations,
+                        "tool_calls": [
+                            {
+                                "tool": tc.tool_name,
+                                "args": tc.arguments,
+                                "result": tc.result,
+                                "duration_ms": int(tc.duration_ms),
+                            }
+                            for tc in result.tool_calls
+                        ],
+                        "cancelled": result.cancelled,
+                        "error": result.error,
+                    },
+                },
+            )
+        except Exception as e:
+            logger.exception("Agent loop failed")
+            try:
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "agent_done",
+                        "seq": 0,
+                        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "payload": {
+                            "job_id": job_id,
+                            "content": "",
+                            "error": str(e),
+                            "cancelled": False,
+                        },
+                    },
+                )
+            except Exception:
+                pass
+        finally:
+            _agent_cancel_events.pop(notebook_id, None)
+            try:
+                await broadcast_notebook_sync(notebook_id, session)
+            except Exception:
+                pass
+
+    asyncio.create_task(_run_agent_task())
+
+    return {"job_id": job_id, "status": "started"}
 
 
 def cancel_agent(notebook_id: str) -> bool:

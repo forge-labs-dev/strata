@@ -971,7 +971,7 @@ async function agentRun(notebookId: string, message: string): Promise<any> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message }),
-    timeoutMs: 300_000, // Agent can take several minutes
+    timeoutMs: 30_000, // Just needs to start the background task
   })
   if (!resp.ok) {
     await throwApiError(resp, 'Agent run failed')

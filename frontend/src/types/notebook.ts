@@ -489,6 +489,7 @@ export type WsServerMessageType =
   | 'environment_job_finished' // Background env job completed or failed
   | 'error' // Protocol-level error (auth, not found, etc.)
   | 'agent_progress' // Agent loop progress event
+  | 'agent_done' // Agent loop completed (success, error, or cancel)
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType
 
