@@ -97,15 +97,24 @@ async def execute_prompt_cell(
                 value = _parse_output(blob, content_type)
                 uri = f"strata://artifact/{canonical.id}@v={canonical.version}"
 
+                preview = _preview(value)
+                display_entry = {
+                    "preview": preview,
+                    "content_type": content_type,
+                    "bytes": len(blob),
+                }
+                display_text = str(preview) if not isinstance(preview, str) else preview
+                display_output = {
+                    "content_type": "text/markdown" if "\n" in display_text else "json/object",
+                    "scalar": display_text,
+                    "markdownText": display_text if "\n" in display_text else None,
+                }
+
                 return {
                     "success": True,
-                    "outputs": {
-                        output_name: {
-                            "preview": _preview(value),
-                            "content_type": content_type,
-                            "bytes": len(blob),
-                        },
-                    },
+                    "outputs": {output_name: display_entry, "_": display_entry},
+                    "display_outputs": [display_output],
+                    "display_output": display_output,
                     "stdout": "",
                     "stderr": "",
                     "error": None,
@@ -207,15 +216,33 @@ async def execute_prompt_cell(
 
     duration_ms = (time.time() - start_time) * 1000
 
+    # Build display output for the frontend
+    preview = _preview(content)
+    display_entry = {
+        "preview": preview,
+        "content_type": content_type,
+        "bytes": len(blob),
+    }
+
+    # The '_' key is the display value the frontend renders
+    outputs = {
+        output_name: display_entry,
+        "_": display_entry,
+    }
+
+    # Build a display_output dict the frontend can render as text/markdown
+    display_text = str(preview) if not isinstance(preview, str) else preview
+    display_output = {
+        "content_type": "text/markdown" if "\n" in display_text else "json/object",
+        "scalar": display_text,
+        "markdownText": display_text if "\n" in display_text else None,
+    }
+
     return {
         "success": True,
-        "outputs": {
-            output_name: {
-                "preview": _preview(content),
-                "content_type": content_type,
-                "bytes": len(blob),
-            },
-        },
+        "outputs": outputs,
+        "display_outputs": [display_output],
+        "display_output": display_output,
         "stdout": "",
         "stderr": f"Model: {result.model} | Tokens: {result.input_tokens}→{result.output_tokens}",
         "error": None,

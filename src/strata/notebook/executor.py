@@ -1667,6 +1667,8 @@ class CellExecutor:
             cell_id=cell_id,
             success=result_dict["success"],
             outputs=result_dict["outputs"],
+            display_outputs=result_dict.get("display_outputs"),
+            display_output=result_dict.get("display_output"),
             stdout=result_dict.get("stdout", ""),
             stderr=result_dict.get("stderr", ""),
             error=result_dict.get("error"),
