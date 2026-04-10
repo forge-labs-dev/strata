@@ -2774,6 +2774,10 @@ async function runAgentAction(message: string) {
     if (result.error) {
       agentError.value = result.error
     }
+
+    // Refresh dependencies and environment in case agent installed packages
+    fetchDependencies()
+    fetchEnvironment()
   } catch (err: any) {
     agentError.value = err.message || 'Agent failed'
   } finally {
