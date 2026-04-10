@@ -2066,6 +2066,7 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
             config,
             session,
             req.message,
+            notebook_id=notebook_id,
             max_iterations=10,
             cancel_event=cancel_event,
             progress_callback=_progress,
@@ -2103,6 +2104,13 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
         raise HTTPException(status_code=502, detail="Agent loop failed")
     finally:
         _agent_cancel_events.pop(notebook_id, None)
+        # Always broadcast final state so frontends reconcile
+        try:
+            from strata.notebook.ws import broadcast_notebook_sync
+
+            await broadcast_notebook_sync(notebook_id, session)
+        except Exception:
+            pass
 
 
 def cancel_agent(notebook_id: str) -> bool:

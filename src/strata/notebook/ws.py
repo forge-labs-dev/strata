@@ -2118,6 +2118,135 @@ async def _handle_dependency_remove(
         )
 
 
+async def execute_cell_for_agent(
+    notebook_id: str,
+    session: Any,
+    cell_id: str,
+    source: str,
+) -> Any:
+    """Execute a cell on behalf of the agent, respecting WS execution state.
+
+    Acquires the control lock, sets running_cell, broadcasts status,
+    executes, broadcasts result, and cleans up — same as user-initiated
+    execution but without a WebSocket sender.
+    """
+    from strata.notebook.executor import CellExecutor
+
+    execution_state = _notebook_execution_state.get(notebook_id)
+    if execution_state is None:
+        # No WS clients — execute directly without state tracking
+        executor = CellExecutor(session, session.warm_pool)
+        return await executor.execute_cell(cell_id, source)
+
+    async with execution_state["control_lock"]:
+        task = _get_active_execution_task(execution_state)
+        if task is not None:
+            raise RuntimeError("Another cell is currently executing. Wait and retry.")
+
+    # Broadcast running status
+    await _broadcast_message(
+        notebook_id,
+        {
+            "type": "cell_status",
+            "seq": 0,
+            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+            "payload": {"cell_id": cell_id, "status": "running"},
+        },
+    )
+
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
+    if cell:
+        cell.status = CellStatus.RUNNING
+
+    try:
+        executor = CellExecutor(session, session.warm_pool)
+        result = await executor.execute_cell(cell_id, source)
+
+        # Update cell status
+        status = CellStatus.READY if result.success else CellStatus.ERROR
+        if cell:
+            cell.status = status
+
+        # Broadcast result
+        if result.success and result.outputs:
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "cell_output",
+                    "seq": 0,
+                    "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                    "payload": {
+                        "cell_id": cell_id,
+                        "outputs": result.outputs,
+                        "cache_hit": result.cache_hit,
+                        "duration_ms": int(result.duration_ms),
+                        "execution_method": result.execution_method,
+                    },
+                },
+            )
+
+        await _broadcast_message(
+            notebook_id,
+            {
+                "type": "cell_status",
+                "seq": 0,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": {"cell_id": cell_id, "status": status},
+            },
+        )
+
+        return result
+    except Exception:
+        if cell:
+            cell.status = CellStatus.ERROR
+        await _broadcast_message(
+            notebook_id,
+            {
+                "type": "cell_status",
+                "seq": 0,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": {"cell_id": cell_id, "status": "error"},
+            },
+        )
+        raise
+
+
+async def broadcast_notebook_sync(notebook_id: str, session: Any) -> None:
+    """Broadcast full notebook state to all WS clients.
+
+    Used by the agent loop to push intermediate state changes so
+    frontends stay in sync during multi-tool operations.
+    """
+    dag_edges = []
+    if session.dag:
+        for edge in session.dag.edges:
+            dag_edges.append(
+                {
+                    "from": edge.from_cell_id,
+                    "to": edge.to_cell_id,
+                    "variable": edge.variable,
+                }
+            )
+
+    state = session.serialize_notebook_state()
+    state["dag"] = {
+        "edges": dag_edges,
+        "roots": list(session.dag.roots) if session.dag else [],
+        "leaves": list(session.dag.leaves) if session.dag else [],
+        "topological_order": (session.dag.topological_order if session.dag else []),
+    }
+
+    await _broadcast_message(
+        notebook_id,
+        {
+            "type": "notebook_state",
+            "seq": 0,
+            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+            "payload": state,
+        },
+    )
+
+
 async def _broadcast_message(notebook_id: str, message: dict[str, Any]) -> None:
     """Broadcast a message to all connected clients for a notebook."""
     connections = _notebook_connections.get(notebook_id, [])

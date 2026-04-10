@@ -768,6 +768,7 @@ async def execute_tool(
     session: NotebookSession,
     tool_name: str,
     arguments: dict[str, Any],
+    notebook_id: str | None = None,
 ) -> str:
     """Execute a tool call and return a text result for the LLM."""
     from strata.notebook.executor import CellExecutor
@@ -776,6 +777,16 @@ async def execute_tool(
         remove_cell_from_notebook,
         write_cell,
     )
+
+    async def _sync_frontend() -> None:
+        """Broadcast updated notebook state to all connected frontends."""
+        if notebook_id:
+            try:
+                from strata.notebook.ws import broadcast_notebook_sync
+
+                await broadcast_notebook_sync(notebook_id, session)
+            except Exception:
+                pass
 
     try:
         if tool_name == "get_notebook_state":
@@ -794,6 +805,7 @@ async def execute_tool(
             if source:
                 write_cell(session.path, cell_id, source)
             session.reload()
+            await _sync_frontend()
 
             cell = next(
                 (c for c in session.notebook_state.cells if c.id == cell_id),
@@ -811,6 +823,7 @@ async def execute_tool(
                 return f"Error: No cell defines '{var_name}'. Valid variables: {valid}"
             write_cell(session.path, cell_id, new_source)
             session.reload()
+            await _sync_frontend()
             return f"Edited cell {cell_id} (was defining: {var_name})"
 
         elif tool_name == "delete_cell":
@@ -821,6 +834,7 @@ async def execute_tool(
                 return f"Error: No cell defines '{var_name}'. Valid variables: {valid}"
             remove_cell_from_notebook(session.path, cell_id)
             session.reload()
+            await _sync_frontend()
             return f"Deleted cell {cell_id} (defined: {var_name})"
 
         elif tool_name == "run_cell":
@@ -836,8 +850,19 @@ async def execute_tool(
             if not cell:
                 return f"Error: Cell {cell_id} not found in session state"
 
-            executor = CellExecutor(session, session.warm_pool)
-            result = await executor.execute_cell(cell_id, cell.source)
+            # Use WS-aware execution if notebook_id is available
+            if notebook_id:
+                from strata.notebook.ws import execute_cell_for_agent
+
+                try:
+                    result = await execute_cell_for_agent(
+                        notebook_id, session, cell_id, cell.source
+                    )
+                except RuntimeError as e:
+                    return f"Error: {e}"
+            else:
+                executor = CellExecutor(session, session.warm_pool)
+                result = await executor.execute_cell(cell_id, cell.source)
 
             parts = []
             if result.success:
@@ -858,6 +883,7 @@ async def execute_tool(
                 for name, meta in result.outputs.items():
                     preview = meta.get("preview", "")
                     parts.append(f"Output '{name}': {str(preview)[:500]}")
+            await _sync_frontend()
             return "\n".join(parts)
 
         elif tool_name == "add_package":
@@ -866,6 +892,7 @@ async def execute_tool(
                 return "Error: package_spec is required"
             try:
                 outcome = await session.mutate_dependency(spec, action="add")
+                await _sync_frontend()
                 if outcome.result.success:
                     return f"Installed {spec} successfully."
                 return f"Failed to install {spec}: {outcome.result.error}"
@@ -884,6 +911,7 @@ async def run_agent_loop(
     session: NotebookSession,
     user_message: str,
     *,
+    notebook_id: str | None = None,
     max_iterations: int = 10,
     cancel_event: asyncio.Event | None = None,
     progress_callback: Callable[[str, str], Awaitable[None]] | None = None,
@@ -960,7 +988,7 @@ async def run_agent_loop(
 
             # Execute tool
             start = time.time()
-            tool_result = await execute_tool(session, tool_name, args)
+            tool_result = await execute_tool(session, tool_name, args, notebook_id=notebook_id)
             duration_ms = (time.time() - start) * 1000
 
             result.tool_calls.append(

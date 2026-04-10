@@ -1674,7 +1674,18 @@ function initializeWebSocket() {
         syncNotebookMountsFromBackend(state.mounts)
       }
       if (state.cells && Array.isArray(state.cells)) {
-        syncCellsFromBackend(state.cells)
+        const localIds = new Set(notebook.cells.map((c) => c.id))
+        const serverIds = new Set(state.cells.map((c: any) => c.id))
+        const cellsAdded = state.cells.some((c: any) => !localIds.has(c.id))
+        const cellsRemoved = notebook.cells.some((c) => !serverIds.has(c.id))
+
+        if (cellsAdded || cellsRemoved) {
+          // Full replace when cells were added or removed (e.g. by agent)
+          notebook.cells = state.cells.map(parseBackendCellPayload)
+          notebook.cells.sort((a, b) => a.order - b.order)
+        } else {
+          syncCellsFromBackend(state.cells)
+        }
       }
       if (state.dag) {
         applyBackendDag(state.dag)
