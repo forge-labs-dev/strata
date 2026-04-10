@@ -359,6 +359,7 @@ async function openNotebook(path: string): Promise<NotebookSessionPayload> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
+    timeoutMs: 120_000, // uv sync can take 30-60s on cold start
   })
   if (!resp.ok) {
     throw new Error(`Failed to open notebook: ${resp.status}`)
