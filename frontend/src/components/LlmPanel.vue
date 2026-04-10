@@ -28,9 +28,9 @@ const userMessage = ref('')
 const selectedCellId = ref<string | null>(null)
 const messagesEl = ref<HTMLDivElement | null>(null)
 
-// Check status when panel first opens
+// Check status every time panel opens (env vars may have changed)
 watch(showPanel, (open) => {
-  if (open && !llmAvailable.value) {
+  if (open) {
     void checkLlmStatus()
   }
 })
