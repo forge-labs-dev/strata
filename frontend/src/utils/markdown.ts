@@ -23,8 +23,9 @@ function sanitizeHref(href: string): string | null {
 
 function renderInlineMarkdown(raw: string): string {
   const codeTokens: string[] = []
+  // Use a token that survives HTML escaping (no special HTML chars)
   const withCodeTokens = raw.replace(/`([^`]+)`/g, (_, code: string) => {
-    const token = `\u0000STRATA_MD_CODE_${codeTokens.length}\u0000`
+    const token = `XSTRATA_CODE_${codeTokens.length}_ENDX`
     codeTokens.push(`<code>${escapeHtml(code)}</code>`)
     return token
   })
@@ -42,7 +43,7 @@ function renderInlineMarkdown(raw: string): string {
   html = html.replace(/(?<!_)_([^_]+)_(?!_)/g, '<em>$1</em>')
 
   return codeTokens.reduce(
-    (acc, tokenHtml, index) => acc.replaceAll(`\u0000STRATA_MD_CODE_${index}\u0000`, tokenHtml),
+    (acc, tokenHtml, index) => acc.replaceAll(`XSTRATA_CODE_${index}_ENDX`, tokenHtml),
     html,
   )
 }
