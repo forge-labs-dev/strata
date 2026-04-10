@@ -1449,6 +1449,16 @@ const proposedPlan = ref<ChangePlan | null>(null)
 const applyingPlan = ref(false)
 const applyError = ref<string | null>(null)
 
+// Agent state
+interface AgentProgressEvent {
+  event: string
+  detail: string
+  timestamp: number
+}
+const agentRunning = ref(false)
+const agentProgress = ref<AgentProgressEvent[]>([])
+const agentError = ref<string | null>(null)
+
 let wsInstance: ReturnType<typeof useWebSocket> | null = null
 
 function initializeWebSocket() {
@@ -1835,6 +1845,15 @@ function initializeWebSocket() {
       if (p.code === 'ENVIRONMENT_BUSY' && typeof p.error === 'string') {
         environmentError.value = p.error
       }
+    })
+
+    wsInstance.onMessage('agent_progress', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      agentProgress.value.push({
+        event: String(p.event || ''),
+        detail: String(p.detail || ''),
+        timestamp: Date.now(),
+      })
     })
 
     wsInstance.connect()
@@ -2723,6 +2742,51 @@ async function applyProposedChanges() {
   }
 }
 
+async function runAgentAction(message: string) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+
+  agentRunning.value = true
+  agentProgress.value = []
+  agentError.value = null
+
+  llmMessages.value.push({
+    role: 'user',
+    content: message,
+    action: 'chat',
+    timestamp: Date.now(),
+  })
+
+  try {
+    const result = await strata.agentRun(sid, message)
+    // Reload notebook state from agent result
+    if (result.notebook) {
+      loadNotebookStateFromBackend(result.notebook)
+    }
+    llmMessages.value.push({
+      role: 'assistant',
+      content: result.content || 'Agent completed.',
+      model: result.model,
+      tokens: { input: result.tokens?.input || 0, output: result.tokens?.output || 0 },
+      timestamp: Date.now(),
+    })
+    if (result.error) {
+      agentError.value = result.error
+    }
+  } catch (err: any) {
+    agentError.value = err.message || 'Agent failed'
+  } finally {
+    agentRunning.value = false
+  }
+}
+
+function cancelAgent() {
+  if (wsInstance && wsInstance.connected()) {
+    wsInstance.send('agent_cancel', {})
+  }
+}
+
 async function insertLlmCodeAsCell(code: string, afterCellId?: string) {
   await addCell(afterCellId)
   const sorted = orderedCells.value
@@ -2872,5 +2936,11 @@ export function useNotebook() {
     applyError,
     discardPlan,
     applyProposedChanges,
+    // Agent
+    agentRunning,
+    agentProgress,
+    agentError,
+    runAgentAction,
+    cancelAgent,
   }
 }

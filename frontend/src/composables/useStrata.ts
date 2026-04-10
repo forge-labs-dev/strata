@@ -966,6 +966,19 @@ async function applyLlmChanges(
   return resp.json()
 }
 
+async function agentRun(notebookId: string, message: string): Promise<any> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/agent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+    timeoutMs: 300_000, // Agent can take several minutes
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Agent run failed')
+  }
+  return resp.json()
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -1017,5 +1030,6 @@ export function useStrata() {
     getLlmStatus,
     llmComplete,
     applyLlmChanges,
+    agentRun,
   }
 }

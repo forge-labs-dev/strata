@@ -16,6 +16,11 @@ const {
   clearLlmHistory,
   insertLlmCodeAsCell,
   insertLlmCodeAsCells,
+  agentRunning,
+  agentProgress,
+  agentError,
+  runAgentAction,
+  cancelAgent,
 } = useNotebook()
 
 const showPanel = ref(false)
@@ -64,6 +69,13 @@ function extractCodeBlocks(content: string): string[] {
 function handleInsert(code: string) {
   const lastCell = orderedCells.value.at(-1)
   void insertLlmCodeAsCell(code, lastCell?.id)
+}
+
+async function runAgent() {
+  const msg = userMessage.value.trim()
+  if (!msg) return
+  userMessage.value = ''
+  await runAgentAction(msg)
 }
 
 function handleInsertAll(codes: string[]) {
@@ -159,12 +171,48 @@ const totalTokens = computed(() => {
           <button :disabled="llmLoading || !connected" @click="send('describe')">Describe</button>
           <button
             class="plan-btn"
-            :disabled="llmLoading || !connected || !userMessage.trim()"
+            :disabled="llmLoading || agentRunning || !connected || !userMessage.trim()"
             title="Type what you want to build, then click Plan"
             @click="send('plan')"
           >
             Plan
           </button>
+          <button
+            class="agent-btn"
+            :disabled="llmLoading || agentRunning || !connected || !userMessage.trim()"
+            title="Agent mode: creates cells, runs them, fixes errors automatically"
+            @click="runAgent"
+          >
+            Agent
+          </button>
+        </div>
+
+        <!-- Agent progress -->
+        <div v-if="agentRunning || agentProgress.length > 0" class="agent-progress">
+          <div class="agent-progress-header">
+            <span class="agent-label">Agent</span>
+            <button v-if="agentRunning" class="agent-cancel-btn" @click="cancelAgent">
+              Cancel
+            </button>
+            <span v-else-if="agentError" class="agent-status error">failed</span>
+            <span v-else class="agent-status done">done</span>
+          </div>
+          <div class="agent-log">
+            <div
+              v-for="(ev, idx) in agentProgress"
+              :key="idx"
+              class="agent-event"
+              :class="ev.event"
+            >
+              <span class="event-type">{{ ev.event }}</span>
+              <span class="event-detail">{{ ev.detail }}</span>
+            </div>
+            <div v-if="agentRunning" class="agent-event thinking">
+              <span class="event-type">working</span>
+              <span class="event-detail">...</span>
+            </div>
+          </div>
+          <div v-if="agentError" class="agent-error">{{ agentError }}</div>
         </div>
 
         <!-- Input -->
@@ -418,6 +466,16 @@ const totalTokens = computed(() => {
   background: #89b4fa50;
 }
 
+.llm-actions .agent-btn {
+  background: #a6e3a130;
+  color: #a6e3a1;
+  border: 1px solid #a6e3a140;
+}
+
+.llm-actions .agent-btn:hover:not(:disabled) {
+  background: #a6e3a150;
+}
+
 .llm-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
@@ -505,5 +563,106 @@ const totalTokens = computed(() => {
 .clear-btn:disabled {
   opacity: 0.3;
   cursor: not-allowed;
+}
+.agent-progress {
+  border-top: 1px solid #2a2a3c;
+  padding: 8px;
+}
+
+.agent-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.agent-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #a6e3a1;
+  letter-spacing: 0.06em;
+}
+
+.agent-cancel-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  background: #f38ba830;
+  border: 1px solid #f38ba850;
+  border-radius: 4px;
+  color: #f38ba8;
+  cursor: pointer;
+}
+
+.agent-cancel-btn:hover {
+  background: #f38ba850;
+}
+
+.agent-status {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.agent-status.done {
+  color: #a6e3a1;
+}
+
+.agent-status.error {
+  color: #f38ba8;
+}
+
+.agent-log {
+  max-height: 150px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-event {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.event-type {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: #6c7086;
+  min-width: 60px;
+}
+
+.agent-event.tool_call .event-type {
+  color: #89b4fa;
+}
+
+.agent-event.tool_result .event-type {
+  color: #a6e3a1;
+}
+
+.agent-event.error .event-type {
+  color: #f38ba8;
+}
+
+.agent-event.thinking .event-type {
+  color: #f9e2af;
+}
+
+.event-detail {
+  color: #a6adc8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-error {
+  margin-top: 6px;
+  padding: 6px;
+  color: #f38ba8;
+  font-size: 11px;
+  background: #45252530;
+  border-radius: 4px;
 }
 </style>

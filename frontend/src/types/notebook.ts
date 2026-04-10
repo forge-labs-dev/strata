@@ -466,6 +466,7 @@ export type WsClientMessageType =
   | 'profiling_request' // Request profiling summary (v1.1)
   | 'dependency_add' // Add a package dependency
   | 'dependency_remove' // Remove a package dependency
+  | 'agent_cancel' // Cancel a running agent loop
 
 /** WebSocket message types: server → client */
 export type WsServerMessageType =
@@ -487,6 +488,7 @@ export type WsServerMessageType =
   | 'environment_job_progress' // Background env job emitted logs or phase changes
   | 'environment_job_finished' // Background env job completed or failed
   | 'error' // Protocol-level error (auth, not found, etc.)
+  | 'agent_progress' // Agent loop progress event
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType
 

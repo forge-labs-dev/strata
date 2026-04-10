@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -1995,3 +1996,119 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
     data["applied"] = applied
     data["errors"] = errors
     return data
+
+
+# ============================================================================
+# LLM Agent
+# ============================================================================
+
+
+class AgentRequest(BaseModel):
+    """Request to start an agent loop."""
+
+    message: str = Field(..., max_length=10_000, description="User instruction")
+
+
+# Per-notebook agent cancellation events
+_agent_cancel_events: dict[str, asyncio.Event] = {}
+
+
+@router.post("/{notebook_id}/ai/agent")
+async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
+    """Run an LLM agent loop with tool use and observe-retry.
+
+    Progress is streamed via WebSocket ``agent_progress`` messages.
+    Only one agent can run per notebook at a time.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    from strata.notebook.llm import run_agent_loop
+
+    config = _get_llm_config(session)
+    if config is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "LLM not configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY."
+            ),
+        )
+
+    # Only one agent per notebook
+    if notebook_id in _agent_cancel_events:
+        raise HTTPException(
+            status_code=409,
+            detail="An agent is already running for this notebook.",
+        )
+
+    cancel_event = asyncio.Event()
+    _agent_cancel_events[notebook_id] = cancel_event
+
+    async def _progress(event: str, detail: str) -> None:
+        from strata.notebook.ws import _broadcast_message
+
+        try:
+            await _broadcast_message(
+                notebook_id,
+                {
+                    "type": "agent_progress",
+                    "seq": 0,
+                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    "payload": {"event": event, "detail": detail},
+                },
+            )
+        except Exception:
+            pass
+
+    try:
+        result = await run_agent_loop(
+            config,
+            session,
+            req.message,
+            max_iterations=10,
+            cancel_event=cancel_event,
+            progress_callback=_progress,
+        )
+
+        return {
+            "content": result.content,
+            "model": result.model,
+            "tokens": {
+                "input": result.total_input_tokens,
+                "output": result.total_output_tokens,
+            },
+            "iterations": result.iterations,
+            "tool_calls": [
+                {
+                    "tool": tc.tool_name,
+                    "args": tc.arguments,
+                    "result": tc.result,
+                    "duration_ms": int(tc.duration_ms),
+                }
+                for tc in result.tool_calls
+            ],
+            "cancelled": result.cancelled,
+            "error": result.error,
+            "notebook": session.serialize_notebook_state(),
+        }
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            raise HTTPException(status_code=429, detail="LLM rate limited")
+        raise HTTPException(status_code=502, detail=f"LLM error: {e.response.status_code}")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="LLM timed out")
+    except Exception:
+        logger.exception("Agent loop failed")
+        raise HTTPException(status_code=502, detail="Agent loop failed")
+    finally:
+        _agent_cancel_events.pop(notebook_id, None)
+
+
+def cancel_agent(notebook_id: str) -> bool:
+    """Cancel a running agent loop. Called from WebSocket handler."""
+    event = _agent_cancel_events.get(notebook_id)
+    if event is not None:
+        event.set()
+        return True
+    return False

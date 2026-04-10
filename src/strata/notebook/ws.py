@@ -476,6 +476,10 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                 )
             elif msg_type == "cell_cancel":
                 await _handle_cell_cancel(websocket, session, payload, execution_state, notebook_id)
+            elif msg_type == "agent_cancel":
+                from strata.notebook.routes import cancel_agent
+
+                cancel_agent(notebook_id)
             elif msg_type == "cell_source_update":
                 await _handle_cell_source_update(
                     websocket, session, payload, execution_state, notebook_id

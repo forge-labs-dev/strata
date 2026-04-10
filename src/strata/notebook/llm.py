@@ -7,9 +7,14 @@ provider that implements the ``/v1/chat/completions`` endpoint.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
-from dataclasses import dataclass
+import time
+import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
@@ -533,10 +538,474 @@ def parse_change_plan(content: str) -> ChangePlan | None:
 
 def _try_parse_json(text: str) -> dict | None:
     """Attempt to parse JSON, returning None on failure."""
-    import json
-
     try:
         result = json.loads(text)
         return result if isinstance(result, dict) else None
     except (json.JSONDecodeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Agent loop — tool-use with observe-and-retry
+# ---------------------------------------------------------------------------
+
+AGENT_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_notebook_state",
+            "description": (
+                "Get current notebook state: all cells with source code, "
+                "defined variables, execution status, and dependency graph."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_cell",
+            "description": (
+                "Create a new Python or prompt cell. Returns the cell ID "
+                "and the variables it defines."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {
+                        "type": "string",
+                        "description": "Source code for the cell",
+                    },
+                    "language": {
+                        "type": "string",
+                        "enum": ["python", "prompt"],
+                        "default": "python",
+                    },
+                    "after_variable": {
+                        "type": "string",
+                        "description": (
+                            "Insert after the cell that defines this variable. "
+                            "Omit to append at end."
+                        ),
+                    },
+                },
+                "required": ["source"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_cell",
+            "description": (
+                "Replace the source code of an existing cell, identified "
+                "by the variable it defines."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "variable_name": {
+                        "type": "string",
+                        "description": "Variable defined by the target cell",
+                    },
+                    "new_source": {
+                        "type": "string",
+                        "description": "New source code",
+                    },
+                },
+                "required": ["variable_name", "new_source"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_cell",
+            "description": ("Delete an existing cell, identified by the variable it defines."),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "variable_name": {
+                        "type": "string",
+                        "description": "Variable defined by the target cell",
+                    },
+                },
+                "required": ["variable_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_cell",
+            "description": (
+                "Execute a cell and return its output, stdout, stderr, "
+                "and any errors. Automatically cascades upstream cells."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "variable_name": {
+                        "type": "string",
+                        "description": "Variable defined by the target cell",
+                    },
+                },
+                "required": ["variable_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_package",
+            "description": "Install a Python package into the notebook environment.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "package_spec": {
+                        "type": "string",
+                        "description": "Package spec (e.g. 'pandas>=2.0')",
+                    },
+                },
+                "required": ["package_spec"],
+            },
+        },
+    },
+]
+
+_SYSTEM_AGENT = """\
+You are an expert Python notebook assistant with access to tools. \
+You can create cells, edit cells, delete cells, run cells, and install packages.
+
+RULES:
+- Reference cells by the VARIABLE NAME they define, not by ID.
+- After creating or editing a cell, RUN IT to verify it works.
+- If a cell errors, read the error, fix the code, and retry.
+- If a ModuleNotFoundError occurs, use add_package to install it, then retry.
+- Keep cells focused — one logical step per cell.
+- When done, respond with a brief summary of what you did.
+
+Current notebook state:
+
+{context}"""
+
+
+@dataclass
+class AgentToolCall:
+    """Record of one tool call in the agent loop."""
+
+    tool_name: str
+    arguments: dict[str, Any]
+    result: str
+    duration_ms: float
+
+
+@dataclass
+class AgentLoopResult:
+    """Final result of an agent loop run."""
+
+    content: str
+    model: str
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    iterations: int = 0
+    tool_calls: list[AgentToolCall] = field(default_factory=list)
+    cancelled: bool = False
+    error: str | None = None
+
+
+async def agent_chat_completion(
+    config: LlmConfig,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Chat completion with tool support. Returns raw choice + usage."""
+    body: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "max_tokens": config.max_output_tokens,
+    }
+    if tools:
+        body["tools"] = tools
+
+    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        resp = await client.post(
+            f"{config.base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    choice = data["choices"][0]
+    usage = data.get("usage", {})
+    return {
+        "message": choice["message"],
+        "finish_reason": choice.get("finish_reason"),
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "output_tokens": usage.get("completion_tokens", 0),
+        "model": data.get("model", config.model),
+    }
+
+
+def resolve_variable_to_cell_id(
+    session: NotebookSession,
+    variable_name: str,
+) -> str | None:
+    """Resolve a variable name to the cell ID that defines it."""
+    if session.dag and variable_name in session.dag.variable_producer:
+        return session.dag.variable_producer[variable_name]
+    for cell in session.notebook_state.cells:
+        if variable_name in cell.defines:
+            return cell.id
+    return None
+
+
+async def execute_tool(
+    session: NotebookSession,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> str:
+    """Execute a tool call and return a text result for the LLM."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        remove_cell_from_notebook,
+        write_cell,
+    )
+
+    try:
+        if tool_name == "get_notebook_state":
+            return build_notebook_context(session, max_tokens=4000)
+
+        elif tool_name == "create_cell":
+            source = arguments.get("source", "")
+            language = arguments.get("language", "python")
+            after_var = arguments.get("after_variable")
+            after_id = None
+            if after_var:
+                after_id = resolve_variable_to_cell_id(session, after_var)
+
+            cell_id = str(uuid.uuid4())[:8]
+            add_cell_to_notebook(session.path, cell_id, after_id, language=language)
+            if source:
+                write_cell(session.path, cell_id, source)
+            session.reload()
+
+            cell = next(
+                (c for c in session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            defines = cell.defines if cell else []
+            return f"Created cell {cell_id} (defines: {', '.join(defines) or 'none'})"
+
+        elif tool_name == "edit_cell":
+            var_name = arguments.get("variable_name", "")
+            new_source = arguments.get("new_source", "")
+            cell_id = resolve_variable_to_cell_id(session, var_name)
+            if not cell_id:
+                valid = [v for c in session.notebook_state.cells for v in c.defines]
+                return f"Error: No cell defines '{var_name}'. Valid variables: {valid}"
+            write_cell(session.path, cell_id, new_source)
+            session.reload()
+            return f"Edited cell {cell_id} (was defining: {var_name})"
+
+        elif tool_name == "delete_cell":
+            var_name = arguments.get("variable_name", "")
+            cell_id = resolve_variable_to_cell_id(session, var_name)
+            if not cell_id:
+                valid = [v for c in session.notebook_state.cells for v in c.defines]
+                return f"Error: No cell defines '{var_name}'. Valid variables: {valid}"
+            remove_cell_from_notebook(session.path, cell_id)
+            session.reload()
+            return f"Deleted cell {cell_id} (defined: {var_name})"
+
+        elif tool_name == "run_cell":
+            var_name = arguments.get("variable_name", "")
+            cell_id = resolve_variable_to_cell_id(session, var_name)
+            if not cell_id:
+                valid = [v for c in session.notebook_state.cells for v in c.defines]
+                return f"Error: No cell defines '{var_name}'. Valid variables: {valid}"
+            cell = next(
+                (c for c in session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            if not cell:
+                return f"Error: Cell {cell_id} not found in session state"
+
+            executor = CellExecutor(session, session.warm_pool)
+            result = await executor.execute_cell(cell_id, cell.source)
+
+            parts = []
+            if result.success:
+                parts.append("Execution succeeded.")
+                if result.cache_hit:
+                    parts.append("(cache hit)")
+            else:
+                parts.append("Execution FAILED.")
+            if result.error:
+                parts.append(f"Error: {result.error}")
+            if result.stdout:
+                stdout = result.stdout[:2000]
+                parts.append(f"Stdout:\n{stdout}")
+            if result.stderr:
+                stderr = result.stderr[:1000]
+                parts.append(f"Stderr:\n{stderr}")
+            if result.outputs:
+                for name, meta in result.outputs.items():
+                    preview = meta.get("preview", "")
+                    parts.append(f"Output '{name}': {str(preview)[:500]}")
+            return "\n".join(parts)
+
+        elif tool_name == "add_package":
+            spec = arguments.get("package_spec", "")
+            if not spec:
+                return "Error: package_spec is required"
+            try:
+                outcome = await session.mutate_dependency(spec, action="add")
+                if outcome.result.success:
+                    return f"Installed {spec} successfully."
+                return f"Failed to install {spec}: {outcome.result.error}"
+            except Exception as e:
+                return f"Error installing {spec}: {e}"
+
+        else:
+            return f"Error: Unknown tool '{tool_name}'"
+
+    except Exception as e:
+        return f"Error in {tool_name}: {type(e).__name__}: {e}"
+
+
+async def run_agent_loop(
+    config: LlmConfig,
+    session: NotebookSession,
+    user_message: str,
+    *,
+    max_iterations: int = 10,
+    cancel_event: asyncio.Event | None = None,
+    progress_callback: Callable[[str, str], Awaitable[None]] | None = None,
+) -> AgentLoopResult:
+    """Run an agent loop with tool use and observe-retry.
+
+    The LLM calls tools, observes results, and retries until it
+    produces a text response or hits the iteration limit.
+    """
+    context = build_notebook_context(session, max_tokens=4000)
+    system = _SYSTEM_AGENT.format(context=context)
+
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_message},
+    ]
+
+    result = AgentLoopResult(content="", model=config.model)
+
+    if progress_callback:
+        await progress_callback("started", f"Agent started: {user_message[:100]}")
+
+    for iteration in range(max_iterations):
+        # Check cancellation
+        if cancel_event and cancel_event.is_set():
+            result.cancelled = True
+            result.content = "Agent cancelled by user."
+            if progress_callback:
+                await progress_callback("cancelled", "Agent cancelled")
+            return result
+
+        result.iterations = iteration + 1
+
+        if progress_callback:
+            await progress_callback("iteration", f"Iteration {iteration + 1}/{max_iterations}")
+
+        # Call LLM
+        try:
+            response = await agent_chat_completion(config, messages, tools=AGENT_TOOLS)
+        except Exception as e:
+            result.error = f"LLM call failed: {e}"
+            if progress_callback:
+                await progress_callback("error", result.error)
+            return result
+
+        result.total_input_tokens += response["input_tokens"]
+        result.total_output_tokens += response["output_tokens"]
+        result.model = response["model"]
+
+        message = response["message"]
+        tool_calls = message.get("tool_calls")
+
+        # If no tool calls, the LLM is done — return text
+        if not tool_calls:
+            result.content = message.get("content", "") or ""
+            if progress_callback:
+                await progress_callback("done", result.content[:200])
+            return result
+
+        # Process tool calls
+        messages.append(message)
+
+        for tc in tool_calls:
+            fn = tc["function"]
+            tool_name = fn["name"]
+            try:
+                args = json.loads(fn["arguments"])
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+            if progress_callback:
+                args_summary = ", ".join(f"{k}={str(v)[:50]}" for k, v in args.items())
+                await progress_callback("tool_call", f"{tool_name}({args_summary})")
+
+            # Execute tool
+            start = time.time()
+            tool_result = await execute_tool(session, tool_name, args)
+            duration_ms = (time.time() - start) * 1000
+
+            result.tool_calls.append(
+                AgentToolCall(
+                    tool_name=tool_name,
+                    arguments=args,
+                    result=tool_result[:500],
+                    duration_ms=duration_ms,
+                )
+            )
+
+            if progress_callback:
+                await progress_callback(
+                    "tool_result",
+                    f"{tool_name} → {tool_result[:200]}",
+                )
+
+            # Add tool result to messages
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_result,
+                }
+            )
+
+    # Hit iteration limit — force a final response
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                "You have reached the maximum number of tool calls. "
+                "Please respond with a summary of what you accomplished."
+            ),
+        }
+    )
+    try:
+        final = await agent_chat_completion(config, messages, tools=None)
+        result.total_input_tokens += final["input_tokens"]
+        result.total_output_tokens += final["output_tokens"]
+        result.content = final["message"].get("content", "") or ""
+    except Exception as e:
+        result.error = f"Final LLM call failed: {e}"
+
+    if progress_callback:
+        await progress_callback("done", result.content[:200])
+
+    return result
