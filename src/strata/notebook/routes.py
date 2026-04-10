@@ -599,6 +599,14 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
                     ),
                 )
 
+        # Check if a notebook already exists at this path
+        expected_dir = parent_path / req.name.lower().replace(" ", "_")
+        if (expected_dir / "notebook.toml").exists():
+            raise HTTPException(
+                status_code=409,
+                detail=f"A notebook already exists at {expected_dir}. Use Open to open it.",
+            )
+
         with timing.phase("create_notebook"):
             notebook_dir = create_notebook(
                 parent_path,
