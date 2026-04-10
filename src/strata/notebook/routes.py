@@ -1947,14 +1947,14 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                 package = change.get("package", "")
                 if package:
                     try:
-                        outcome = await session.mutate_dependency(
-                            package, action="add"
+                        outcome = await session.mutate_dependency(package, action="add")
+                        applied.append(
+                            {
+                                "type": "add_package",
+                                "package": package,
+                                "success": outcome.result.success,
+                            }
                         )
-                        applied.append({
-                            "type": "add_package",
-                            "package": package,
-                            "success": outcome.result.success,
-                        })
                     except Exception as e:
                         errors.append({"type": "add_package", "error": str(e)})
 
@@ -1968,10 +1968,12 @@ async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> 
                     applied.append({"type": "set_env", "key": key})
 
             else:
-                errors.append({
-                    "type": change_type,
-                    "error": f"Unsupported change type: {change_type}",
-                })
+                errors.append(
+                    {
+                        "type": change_type,
+                        "error": f"Unsupported change type: {change_type}",
+                    }
+                )
 
         except Exception as e:
             errors.append({"type": change_type, "error": str(e)})
