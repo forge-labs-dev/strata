@@ -106,8 +106,8 @@ async def execute_prompt_cell(
                 display_text = str(preview) if not isinstance(preview, str) else preview
                 display_output = {
                     "content_type": "text/markdown" if "\n" in display_text else "json/object",
-                    "scalar": display_text,
-                    "markdownText": display_text if "\n" in display_text else None,
+                    "preview": display_text,
+                    "markdown_text": display_text if "\n" in display_text else None,
                 }
 
                 return {
@@ -235,7 +235,7 @@ async def execute_prompt_cell(
     display_output = {
         "content_type": "text/markdown" if "\n" in display_text else "json/object",
         "scalar": display_text,
-        "markdownText": display_text if "\n" in display_text else None,
+        "markdown_text": display_text if "\n" in display_text else None,
     }
 
     return {
