@@ -332,13 +332,13 @@ def _parse_output(blob: bytes, content_type: str) -> Any:
 def _preview(value: Any) -> Any:
     """Create a JSON-safe preview of a value."""
     if isinstance(value, str):
-        return value[:500] if len(value) > 500 else value
+        return value[:4000] if len(value) > 4000 else value
     if isinstance(value, (int, float, bool, type(None))):
         return value
     if isinstance(value, (dict, list)):
         text = json.dumps(value, indent=2, default=str)
         return text[:500] if len(text) > 500 else text
-    return str(value)[:500]
+    return str(value)[:4000]
 
 
 def _error_result(error: str, start_time: float) -> dict[str, Any]:

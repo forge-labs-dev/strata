@@ -22,16 +22,12 @@ function sanitizeHref(href: string): string | null {
 }
 
 function renderInlineMarkdown(raw: string): string {
-  const codeTokens: string[] = []
-  // Use a token that survives HTML escaping (no special HTML chars)
-  const withCodeTokens = raw.replace(/`([^`]+)`/g, (_, code: string) => {
-    const token = `XSTRATA_CODE_${codeTokens.length}_ENDX`
-    codeTokens.push(`<code>${escapeHtml(code)}</code>`)
-    return token
-  })
-  const escaped = escapeHtml(withCodeTokens)
+  // Process inline code: escape HTML first, then replace backtick patterns
+  const escaped = escapeHtml(raw)
 
-  let html = escaped.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label: string, href: string) => {
+  let html = escaped.replace(/`([^`]+)`/g, (_, code: string) => `<code>${code}</code>`)
+
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label: string, href: string) => {
     const safeHref = sanitizeHref(href)
     if (!safeHref) return label
     return `<a href="${escapeHtml(safeHref)}" target="_blank" rel="noreferrer noopener">${label}</a>`
@@ -42,10 +38,7 @@ function renderInlineMarkdown(raw: string): string {
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
   html = html.replace(/(?<!_)_([^_]+)_(?!_)/g, '<em>$1</em>')
 
-  return codeTokens.reduce(
-    (acc, tokenHtml, index) => acc.replaceAll(`XSTRATA_CODE_${index}_ENDX`, tokenHtml),
-    html,
-  )
+  return html
 }
 
 function isTableDivider(line: string): boolean {
