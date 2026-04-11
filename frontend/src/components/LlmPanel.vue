@@ -46,13 +46,18 @@ watch(
   },
 )
 
-async function send(action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan' = 'generate') {
+async function chat() {
   const msg = userMessage.value.trim()
-  if (!msg && (action === 'generate' || action === 'plan')) return
-  const finalMessage =
-    msg || (action === 'explain' ? 'Explain this cell' : 'Describe what this cell does')
+  if (!msg) return
   userMessage.value = ''
-  await llmCompleteAction(action, finalMessage, selectedCellId.value ?? undefined)
+  await llmCompleteAction('chat', msg, selectedCellId.value ?? undefined)
+}
+
+async function agent() {
+  const msg = userMessage.value.trim()
+  if (!msg) return
+  userMessage.value = ''
+  await runAgentAction(msg)
 }
 
 function extractCodeBlocks(content: string): string[] {
@@ -71,17 +76,12 @@ function handleInsert(code: string) {
   void insertLlmCodeAsCell(code, lastCell?.id)
 }
 
-async function runAgent() {
-  const msg = userMessage.value.trim()
-  if (!msg) return
-  userMessage.value = ''
-  await runAgentAction(msg)
-}
-
 function handleInsertAll(codes: string[]) {
   const lastCell = orderedCells.value.at(-1)
   void insertLlmCodeAsCells(codes, lastCell?.id)
 }
+
+const isBusy = computed(() => llmLoading.value || agentRunning.value)
 
 const totalTokens = computed(() => {
   let input = 0
@@ -157,36 +157,6 @@ const totalTokens = computed(() => {
         <!-- Error -->
         <div v-if="llmError" class="llm-error">{{ llmError }}</div>
 
-        <!-- Cell selector -->
-        <select v-model="selectedCellId" class="llm-cell-select">
-          <option :value="null">All cells (notebook context)</option>
-          <option v-for="cell in orderedCells" :key="cell.id" :value="cell.id">
-            {{ cell.defines.length ? cell.defines.join(', ') : `Cell ${cell.id.slice(0, 6)}` }}
-          </option>
-        </select>
-
-        <!-- Quick actions -->
-        <div class="llm-actions">
-          <button :disabled="llmLoading || !connected" @click="send('explain')">Explain</button>
-          <button :disabled="llmLoading || !connected" @click="send('describe')">Describe</button>
-          <button
-            class="plan-btn"
-            :disabled="llmLoading || agentRunning || !connected || !userMessage.trim()"
-            title="Type what you want to build, then click Plan"
-            @click="send('plan')"
-          >
-            Plan
-          </button>
-          <button
-            class="agent-btn"
-            :disabled="llmLoading || agentRunning || !connected || !userMessage.trim()"
-            title="Agent mode: creates cells, runs them, fixes errors automatically"
-            @click="runAgent"
-          >
-            Agent
-          </button>
-        </div>
-
         <!-- Agent progress -->
         <div v-if="agentRunning || agentProgress.length > 0" class="agent-progress">
           <div class="agent-progress-header">
@@ -215,22 +185,42 @@ const totalTokens = computed(() => {
           <div v-if="agentError" class="agent-error">{{ agentError }}</div>
         </div>
 
-        <!-- Input -->
+        <!-- Cell context selector -->
+        <select v-model="selectedCellId" class="llm-cell-select">
+          <option :value="null">Entire notebook</option>
+          <option v-for="cell in orderedCells" :key="cell.id" :value="cell.id">
+            {{ cell.defines.length ? cell.defines.join(', ') : `Cell ${cell.id.slice(0, 6)}` }}
+          </option>
+        </select>
+
+        <!-- Input with two actions -->
         <div class="llm-input">
           <textarea
             v-model="userMessage"
-            placeholder="Describe what you want to build..."
-            :disabled="llmLoading || !connected"
+            placeholder="Ask a question or describe what to build..."
+            :disabled="isBusy || !connected"
             rows="2"
-            @keydown.enter.exact.prevent="send('generate')"
+            @keydown.enter.exact.prevent="chat"
+            @keydown.shift.enter.exact.prevent="agent"
           ></textarea>
-          <button
-            class="send-btn"
-            :disabled="!userMessage.trim() || llmLoading || !connected"
-            @click="send('generate')"
-          >
-            Send
-          </button>
+          <div class="input-actions">
+            <button
+              class="chat-btn"
+              title="Ask a question (Enter)"
+              :disabled="!userMessage.trim() || isBusy || !connected"
+              @click="chat"
+            >
+              Chat
+            </button>
+            <button
+              class="agent-btn"
+              title="Take action: create cells, run code, install packages (Shift+Enter)"
+              :disabled="!userMessage.trim() || isBusy || !connected"
+              @click="agent"
+            >
+              Agent
+            </button>
+          </div>
         </div>
 
         <!-- Footer -->
@@ -434,62 +424,22 @@ const totalTokens = computed(() => {
   cursor: pointer;
 }
 
-.llm-actions {
-  display: flex;
-  gap: 4px;
-  padding: 6px 8px;
-  border-top: 1px solid #2a2a3c;
-}
-
-.llm-actions button {
-  flex: 1;
-  padding: 4px 8px;
-  background: #313244;
-  color: #cdd6f4;
-  border: none;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.llm-actions button:hover:not(:disabled) {
-  background: #45475a;
-}
-
-.llm-actions .plan-btn {
-  background: #89b4fa30;
-  color: #89b4fa;
-  border: 1px solid #89b4fa40;
-}
-
-.llm-actions .plan-btn:hover:not(:disabled) {
-  background: #89b4fa50;
-}
-
-.llm-actions .agent-btn {
-  background: #a6e3a130;
-  color: #a6e3a1;
-  border: 1px solid #a6e3a140;
-}
-
-.llm-actions .agent-btn:hover:not(:disabled) {
-  background: #a6e3a150;
-}
-
-.llm-actions button:disabled {
+.llm-actions button:disabled,
+.input-actions button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
 .llm-input {
   display: flex;
+  flex-direction: column;
   gap: 6px;
   padding: 8px;
   border-top: 1px solid #2a2a3c;
 }
 
 .llm-input textarea {
-  flex: 1;
+  width: 100%;
   padding: 6px 8px;
   background: #313244;
   border: 1px solid #45475a;
@@ -505,25 +455,41 @@ const totalTokens = computed(() => {
   border-color: #89b4fa;
 }
 
-.send-btn {
+.input-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.chat-btn {
+  flex: 1;
   padding: 6px 12px;
-  background: #89b4fa;
-  color: #1e1e2e;
-  border: none;
+  background: #313244;
+  color: #cdd6f4;
+  border: 1px solid #45475a;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  align-self: flex-end;
 }
 
-.send-btn:hover:not(:disabled) {
-  background: #74c7ec;
+.chat-btn:hover:not(:disabled) {
+  background: #45475a;
 }
 
-.send-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.agent-btn {
+  flex: 1;
+  padding: 6px 12px;
+  background: #a6e3a120;
+  color: #a6e3a1;
+  border: 1px solid #a6e3a140;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-btn:hover:not(:disabled) {
+  background: #a6e3a140;
 }
 
 .llm-footer {
