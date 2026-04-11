@@ -18,11 +18,20 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-echo "[workers] starting df-cluster on port 9000..."
-uv run python -m strata.notebook.remote_executor --port 9000 --log-level warning &
+echo "[workers] starting df-cluster on port 9000 (with datafusion)..."
+# df-cluster needs DataFusion's Python bindings installed in its interpreter
+# so cells that `from datafusion import SessionContext` can actually run.
+# `uv run --with` installs the package into an ephemeral overlay for this
+# invocation only, matching how the cloud df-cluster image will ship with
+# datafusion pre-installed.
+uv run --with datafusion python -m strata.notebook.remote_executor \
+    --port 9000 --log-level warning &
 DF_PID=$!
 
 echo "[workers] starting gpu-fly on port 9001..."
+# gpu-fly will eventually run with torch + sentence-transformers pre-installed
+# (matching the cloud GPU worker image). For Day 1 placeholder cells it only
+# needs scikit-learn + numpy, which are already in the base venv.
 uv run python -m strata.notebook.remote_executor --port 9001 --log-level warning &
 GPU_PID=$!
 
