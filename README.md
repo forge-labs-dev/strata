@@ -19,48 +19,46 @@ Strata is currently in **alpha**. The repo, package, and runtime are shared,
 but the docs and release framing should be read as two separate surfaces with
 different maturity levels.
 
-**Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev) (small hosted preview)
+**Try it:** [strata-notebook.fly.dev](https://strata-notebook.fly.dev) (hosted preview, no account needed)
 
-## Docker Quick Start
+**Docs:** [forge-labs-dev.github.io/strata](https://forge-labs-dev.github.io/strata/)
 
-If you want to try Strata locally without setting up the Python and Rust
-toolchain first, start with Docker:
+## Quick Start
 
 ```bash
+# Docker (recommended)
 docker compose up -d --build
+# Then open http://localhost:8765
+
+# Or from source
+uv sync
+cd frontend && npm ci && npm run build && cd ..
+uv run strata-server
 ```
 
-Then open:
+## Notebook Features
 
-```text
-http://localhost:8765/#/
-```
-
-To stop it:
-
-```bash
-docker compose down
-```
-
-This path starts the local **personal-mode notebook** stack from
-[docker-compose.yml](docker-compose.yml).
+- **Content-addressed caching** — same code + same inputs = instant cache hit
+- **Automatic dependency tracking** — DAG built from variable analysis
+- **Cascade execution** — change upstream, downstream auto-invalidates
+- **Rich outputs** — DataFrames, matplotlib plots, markdown
+- **Environment management** — per-notebook Python venvs via uv
+- **AI assistant** — Chat mode for questions, Agent mode for autonomous notebook building
+- **Prompt cells** — LLM-powered cells with `{{ variable }}` injection
+- **Cell operations** — reorder, duplicate, fold, keyboard shortcuts
 
 ## Choose Your Path
 
-- **Strata Core**
-  Start with [docs/core-quickstart.md](docs/core-quickstart.md) if you want the
-  programmatic `materialize(...) -> artifact` API, artifact caching, lineage,
-  and executor integration.
-- **Strata Notebook**
-  Start with [docs/notebook-quickstart.md](docs/notebook-quickstart.md) if you
-  want the interactive notebook UI, notebook environments, and rich display
-  outputs.
-- **Service Mode / Shared Backend**
-  See [docs/service-mode-deployment.md](docs/service-mode-deployment.md) for the
-  advanced shared-backend deployment model.
-- **Hosted Personal Notebook Example**
-  See [docs/fly-notebook-smoke-checklist.md](docs/fly-notebook-smoke-checklist.md)
-  for the current Fly-hosted personal-mode preview path.
+- **Strata Notebook** — Start with the
+  [Notebook Quickstart](https://forge-labs-dev.github.io/strata/getting-started/notebook/)
+  for the interactive notebook UI.
+- **Strata Core** — Start with the
+  [Core Quickstart](https://forge-labs-dev.github.io/strata/getting-started/core/)
+  for the programmatic `materialize()` API.
+- **Deployment** — See
+  [Docker](https://forge-labs-dev.github.io/strata/deployment/docker/),
+  [Fly.io](https://forge-labs-dev.github.io/strata/deployment/fly/), or
+  [Codespaces](https://forge-labs-dev.github.io/strata/deployment/codespaces/).
 
 It provides a single primitive:
 
