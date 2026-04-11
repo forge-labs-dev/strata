@@ -1628,9 +1628,6 @@ class TestPromptCellExecution:
     @pytest.mark.asyncio
     async def test_prompt_cell_returns_error_when_llm_not_configured(self, tmp_path):
         """Prompt cells should return a clear error when no LLM provider is set."""
-        import os
-        from unittest.mock import patch
-
         from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
 
         notebook_dir = create_notebook(tmp_path, "prompt_test")
@@ -1641,10 +1638,8 @@ class TestPromptCellExecution:
         cell = next(c for c in session.notebook_state.cells if c.id == "p1")
         assert cell.language == "prompt"
 
-        # Ensure no API keys are set
-        with patch.dict(os.environ, {}, clear=True):
-            executor = CellExecutor(session)
-            result = await executor.execute_cell("p1", cell.source)
+        executor = CellExecutor(session)
+        result = await executor.execute_cell("p1", cell.source)
 
         assert result.success is False
         assert result.cell_id == "p1"
@@ -1654,7 +1649,6 @@ class TestPromptCellExecution:
     @pytest.mark.asyncio
     async def test_prompt_cell_calls_llm_and_stores_artifact(self, tmp_path):
         """Prompt cells should call the LLM and store the result as an artifact."""
-        import os
         from unittest.mock import AsyncMock, patch
 
         from strata.notebook.llm import LlmCompletionResult
@@ -1667,6 +1661,7 @@ class TestPromptCellExecution:
         write_cell(notebook_dir, "p1", "# @name answer\nWhat is {{ x }}?")
 
         session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        session.notebook_state.env["STRATA_AI_API_KEY"] = "sk-test"
 
         # Execute c1 first so x has an artifact
         executor = CellExecutor(session)
@@ -1681,13 +1676,10 @@ class TestPromptCellExecution:
             output_tokens=8,
         )
 
-        with (
-            patch.dict(os.environ, {"STRATA_AI_API_KEY": "sk-test"}, clear=True),
-            patch(
-                "strata.notebook.prompt_executor.chat_completion",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "strata.notebook.prompt_executor.chat_completion",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             result = await executor.execute_cell("p1", "# @name answer\nWhat is {{ x }}?")
 
@@ -1697,6 +1689,81 @@ class TestPromptCellExecution:
         assert "42 is the answer" in str(result.outputs["answer"].get("preview", ""))
         assert result.execution_method == "llm"
         assert result.artifact_uri is not None
+
+    @pytest.mark.asyncio
+    async def test_prompt_cell_cache_hit_reuses_artifact(self, tmp_path):
+        """Prompt cells should hit cache on identical reruns."""
+        from unittest.mock import AsyncMock, patch
+
+        from strata.notebook.llm import LlmCompletionResult
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "prompt_cache_test")
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(notebook_dir, "c1", "x = 42")
+        add_cell_to_notebook(notebook_dir, "p1", after_cell_id="c1", language="prompt")
+        write_cell(notebook_dir, "p1", "# @name answer\nWhat is {{ x }}?")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        session.notebook_state.env["STRATA_AI_API_KEY"] = "sk-test"
+        executor = CellExecutor(session)
+        assert (await executor.execute_cell("c1", "x = 42")).success
+
+        mock_result = LlmCompletionResult(
+            content="42 is the answer to everything.",
+            model="test-model",
+            input_tokens=10,
+            output_tokens=8,
+        )
+
+        with patch(
+            "strata.notebook.prompt_executor.chat_completion",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_chat:
+            first = await executor.execute_cell("p1", "# @name answer\nWhat is {{ x }}?")
+            second = await executor.execute_cell("p1", "# @name answer\nWhat is {{ x }}?")
+
+        assert first.success is True
+        assert first.cache_hit is False
+        assert second.success is True
+        assert second.cache_hit is True
+        assert second.artifact_uri is not None
+        assert mock_chat.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_prompt_cell_passes_temperature_to_llm(self, tmp_path):
+        """Prompt-cell @temperature should be sent to the provider call."""
+        import unittest.mock as mock
+
+        from strata.notebook.llm import LlmCompletionResult
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "prompt_temp_test")
+        add_cell_to_notebook(notebook_dir, "p1", language="prompt")
+        write_cell(notebook_dir, "p1", "# @temperature 0.7\nHello")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        session.notebook_state.env["STRATA_AI_API_KEY"] = "sk-test"
+        executor = CellExecutor(session)
+        captured: dict[str, object] = {}
+
+        async def _fake_chat_completion(config, messages, *, temperature=None):
+            captured["config"] = config
+            captured["messages"] = messages
+            captured["temperature"] = temperature
+            return LlmCompletionResult(
+                content="hello",
+                model="test-model",
+                input_tokens=3,
+                output_tokens=2,
+            )
+
+        with mock.patch("strata.notebook.prompt_executor.chat_completion", _fake_chat_completion):
+            result = await executor.execute_cell("p1", "# @temperature 0.7\nHello")
+
+        assert result.success is True
+        assert captured["temperature"] == 0.7
 
     @pytest.mark.asyncio
     async def test_prompt_cell_dag_connects_to_upstream(self, tmp_path):

@@ -182,6 +182,10 @@ class NotebookToml(BaseModel):
         default_factory=list,
         description="Notebook-level filesystem mounts",
     )
+    ai: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Notebook-level LLM configuration persisted under [ai]",
+    )
     # Preserved in TOML round-trip but not used at runtime
     artifacts: dict = Field(default_factory=dict)
     environment: dict = Field(default_factory=dict)

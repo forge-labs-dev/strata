@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
+
+import pytest
 
 from strata.notebook.llm import (
     build_messages,
     build_notebook_context,
     estimate_tokens,
+    execute_tool,
     infer_provider_name,
+    render_prompt_template,
     resolve_llm_config,
 )
 
@@ -206,6 +212,77 @@ class TestBuildMessages:
         # system (index 0) + 1 valid history turn + current user = 3
         assert len(messages) == 3
         assert messages[1]["content"] == "ok"
+
+
+class TestRenderPromptTemplate:
+    """Tests for safe prompt template rendering."""
+
+    def test_renders_attribute_access_without_eval(self):
+        variables = {"obj": SimpleNamespace(value=42)}
+
+        rendered = render_prompt_template("Value: {{ obj.value }}", variables)
+
+        assert rendered == "Value: 42"
+
+    def test_blocks_side_effecting_method_calls(self):
+        class _Mutating:
+            def __init__(self) -> None:
+                self.called = False
+
+            def mutate(self) -> str:
+                self.called = True
+                return "changed"
+
+        value = _Mutating()
+
+        rendered = render_prompt_template("Unsafe: {{ obj.mutate() }}", {"obj": value})
+
+        assert rendered == "Unsafe: {{ obj.mutate() }}"
+        assert value.called is False
+
+
+class TestExecuteTool:
+    """Tests for agent tool execution helpers."""
+
+    @staticmethod
+    def _make_fake_session() -> SimpleNamespace:
+        history: list[dict[str, object]] = []
+
+        async def submit_environment_job(*, action: str, package: str | None = None, **_kwargs):
+            history[:] = [
+                {
+                    "id": "job-123",
+                    "action": action,
+                    "package": package,
+                    "status": "completed",
+                    "error": None,
+                }
+            ]
+            return SimpleNamespace(id="job-123")
+
+        async def wait_for_environment_job() -> None:
+            return None
+
+        return SimpleNamespace(
+            submit_environment_job=submit_environment_job,
+            wait_for_environment_job=wait_for_environment_job,
+            serialize_environment_job_history=lambda: list(history),
+            mutate_dependency=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("mutate_dependency should not be called")
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_add_package_uses_environment_jobs(self):
+        session = cast(Any, self._make_fake_session())
+
+        result = await execute_tool(
+            session,
+            "add_package",
+            {"package_spec": "pandas"},
+        )
+
+        assert result == "Installed pandas successfully."
 
 
 class TestBuildNotebookContext:

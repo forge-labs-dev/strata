@@ -267,6 +267,7 @@ def test_write_notebook_toml():
             worker="gpu-default",
             timeout=9.5,
             env={"API_ROOT": "https://example.test"},
+            ai={"model": "gpt-4o", "base_url": "https://api.openai.com/v1"},
             mounts=[
                 MountSpec(name="raw_data", uri="s3://bucket/dataset", mode=MountMode.READ_ONLY),
             ],
@@ -321,6 +322,13 @@ def test_write_notebook_toml():
         assert len(notebook_state.cells[1].mounts) == 1
         assert notebook_state.cells[1].mounts[0].name == "raw_data"
 
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert data["ai"] == {
+            "model": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+        }
+
 
 def test_update_notebook_worker():
     """Test persisting notebook-level worker configuration."""
@@ -369,6 +377,26 @@ def test_update_notebook_timeout_and_env():
         notebook_state = parse_notebook(notebook_dir)
         assert notebook_state.timeout == 7.5
         assert notebook_state.env == {"TOKEN": "secret"}
+
+
+def test_update_notebook_env_preserves_ai_config():
+    """Notebook runtime edits should not strip [ai] configuration."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Notebook AI Runtime")
+
+        with open(notebook_dir / "notebook.toml", "a", encoding="utf-8") as f:
+            f.write('\n[ai]\nmodel = "gpt-4o"\nbase_url = "https://api.openai.com/v1"\n')
+
+        update_notebook_env(notebook_dir, {"TOKEN": "secret"})
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        assert data["env"] == {"TOKEN": "secret"}
+        assert data["ai"] == {
+            "model": "gpt-4o",
+            "base_url": "https://api.openai.com/v1",
+        }
 
 
 def test_update_cell_worker():

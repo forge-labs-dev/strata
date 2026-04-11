@@ -78,12 +78,13 @@ async def execute_prompt_cell(
     artifact_mgr = session.get_artifact_manager()
     notebook_id = session.notebook_state.id
     canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{output_name}"
+    var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
 
     if use_cache:
-        cached = artifact_mgr.find_cached(provenance_hash)
+        cached = artifact_mgr.find_cached(var_provenance)
         if cached is not None:
             canonical = artifact_mgr.artifact_store.get_latest_version(canonical_id)
-            if canonical is not None and canonical.provenance_hash == provenance_hash:
+            if canonical is not None and canonical.provenance_hash == var_provenance:
                 # Cache hit
                 duration_ms = (time.time() - start_time) * 1000
                 blob = artifact_mgr.load_artifact_data(canonical.id, canonical.version)
@@ -156,7 +157,7 @@ async def execute_prompt_cell(
             max_output_tokens=max_tokens,
             timeout_seconds=llm_config.timeout_seconds,
         )
-        result = await chat_completion(call_config, messages)
+        result = await chat_completion(call_config, messages, temperature=temperature)
     except Exception as e:
         return _error_result(f"LLM call failed: {e}", start_time)
 
@@ -182,8 +183,6 @@ async def execute_prompt_cell(
 
     try:
         from strata.artifact_store import TransformSpec
-
-        var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
 
         version = artifact_mgr.artifact_store.create_artifact(
             artifact_id=canonical_id,

@@ -60,6 +60,7 @@ def parse_notebook(directory: Path) -> NotebookState:
         workers=[WorkerSpec(**worker) for worker in toml_data.get("workers", [])],
         cells=[CellMeta(**cell_meta) for cell_meta in toml_data.get("cells", [])],
         mounts=[MountSpec(**m) for m in toml_data.get("mounts", [])],
+        ai=toml_data.get("ai", {}),
         artifacts=toml_data.get("artifacts", {}),
         environment=toml_data.get("environment", {}),
         cache=toml_data.get("cache", {}),

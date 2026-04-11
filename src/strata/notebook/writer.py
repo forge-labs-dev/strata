@@ -173,6 +173,7 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         **({"env": _serialize_env(toml.env)} if toml.env else {}),
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
+        **({"ai": toml.ai} if toml.ai else {}),
         "artifacts": toml.artifacts,
         "environment": toml.environment,
         "cache": toml.cache,

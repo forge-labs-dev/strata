@@ -7,6 +7,7 @@ provider that implements the ``/v1/chat/completions`` endpoint.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
@@ -175,8 +176,18 @@ def infer_provider_name(base_url: str) -> str:
 async def chat_completion(
     config: LlmConfig,
     messages: list[dict[str, str]],
+    *,
+    temperature: float | None = None,
 ) -> LlmCompletionResult:
     """Send a chat completion request via the OpenAI-compatible API."""
+    body: dict[str, Any] = {
+        "model": config.model,
+        "messages": messages,
+        "max_tokens": config.max_output_tokens,
+    }
+    if temperature is not None:
+        body["temperature"] = temperature
+
     async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
         resp = await client.post(
             f"{config.base_url.rstrip('/')}/chat/completions",
@@ -184,11 +195,7 @@ async def chat_completion(
                 "Authorization": f"Bearer {config.api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": config.model,
-                "messages": messages,
-                "max_tokens": config.max_output_tokens,
-            },
+            json=body,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -339,19 +346,69 @@ def render_prompt_template(
 
     def _replace(match: re.Match) -> str:
         expr = match.group(1).strip()
-        root_var = expr.split(".")[0].split("(")[0]
-        if root_var in variables:
-            value = variables[root_var]
-            # If the expression has attribute access, try to evaluate it
-            if expr != root_var:
-                try:
-                    value = eval(expr, {"__builtins__": {}}, variables)  # noqa: S307
-                except Exception:
-                    pass
+        try:
+            value = _resolve_prompt_expression(expr, variables)
+        except Exception:
+            return match.group(0)
+        else:
             return variable_to_text(value, max_tokens=max_tokens_per_var)
-        return match.group(0)  # Leave unreplaced if variable not found
 
     return re.sub(r"\{\{\s*([^}]+)\s*\}\}", _replace, template)
+
+
+def _resolve_prompt_expression(expr: str, variables: dict[str, Any]) -> Any:
+    """Resolve a prompt template expression without executing arbitrary code."""
+    parsed = ast.parse(expr, mode="eval")
+    return _evaluate_prompt_node(parsed.body, variables)
+
+
+def _evaluate_prompt_node(node: ast.AST, variables: dict[str, Any]) -> Any:
+    """Evaluate a restricted AST node for prompt templating."""
+    if isinstance(node, ast.Name):
+        if node.id not in variables:
+            raise KeyError(node.id)
+        return variables[node.id]
+
+    if isinstance(node, ast.Attribute):
+        value = _evaluate_prompt_node(node.value, variables)
+        if node.attr.startswith("_"):
+            raise ValueError("Private attributes are not allowed")
+        resolved = getattr(value, node.attr)
+        if callable(resolved):
+            raise ValueError("Callable attributes must be explicitly allowed")
+        return resolved
+
+    if isinstance(node, ast.Call):
+        if node.args or node.keywords:
+            raise ValueError("Prompt template calls do not accept arguments")
+        if not isinstance(node.func, ast.Attribute):
+            raise ValueError("Only attribute method calls are allowed")
+        obj = _evaluate_prompt_node(node.func.value, variables)
+        method_name = node.func.attr
+        if method_name.startswith("_"):
+            raise ValueError("Private methods are not allowed")
+        method = getattr(obj, method_name)
+        if not _is_safe_prompt_method(obj, method_name, method):
+            raise ValueError(f"Unsafe prompt method: {method_name}")
+        return method()
+
+    raise ValueError("Unsupported prompt expression")
+
+
+def _is_safe_prompt_method(obj: Any, method_name: str, method: Any) -> bool:
+    """Allow a very small set of known-safe zero-arg prompt helpers."""
+    if not callable(method):
+        return False
+
+    try:
+        import pandas as pd
+
+        if isinstance(obj, (pd.DataFrame, pd.Series)):
+            return method_name in {"describe", "head", "tail"}
+    except ImportError:
+        pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -794,11 +851,19 @@ async def execute_tool(
             if not spec:
                 return "Error: package_spec is required"
             try:
-                outcome = await session.mutate_dependency(spec, action="add")
+                job = await session.submit_environment_job(action="add", package=spec)
+                await session.wait_for_environment_job()
                 await _sync_frontend()
-                if outcome.result.success:
+                history = session.serialize_environment_job_history()
+                completed = next((entry for entry in history if entry.get("id") == job.id), None)
+                if completed and completed.get("status") == "completed":
                     return f"Installed {spec} successfully."
-                return f"Failed to install {spec}: {outcome.result.error}"
+                error = (
+                    completed.get("error")
+                    if completed is not None
+                    else "Environment job did not finish cleanly"
+                )
+                return f"Failed to install {spec}: {error}"
             except Exception as e:
                 return f"Error installing {spec}: {e}"
 
