@@ -627,6 +627,82 @@ def test_delete_notebook_endpoint_rejects_running_execution(monkeypatch):
         assert notebook_dir.exists()
 
 
+def test_delete_by_path_removes_directory_without_session():
+    """Path-based delete should work for a notebook that was never opened."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Forgotten Notebook")
+        assert notebook_dir.exists()
+
+        response = client.post(
+            "/v1/notebooks/delete-by-path",
+            json={"path": str(notebook_dir)},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deleted"] is True
+        assert not notebook_dir.exists()
+
+
+def test_delete_by_path_closes_open_session_before_removal():
+    """If a session happens to be open for the path, it should be closed first."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Open And Delete")
+        open_response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert open_response.status_code == 200
+        session_id = open_response.json()["session_id"]
+
+        response = client.post(
+            "/v1/notebooks/delete-by-path",
+            json={"path": str(notebook_dir)},
+        )
+
+        assert response.status_code == 200
+        assert not notebook_dir.exists()
+
+        from strata.notebook.routes import get_session_manager
+
+        assert get_session_manager().get_session(session_id) is None
+
+
+def test_delete_by_path_rejects_missing_notebook():
+    """Deleting a path that is not a notebook directory should 404."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bogus = Path(tmpdir) / "not-a-notebook"
+        bogus.mkdir()
+
+        response = client.post(
+            "/v1/notebooks/delete-by-path",
+            json={"path": str(bogus)},
+        )
+
+        assert response.status_code == 404
+        assert bogus.exists()
+
+
+def test_delete_by_path_rejects_service_mode(deployment_mode_state):
+    """Path-based delete should also be disabled in service mode."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Service Path Delete")
+        deployment_mode_state("service")
+
+        response = client.post(
+            "/v1/notebooks/delete-by-path",
+            json={"path": str(notebook_dir)},
+        )
+
+        assert response.status_code == 403
+        assert notebook_dir.exists()
+
+
 def test_get_notebook_runtime_config_endpoint(monkeypatch):
     """The runtime config endpoint should expose the server default notebook path."""
     monkeypatch.setattr(

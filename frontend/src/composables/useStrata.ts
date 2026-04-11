@@ -411,6 +411,18 @@ async function deleteNotebook(notebookId: string): Promise<NotebookDeleteRespons
   return readJson<NotebookDeleteResponse>(resp)
 }
 
+async function deleteNotebookByPath(path: string): Promise<{ deleted: boolean; path: string }> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/delete-by-path`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to delete notebook')
+  }
+  return readJson<{ deleted: boolean; path: string }>(resp)
+}
+
 async function getNotebookRuntimeConfig(): Promise<NotebookRuntimeConfigResponse> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/config`)
   if (!resp.ok) {
@@ -1082,6 +1094,7 @@ export function useStrata() {
     createNotebook,
     renameNotebook,
     deleteNotebook,
+    deleteNotebookByPath,
     getNotebookRuntimeConfig,
     updateCellSource,
     addCell,

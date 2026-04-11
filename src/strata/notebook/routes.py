@@ -701,6 +701,59 @@ async def delete_notebook(notebook_id: str) -> dict:
     }
 
 
+class DeleteNotebookByPathRequest(BaseModel):
+    """Request for path-based notebook deletion (no session required)."""
+
+    path: str = Field(..., description="Filesystem path of the notebook directory to delete")
+
+
+@router.post("/delete-by-path")
+async def delete_notebook_by_path(req: DeleteNotebookByPathRequest) -> dict:
+    """Delete a notebook directory identified by path.
+
+    Unlike ``DELETE /{notebook_id}`` this does not require the notebook to
+    be open in a session — it's for deleting notebooks from the home page
+    list. If a session happens to be open against the same directory it
+    is closed first so the subsequent ``rmtree`` is safe.
+    """
+    _require_personal_mode_notebook_delete()
+
+    notebook_path = _validate_notebook_path(req.path, "notebook path")
+    if not (notebook_path / "notebook.toml").is_file():
+        raise HTTPException(
+            status_code=404,
+            detail=f"No notebook found at {notebook_path}",
+        )
+
+    # If a session happens to be open for this path, close it first.
+    # _find_session_by_path takes care of path canonicalization.
+    existing = _session_manager._find_session_by_path(notebook_path)
+    if existing is not None:
+        if existing.has_active_environment_mutation():
+            _raise_environment_busy(
+                existing,
+                "Notebook deletion is blocked while an environment update is in progress.",
+            )
+        if existing._has_active_execution():
+            raise HTTPException(
+                status_code=409,
+                detail="Notebook deletion is blocked while notebook execution is running.",
+            )
+        _session_manager.close_session(existing.id)
+
+    try:
+        delete_notebook_directory(notebook_path.resolve())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception:
+        logger.exception("Failed to delete notebook by path %s", notebook_path)
+        raise HTTPException(status_code=500, detail="Failed to delete notebook")
+
+    return {"deleted": True, "path": str(notebook_path)}
+
+
 @router.get("/{notebook_id}/environment")
 async def get_environment_status(notebook_id: str) -> dict:
     """Get the live notebook environment status."""

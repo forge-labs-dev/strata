@@ -123,10 +123,33 @@ function dismissError() {
   failedRecentName.value = null
 }
 
-function removeRecent(path: string) {
+function forgetRecent(path: string) {
+  // Local-only: drop from recents list without touching the directory.
   remove(path)
   if (failedRecentPath.value === path) {
     dismissError()
+  }
+}
+
+async function deleteRecent(path: string, name: string) {
+  // Destructive: rm -rf the notebook directory on disk + drop from recents.
+  const confirmed = window.confirm(
+    `Delete notebook "${name}"?\n\nThis permanently removes the directory:\n${path}\n\nThis cannot be undone.`,
+  )
+  if (!confirmed) return
+
+  loading.value = true
+  dismissError()
+  try {
+    await strata.deleteNotebookByPath(path)
+    remove(path)
+    if (failedRecentPath.value === path) {
+      dismissError()
+    }
+  } catch (e: any) {
+    error.value = e?.message || 'Failed to delete notebook'
+  } finally {
+    loading.value = false
   }
 }
 
@@ -158,7 +181,7 @@ function formatTime(ts: number): string {
             type="button"
             class="btn-inline"
             data-testid="remove-failed-recent"
-            @click="removeRecent(failedRecentPath)"
+            @click="forgetRecent(failedRecentPath)"
           >
             Remove
             {{ failedRecentName ? `"${failedRecentName}"` : 'this notebook' }}
@@ -296,11 +319,12 @@ function formatTime(ts: number): string {
               <button
                 type="button"
                 class="recent-remove"
-                :data-testid="`recent-remove-${entry.name}`"
-                :aria-label="`Remove ${entry.name} from recents`"
-                @click.stop="removeRecent(entry.path)"
+                :data-testid="`recent-delete-${entry.name}`"
+                :aria-label="`Delete ${entry.name}`"
+                title="Delete notebook directory from disk"
+                @click.stop="deleteRecent(entry.path, entry.name)"
               >
-                Remove
+                Delete
               </button>
             </div>
           </div>
