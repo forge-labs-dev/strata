@@ -915,15 +915,28 @@ interface LlmStatusResponse {
   provider: string | null
 }
 
-interface LlmCompleteResponse {
+export interface LlmChatTurn {
+  role: 'user' | 'assistant'
   content: string
-  model: string
-  tokens: { input: number; output: number }
-  plan?: {
-    summary: string
-    changes: Record<string, unknown>[]
-  }
 }
+
+export interface LlmStreamDelta {
+  type: 'delta'
+  text: string
+}
+
+export interface LlmStreamDone {
+  type: 'done'
+  model: string | null
+  tokens: { input: number; output: number }
+}
+
+export interface LlmStreamError {
+  type: 'error'
+  message: string
+}
+
+export type LlmStreamEvent = LlmStreamDelta | LlmStreamDone | LlmStreamError
 
 async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/status`)
@@ -933,38 +946,113 @@ async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
   return readJson<LlmStatusResponse>(resp)
 }
 
-async function llmComplete(
+/**
+ * Stream a chat completion from /ai/stream via SSE.
+ *
+ * Yields incremental deltas, a final `done` event, or a single `error`
+ * event. The caller is responsible for appending deltas to the assistant
+ * message in the UI.
+ */
+async function* llmChatStream(
   notebookId: string,
-  action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan',
   message: string,
+  history: LlmChatTurn[],
   cellId?: string,
-): Promise<LlmCompleteResponse> {
-  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/complete`, {
+  signal?: AbortSignal,
+): AsyncGenerator<LlmStreamEvent, void, void> {
+  const resp = await fetch(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/stream`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, message, cell_id: cellId ?? null }),
-    timeoutMs: 90_000,
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({
+      message,
+      history,
+      cell_id: cellId ?? null,
+    }),
+    signal,
   })
+
   if (!resp.ok) {
-    await throwApiError(resp, 'LLM completion failed')
+    let detail = `LLM stream failed (${resp.status})`
+    try {
+      const body = await resp.json()
+      if (body?.detail) detail = body.detail
+    } catch {
+      // ignore
+    }
+    yield { type: 'error', message: detail }
+    return
   }
-  return readJson<LlmCompleteResponse>(resp)
+
+  if (!resp.body) {
+    yield { type: 'error', message: 'LLM stream returned no body' }
+    return
+  }
+
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+
+      let sepIdx: number
+      while ((sepIdx = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, sepIdx)
+        buffer = buffer.slice(sepIdx + 2)
+        const parsed = parseSseEvent(rawEvent)
+        if (parsed) yield parsed
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock()
+    } catch {
+      // ignore
+    }
+  }
 }
 
-async function applyLlmChanges(
-  notebookId: string,
-  changes: Record<string, unknown>[],
-): Promise<any> {
-  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/apply`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ changes }),
-    timeoutMs: 120_000,
-  })
-  if (!resp.ok) {
-    await throwApiError(resp, 'Failed to apply changes')
+function parseSseEvent(raw: string): LlmStreamEvent | null {
+  let eventName = 'message'
+  const dataLines: string[] = []
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trim())
+    }
   }
-  return resp.json()
+  if (dataLines.length === 0) return null
+  const dataStr = dataLines.join('\n')
+  let data: any
+  try {
+    data = JSON.parse(dataStr)
+  } catch {
+    return null
+  }
+  if (eventName === 'delta' && typeof data?.text === 'string') {
+    return { type: 'delta', text: data.text }
+  }
+  if (eventName === 'done') {
+    return {
+      type: 'done',
+      model: data?.model ?? null,
+      tokens: {
+        input: data?.tokens?.input ?? 0,
+        output: data?.tokens?.output ?? 0,
+      },
+    }
+  }
+  if (eventName === 'error') {
+    return { type: 'error', message: data?.message ?? 'LLM stream error' }
+  }
+  return null
 }
 
 async function agentRun(notebookId: string, message: string): Promise<any> {
@@ -1029,8 +1117,7 @@ export function useStrata() {
     listSessions,
     getSession,
     getLlmStatus,
-    llmComplete,
-    applyLlmChanges,
+    llmChatStream,
     agentRun,
   }
 }

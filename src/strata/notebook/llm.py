@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -38,7 +37,7 @@ _PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
     "MISTRAL_API_KEY": ("https://api.mistral.ai/v1", "mistral-large-latest"),
 }
 
-ActionType = Literal["generate", "explain", "describe", "chat", "plan"]
+ActionType = Literal["chat"]
 
 
 @dataclass(frozen=True)
@@ -73,13 +72,17 @@ def resolve_llm_config(
     server_config: Any | None = None,
     notebook_env: dict[str, str] | None = None,
 ) -> LlmConfig | None:
-    """Merge notebook [ai] config, server config, and env vars.
+    """Merge notebook [ai] config, server config, and notebook env vars.
 
     Resolution order (highest priority wins):
     1. notebook.toml ``[ai]`` section
-    2. Server config (``STRATA_AI_*`` env vars via StrataConfig)
-    3. Notebook-level env vars (set via the Runtime panel)
-    4. Provider-specific process env vars (``ANTHROPIC_API_KEY``, etc.)
+    2. Notebook-level env vars (set via the Runtime panel)
+    3. Server config (``STRATA_AI_*`` env vars read at server startup)
+
+    Process-level environment variables are **not** consulted, so a key
+    accidentally exported in the shell that started the server does not
+    leak into every notebook. An admin deploying a shared server can still
+    provide a default via the explicit ``STRATA_AI_*`` server config.
 
     Returns ``None`` if no API key can be found.
     """
@@ -90,26 +93,7 @@ def resolve_llm_config(
     max_output_tokens = 4096
     timeout_seconds = 60.0
 
-    # Layer 1: provider-specific process env var fallbacks
-    for env_var, (default_url, default_model) in _PROVIDER_DEFAULTS.items():
-        key = os.environ.get(env_var)
-        if key:
-            api_key = key
-            base_url = default_url
-            model = default_model
-            break
-
-    # Layer 1b: notebook-level env vars (from Runtime panel)
-    if notebook_env:
-        for env_var, (default_url, default_model) in _PROVIDER_DEFAULTS.items():
-            key = notebook_env.get(env_var)
-            if key:
-                api_key = key
-                base_url = default_url
-                model = default_model
-                break
-
-    # Layer 2: server config (STRATA_AI_* env vars)
+    # Layer 1 (lowest): server config (explicit STRATA_AI_* at startup)
     if server_config is not None:
         if getattr(server_config, "ai_api_key", None):
             api_key = server_config.ai_api_key
@@ -124,7 +108,22 @@ def resolve_llm_config(
         if getattr(server_config, "ai_timeout_seconds", None):
             timeout_seconds = server_config.ai_timeout_seconds
 
-    # Layer 3: notebook.toml [ai] section (highest priority)
+    # Layer 2: notebook-level env vars (from Runtime panel).
+    # Setting a provider-specific key here picks up that provider's
+    # default base_url and model unless the notebook.toml overrides them.
+    if notebook_env:
+        for env_var, (default_url, default_model) in _PROVIDER_DEFAULTS.items():
+            key = notebook_env.get(env_var)
+            if key:
+                api_key = key
+                base_url = default_url
+                model = default_model
+                break
+        # Generic key (no implicit provider selection)
+        if not api_key and notebook_env.get("STRATA_AI_API_KEY"):
+            api_key = notebook_env["STRATA_AI_API_KEY"]
+
+    # Layer 3 (highest): notebook.toml [ai] section
     if notebook_config:
         if notebook_config.get("api_key"):
             api_key = notebook_config["api_key"]
@@ -138,12 +137,6 @@ def resolve_llm_config(
             max_output_tokens = int(notebook_config["max_output_tokens"])
         if notebook_config.get("timeout_seconds"):
             timeout_seconds = float(notebook_config["timeout_seconds"])
-
-    # Also check the generic STRATA_AI_API_KEY (process env + notebook env)
-    if not api_key:
-        api_key = (notebook_env or {}).get("STRATA_AI_API_KEY") or os.environ.get(
-            "STRATA_AI_API_KEY"
-        )
 
     if not api_key:
         return None
@@ -209,6 +202,72 @@ async def chat_completion(
         input_tokens=usage.get("prompt_tokens", 0),
         output_tokens=usage.get("completion_tokens", 0),
     )
+
+
+async def chat_completion_stream(
+    config: LlmConfig,
+    messages: list[dict[str, str]],
+):
+    """Stream a chat completion as text deltas.
+
+    Yields dicts of the form ``{"type": "delta", "text": str}`` for content
+    chunks and a final ``{"type": "done", "model": str, "input_tokens": int,
+    "output_tokens": int}`` event when the stream ends. The OpenAI-compatible
+    API returns ``data: ...`` SSE lines; we parse them and pull
+    ``choices[0].delta.content``.
+    """
+    model = config.model
+    input_tokens = 0
+    output_tokens = 0
+
+    async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
+        async with client.stream(
+            "POST",
+            f"{config.base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+            json={
+                "model": config.model,
+                "messages": messages,
+                "max_tokens": config.max_output_tokens,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+            },
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("model"):
+                    model = chunk["model"]
+                usage = chunk.get("usage")
+                if isinstance(usage, dict):
+                    input_tokens = usage.get("prompt_tokens", input_tokens)
+                    output_tokens = usage.get("completion_tokens", output_tokens)
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = choices[0].get("delta") or {}
+                text = delta.get("content")
+                if text:
+                    yield {"type": "delta", "text": text}
+
+    yield {
+        "type": "done",
+        "model": model,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -349,38 +408,6 @@ def build_notebook_context(
 # Prompt templates
 # ---------------------------------------------------------------------------
 
-_SYSTEM_GENERATE = """\
-You are a Python coding assistant for a data notebook. Write clean, \
-concise Python code in fenced code blocks. No explanations outside \
-code blocks unless the user asks.
-
-When the task involves multiple logical steps (e.g. load data, \
-transform, visualize), split into SEPARATE fenced code blocks — one \
-per step. Each block becomes its own notebook cell. Start each block \
-with a brief # comment describing its purpose. Variables defined in \
-earlier blocks are automatically available in later ones.
-
-The user's notebook has these cells and variables:
-
-{context}"""
-
-_SYSTEM_EXPLAIN = """\
-You are explaining a Python error in a data notebook. Be concise. \
-Explain what went wrong and suggest a fix. If you suggest code, \
-put it in a fenced code block.
-
-Notebook context:
-
-{context}"""
-
-_SYSTEM_DESCRIBE = """\
-You are describing what a Python notebook cell does. Be concise (2-3 sentences). \
-Mention the key variables produced and any transformations applied.
-
-Notebook context:
-
-{context}"""
-
 _SYSTEM_CHAT = """\
 You are a helpful assistant for a Python data notebook. Answer questions \
 about the code, data, and analysis. When suggesting code, use fenced code blocks.
@@ -391,158 +418,34 @@ Notebook context:
 
 
 def build_messages(
-    action: ActionType,
     user_message: str,
     notebook_context: str,
+    history: list[dict[str, str]] | None = None,
     cell_source: str | None = None,
-    cell_error: str | None = None,
 ) -> list[dict[str, str]]:
-    """Build the chat messages list for a given action type."""
-    system_templates: dict[str, str] = {
-        "generate": _SYSTEM_GENERATE,
-        "explain": _SYSTEM_EXPLAIN,
-        "describe": _SYSTEM_DESCRIBE,
-        "chat": _SYSTEM_CHAT,
-        "plan": _SYSTEM_PLAN,
-    }
+    """Build the chat messages list.
 
-    system = system_templates[action].format(context=notebook_context)
+    Order: system prompt → prior turns (``history``) → current user message.
+    ``cell_source``, if given, is prepended to the current user message as
+    optional context.
+    """
+    system = _SYSTEM_CHAT.format(context=notebook_context)
     messages: list[dict[str, str]] = [{"role": "system", "content": system}]
 
-    # Add cell context for explain/describe
-    if action == "explain" and cell_source:
-        user_content = f"Cell code:\n```python\n{cell_source}\n```\n\n"
-        if cell_error:
-            user_content += f"Error:\n```\n{cell_error}\n```\n\n"
-        user_content += user_message
-        messages.append({"role": "user", "content": user_content})
-    elif action == "describe" and cell_source:
-        messages.append(
-            {"role": "user", "content": f"```python\n{cell_source}\n```\n\n{user_message}"}
-        )
+    if history:
+        for turn in history:
+            role = turn.get("role")
+            content = turn.get("content", "")
+            if role in ("user", "assistant") and isinstance(content, str) and content:
+                messages.append({"role": role, "content": content})
+
+    if cell_source:
+        user_content = f"Selected cell:\n```python\n{cell_source}\n```\n\n{user_message}"
     else:
-        messages.append({"role": "user", "content": user_message})
+        user_content = user_message
 
+    messages.append({"role": "user", "content": user_content})
     return messages
-
-
-# ---------------------------------------------------------------------------
-# Plan prompt and parser
-# ---------------------------------------------------------------------------
-
-_SYSTEM_PLAN = """\
-You are a notebook assistant that proposes structured changes. Return ONLY \
-a JSON object with this exact schema — no markdown, no explanation outside \
-the JSON:
-
-{{
-  "summary": "Brief description of what these changes do",
-  "changes": [
-    {{"type": "add_package", "package": "pandas>=2.0"}},
-    {{"type": "add_cell", "language": "python",
-      "source": "import pandas as pd\\ndf = pd.read_csv('data.csv')",
-      "name": "Load data"}},
-    {{"type": "add_cell", "language": "python",
-      "source": "df.describe()", "name": "Explore"}},
-    {{"type": "set_env", "key": "API_KEY", "value": "placeholder"}},
-    {{"type": "add_cell", "language": "prompt",
-      "source": "# @name summary\\nSummarize {{{{ df }}}}",
-      "name": "AI summary"}}
-  ]
-}}
-
-Valid change types: add_cell, add_package, set_env.
-
-For add_cell, set language to "python" or "prompt". Use "name" for a \
-human-readable label. Order matters — cells will be added sequentially. \
-When the task involves multiple steps, split into separate cells.
-
-Do NOT propose delete or modify operations — those are done by the user \
-directly in the notebook UI. Focus on generating new content.
-
-The user's notebook has these cells and variables:
-
-{{context}}"""
-
-
-@dataclass
-class ProposedChange:
-    """One proposed change to the notebook."""
-
-    type: str  # add_cell, add_package, set_env
-    source: str | None = None
-    language: str | None = None
-    name: str | None = None
-    package: str | None = None
-    key: str | None = None
-    value: str | None = None
-
-
-@dataclass
-class ChangePlan:
-    """A structured set of proposed changes from the LLM."""
-
-    summary: str
-    changes: list[ProposedChange]
-    raw_content: str = ""
-
-
-def parse_change_plan(content: str) -> ChangePlan | None:
-    """Parse an LLM response as a structured change plan.
-
-    Tries JSON directly, then extracts from a code block.
-    Returns None if parsing fails.
-    """
-    import re
-
-    raw = content.strip()
-
-    # Try direct JSON parse
-    parsed = _try_parse_json(raw)
-
-    # Try extracting from markdown code block
-    if parsed is None:
-        m = re.search(r"```(?:json)?\s*\n([\s\S]*?)\n```", raw)
-        if m:
-            parsed = _try_parse_json(m.group(1).strip())
-
-    if parsed is None or not isinstance(parsed, dict):
-        return None
-
-    summary = parsed.get("summary", "")
-    raw_changes = parsed.get("changes", [])
-    if not isinstance(raw_changes, list):
-        return None
-
-    changes: list[ProposedChange] = []
-    for item in raw_changes:
-        if not isinstance(item, dict) or "type" not in item:
-            continue
-        changes.append(
-            ProposedChange(
-                type=item["type"],
-                source=item.get("source"),
-                language=item.get("language"),
-                name=item.get("name"),
-                package=item.get("package"),
-                key=item.get("key"),
-                value=item.get("value"),
-            )
-        )
-
-    if not changes:
-        return None
-
-    return ChangePlan(summary=summary, changes=changes, raw_content=content)
-
-
-def _try_parse_json(text: str) -> dict | None:
-    """Attempt to parse JSON, returning None on failure."""
-    try:
-        result = json.loads(text)
-        return result if isinstance(result, dict) else None
-    except (json.JSONDecodeError, ValueError):
-        return None
 
 
 # ---------------------------------------------------------------------------

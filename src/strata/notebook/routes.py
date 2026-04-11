@@ -1763,14 +1763,23 @@ async def export_notebook(notebook_id: str) -> StreamingResponse:
 # ============================================================================
 
 
+class LlmChatTurn(BaseModel):
+    """One prior chat turn passed back to the LLM for context."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., max_length=20_000)
+
+
 class LlmCompleteRequest(BaseModel):
     """Request for LLM assistant completion."""
 
-    action: Literal["generate", "explain", "describe", "chat", "plan"] = Field(
-        ..., description="Action type"
-    )
     message: str = Field(..., max_length=10_000, description="User message")
     cell_id: str | None = Field(default=None, description="Target cell ID for context")
+    history: list[LlmChatTurn] = Field(
+        default_factory=list,
+        description="Prior chat turns in this session (capped to most recent)",
+        max_length=20,
+    )
 
 
 def _read_notebook_ai_config(session) -> dict | None:
@@ -1829,35 +1838,28 @@ async def llm_status(notebook_id: str) -> dict:
     }
 
 
-@router.post("/{notebook_id}/ai/complete")
-async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
-    """Run an LLM assistant completion."""
-    session = _session_manager.get_session(notebook_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Notebook not found")
+def _prepare_chat_request(session, req: LlmCompleteRequest):
+    """Resolve config + build messages for a chat request.
 
-    from strata.notebook.llm import (
-        build_messages,
-        build_notebook_context,
-        chat_completion,
-    )
+    Returns ``(config, messages)``. Raises ``HTTPException`` if LLM is not
+    configured.
+    """
+    from strata.notebook.llm import build_messages, build_notebook_context
 
     config = _get_llm_config(session)
     if config is None:
         raise HTTPException(
             status_code=503,
             detail=(
-                "LLM assistant not configured. "
-                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY."
+                "LLM assistant not configured for this notebook. "
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY "
+                "in the Runtime panel, or add an [ai] section to notebook.toml."
             ),
         )
 
-    # Build notebook context
     notebook_context = build_notebook_context(session, max_tokens=config.max_context_tokens // 4)
 
-    # Get cell-specific context
     cell_source = None
-    cell_error = None
     if req.cell_id:
         cell = next(
             (c for c in session.notebook_state.cells if c.id == req.cell_id),
@@ -1865,13 +1867,27 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
         )
         if cell:
             cell_source = cell.source
-            # Extract error from display outputs
-            for output in reversed(getattr(cell, "display_outputs", []) or []):
-                if getattr(output, "content_type", None) == "error":
-                    cell_error = getattr(output, "error", None)
-                    break
 
-    messages = build_messages(req.action, req.message, notebook_context, cell_source, cell_error)
+    history = [{"role": t.role, "content": t.content} for t in req.history]
+    messages = build_messages(
+        req.message,
+        notebook_context,
+        history=history,
+        cell_source=cell_source,
+    )
+    return config, messages
+
+
+@router.post("/{notebook_id}/ai/complete")
+async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
+    """Run a (blocking) LLM chat completion. Prefer ``/ai/stream`` for UI."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    from strata.notebook.llm import chat_completion
+
+    config, messages = _prepare_chat_request(session, req)
 
     try:
         result = await chat_completion(config, messages)
@@ -1886,7 +1902,7 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
         logger.exception("LLM completion failed")
         raise HTTPException(status_code=502, detail="LLM completion failed")
 
-    response: dict = {
+    return {
         "content": result.content,
         "model": result.model,
         "tokens": {
@@ -1895,115 +1911,62 @@ async def llm_complete(notebook_id: str, req: LlmCompleteRequest) -> dict:
         },
     }
 
-    # For plan actions, try to parse as a structured change plan
-    if req.action == "plan":
-        from strata.notebook.llm import parse_change_plan
 
-        plan = parse_change_plan(result.content)
-        if plan is not None:
-            response["plan"] = {
-                "summary": plan.summary,
-                "changes": [
-                    {
-                        k: v
-                        for k, v in {
-                            "type": c.type,
-                            "source": c.source,
-                            "language": c.language,
-                            "name": c.name,
-                            "package": c.package,
-                            "key": c.key,
-                            "value": c.value,
-                        }.items()
-                        if v is not None
-                    }
-                    for c in plan.changes
-                ],
-            }
+@router.post("/{notebook_id}/ai/stream")
+async def llm_stream(notebook_id: str, req: LlmCompleteRequest):
+    """Stream an LLM chat completion as Server-Sent Events.
 
-    return response
+    Event types:
+    - ``delta``: ``{"text": "..."}`` — incremental content chunk
+    - ``done``: ``{"model": "...", "tokens": {"input": N, "output": N}}``
+    - ``error``: ``{"message": "..."}``
+    """
+    from fastapi.responses import StreamingResponse
 
+    from strata.notebook.llm import chat_completion_stream
 
-class ApplyChangesRequest(BaseModel):
-    """Request to apply a set of proposed changes."""
-
-    changes: list[dict] = Field(..., description="List of changes to apply")
-
-
-@router.post("/{notebook_id}/ai/apply")
-async def apply_proposed_changes(notebook_id: str, req: ApplyChangesRequest) -> dict:
-    """Apply a set of LLM-proposed changes to the notebook."""
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
 
-    applied: list[dict] = []
-    errors: list[dict] = []
+    config, messages = _prepare_chat_request(session, req)
 
-    for change in req.changes:
-        change_type = change.get("type")
+    async def event_stream():
+        def _sse(event: str, payload: dict) -> str:
+            return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
         try:
-            if change_type == "add_cell":
-                cell_id = str(uuid.uuid4())[:8]
-                language = change.get("language", "python")
-                add_cell_to_notebook(session.path, cell_id, language=language)
-                source = change.get("source", "")
-                if source:
-                    write_cell(session.path, cell_id, source)
-                applied.append({"type": "add_cell", "cell_id": cell_id})
-
-            elif change_type == "add_package":
-                package = change.get("package", "")
-                if package:
-                    try:
-                        outcome = await session.mutate_dependency(package, action="add")
-                        applied.append(
-                            {
-                                "type": "add_package",
-                                "package": package,
-                                "success": outcome.result.success,
-                            }
-                        )
-                    except Exception as e:
-                        errors.append({"type": "add_package", "error": str(e)})
-
-            elif change_type == "set_env":
-                key = change.get("key", "")
-                value = change.get("value", "")
-                if key:
-                    env = dict(session.notebook_state.env or {})
-                    env[key] = value
-                    update_notebook_env(session.path, env)
-                    applied.append({"type": "set_env", "key": key})
-
-            else:
-                errors.append(
-                    {
-                        "type": change_type,
-                        "error": f"Unsupported change type: {change_type}",
-                    }
-                )
-
+            async for chunk in chat_completion_stream(config, messages):
+                if chunk["type"] == "delta":
+                    yield _sse("delta", {"text": chunk["text"]})
+                elif chunk["type"] == "done":
+                    yield _sse(
+                        "done",
+                        {
+                            "model": chunk.get("model"),
+                            "tokens": {
+                                "input": chunk.get("input_tokens", 0),
+                                "output": chunk.get("output_tokens", 0),
+                            },
+                        },
+                    )
+        except httpx.HTTPStatusError as e:
+            logger.warning("LLM stream HTTP error: %s", e.response.status_code)
+            yield _sse("error", {"message": f"LLM provider error: {e.response.status_code}"})
+        except httpx.TimeoutException:
+            yield _sse("error", {"message": "LLM provider timed out"})
         except Exception as e:
-            errors.append({"type": change_type, "error": str(e)})
+            logger.exception("LLM stream failed")
+            yield _sse("error", {"message": f"LLM stream failed: {e}"})
 
-    logger.info(
-        "ai/apply: applied=%d errors=%d changes=%s",
-        len(applied),
-        len(errors),
-        [a.get("type") for a in applied],
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
-    if errors:
-        logger.warning("ai/apply errors: %s", errors)
-
-    # Reload after all changes
-    session.reload()
-
-    data = session.serialize_notebook_state()
-    data["session_id"] = session.id
-    data["applied"] = applied
-    data["errors"] = errors
-    return data
 
 
 # ============================================================================
@@ -2039,7 +2002,9 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
         raise HTTPException(
             status_code=503,
             detail=(
-                "LLM not configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY."
+                "LLM not configured for this notebook. "
+                "Set ANTHROPIC_API_KEY, OPENAI_API_KEY, or STRATA_AI_API_KEY "
+                "in the Runtime panel, or add an [ai] section to notebook.toml."
             ),
         )
 

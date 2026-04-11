@@ -1413,10 +1413,10 @@ const inspectHistory = ref<InspectEntry[]>([])
 interface LlmMessage {
   role: 'user' | 'assistant'
   content: string
-  action?: 'generate' | 'explain' | 'describe' | 'chat' | 'plan'
   model?: string
   tokens?: { input: number; output: number }
   timestamp: number
+  streaming?: boolean
 }
 const llmAvailable = ref(false)
 const llmModel = ref<string | null>(null)
@@ -1425,29 +1425,9 @@ const llmLoading = ref(false)
 const llmError = ref<string | null>(null)
 const llmMessages = ref<LlmMessage[]>([])
 
-// LLM proposal state
-interface ProposedChange {
-  type: string
-  source?: string
-  language?: string
-  name?: string
-  cell_id?: string
-  reason?: string
-  package?: string
-  key?: string
-  value?: string
-  cell_ids?: string[]
-  accepted: boolean
-}
-
-interface ChangePlan {
-  summary: string
-  changes: ProposedChange[]
-}
-
-const proposedPlan = ref<ChangePlan | null>(null)
-const applyingPlan = ref(false)
-const applyError = ref<string | null>(null)
+// How many prior turns to send back to the LLM. System prompt + notebook
+// context is already heavy; keep history cap modest.
+const LLM_HISTORY_LIMIT = 10
 
 // Agent state
 interface AgentProgressEvent {
@@ -2665,44 +2645,69 @@ async function checkLlmStatus() {
   }
 }
 
-async function llmCompleteAction(
-  action: 'generate' | 'explain' | 'describe' | 'chat' | 'plan',
-  message: string,
-  cellId?: string,
-) {
+/**
+ * Send a chat message and stream the assistant response.
+ *
+ * Sends the last LLM_HISTORY_LIMIT prior turns as conversation history so
+ * the LLM has context across turns within this session. The assistant
+ * message is appended immediately with streaming=true and deltas are
+ * written into it until the stream ends.
+ */
+async function llmChat(message: string, cellId?: string) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
 
+  // Snapshot history BEFORE appending the new user message — the new
+  // message will be sent separately via the `message` field.
+  const history = llmMessages.value
+    .filter((m) => !m.streaming && m.content)
+    .slice(-LLM_HISTORY_LIMIT)
+    .map((m) => ({ role: m.role, content: m.content }))
+
   llmMessages.value.push({
     role: 'user',
     content: message,
-    action,
     timestamp: Date.now(),
   })
 
+  const assistantMsg: LlmMessage = {
+    role: 'assistant',
+    content: '',
+    timestamp: Date.now(),
+    streaming: true,
+  }
+  llmMessages.value.push(assistantMsg)
+
   llmLoading.value = true
   llmError.value = null
-  try {
-    const result = await strata.llmComplete(sid, action, message, cellId)
-    llmMessages.value.push({
-      role: 'assistant',
-      content: result.content,
-      model: result.model,
-      tokens: result.tokens,
-      timestamp: Date.now(),
-    })
 
-    // If this was a plan action with a structured plan, open the proposal panel
-    if (action === 'plan' && result.plan) {
-      proposedPlan.value = {
-        summary: result.plan.summary || '',
-        changes: (result.plan.changes || []).map((c: any) => ({ ...c, accepted: true })),
+  try {
+    for await (const event of strata.llmChatStream(sid, message, history, cellId)) {
+      if (event.type === 'delta') {
+        assistantMsg.content += event.text
+      } else if (event.type === 'done') {
+        assistantMsg.model = event.model ?? undefined
+        assistantMsg.tokens = event.tokens
+        assistantMsg.streaming = false
+      } else if (event.type === 'error') {
+        llmError.value = event.message
+        assistantMsg.streaming = false
+        if (!assistantMsg.content) {
+          // Drop the empty placeholder so the error stands alone
+          llmMessages.value = llmMessages.value.filter((m) => m !== assistantMsg)
+        }
+        break
       }
     }
   } catch (err: any) {
-    llmError.value = err.message || 'LLM request failed'
+    llmError.value = err?.message || 'LLM request failed'
+    assistantMsg.streaming = false
+    if (!assistantMsg.content) {
+      llmMessages.value = llmMessages.value.filter((m) => m !== assistantMsg)
+    }
   } finally {
+    assistantMsg.streaming = false
     llmLoading.value = false
   }
 }
@@ -2710,52 +2715,6 @@ async function llmCompleteAction(
 function clearLlmHistory() {
   llmMessages.value = []
   llmError.value = null
-}
-
-function discardPlan() {
-  proposedPlan.value = null
-  applyError.value = null
-}
-
-async function applyProposedChanges() {
-  const plan = proposedPlan.value
-  if (!plan) return
-  const sid = sessionId()
-  if (!sid) return
-
-  const accepted = plan.changes.filter((c) => c.accepted)
-  if (accepted.length === 0) {
-    discardPlan()
-    return
-  }
-
-  applyingPlan.value = true
-  applyError.value = null
-  const strata = useStrata()
-
-  try {
-    const data = await strata.applyLlmChanges(
-      sid,
-      accepted.map((c) => {
-        const { accepted: _, ...rest } = c
-        return rest
-      }),
-    )
-    // Reload notebook state from response
-    loadNotebookStateFromBackend(data)
-
-    // Surface any per-change errors — keep panel open so user sees them
-    const applyErrors = data.errors
-    if (Array.isArray(applyErrors) && applyErrors.length > 0) {
-      applyError.value = applyErrors.map((e: any) => `${e.type}: ${e.error}`).join('\n')
-    } else {
-      proposedPlan.value = null
-    }
-  } catch (err: any) {
-    applyError.value = err.message || 'Failed to apply changes'
-  } finally {
-    applyingPlan.value = false
-  }
 }
 
 async function runAgentAction(message: string) {
@@ -2770,7 +2729,6 @@ async function runAgentAction(message: string) {
   llmMessages.value.push({
     role: 'user',
     content: message,
-    action: 'chat',
     timestamp: Date.now(),
   })
 
@@ -2961,15 +2919,10 @@ export function useNotebook() {
     llmError,
     llmMessages,
     checkLlmStatus,
-    llmCompleteAction,
+    llmChat,
     clearLlmHistory,
     insertLlmCodeAsCell,
     insertLlmCodeAsCells,
-    proposedPlan,
-    applyingPlan,
-    applyError,
-    discardPlan,
-    applyProposedChanges,
     // Agent
     agentRunning,
     agentProgress,

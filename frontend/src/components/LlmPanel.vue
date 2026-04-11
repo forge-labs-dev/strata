@@ -12,7 +12,7 @@ const {
   llmError,
   llmMessages,
   checkLlmStatus,
-  llmCompleteAction,
+  llmChat,
   clearLlmHistory,
   insertLlmCodeAsCell,
   insertLlmCodeAsCells,
@@ -50,7 +50,7 @@ async function chat() {
   const msg = userMessage.value.trim()
   if (!msg) return
   userMessage.value = ''
-  await llmCompleteAction('chat', msg, selectedCellId.value ?? undefined)
+  await llmChat(msg, selectedCellId.value ?? undefined)
 }
 
 async function agent() {
@@ -83,6 +83,15 @@ function handleInsertAll(codes: string[]) {
 
 const isBusy = computed(() => llmLoading.value || agentRunning.value)
 
+// Show "Thinking..." only when a stream is in flight but no delta has
+// arrived yet. Once deltas start landing, the message content is its own
+// indicator that progress is happening.
+const showThinking = computed(() => {
+  if (!llmLoading.value) return false
+  const last = llmMessages.value.at(-1)
+  return !last || last.role !== 'assistant' || !last.content
+})
+
 const totalTokens = computed(() => {
   let input = 0
   let output = 0
@@ -109,10 +118,10 @@ const totalTokens = computed(() => {
     <div v-if="showPanel" class="panel-content">
       <!-- Not configured -->
       <div v-if="!llmAvailable" class="llm-unconfigured">
-        <p>No LLM provider configured.</p>
+        <p>No LLM provider configured for this notebook.</p>
         <p class="llm-hint">
           Set <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code>, or
-          <code>STRATA_AI_API_KEY</code> to enable.
+          <code>STRATA_AI_API_KEY</code> in the Runtime panel.
         </p>
       </div>
 
@@ -151,7 +160,7 @@ const totalTokens = computed(() => {
               </button>
             </div>
           </div>
-          <div v-if="llmLoading" class="llm-loading">Thinking...</div>
+          <div v-if="showThinking" class="llm-loading">Thinking...</div>
         </div>
 
         <!-- Error -->
