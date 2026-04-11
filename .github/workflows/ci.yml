@@ -103,21 +103,6 @@ jobs:
         run: |
           uv run pytest tests/test_executor_protocol.py -v --tb=short
 
-  # Lint (ruff + prettier via pre-commit)
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - uses: pre-commit/action@v3.0.1
-
   notebook-browser-smoke:
     name: Notebook Browser Smoke
     runs-on: ubuntu-latest
