@@ -66,6 +66,7 @@ docs = [
 ]
 
 [project.scripts]
+strata = "strata.cli:main"
 strata-server = "strata.server:main"
 
 [build-system]
