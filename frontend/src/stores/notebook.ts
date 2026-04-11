@@ -1463,6 +1463,14 @@ function initializeWebSocket() {
         }
       }
 
+      // When a cell enters "running" state against a remote worker, the
+      // backend includes remote_worker + remote_transport on the payload
+      // so the UI can render a live "dispatching → X" badge while the
+      // cell executes. Local cells omit these fields.
+      if (cell && status === 'running' && typeof p.remote_worker === 'string') {
+        applyRemoteExecutionMetadata(cell, p)
+      }
+
       if (cell && p.causality && supportsStalenessDetail(status)) {
         const rawCausality = p.causality as Record<string, any>
         cell.causality = {

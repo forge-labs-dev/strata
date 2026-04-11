@@ -91,6 +91,18 @@ watch(
 )
 
 const statusClass = computed(() => `status-${props.cell.status}`)
+
+// Live dispatch badge: shows "dispatching → gpu-fly" when a remote cell
+// is in-flight. The backend includes remote_worker on the cell_status
+// running message precisely so this badge can appear without waiting for
+// the cell to finish.
+const dispatchLabel = computed(() => {
+  if (props.cell.status !== 'running') return null
+  const worker = props.cell.remoteWorkerName
+  if (!worker) return null
+  return `dispatching → ${worker}`
+})
+
 const statusLabel = computed(() => {
   switch (props.cell.status) {
     case 'idle':
@@ -483,6 +495,13 @@ function outputKey(output: CellOutput, index: number): string {
           </span>
           <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
             worker: {{ effectiveWorkerLabel }}
+          </span>
+          <span
+            v-if="dispatchLabel"
+            class="dispatch-badge"
+            :title="'Cell is executing on a remote worker'"
+          >
+            {{ dispatchLabel }}
           </span>
           <span
             v-if="effectiveWorkerTransportLabel"
@@ -1047,6 +1066,25 @@ function outputKey(output: CellOutput, index: number): string {
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
+}
+.dispatch-badge {
+  background: #f9e2af22;
+  color: #f9e2af;
+  border: 1px solid #f9e2af55;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  animation: dispatch-pulse 1.2s ease-in-out infinite;
+}
+@keyframes dispatch-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
 }
 .worker-transport-badge {
   background: #89dceb22;

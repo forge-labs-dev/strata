@@ -1827,3 +1827,99 @@ def test_unknown_notebook(client, app):
     with pytest.raises(Exception):  # Should raise connection error
         with client.websocket_connect("/v1/notebooks/ws/nonexistent") as _websocket:
             pass
+
+
+class TestRunningPayloadHelper:
+    """Tests for the ``_running_payload`` helper that decorates the
+    ``cell_status: running`` broadcast with remote worker metadata.
+
+    Local cells must keep the existing, minimal payload so existing
+    clients don't regress. Remote cells must include ``remote_worker``
+    and ``remote_transport`` so the UI can render a live dispatch badge
+    while the cell executes on the remote worker.
+    """
+
+    @staticmethod
+    def _build_session(tmp_path, cells):
+        """Build a NotebookSession with the given (cell_id, source) pairs.
+
+        The notebook is created with two pre-registered workers: a
+        DataFusion cluster at port 9000 and a GPU worker at 9001, both
+        configured as HTTP executors.
+        """
+        from strata.notebook.models import WorkerBackendType, WorkerSpec
+        from strata.notebook.parser import parse_notebook
+        from strata.notebook.session import NotebookSession
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "RunningPayloadTest", initialize_environment=False)
+        prev_id = None
+        for cell_id, source in cells:
+            add_cell_to_notebook(notebook_dir, cell_id, prev_id)
+            write_cell(notebook_dir, cell_id, source)
+            prev_id = cell_id
+
+        state = parse_notebook(notebook_dir)
+        state.workers = [
+            WorkerSpec(
+                name="df-cluster",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="df-cluster",
+                config={"url": "http://127.0.0.1:9000/v1/execute"},
+            ),
+            WorkerSpec(
+                name="gpu-fly",
+                backend=WorkerBackendType.EXECUTOR,
+                runtime_id="gpu-fly",
+                config={"url": "http://127.0.0.1:9001/v1/execute"},
+            ),
+        ]
+        return NotebookSession(state, notebook_dir)
+
+    def test_local_cell_returns_minimal_payload(self, tmp_path):
+        from strata.notebook.ws import _running_payload
+
+        session = self._build_session(tmp_path, [("c1", "x = 1")])
+        payload = _running_payload(session, "c1", "x = 1")
+        assert payload == {"cell_id": "c1", "status": "running"}
+
+    def test_remote_cell_annotation_adds_worker_metadata(self, tmp_path):
+        from strata.notebook.ws import _running_payload
+
+        source = "# @worker gpu-fly\ny = 2"
+        session = self._build_session(tmp_path, [("c1", source)])
+        payload = _running_payload(session, "c1", source)
+        assert payload["cell_id"] == "c1"
+        assert payload["status"] == "running"
+        assert payload["remote_worker"] == "gpu-fly"
+        assert payload["remote_transport"] == "direct"
+
+    def test_df_cluster_annotation_routes_to_df_cluster(self, tmp_path):
+        from strata.notebook.ws import _running_payload
+
+        source = "# @worker df-cluster\nz = 3"
+        session = self._build_session(tmp_path, [("c1", source)])
+        payload = _running_payload(session, "c1", source)
+        assert payload["remote_worker"] == "df-cluster"
+
+    def test_unknown_worker_falls_back_to_minimal_payload(self, tmp_path):
+        from strata.notebook.ws import _running_payload
+
+        source = "# @worker nonexistent-worker\nw = 4"
+        session = self._build_session(tmp_path, [("c1", source)])
+        payload = _running_payload(session, "c1", source)
+        # Unknown worker name resolves to None → we drop the remote fields
+        # rather than broadcasting a lie.
+        assert "remote_worker" not in payload
+        assert payload == {"cell_id": "c1", "status": "running"}
+
+    def test_cell_level_worker_override_is_respected(self, tmp_path):
+        from strata.notebook.ws import _running_payload
+
+        session = self._build_session(tmp_path, [("c1", "q = 5")])
+        # No annotation, but the cell has a persisted worker override
+        cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+        cell.worker = "df-cluster"
+
+        payload = _running_payload(session, "c1", "q = 5")
+        assert payload["remote_worker"] == "df-cluster"

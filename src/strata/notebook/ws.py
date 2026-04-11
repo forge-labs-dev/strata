@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from strata.notebook.annotations import parse_annotations
 from strata.notebook.cascade import CascadePlanner
 from strata.notebook.executor import CellExecutor
 from strata.notebook.impact import ImpactAnalyzer
 from strata.notebook.inspect_repl import InspectManager
-from strata.notebook.models import CellStaleness, CellStatus
+from strata.notebook.models import CellStaleness, CellStatus, WorkerBackendType
 from strata.notebook.session import SessionManager
+from strata.notebook.workers import resolve_worker_spec, worker_transport
 from strata.notebook.writer import write_cell
 
 if TYPE_CHECKING:
@@ -1112,7 +1114,7 @@ async def _execute_cell_directly(
             "type": "cell_status",
             "seq": seq,
             "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-            "payload": {"cell_id": cell_id, "status": "running"},
+            "payload": _running_payload(session, cell_id, cell.source),
         },
     )
 
@@ -1387,7 +1389,7 @@ async def _execute_cascade(
                     "type": "cell_status",
                     "seq": seq,
                     "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                    "payload": {"cell_id": cell_id, "status": "running"},
+                    "payload": _running_payload(session, cell_id, cell.source),
                 },
             )
 
@@ -1629,7 +1631,7 @@ async def _execute_run_all(
                     "type": "cell_status",
                     "seq": seq,
                     "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-                    "payload": {"cell_id": cell_id, "status": "running"},
+                    "payload": _running_payload(session, cell_id, cell.source),
                 },
             )
 
@@ -2150,7 +2152,7 @@ async def execute_cell_for_agent(
             "type": "cell_status",
             "seq": 0,
             "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-            "payload": {"cell_id": cell_id, "status": "running"},
+            "payload": _running_payload(session, cell_id, source),
         },
     )
 
@@ -2245,6 +2247,49 @@ async def broadcast_notebook_sync(notebook_id: str, session: Any) -> None:
             "payload": state,
         },
     )
+
+
+def _running_payload(session, cell_id: str, source: str) -> dict[str, Any]:
+    """Build the payload for a ``cell_status: running`` broadcast.
+
+    If the cell will dispatch to a remote worker, include ``remote_worker``
+    and ``remote_transport`` so the UI can render a live "dispatching → X"
+    badge while the cell executes. Local cells get an unchanged payload.
+
+    Mirrors the precedence chain in
+    :meth:`CellExecutor._resolve_effective_worker`: annotation → cell
+    override → notebook default → implicit local. We consult the same
+    resolver to avoid drifting from the executor's decision.
+    """
+    payload: dict[str, Any] = {"cell_id": cell_id, "status": "running"}
+
+    try:
+        annotations = parse_annotations(source)
+    except Exception:
+        return payload
+
+    cell = next(
+        (c for c in session.notebook_state.cells if c.id == cell_id),
+        None,
+    )
+    effective_name = (
+        annotations.worker
+        or (cell.worker if cell else None)
+        or session.notebook_state.worker
+        or "local"
+    )
+
+    try:
+        worker_spec = resolve_worker_spec(session.notebook_state, effective_name)
+    except Exception:
+        return payload
+
+    if worker_spec is None or worker_spec.backend == WorkerBackendType.LOCAL:
+        return payload
+
+    payload["remote_worker"] = worker_spec.name
+    payload["remote_transport"] = worker_transport(worker_spec)
+    return payload
 
 
 async def _broadcast_message(notebook_id: str, message: dict[str, Any]) -> None:

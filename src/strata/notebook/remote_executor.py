@@ -504,3 +504,37 @@ def create_notebook_executor_app() -> FastAPI:
         )
 
     return app
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Standalone entry point: run the notebook executor HTTP app.
+
+    Used by ``python -m strata.notebook.remote_executor --port 9000`` and
+    by deployment images that run a single executor process. For local
+    multi-worker testing, launch multiple instances on different ports.
+    """
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(
+        prog="strata-notebook-executor",
+        description="Run the Strata notebook HTTP executor server.",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=9000, help="Bind port (default: 9000)")
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=["debug", "info", "warning", "error"],
+        help="Uvicorn log level",
+    )
+    args = parser.parse_args(argv)
+
+    app = create_notebook_executor_app()
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

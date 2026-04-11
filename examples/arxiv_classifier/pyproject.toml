@@ -1,0 +1,14 @@
+[project]
+name = "arxiv-classifier"
+version = "0.1.0"
+description = "Distributed arXiv paper classifier demo for Strata Notebook"
+requires-python = ">=3.12"
+dependencies = [
+    "pandas>=2.0.0",
+    "pyarrow>=18.0.0",
+    "scikit-learn>=1.5.0",
+    "matplotlib>=3.9.0",
+    "numpy>=1.26.0",
+]
+
+[tool.uv]

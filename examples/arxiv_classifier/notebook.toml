@@ -1,0 +1,85 @@
+notebook_id = "arxiv-classifier-001"
+name = "arXiv Paper Classifier (distributed)"
+created_at = 2026-04-10T00:00:00Z
+updated_at = 2026-04-10T00:00:00Z
+
+# Two remote workers illustrate "every cell runs on the right machine":
+#   - df-cluster: a CPU-heavy DataFusion worker for big-data ops
+#   - gpu-fly:    a GPU worker for embeddings and model training
+# During local development both point at localhost on different ports;
+# in production they point at their respective hosted services.
+[[workers]]
+name = "df-cluster"
+backend = "executor"
+runtime_id = "df-cluster"
+[workers.config]
+url = "http://127.0.0.1:9000/v1/execute"
+transport = "http"
+
+[[workers]]
+name = "gpu-fly"
+backend = "executor"
+runtime_id = "gpu-fly"
+[workers.config]
+url = "http://127.0.0.1:9001/v1/execute"
+transport = "http"
+
+[[cells]]
+id = "load"
+file = "load.py"
+language = "python"
+order = 0
+
+[[cells]]
+id = "aggregate"
+file = "aggregate.py"
+language = "python"
+order = 1
+
+[[cells]]
+id = "themes"
+file = "themes.py"
+language = "prompt"
+order = 2
+
+[[cells]]
+id = "sample"
+file = "sample.py"
+language = "python"
+order = 3
+
+[[cells]]
+id = "embed"
+file = "embed.py"
+language = "python"
+order = 4
+
+[[cells]]
+id = "clusters"
+file = "clusters.py"
+language = "prompt"
+order = 5
+
+[[cells]]
+id = "train"
+file = "train.py"
+language = "python"
+order = 6
+
+[[cells]]
+id = "evaluate"
+file = "evaluate.py"
+language = "python"
+order = 7
+
+[[cells]]
+id = "plot"
+file = "plot.py"
+language = "python"
+order = 8
+
+[artifacts]
+
+[environment]
+
+[cache]
