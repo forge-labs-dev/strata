@@ -1,4 +1,5 @@
 # @worker gpu-fly
+# @timeout 120
 # Train a logistic regression classifier: embeddings → topic label.
 # Fast even on CPU (~1s for 3K × 384), but runs on the GPU worker so
 # it shares the embedding model's warm container and avoids data

@@ -151,7 +151,12 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            return "arrow/ipc"
+            # Numpy arrays are tensors, not tables. Arrow IPC is designed
+            # for columnar tabular data; wrapping a 2D array as
+            # pa.table({"array": arr}) creates a column-of-lists that
+            # loses shape on the round-trip. Pickle preserves shape,
+            # dtype, and strides exactly for any ndim.
+            return "pickle/object"
     except ImportError:
         pass
 
@@ -575,6 +580,12 @@ def _deserialize_arrow(file_path: Path) -> Any:
     with open(file_path, "rb") as f:
         reader = pa.ipc.open_stream(f)
         table = reader.read_all()
+
+    # Consolidate chunks so downstream code that creates RecordBatches
+    # (e.g. DataFusion's register_record_batches) gets flat Arrays
+    # instead of ChunkedArrays. Without this, pa.RecordBatch.from_pandas
+    # fails on DataFrames that survived an Arrow round-trip.
+    table = table.combine_chunks()
 
     try:
         return table.to_pandas()

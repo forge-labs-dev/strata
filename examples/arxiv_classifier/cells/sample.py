@@ -5,7 +5,8 @@ import pyarrow as pa
 from datafusion import SessionContext
 
 ctx = SessionContext()
-ctx.register_record_batches("papers", [[pa.RecordBatch.from_pandas(papers)]])
+table = pa.Table.from_pandas(papers)
+ctx.register_record_batches("papers", [table.to_batches()])
 
 PER_TOPIC = 500
 

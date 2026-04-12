@@ -306,7 +306,7 @@ def _parse_output(blob: bytes, content_type: str) -> Any:
             import pyarrow as pa
 
             reader = pa.ipc.open_stream(blob)
-            table = reader.read_all()
+            table = reader.read_all().combine_chunks()
             try:
                 return table.to_pandas()
             except Exception:
