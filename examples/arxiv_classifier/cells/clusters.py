@@ -1,9 +1,10 @@
 # @name cluster_descriptions
 # @worker local
-# Prompt cell: LLM narration of the per-category paper cluster.
-Given these research themes derived from the aggregated paper counts:
+# Prompt cell: generate a practical summary of the research themes.
+The following research themes were identified from analyzing {{ category_stats }}:
 
 {{ research_themes }}
 
-Write one short paragraph (3-4 sentences) describing the practical significance
-of these themes for someone working in machine learning.
+Write a short paragraph (4-5 sentences) for a technical audience explaining
+the practical significance of these themes. Focus on how they relate to each
+other and what trends they suggest for the ML research community.

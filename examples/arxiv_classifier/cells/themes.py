@@ -1,11 +1,9 @@
 # @name research_themes
 # @worker local
-# Prompt cell: use an LLM to identify research themes from the aggregated stats.
-# The {{ category_stats }} template variable is injected from the upstream cell.
-Given these arXiv paper counts per category and year:
+# Prompt cell: LLM analysis of topic distribution from the DataFusion aggregation.
+Given these arXiv ML paper topic counts derived from keyword classification:
 
 {{ category_stats }}
 
-Identify 3 research themes that cut across the categories above. For each theme,
-return a short name (2-4 words) and a one-sentence description. Return them as a
-numbered list.
+For each topic, write one sentence describing what kinds of papers fall into it
+and why this topic matters for the ML research community. Return as a numbered list.

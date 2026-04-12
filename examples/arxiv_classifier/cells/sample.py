@@ -1,36 +1,34 @@
 # @worker df-cluster
-# Stratified sample of papers, balanced across categories.
-# Stays on the DataFusion worker to avoid moving the full table back to the
-# client. Uses ROW_NUMBER() window functions partitioned by category — the
-# classic SQL pattern for "take N rows per group" without a pandas round-trip.
+# Stratified sample: take up to 500 papers per topic so the embedding
+# step runs in seconds, not minutes. Uses DataFusion window functions.
 import pyarrow as pa
 from datafusion import SessionContext
 
 ctx = SessionContext()
 ctx.register_record_batches("papers", [[pa.RecordBatch.from_pandas(papers)]])
 
-PER_CATEGORY = 2
+PER_TOPIC = 500
 
 sampled_papers = ctx.sql(
     f"""
     WITH ranked AS (
         SELECT
-            id,
-            category,
-            year,
             title,
-            ROW_NUMBER() OVER (PARTITION BY category ORDER BY id) AS rn
+            abstract,
+            topic,
+            ROW_NUMBER() OVER (PARTITION BY topic ORDER BY title) AS rn
         FROM papers
     )
-    SELECT id, category, year, title
+    SELECT title, abstract, topic
     FROM ranked
-    WHERE rn <= {PER_CATEGORY}
-    ORDER BY category, id
+    WHERE rn <= {PER_TOPIC}
+    ORDER BY topic, title
     """
 ).to_pandas()
 
 print(
-    f"Sampled {len(sampled_papers)} papers across "
-    f"{sampled_papers['category'].nunique()} categories via DataFusion SQL"
+    f"Sampled {len(sampled_papers):,} papers across "
+    f"{sampled_papers['topic'].nunique()} topics (DataFusion SQL)"
 )
+print(sampled_papers["topic"].value_counts().to_string())
 sampled_papers
