@@ -1,64 +1,59 @@
 # Strata
 
-**A Persistence Substrate and Notebook Runtime for Long-Horizon Computation**
+**Content-addressed notebooks for ML and data workflows.**
 
-Strata provides a single primitive — `materialize(inputs, transform) → artifact` — that ensures results are immutable, versioned, deduplicated, and traceable. It sits below orchestration and outside execution.
+Strata Notebook is an interactive notebook where every cell output is an
+artifact. Same code + same inputs = instant cache hit. Change one cell,
+and only that cell and its dependents re-execute — everything else is
+served from the artifact store in milliseconds.
 
-**[Try it now](https://strata-notebook.fly.dev)** — a small hosted preview, no account needed.
+**[Try it now](https://strata-notebook.fly.dev)** — hosted preview, no account needed.
 
 ---
 
-## Two Surfaces
+## Strata Notebook
 
-### Strata Notebook
+An interactive notebook with content-addressed caching, automatic
+dependency tracking, and cascade execution. Each cell output is an
+artifact. Change upstream code, and downstream cells automatically
+invalidate — but everything that hasn't changed is served instantly
+from cache.
 
-Interactive notebook with content-addressed caching, automatic dependency tracking, and cascade execution. Each cell output is an artifact. Change upstream code, and downstream cells automatically invalidate.
+**Key features:**
 
-[:octicons-arrow-right-24: Notebook Quickstart](getting-started/notebook.md){ .md-button }
+- Content-addressed caching (same code + inputs = cache hit)
+- Automatic DAG from variable analysis
+- Distributed workers (`@worker gpu-fly` dispatches to remote GPU)
+- Prompt cells with `{{ variable }}` LLM injection
+- AI assistant with streaming chat and agent mode
+- Per-notebook Python environments via uv
+- Headless runner (`strata run`) for CI
 
-### Strata Core
+[:octicons-arrow-right-24: Notebook Quickstart](getting-started/notebook.md){ .md-button .md-button--primary }
 
-Programmatic `materialize()` API with artifact caching, lineage, and executor integration. Same runtime as the notebook, exposed as a Python client and REST API.
+---
+
+## Strata Core
+
+The notebook is built on Strata Core — a standalone materialization
+and artifact layer. Core can also be used independently as a Python
+client library and REST API for any workflow that needs provenance-based
+caching, lineage tracking, or Iceberg table scanning.
+
+```python
+from strata import StrataClient
+
+client = StrataClient()
+artifact = client.materialize(
+    inputs=["file:///warehouse#db.events"],
+    transform={"executor": "scan@v1", "params": {}},
+)
+table = client.fetch(artifact.uri)
+```
 
 [:octicons-arrow-right-24: Core API Quickstart](getting-started/core.md){ .md-button }
 
 ---
-
-## Why Strata?
-
-Long-horizon workflows (AI agents, data pipelines, evaluation loops) share these properties:
-
-- **Expensive** — LLM calls, embeddings, large scans
-- **Iterative** — evaluate, refine, repeat
-- **Branching** — explore multiple variants
-- **Failure-prone** — crashes, retries, restarts are normal
-
-What breaks first is not compute — it's **state**. Strata makes state explicit and durable.
-
-## The Layering Model
-
-```
-┌─────────────────────────────────────────────┐
-│ Orchestration Layer                         │
-│ (DAGs, agents, control flow, retries)       │
-└─────────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────┐
-│ Executors / Compute Engines                 │
-│ (SQL engines, ML jobs, LLMs, feature code)  │
-└─────────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────┐
-│ Strata                                      │
-│ (materialize, artifacts, lineage, dedupe)   │
-└─────────────────────────────────────────────┘
-```
-
-- **Orchestrators** decide what to run next
-- **Executors** decide how to compute
-- **Strata** decides whether it already exists and persists it
 
 ## Quick Start
 
@@ -74,6 +69,7 @@ What breaks first is not compute — it's **state**. Strata makes state explicit
 
     ```bash
     uv sync
+    cd frontend && npm ci && npm run build && cd ..
     uv run strata-server
     ```
 
@@ -83,4 +79,5 @@ See [Installation](getting-started/installation.md) for full details.
 
 ## Status
 
-Strata is currently in **alpha**. Both surfaces (Core and Notebook) are functional but the API may change before 1.0.
+Strata is currently in **alpha**. Both surfaces (Notebook and Core) are
+functional but the API may change before 1.0.

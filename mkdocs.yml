@@ -52,22 +52,21 @@ plugins:
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Installation: getting-started/installation.md
-    - Notebook Quickstart: getting-started/notebook.md
-    - Core API Quickstart: getting-started/core.md
-  - Notebook Guide:
+  - Notebook:
+    - Quickstart: getting-started/notebook.md
     - Concepts: notebook/concepts.md
     - Environment: notebook/environment.md
     - Keyboard Shortcuts: notebook/keyboard.md
-  - Deployment:
-    - Docker: deployment/docker.md
-    - Fly.io: deployment/fly.md
-    - GitHub Codespaces: deployment/codespaces.md
-  - Reference:
+  - Core:
+    - Quickstart: getting-started/core.md
     - Configuration: reference/configuration.md
     - REST API: reference/rest-api.md
     - WebSocket Protocol: reference/websocket.md
+  - Deployment:
+    - Installation: getting-started/installation.md
+    - Docker: deployment/docker.md
+    - Fly.io: deployment/fly.md
+    - GitHub Codespaces: deployment/codespaces.md
 
 exclude_docs: |
   internal/
