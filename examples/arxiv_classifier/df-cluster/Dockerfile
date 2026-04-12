@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/root/.cargo/bin:$PATH"
 
 RUN pip install --no-cache-dir \
-    "strata @ git+https://github.com/forge-labs-dev/strata.git@4ec2eb9" \
+    "strata @ git+https://github.com/forge-labs-dev/strata.git@bb56962" \
     "datafusion>=42" \
     "pandas>=2" \
     "pyarrow>=18"
