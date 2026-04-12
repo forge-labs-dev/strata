@@ -318,6 +318,14 @@ def _parse_output(blob: bytes, content_type: str) -> Any:
             return json.loads(blob)
         except Exception:
             return blob.decode(errors="replace")
+    elif content_type == "tensor/arrow":
+        try:
+            import pyarrow as pa
+
+            tensor = pa.ipc.read_tensor(pa.BufferReader(blob))
+            return tensor.to_numpy()
+        except Exception:
+            return blob
     elif content_type == "pickle/object":
         import pickle
 

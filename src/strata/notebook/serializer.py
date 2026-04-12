@@ -151,12 +151,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            # Numpy arrays are tensors, not tables. Arrow IPC is designed
-            # for columnar tabular data; wrapping a 2D array as
-            # pa.table({"array": arr}) creates a column-of-lists that
-            # loses shape on the round-trip. Pickle preserves shape,
-            # dtype, and strides exactly for any ndim.
-            return "pickle/object"
+            return "tensor/arrow"
     except ImportError:
         pass
 
@@ -215,6 +210,8 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
         except (ImportError, ValueError):
             # pyarrow unavailable — fall back to JSON with table metadata
             return _serialize_dataframe_json(value, output_dir, variable_name)
+    elif content_type == "tensor/arrow":
+        return _serialize_tensor(value, output_dir, variable_name)
     elif content_type == "image/png":
         return _serialize_image_png(value, output_dir, variable_name)
     elif content_type == "text/markdown":
@@ -553,6 +550,8 @@ def deserialize_value(
     file_path = Path(file_path)
     if content_type == "arrow/ipc":
         return _deserialize_arrow(file_path)
+    elif content_type == "tensor/arrow":
+        return _deserialize_tensor(file_path)
     elif content_type == "text/markdown":
         return _deserialize_markdown(file_path)
     elif content_type == "json/object":
@@ -591,6 +590,45 @@ def _deserialize_arrow(file_path: Path) -> Any:
         return table.to_pandas()
     except Exception:
         return table
+
+
+def _serialize_tensor(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
+    """Serialize a numpy ndarray using Arrow's tensor IPC format.
+
+    Arrow Tensor preserves shape, dtype, and strides exactly, provides
+    zero-copy reads on deserialization, and has no arbitrary-code-execution
+    surface (unlike pickle).
+    """
+    import numpy as np
+    import pyarrow as pa
+
+    arr = np.ascontiguousarray(value)
+    tensor = pa.Tensor.from_numpy(arr)
+
+    filename = f"{variable_name}.tensor"
+    filepath = output_dir / filename
+
+    buf = pa.BufferOutputStream()
+    pa.ipc.write_tensor(tensor, buf)
+    with open(filepath, "wb") as f:
+        f.write(buf.getvalue())
+
+    return {
+        "content_type": "tensor/arrow",
+        "file": filename,
+        "bytes": filepath.stat().st_size,
+        "preview": f"ndarray shape={arr.shape} dtype={arr.dtype}",
+    }
+
+
+def _deserialize_tensor(file_path: Path) -> Any:
+    """Read an Arrow tensor IPC file back to a numpy ndarray."""
+    import pyarrow as pa
+
+    with open(file_path, "rb") as f:
+        buf = pa.py_buffer(f.read())
+    tensor = pa.ipc.read_tensor(buf)
+    return tensor.to_numpy()
 
 
 def _deserialize_json(file_path: Path) -> Any:

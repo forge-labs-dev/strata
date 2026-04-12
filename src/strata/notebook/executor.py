@@ -1947,6 +1947,7 @@ class CellExecutor:
 
                         content_type_map = {
                             ".arrow": "arrow/ipc",
+                            ".tensor": "tensor/arrow",
                             ".json": "json/object",
                             ".pickle": "pickle/object",
                             ".module.json": "module/import",
