@@ -13,7 +13,7 @@ name = "df-cluster"
 backend = "executor"
 runtime_id = "df-cluster"
 [workers.config]
-url = "http://127.0.0.1:9000/v1/execute"
+url = "https://strata-df-cluster.fly.dev/v1/execute"
 transport = "http"
 
 [[workers]]
