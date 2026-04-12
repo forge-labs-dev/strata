@@ -21,7 +21,7 @@ name = "gpu-fly"
 backend = "executor"
 runtime_id = "gpu-fly"
 [workers.config]
-url = "http://127.0.0.1:9001/v1/execute"
+url = "https://fangchenli--strata-gpu-worker-gpu-executor.modal.run/v1/execute"
 transport = "http"
 
 [[cells]]
