@@ -1851,6 +1851,7 @@ class CellExecutor:
 
                     ext_map = {
                         "arrow/ipc": ".arrow",
+                        "tensor/arrow": ".tensor",
                         "json/object": ".json",
                         "pickle/object": ".pickle",
                         "module/import": ".module.json",
@@ -1932,6 +1933,7 @@ class CellExecutor:
             found = False
             for ext in [
                 ".arrow",
+                ".tensor",
                 ".cell_module.json",
                 ".cell_instance.pickle",
                 ".module.json",
@@ -1997,7 +1999,7 @@ class CellExecutor:
                 logger.warning(
                     "_store_outputs %s: no output file for consumed var %s "
                     "("
-                    "looked for %s.arrow/.json/.pickle/"
+                    "looked for %s.arrow/.tensor/.json/.pickle/"
                     ".cell_module.json/.cell_instance.pickle in %s"
                     ")",
                     cell_id,
