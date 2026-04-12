@@ -54,9 +54,9 @@ gpu_image = (
         "torch>=2.3",
         "sentence-transformers>=3.0",
         "scikit-learn>=1.5",
-        # Strata itself, built from main. Update the ref when promoting
-        # the demo to a stable tag.
-        "strata @ git+https://github.com/forge-labs-dev/strata.git@main",
+        # Strata itself. Pinned to a specific commit so Modal's image
+        # cache busts when the ref changes. Update after pushing fixes.
+        "strata @ git+https://github.com/forge-labs-dev/strata.git@4ec2eb9",
     )
 )
 
