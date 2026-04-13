@@ -845,41 +845,43 @@ def update_cell_console_output(
 ) -> None:
     """Persist stdout/stderr for a cell so they survive notebook reopens.
 
-    Stored in the ``[artifacts.<cell_id>]`` section alongside display outputs.
-    Truncated to 10 KB per stream to avoid bloating notebook.toml.
+    Written to ``.strata/console/{cell_id}.json`` — separate from
+    notebook.toml to keep configuration and runtime state apart.
+    Truncated to 10 KB per stream.
     """
     max_len = 10_000
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
+    console_dir = Path(notebook_dir) / ".strata" / "console"
+    console_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    console_file = console_dir / f"{cell_id}.json"
+    if stdout or stderr:
+        import json
 
-    artifacts_data = toml_data.get("artifacts", {})
-    if not isinstance(artifacts_data, dict):
-        artifacts_data = {}
+        with open(console_file, "w", encoding="utf-8") as f:
+            json.dump(
+                {"stdout": stdout[:max_len], "stderr": stderr[:max_len]},
+                f,
+            )
+    elif console_file.exists():
+        console_file.unlink()
 
-    raw_cell = artifacts_data.get(cell_id, {})
-    cell_artifacts = dict(raw_cell) if isinstance(raw_cell, dict) else {}
 
-    if stdout:
-        cell_artifacts["stdout"] = stdout[:max_len]
-    else:
-        cell_artifacts.pop("stdout", None)
-    if stderr:
-        cell_artifacts["stderr"] = stderr[:max_len]
-    else:
-        cell_artifacts.pop("stderr", None)
+def load_cell_console_output(notebook_dir: Path, cell_id: str) -> tuple[str, str]:
+    """Load persisted stdout/stderr for a cell.
 
-    if cell_artifacts:
-        artifacts_data[cell_id] = cell_artifacts
-    else:
-        artifacts_data.pop(cell_id, None)
+    Returns ``(stdout, stderr)`` — empty strings if nothing is persisted.
+    """
+    console_file = Path(notebook_dir) / ".strata" / "console" / f"{cell_id}.json"
+    if not console_file.exists():
+        return "", ""
+    try:
+        import json
 
-    toml_data["artifacts"] = artifacts_data
-
-    with open(notebook_toml_path, "wb") as out:
-        tomli_w.dump(toml_data, out)
+        with open(console_file, encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("stdout", ""), data.get("stderr", "")
+    except Exception:
+        return "", ""
 
 
 def update_cell_display_output(

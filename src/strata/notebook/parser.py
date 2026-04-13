@@ -111,14 +111,10 @@ def parse_notebook(directory: Path) -> NotebookState:
                 except Exception:
                     display_outputs = []
 
-        # Restore console output from artifacts section
-        console_stdout = ""
-        console_stderr = ""
-        if isinstance(raw_artifacts, dict):
-            if isinstance(raw_artifacts.get("stdout"), str):
-                console_stdout = raw_artifacts["stdout"]
-            if isinstance(raw_artifacts.get("stderr"), str):
-                console_stderr = raw_artifacts["stderr"]
+        # Restore console output from .strata/console/
+        from strata.notebook.writer import load_cell_console_output
+
+        console_stdout, console_stderr = load_cell_console_output(directory, cell_meta.id)
 
         cell_states.append(
             CellState(
