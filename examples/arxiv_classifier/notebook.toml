@@ -1,17 +1,24 @@
 notebook_id = "arxiv-classifier-001"
 name = "arXiv Paper Classifier (distributed)"
-created_at = 2026-04-10T00:00:00Z
-updated_at = 2026-04-10T00:00:00Z
+created_at = 2026-04-10 00:00:00+00:00
+updated_at = "2026-04-13T01:03:11.707516+00:00"
+cells = [
+    { id = "load", file = "load.py", language = "python", order = 0 },
+    { id = "aggregate", file = "aggregate.py", language = "python", order = 1 },
+    { id = "themes", file = "themes.py", language = "prompt", order = 2 },
+    { id = "sample", file = "sample.py", language = "python", order = 3 },
+    { id = "embed", file = "embed.py", language = "python", order = 4 },
+    { id = "clusters", file = "clusters.py", language = "prompt", order = 5 },
+    { id = "train", file = "train.py", language = "python", order = 6 },
+    { id = "evaluate", file = "evaluate.py", language = "python", order = 7 },
+    { id = "plot", file = "plot.py", language = "python", order = 8 },
+]
 
-# Two remote workers illustrate "every cell runs on the right machine":
-#   - df-cluster: a CPU-heavy DataFusion worker for big-data ops
-#   - gpu-fly:    a GPU worker for embeddings and model training
-# During local development both point at localhost on different ports;
-# in production they point at their respective hosted services.
 [[workers]]
 name = "df-cluster"
 backend = "executor"
 runtime_id = "df-cluster"
+
 [workers.config]
 url = "https://strata-df-cluster.fly.dev/v1/execute"
 transport = "http"
@@ -20,66 +27,726 @@ transport = "http"
 name = "gpu-fly"
 backend = "executor"
 runtime_id = "gpu-fly"
+
 [workers.config]
 url = "https://fangchenli--strata-gpu-worker-gpu-executor.modal.run/v1/execute"
 transport = "http"
 
-[[cells]]
-id = "load"
-file = "load.py"
-language = "python"
-order = 0
+[[artifacts.load.display_outputs]]
+content_type = "arrow/ipc"
+rows = 20000
+columns = [
+    "title",
+    "abstract",
+    "topic",
+]
+bytes = 23324608
+preview = [
+    [
+        "Learning from compressed observations",
+        "  The problem of statistical learning is to construct a predictor of a random\nvariable $Y$ as a function of a related random variable $X$ on the basis of an\ni.i.d. training sample from the joint distribution of $(X,Y)$. Allowable\npredictors are drawn from some specified class, and the goal is to approach\nasymptotically the performance (expected loss) of the best predictor in the\nclass. We consider the setting in which one has perfect observation of the\n$X$-part of the sample, while the $Y$-part has to be communicated at some\nfinite bit rate. The encoding of the $Y$-values is allowed to depend on the\n$X$-values. Under suitable regularity conditions on the admissible predictors,\nthe underlying family of probability distributions and the loss function, we\ngive an information-theoretic characterization of achievable predictor\nperformance in terms of conditional distortion-rate functions. The ideas are\nillustrated on the example of nonparametric regression in Gaussian noise.\n",
+        "other",
+    ],
+    [
+        "Sensor Networks with Random Links: Topology Design for Distributed\n  Consensus",
+        "  In a sensor network, in practice, the communication among sensors is subject\nto:(1) errors or failures at random times; (3) costs; and(2) constraints since\nsensors and networks operate under scarce resources, such as power, data rate,\nor communication. The signal-to-noise ratio (SNR) is usually a main factor in\ndetermining the probability of error (or of communication failure) in a link.\nThese probabilities are then a proxy for the SNR under which the links operate.\nThe paper studies the problem of designing the topology, i.e., assigning the\nprobabilities of reliable communication among sensors (or of link failures) to\nmaximize the rate of convergence of average consensus, when the link\ncommunication costs are taken into account, and there is an overall\ncommunication budget constraint. To consider this problem, we address a number\nof preliminary issues: (1) model the network as a random topology; (2)\nestablish necessary and sufficient conditions for mean square sense (mss) and\nalmost sure (a.s.) convergence of average consensus when network links fail;\nand, in particular, (3) show that a necessary and sufficient condition for both\nmss and a.s. convergence is for the algebraic connectivity of the mean graph\ndescribing the network topology to be strictly positive. With these results, we\nformulate topology design, subject to random link failures and to a\ncommunication cost constraint, as a constrained convex optimization problem to\nwhich we apply semidefinite programming techniques. We show by an extensive\nnumerical study that the optimal design improves significantly the convergence\nspeed of the consensus algorithm and can achieve the asymptotic performance of\na non-random network at a fraction of the communication cost.\n",
+        "optimization",
+    ],
+    [
+        "The on-line shortest path problem under partial monitoring",
+        "  The on-line shortest path problem is considered under various models of\npartial monitoring. Given a weighted directed acyclic graph whose edge weights\ncan change in an arbitrary (adversarial) way, a decision maker has to choose in\neach round of a game a path between two distinguished vertices such that the\nloss of the chosen path (defined as the sum of the weights of its composing\nedges) be as small as possible. In a setting generalizing the multi-armed\nbandit problem, after choosing a path, the decision maker learns only the\nweights of those edges that belong to the chosen path. For this problem, an\nalgorithm is given whose average cumulative loss in n rounds exceeds that of\nthe best path, matched off-line to the entire sequence of the edge weights, by\na quantity that is proportional to 1/\\sqrt{n} and depends only polynomially on\nthe number of edges of the graph. The algorithm can be implemented with linear\ncomplexity in the number of rounds n and in the number of edges. An extension\nto the so-called label efficient setting is also given, in which the decision\nmaker is informed about the weights of the edges corresponding to the chosen\npath at a total of m << n time instances. Another extension is shown where the\ndecision maker competes against a time-varying path, a generalization of the\nproblem of tracking the best expert. A version of the multi-armed bandit\nsetting for shortest path is also discussed where the decision maker learns\nonly the total weight of the chosen path but not the weights of the individual\nedges on the path. Applications to routing in packet switched networks along\nwith simulation results are also presented.\n",
+        "other",
+    ],
+    [
+        "A neural network approach to ordinal regression",
+        "  Ordinal regression is an important type of learning, which has properties of\nboth classification and regression. Here we describe a simple and effective\napproach to adapt a traditional neural network to learn ordinal categories. Our\napproach is a generalization of the perceptron method for ordinal regression.\nOn several benchmark datasets, our method (NNRank) outperforms a neural network\nclassification method. Compared with the ordinal regression methods using\nGaussian processes and support vector machines, NNRank achieves comparable\nperformance. Moreover, NNRank has the advantages of traditional neural\nnetworks: learning in both online and batch modes, handling very large training\ndatasets, and making rapid predictions. These features make NNRank a useful and\ncomplementary tool for large-scale data processing tasks such as information\nretrieval, web page ranking, collaborative filtering, and protein ranking in\nBioinformatics.\n",
+        "other",
+    ],
+    [
+        "Parametric Learning and Monte Carlo Optimization",
+        "  This paper uncovers and explores the close relationship between Monte Carlo\nOptimization of a parametrized integral (MCO), Parametric machine-Learning\n(PL), and `blackbox' or `oracle'-based optimization (BO). We make four\ncontributions. First, we prove that MCO is mathematically identical to a broad\nclass of PL problems. This identity potentially provides a new application\ndomain for all broadly applicable PL techniques: MCO. Second, we introduce\nimmediate sampling, a new version of the Probability Collectives (PC) algorithm\nfor blackbox optimization. Immediate sampling transforms the original BO\nproblem into an MCO problem. Accordingly, by combining these first two\ncontributions, we can apply all PL techniques to BO. In our third contribution\nwe validate this way of improving BO by demonstrating that cross-validation and\nbagging improve immediate sampling. Finally, conventional MC and MCO procedures\nignore the relationship between the sample point locations and the associated\nvalues of the integrand; only the values of the integrand at those locations\nare considered. We demonstrate that one can exploit the sample location\ninformation using PL techniques, for example by forming a fit of the sample\nlocations to the associated values of the integrand. This provides an\nadditional way to apply PL techniques to improve MCO.\n",
+        "optimization",
+    ],
+    [
+        "Preconditioned Temporal Difference Learning",
+        "  This paper has been withdrawn by the author. This draft is withdrawn for its\npoor quality in english, unfortunately produced by the author when he was just\nstarting his science route. Look at the ICML version instead:\nhttp://icml2008.cs.helsinki.fi/papers/111.pdf\n",
+        "other",
+    ],
+    [
+        "A Note on the Inapproximability of Correlation Clustering",
+        "  We consider inapproximability of the correlation clustering problem defined\nas follows: Given a graph $G = (V,E)$ where each edge is labeled either \"+\"\n(similar) or \"-\" (dissimilar), correlation clustering seeks to partition the\nvertices into clusters so that the number of pairs correctly (resp.\nincorrectly) classified with respect to the labels is maximized (resp.\nminimized). The two complementary problems are called MaxAgree and MinDisagree,\nrespectively, and have been studied on complete graphs, where every edge is\nlabeled, and general graphs, where some edge might not have been labeled.\nNatural edge-weighted versions of both problems have been studied as well. Let\nS-MaxAgree denote the weighted problem where all weights are taken from set S,\nwe show that S-MaxAgree with weights bounded by $O(|V|^{1/2-\\delta})$\nessentially belongs to the same hardness class in the following sense: if there\nis a polynomial time algorithm that approximates S-MaxAgree within a factor of\n$\\lambda = O(\\log{|V|})$ with high probability, then for any choice of S',\nS'-MaxAgree can be approximated in polynomial time within a factor of $(\\lambda\n+ \\epsilon)$, where $\\epsilon > 0$ can be arbitrarily small, with high\nprobability. A similar statement also holds for $S-MinDisagree. This result\nimplies it is hard (assuming $NP \\neq RP$) to approximate unweighted MaxAgree\nwithin a factor of $80/79-\\epsilon$, improving upon a previous known factor of\n$116/115-\\epsilon$ by Charikar et. al. \\cite{Chari05}.\n",
+        "other",
+    ],
+    [
+        "Joint universal lossy coding and identification of stationary mixing\n  sources",
+        "  The problem of joint universal source coding and modeling, treated in the\ncontext of lossless codes by Rissanen, was recently generalized to fixed-rate\nlossy coding of finitely parametrized continuous-alphabet i.i.d. sources. We\nextend these results to variable-rate lossy block coding of stationary ergodic\nsources and show that, for bounded metric distortion measures, any finitely\nparametrized family of stationary sources satisfying suitable mixing,\nsmoothness and Vapnik-Chervonenkis learnability conditions admits universal\nschemes for joint lossy source coding and identification. We also give several\nexplicit examples of parametric sources satisfying the regularity conditions.\n",
+        "other",
+    ],
+    [
+        "Supervised Feature Selection via Dependence Estimation",
+        "  We introduce a framework for filtering features that employs the\nHilbert-Schmidt Independence Criterion (HSIC) as a measure of dependence\nbetween the features and the labels. The key idea is that good features should\nmaximise such dependence. Feature selection for various supervised learning\nproblems (including classification and regression) is unified under this\nframework, and the solutions can be approximated using a backward-elimination\nalgorithm. We demonstrate the usefulness of our method on both artificial and\nreal world datasets.\n",
+        "other",
+    ],
+    [
+        "Equivalence of LP Relaxation and Max-Product for Weighted Matching in\n  General Graphs",
+        "  Max-product belief propagation is a local, iterative algorithm to find the\nmode/MAP estimate of a probability distribution. While it has been successfully\nemployed in a wide variety of applications, there are relatively few\ntheoretical guarantees of convergence and correctness for general loopy graphs\nthat may have many short cycles. Of these, even fewer provide exact ``necessary\nand sufficient'' characterizations.\n  In this paper we investigate the problem of using max-product to find the\nmaximum weight matching in an arbitrary graph with edge weights. This is done\nby first constructing a probability distribution whose mode corresponds to the\noptimal matching, and then running max-product. Weighted matching can also be\nposed as an integer program, for which there is an LP relaxation. This\nrelaxation is not always tight. In this paper we show that \\begin{enumerate}\n\\item If the LP relaxation is tight, then max-product always converges, and\nthat too to the correct answer. \\item If the LP relaxation is loose, then\nmax-product does not converge. \\end{enumerate} This provides an exact,\ndata-dependent characterization of max-product performance, and a precise\nconnection to LP relaxation, which is a well-studied optimization technique.\nAlso, since LP relaxation is known to be tight for bipartite graphs, our\nresults generalize other recent results on using max-product to find weighted\nmatchings in bipartite graphs.\n",
+        "optimization",
+    ],
+    [
+        "HMM Speaker Identification Using Linear and Non-linear Merging\n  Techniques",
+        "  Speaker identification is a powerful, non-invasive and in-expensive biometric\ntechnique. The recognition accuracy, however, deteriorates when noise levels\naffect a specific band of frequency. In this paper, we present a sub-band based\nspeaker identification that intends to improve the live testing performance.\nEach frequency sub-band is processed and classified independently. We also\ncompare the linear and non-linear merging techniques for the sub-bands\nrecognizer. Support vector machines and Gaussian Mixture models are the\nnon-linear merging techniques that are investigated. Results showed that the\nsub-band based method used with linear merging techniques enormously improved\nthe performance of the speaker identification over the performance of wide-band\nrecognizers when tested live. A live testing improvement of 9.78% was achieved\n",
+        "other",
+    ],
+    [
+        "Statistical Mechanics of Nonlinear On-line Learning for Ensemble\n  Teachers",
+        "  We analyze the generalization performance of a student in a model composed of\nnonlinear perceptrons: a true teacher, ensemble teachers, and the student. We\ncalculate the generalization error of the student analytically or numerically\nusing statistical mechanics in the framework of on-line learning. We treat two\nwell-known learning rules: Hebbian learning and perceptron learning. As a\nresult, it is proven that the nonlinear model shows qualitatively different\nbehaviors from the linear model. Moreover, it is clarified that Hebbian\nlearning and perceptron learning show qualitatively different behaviors from\neach other. In Hebbian learning, we can analytically obtain the solutions. In\nthis case, the generalization error monotonically decreases. The steady value\nof the generalization error is independent of the learning rate. The larger the\nnumber of teachers is and the more variety the ensemble teachers have, the\nsmaller the generalization error is. In perceptron learning, we have to\nnumerically obtain the solutions. In this case, the dynamical behaviors of the\ngeneralization error are non-monotonic. The smaller the learning rate is, the\nlarger the number of teachers is; and the more variety the ensemble teachers\nhave, the smaller the minimum value of the generalization error is.\n",
+        "other",
+    ],
+    [
+        "On the monotonization of the training set",
+        "  We consider the problem of minimal correction of the training set to make it\nconsistent with monotonic constraints. This problem arises during analysis of\ndata sets via techniques that require monotone data. We show that this problem\nis NP-hard in general and is equivalent to finding a maximal independent set in\nspecial orgraphs. Practically important cases of that problem considered in\ndetail. These are the cases when a partial order given on the replies set is a\ntotal order or has a dimension 2. We show that the second case can be reduced\nto maximization of a quadratic convex function on a convex set. For this case\nwe construct an approximate polynomial algorithm based on convex optimization.\n",
+        "optimization",
+    ],
+    [
+        "Mixed membership stochastic blockmodels",
+        "  Observations consisting of measurements on relationships for pairs of objects\narise in many settings, such as protein interaction and gene regulatory\nnetworks, collections of author-recipient email, and social networks. Analyzing\nsuch data with probabilisic models can be delicate because the simple\nexchangeability assumptions underlying many boilerplate models no longer hold.\nIn this paper, we describe a latent variable model of such data called the\nmixed membership stochastic blockmodel. This model extends blockmodels for\nrelational data to ones which capture mixed membership latent relational\nstructure, thus providing an object-specific low-dimensional representation. We\ndevelop a general variational inference algorithm for fast approximate\nposterior inference. We explore applications to social and protein interaction\nnetworks.\n",
+        "optimization",
+    ],
+    [
+        "Loop corrections for message passing algorithms in continuous variable\n  models",
+        "  In this paper we derive the equations for Loop Corrected Belief Propagation\non a continuous variable Gaussian model. Using the exactness of the averages\nfor belief propagation for Gaussian models, a different way of obtaining the\ncovariances is found, based on Belief Propagation on cavity graphs. We discuss\nthe relation of this loop correction algorithm to Expectation Propagation\nalgorithms for the case in which the model is no longer Gaussian, but slightly\nperturbed by nonlinear terms.\n",
+        "other",
+    ],
+    [
+        "A Novel Model of Working Set Selection for SMO Decomposition Methods",
+        "  In the process of training Support Vector Machines (SVMs) by decomposition\nmethods, working set selection is an important technique, and some exciting\nschemes were employed into this field. To improve working set selection, we\npropose a new model for working set selection in sequential minimal\noptimization (SMO) decomposition methods. In this model, it selects B as\nworking set without reselection. Some properties are given by simple proof, and\nexperiments demonstrate that the proposed method is in general faster than\nexisting methods.\n",
+        "optimization",
+    ],
+    [
+        "Getting started in probabilistic graphical models",
+        "  Probabilistic graphical models (PGMs) have become a popular tool for\ncomputational analysis of biological data in a variety of domains. But, what\nexactly are they and how do they work? How can we use PGMs to discover patterns\nthat are biologically relevant? And to what extent can PGMs help us formulate\nnew hypotheses that are testable at the bench? This note sketches out some\nanswers and illustrates the main ideas behind the statistical approach to\nbiological pattern discovery.\n",
+        "other",
+    ],
+    [
+        "A tutorial on conformal prediction",
+        "  Conformal prediction uses past experience to determine precise levels of\nconfidence in new predictions. Given an error probability $\\epsilon$, together\nwith a method that makes a prediction $\\hat{y}$ of a label $y$, it produces a\nset of labels, typically containing $\\hat{y}$, that also contains $y$ with\nprobability $1-\\epsilon$. Conformal prediction can be applied to any method for\nproducing $\\hat{y}$: a nearest-neighbor method, a support-vector machine, ridge\nregression, etc.\n  Conformal prediction is designed for an on-line setting in which labels are\npredicted successively, each one being revealed before the next is predicted.\nThe most novel and valuable feature of conformal prediction is that if the\nsuccessive examples are sampled independently from the same distribution, then\nthe successive predictions will be right $1-\\epsilon$ of the time, even though\nthey are based on an accumulating dataset rather than on independent datasets.\n  In addition to the model under which successive examples are sampled\nindependently, other on-line compression models can also use conformal\nprediction. The widely used Gaussian linear model is one of these.\n  This tutorial presents a self-contained account of the theory of conformal\nprediction and works through several numerical examples. A more comprehensive\ntreatment of the topic is provided in \"Algorithmic Learning in a Random World\",\nby Vladimir Vovk, Alex Gammerman, and Glenn Shafer (Springer, 2005).\n",
+        "other",
+    ],
+    [
+        "Scale-sensitive Psi-dimensions: the Capacity Measures for Classifiers\n  Taking Values in R^Q",
+        "  Bounds on the risk play a crucial role in statistical learning theory. They\nusually involve as capacity measure of the model studied the VC dimension or\none of its extensions. In classification, such \"VC dimensions\" exist for models\ntaking values in {0, 1}, {1,..., Q} and R. We introduce the generalizations\nappropriate for the missing case, the one of models with values in R^Q. This\nprovides us with a new guaranteed risk for M-SVMs which appears superior to the\nexisting one.\n",
+        "other",
+    ],
+    [
+        "The Role of Time in the Creation of Knowledge",
+        "  This paper I assume that in humans the creation of knowledge depends on a\ndiscrete time, or stage, sequential decision-making process subjected to a\nstochastic, information transmitting environment. For each time-stage, this\nenvironment randomly transmits Shannon type information-packets to the\ndecision-maker, who examines each of them for relevancy and then determines his\noptimal choices. Using this set of relevant information-packets, the\ndecision-maker adapts, over time, to the stochastic nature of his environment,\nand optimizes the subjective expected rate-of-growth of knowledge. The\ndecision-maker's optimal actions, lead to a decision function that involves,\nover time, his view of the subjective entropy of the environmental process and\nother important parameters at each time-stage of the process. Using this model\nof human behavior, one could create psychometric experiments using computer\nsimulation and real decision-makers, to play programmed games to measure the\nresulting human performance.\n",
+        "optimization",
+    ],
+]
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=2"
 
-[[cells]]
-id = "aggregate"
-file = "aggregate.py"
-language = "python"
-order = 1
+[artifacts.load.display]
+content_type = "arrow/ipc"
+rows = 20000
+columns = [
+    "title",
+    "abstract",
+    "topic",
+]
+bytes = 23324608
+preview = [
+    [
+        "Learning from compressed observations",
+        "  The problem of statistical learning is to construct a predictor of a random\nvariable $Y$ as a function of a related random variable $X$ on the basis of an\ni.i.d. training sample from the joint distribution of $(X,Y)$. Allowable\npredictors are drawn from some specified class, and the goal is to approach\nasymptotically the performance (expected loss) of the best predictor in the\nclass. We consider the setting in which one has perfect observation of the\n$X$-part of the sample, while the $Y$-part has to be communicated at some\nfinite bit rate. The encoding of the $Y$-values is allowed to depend on the\n$X$-values. Under suitable regularity conditions on the admissible predictors,\nthe underlying family of probability distributions and the loss function, we\ngive an information-theoretic characterization of achievable predictor\nperformance in terms of conditional distortion-rate functions. The ideas are\nillustrated on the example of nonparametric regression in Gaussian noise.\n",
+        "other",
+    ],
+    [
+        "Sensor Networks with Random Links: Topology Design for Distributed\n  Consensus",
+        "  In a sensor network, in practice, the communication among sensors is subject\nto:(1) errors or failures at random times; (3) costs; and(2) constraints since\nsensors and networks operate under scarce resources, such as power, data rate,\nor communication. The signal-to-noise ratio (SNR) is usually a main factor in\ndetermining the probability of error (or of communication failure) in a link.\nThese probabilities are then a proxy for the SNR under which the links operate.\nThe paper studies the problem of designing the topology, i.e., assigning the\nprobabilities of reliable communication among sensors (or of link failures) to\nmaximize the rate of convergence of average consensus, when the link\ncommunication costs are taken into account, and there is an overall\ncommunication budget constraint. To consider this problem, we address a number\nof preliminary issues: (1) model the network as a random topology; (2)\nestablish necessary and sufficient conditions for mean square sense (mss) and\nalmost sure (a.s.) convergence of average consensus when network links fail;\nand, in particular, (3) show that a necessary and sufficient condition for both\nmss and a.s. convergence is for the algebraic connectivity of the mean graph\ndescribing the network topology to be strictly positive. With these results, we\nformulate topology design, subject to random link failures and to a\ncommunication cost constraint, as a constrained convex optimization problem to\nwhich we apply semidefinite programming techniques. We show by an extensive\nnumerical study that the optimal design improves significantly the convergence\nspeed of the consensus algorithm and can achieve the asymptotic performance of\na non-random network at a fraction of the communication cost.\n",
+        "optimization",
+    ],
+    [
+        "The on-line shortest path problem under partial monitoring",
+        "  The on-line shortest path problem is considered under various models of\npartial monitoring. Given a weighted directed acyclic graph whose edge weights\ncan change in an arbitrary (adversarial) way, a decision maker has to choose in\neach round of a game a path between two distinguished vertices such that the\nloss of the chosen path (defined as the sum of the weights of its composing\nedges) be as small as possible. In a setting generalizing the multi-armed\nbandit problem, after choosing a path, the decision maker learns only the\nweights of those edges that belong to the chosen path. For this problem, an\nalgorithm is given whose average cumulative loss in n rounds exceeds that of\nthe best path, matched off-line to the entire sequence of the edge weights, by\na quantity that is proportional to 1/\\sqrt{n} and depends only polynomially on\nthe number of edges of the graph. The algorithm can be implemented with linear\ncomplexity in the number of rounds n and in the number of edges. An extension\nto the so-called label efficient setting is also given, in which the decision\nmaker is informed about the weights of the edges corresponding to the chosen\npath at a total of m << n time instances. Another extension is shown where the\ndecision maker competes against a time-varying path, a generalization of the\nproblem of tracking the best expert. A version of the multi-armed bandit\nsetting for shortest path is also discussed where the decision maker learns\nonly the total weight of the chosen path but not the weights of the individual\nedges on the path. Applications to routing in packet switched networks along\nwith simulation results are also presented.\n",
+        "other",
+    ],
+    [
+        "A neural network approach to ordinal regression",
+        "  Ordinal regression is an important type of learning, which has properties of\nboth classification and regression. Here we describe a simple and effective\napproach to adapt a traditional neural network to learn ordinal categories. Our\napproach is a generalization of the perceptron method for ordinal regression.\nOn several benchmark datasets, our method (NNRank) outperforms a neural network\nclassification method. Compared with the ordinal regression methods using\nGaussian processes and support vector machines, NNRank achieves comparable\nperformance. Moreover, NNRank has the advantages of traditional neural\nnetworks: learning in both online and batch modes, handling very large training\ndatasets, and making rapid predictions. These features make NNRank a useful and\ncomplementary tool for large-scale data processing tasks such as information\nretrieval, web page ranking, collaborative filtering, and protein ranking in\nBioinformatics.\n",
+        "other",
+    ],
+    [
+        "Parametric Learning and Monte Carlo Optimization",
+        "  This paper uncovers and explores the close relationship between Monte Carlo\nOptimization of a parametrized integral (MCO), Parametric machine-Learning\n(PL), and `blackbox' or `oracle'-based optimization (BO). We make four\ncontributions. First, we prove that MCO is mathematically identical to a broad\nclass of PL problems. This identity potentially provides a new application\ndomain for all broadly applicable PL techniques: MCO. Second, we introduce\nimmediate sampling, a new version of the Probability Collectives (PC) algorithm\nfor blackbox optimization. Immediate sampling transforms the original BO\nproblem into an MCO problem. Accordingly, by combining these first two\ncontributions, we can apply all PL techniques to BO. In our third contribution\nwe validate this way of improving BO by demonstrating that cross-validation and\nbagging improve immediate sampling. Finally, conventional MC and MCO procedures\nignore the relationship between the sample point locations and the associated\nvalues of the integrand; only the values of the integrand at those locations\nare considered. We demonstrate that one can exploit the sample location\ninformation using PL techniques, for example by forming a fit of the sample\nlocations to the associated values of the integrand. This provides an\nadditional way to apply PL techniques to improve MCO.\n",
+        "optimization",
+    ],
+    [
+        "Preconditioned Temporal Difference Learning",
+        "  This paper has been withdrawn by the author. This draft is withdrawn for its\npoor quality in english, unfortunately produced by the author when he was just\nstarting his science route. Look at the ICML version instead:\nhttp://icml2008.cs.helsinki.fi/papers/111.pdf\n",
+        "other",
+    ],
+    [
+        "A Note on the Inapproximability of Correlation Clustering",
+        "  We consider inapproximability of the correlation clustering problem defined\nas follows: Given a graph $G = (V,E)$ where each edge is labeled either \"+\"\n(similar) or \"-\" (dissimilar), correlation clustering seeks to partition the\nvertices into clusters so that the number of pairs correctly (resp.\nincorrectly) classified with respect to the labels is maximized (resp.\nminimized). The two complementary problems are called MaxAgree and MinDisagree,\nrespectively, and have been studied on complete graphs, where every edge is\nlabeled, and general graphs, where some edge might not have been labeled.\nNatural edge-weighted versions of both problems have been studied as well. Let\nS-MaxAgree denote the weighted problem where all weights are taken from set S,\nwe show that S-MaxAgree with weights bounded by $O(|V|^{1/2-\\delta})$\nessentially belongs to the same hardness class in the following sense: if there\nis a polynomial time algorithm that approximates S-MaxAgree within a factor of\n$\\lambda = O(\\log{|V|})$ with high probability, then for any choice of S',\nS'-MaxAgree can be approximated in polynomial time within a factor of $(\\lambda\n+ \\epsilon)$, where $\\epsilon > 0$ can be arbitrarily small, with high\nprobability. A similar statement also holds for $S-MinDisagree. This result\nimplies it is hard (assuming $NP \\neq RP$) to approximate unweighted MaxAgree\nwithin a factor of $80/79-\\epsilon$, improving upon a previous known factor of\n$116/115-\\epsilon$ by Charikar et. al. \\cite{Chari05}.\n",
+        "other",
+    ],
+    [
+        "Joint universal lossy coding and identification of stationary mixing\n  sources",
+        "  The problem of joint universal source coding and modeling, treated in the\ncontext of lossless codes by Rissanen, was recently generalized to fixed-rate\nlossy coding of finitely parametrized continuous-alphabet i.i.d. sources. We\nextend these results to variable-rate lossy block coding of stationary ergodic\nsources and show that, for bounded metric distortion measures, any finitely\nparametrized family of stationary sources satisfying suitable mixing,\nsmoothness and Vapnik-Chervonenkis learnability conditions admits universal\nschemes for joint lossy source coding and identification. We also give several\nexplicit examples of parametric sources satisfying the regularity conditions.\n",
+        "other",
+    ],
+    [
+        "Supervised Feature Selection via Dependence Estimation",
+        "  We introduce a framework for filtering features that employs the\nHilbert-Schmidt Independence Criterion (HSIC) as a measure of dependence\nbetween the features and the labels. The key idea is that good features should\nmaximise such dependence. Feature selection for various supervised learning\nproblems (including classification and regression) is unified under this\nframework, and the solutions can be approximated using a backward-elimination\nalgorithm. We demonstrate the usefulness of our method on both artificial and\nreal world datasets.\n",
+        "other",
+    ],
+    [
+        "Equivalence of LP Relaxation and Max-Product for Weighted Matching in\n  General Graphs",
+        "  Max-product belief propagation is a local, iterative algorithm to find the\nmode/MAP estimate of a probability distribution. While it has been successfully\nemployed in a wide variety of applications, there are relatively few\ntheoretical guarantees of convergence and correctness for general loopy graphs\nthat may have many short cycles. Of these, even fewer provide exact ``necessary\nand sufficient'' characterizations.\n  In this paper we investigate the problem of using max-product to find the\nmaximum weight matching in an arbitrary graph with edge weights. This is done\nby first constructing a probability distribution whose mode corresponds to the\noptimal matching, and then running max-product. Weighted matching can also be\nposed as an integer program, for which there is an LP relaxation. This\nrelaxation is not always tight. In this paper we show that \\begin{enumerate}\n\\item If the LP relaxation is tight, then max-product always converges, and\nthat too to the correct answer. \\item If the LP relaxation is loose, then\nmax-product does not converge. \\end{enumerate} This provides an exact,\ndata-dependent characterization of max-product performance, and a precise\nconnection to LP relaxation, which is a well-studied optimization technique.\nAlso, since LP relaxation is known to be tight for bipartite graphs, our\nresults generalize other recent results on using max-product to find weighted\nmatchings in bipartite graphs.\n",
+        "optimization",
+    ],
+    [
+        "HMM Speaker Identification Using Linear and Non-linear Merging\n  Techniques",
+        "  Speaker identification is a powerful, non-invasive and in-expensive biometric\ntechnique. The recognition accuracy, however, deteriorates when noise levels\naffect a specific band of frequency. In this paper, we present a sub-band based\nspeaker identification that intends to improve the live testing performance.\nEach frequency sub-band is processed and classified independently. We also\ncompare the linear and non-linear merging techniques for the sub-bands\nrecognizer. Support vector machines and Gaussian Mixture models are the\nnon-linear merging techniques that are investigated. Results showed that the\nsub-band based method used with linear merging techniques enormously improved\nthe performance of the speaker identification over the performance of wide-band\nrecognizers when tested live. A live testing improvement of 9.78% was achieved\n",
+        "other",
+    ],
+    [
+        "Statistical Mechanics of Nonlinear On-line Learning for Ensemble\n  Teachers",
+        "  We analyze the generalization performance of a student in a model composed of\nnonlinear perceptrons: a true teacher, ensemble teachers, and the student. We\ncalculate the generalization error of the student analytically or numerically\nusing statistical mechanics in the framework of on-line learning. We treat two\nwell-known learning rules: Hebbian learning and perceptron learning. As a\nresult, it is proven that the nonlinear model shows qualitatively different\nbehaviors from the linear model. Moreover, it is clarified that Hebbian\nlearning and perceptron learning show qualitatively different behaviors from\neach other. In Hebbian learning, we can analytically obtain the solutions. In\nthis case, the generalization error monotonically decreases. The steady value\nof the generalization error is independent of the learning rate. The larger the\nnumber of teachers is and the more variety the ensemble teachers have, the\nsmaller the generalization error is. In perceptron learning, we have to\nnumerically obtain the solutions. In this case, the dynamical behaviors of the\ngeneralization error are non-monotonic. The smaller the learning rate is, the\nlarger the number of teachers is; and the more variety the ensemble teachers\nhave, the smaller the minimum value of the generalization error is.\n",
+        "other",
+    ],
+    [
+        "On the monotonization of the training set",
+        "  We consider the problem of minimal correction of the training set to make it\nconsistent with monotonic constraints. This problem arises during analysis of\ndata sets via techniques that require monotone data. We show that this problem\nis NP-hard in general and is equivalent to finding a maximal independent set in\nspecial orgraphs. Practically important cases of that problem considered in\ndetail. These are the cases when a partial order given on the replies set is a\ntotal order or has a dimension 2. We show that the second case can be reduced\nto maximization of a quadratic convex function on a convex set. For this case\nwe construct an approximate polynomial algorithm based on convex optimization.\n",
+        "optimization",
+    ],
+    [
+        "Mixed membership stochastic blockmodels",
+        "  Observations consisting of measurements on relationships for pairs of objects\narise in many settings, such as protein interaction and gene regulatory\nnetworks, collections of author-recipient email, and social networks. Analyzing\nsuch data with probabilisic models can be delicate because the simple\nexchangeability assumptions underlying many boilerplate models no longer hold.\nIn this paper, we describe a latent variable model of such data called the\nmixed membership stochastic blockmodel. This model extends blockmodels for\nrelational data to ones which capture mixed membership latent relational\nstructure, thus providing an object-specific low-dimensional representation. We\ndevelop a general variational inference algorithm for fast approximate\nposterior inference. We explore applications to social and protein interaction\nnetworks.\n",
+        "optimization",
+    ],
+    [
+        "Loop corrections for message passing algorithms in continuous variable\n  models",
+        "  In this paper we derive the equations for Loop Corrected Belief Propagation\non a continuous variable Gaussian model. Using the exactness of the averages\nfor belief propagation for Gaussian models, a different way of obtaining the\ncovariances is found, based on Belief Propagation on cavity graphs. We discuss\nthe relation of this loop correction algorithm to Expectation Propagation\nalgorithms for the case in which the model is no longer Gaussian, but slightly\nperturbed by nonlinear terms.\n",
+        "other",
+    ],
+    [
+        "A Novel Model of Working Set Selection for SMO Decomposition Methods",
+        "  In the process of training Support Vector Machines (SVMs) by decomposition\nmethods, working set selection is an important technique, and some exciting\nschemes were employed into this field. To improve working set selection, we\npropose a new model for working set selection in sequential minimal\noptimization (SMO) decomposition methods. In this model, it selects B as\nworking set without reselection. Some properties are given by simple proof, and\nexperiments demonstrate that the proposed method is in general faster than\nexisting methods.\n",
+        "optimization",
+    ],
+    [
+        "Getting started in probabilistic graphical models",
+        "  Probabilistic graphical models (PGMs) have become a popular tool for\ncomputational analysis of biological data in a variety of domains. But, what\nexactly are they and how do they work? How can we use PGMs to discover patterns\nthat are biologically relevant? And to what extent can PGMs help us formulate\nnew hypotheses that are testable at the bench? This note sketches out some\nanswers and illustrates the main ideas behind the statistical approach to\nbiological pattern discovery.\n",
+        "other",
+    ],
+    [
+        "A tutorial on conformal prediction",
+        "  Conformal prediction uses past experience to determine precise levels of\nconfidence in new predictions. Given an error probability $\\epsilon$, together\nwith a method that makes a prediction $\\hat{y}$ of a label $y$, it produces a\nset of labels, typically containing $\\hat{y}$, that also contains $y$ with\nprobability $1-\\epsilon$. Conformal prediction can be applied to any method for\nproducing $\\hat{y}$: a nearest-neighbor method, a support-vector machine, ridge\nregression, etc.\n  Conformal prediction is designed for an on-line setting in which labels are\npredicted successively, each one being revealed before the next is predicted.\nThe most novel and valuable feature of conformal prediction is that if the\nsuccessive examples are sampled independently from the same distribution, then\nthe successive predictions will be right $1-\\epsilon$ of the time, even though\nthey are based on an accumulating dataset rather than on independent datasets.\n  In addition to the model under which successive examples are sampled\nindependently, other on-line compression models can also use conformal\nprediction. The widely used Gaussian linear model is one of these.\n  This tutorial presents a self-contained account of the theory of conformal\nprediction and works through several numerical examples. A more comprehensive\ntreatment of the topic is provided in \"Algorithmic Learning in a Random World\",\nby Vladimir Vovk, Alex Gammerman, and Glenn Shafer (Springer, 2005).\n",
+        "other",
+    ],
+    [
+        "Scale-sensitive Psi-dimensions: the Capacity Measures for Classifiers\n  Taking Values in R^Q",
+        "  Bounds on the risk play a crucial role in statistical learning theory. They\nusually involve as capacity measure of the model studied the VC dimension or\none of its extensions. In classification, such \"VC dimensions\" exist for models\ntaking values in {0, 1}, {1,..., Q} and R. We introduce the generalizations\nappropriate for the missing case, the one of models with values in R^Q. This\nprovides us with a new guaranteed risk for M-SVMs which appears superior to the\nexisting one.\n",
+        "other",
+    ],
+    [
+        "The Role of Time in the Creation of Knowledge",
+        "  This paper I assume that in humans the creation of knowledge depends on a\ndiscrete time, or stage, sequential decision-making process subjected to a\nstochastic, information transmitting environment. For each time-stage, this\nenvironment randomly transmits Shannon type information-packets to the\ndecision-maker, who examines each of them for relevancy and then determines his\noptimal choices. Using this set of relevant information-packets, the\ndecision-maker adapts, over time, to the stochastic nature of his environment,\nand optimizes the subjective expected rate-of-growth of knowledge. The\ndecision-maker's optimal actions, lead to a decision function that involves,\nover time, his view of the subjective entropy of the environmental process and\nother important parameters at each time-stage of the process. Using this model\nof human behavior, one could create psychometric experiments using computer\nsimulation and real decision-makers, to play programmed games to measure the\nresulting human performance.\n",
+        "optimization",
+    ],
+]
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=2"
 
-[[cells]]
-id = "themes"
-file = "themes.py"
-language = "prompt"
-order = 2
+[[artifacts.aggregate.display_outputs]]
+bytes = 1448
+columns = [
+    "topic",
+    "paper_count",
+    "pct",
+]
+content_type = "arrow/ipc"
+preview = [
+    [
+        "other",
+        8959,
+        44.8,
+    ],
+    [
+        "optimization",
+        4149,
+        20.7,
+    ],
+    [
+        "computer-vision",
+        3465,
+        17.3,
+    ],
+    [
+        "reinforcement-learning",
+        1538,
+        7.7,
+    ],
+    [
+        "generative",
+        1130,
+        5.7,
+    ],
+    [
+        "nlp",
+        759,
+        3.8,
+    ],
+]
+rows = 6
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=2"
 
-[[cells]]
-id = "sample"
-file = "sample.py"
-language = "python"
-order = 3
+[artifacts.aggregate.display]
+bytes = 1448
+columns = [
+    "topic",
+    "paper_count",
+    "pct",
+]
+content_type = "arrow/ipc"
+preview = [
+    [
+        "other",
+        8959,
+        44.8,
+    ],
+    [
+        "optimization",
+        4149,
+        20.7,
+    ],
+    [
+        "computer-vision",
+        3465,
+        17.3,
+    ],
+    [
+        "reinforcement-learning",
+        1538,
+        7.7,
+    ],
+    [
+        "generative",
+        1130,
+        5.7,
+    ],
+    [
+        "nlp",
+        759,
+        3.8,
+    ],
+]
+rows = 6
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=2"
 
-[[cells]]
-id = "embed"
-file = "embed.py"
-language = "python"
-order = 4
+[[artifacts.sample.display_outputs]]
+bytes = 3526568
+columns = [
+    "title",
+    "abstract",
+    "topic",
+]
+content_type = "arrow/ipc"
+preview = [
+    [
+        "\"Mental Rotation\" by Optimizing Transforming Distance",
+        "  The human visual system is able to recognize objects despite transformations\nthat can drastically alter their appearance. To this end, much effort has been\ndevoted to the invariance properties of recognition systems. Invariance can be\nengineered (e.g. convolutional nets), or learned from data explicitly (e.g.\ntemporal coherence) or implicitly (e.g. by data augmentation). One idea that\nhas not, to date, been explored is the integration of latent variables which\npermit a search over a learned space of transformations. Motivated by evidence\nthat people mentally simulate transformations in space while comparing\nexamples, so-called \"mental rotation\", we propose a transforming distance.\nHere, a trained relational model actively transforms pairs of examples so that\nthey are maximally similar in some feature space yet respect the learned\ntransformational constraints. We apply our method to nearest-neighbour problems\non the Toronto Face Database and NORB.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Show me the cup\": Reference with Continuous Representations",
+        "  One of the most basic functions of language is to refer to objects in a\nshared scene. Modeling reference with continuous representations is challenging\nbecause it requires individuation, i.e., tracking and distinguishing an\narbitrary number of referents. We introduce a neural network model that, given\na definite description and a set of objects represented by natural images,\npoints to the intended object if the expression has a unique referent, or\nindicates a failure, if it does not. The model, directly trained on reference\nacts, is competitive with a pipeline manually engineered to perform the same\ntask, both when referents are purely visual, and when they are characterized by\na combination of visual and linguistic properties.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Why Should I Trust Interactive Learners?\" Explaining Interactive\n  Queries of Classifiers to Users",
+        "  Although interactive learning puts the user into the loop, the learner\nremains mostly a black box for the user. Understanding the reasons behind\nqueries and predictions is important when assessing how the learner works and,\nin turn, trust. Consequently, we propose the novel framework of explanatory\ninteractive learning: in each step, the learner explains its interactive query\nto the user, and she queries of any active classifier for visualizing\nexplanations of the corresponding predictions. We demonstrate that this can\nboost the predictive and explanatory powers of and the trust into the learned\nmodel, using text (e.g. SVMs) and image classification (e.g. neural networks)\nexperiments as well as a user study.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Why Should I Trust You?\": Explaining the Predictions of Any Classifier",
+        "  Despite widespread adoption, machine learning models remain mostly black\nboxes. Understanding the reasons behind predictions is, however, quite\nimportant in assessing trust, which is fundamental if one plans to take action\nbased on a prediction, or when choosing whether to deploy a new model. Such\nunderstanding also provides insights into the model, which can be used to\ntransform an untrustworthy model or prediction into a trustworthy one. In this\nwork, we propose LIME, a novel explanation technique that explains the\npredictions of any classifier in an interpretable and faithful manner, by\nlearning an interpretable model locally around the prediction. We also propose\na method to explain models by presenting representative individual predictions\nand their explanations in a non-redundant way, framing the task as a submodular\noptimization problem. We demonstrate the flexibility of these methods by\nexplaining different models for text (e.g. random forests) and image\nclassification (e.g. neural networks). We show the utility of explanations via\nnovel experiments, both simulated and with human subjects, on various scenarios\nthat require trust: deciding if one should trust a prediction, choosing between\nmodels, improving an untrustworthy classifier, and identifying why a classifier\nshould not be trusted.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Zero-Shot\" Super-Resolution using Deep Internal Learning",
+        "  Deep Learning has led to a dramatic leap in Super-Resolution (SR) performance\nin the past few years. However, being supervised, these SR methods are\nrestricted to specific training data, where the acquisition of the\nlow-resolution (LR) images from their high-resolution (HR) counterparts is\npredetermined (e.g., bicubic downscaling), without any distracting artifacts\n(e.g., sensor noise, image compression, non-ideal PSF, etc). Real LR images,\nhowever, rarely obey these restrictions, resulting in poor SR results by SotA\n(State of the Art) methods. In this paper we introduce \"Zero-Shot\" SR, which\nexploits the power of Deep Learning, but does not rely on prior training. We\nexploit the internal recurrence of information inside a single image, and train\na small image-specific CNN at test time, on examples extracted solely from the\ninput image itself. As such, it can adapt itself to different settings per\nimage. This allows to perform SR of real old photos, noisy images, biological\ndata, and other images where the acquisition process is unknown or non-ideal.\nOn such images, our method outperforms SotA CNN-based SR methods, as well as\nprevious unsupervised SR methods. To the best of our knowledge, this is the\nfirst unsupervised CNN-based SR method.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\ell_0$ Sparsifying Transform Learning with Efficient Optimal Updates\n  and Convergence Guarantees",
+        "  Many applications in signal processing benefit from the sparsity of signals\nin a certain transform domain or dictionary. Synthesis sparsifying dictionaries\nthat are directly adapted to data have been popular in applications such as\nimage denoising, inpainting, and medical image reconstruction. In this work, we\nfocus instead on the sparsifying transform model, and study the learning of\nwell-conditioned square sparsifying transforms. The proposed algorithms\nalternate between a $\\ell_0$ \"norm\"-based sparse coding step, and a non-convex\ntransform update step. We derive the exact analytical solution for each of\nthese steps. The proposed solution for the transform update step achieves the\nglobal minimum in that step, and also provides speedups over iterative\nsolutions involving conjugate gradients. We establish that our alternating\nalgorithms are globally convergent to the set of local minimizers of the\nnon-convex transform learning problems. In practice, the algorithms are\ninsensitive to initialization. We present results illustrating the promising\nperformance and significant speed-ups of transform learning over synthesis\nK-SVD in image denoising.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\ell_1$-K-SVD: A Robust Dictionary Learning Algorithm With Simultaneous\n  Update",
+        "  We develop a dictionary learning algorithm by minimizing the $\\ell_1$\ndistortion metric on the data term, which is known to be robust for\nnon-Gaussian noise contamination. The proposed algorithm exploits the idea of\niterative minimization of weighted $\\ell_2$ error. We refer to this algorithm\nas $\\ell_1$-K-SVD, where the dictionary atoms and the corresponding sparse\ncoefficients are simultaneously updated to minimize the $\\ell_1$ objective,\nresulting in noise-robustness. We demonstrate through experiments that the\n$\\ell_1$-K-SVD algorithm results in higher atom recovery rate compared with the\nK-SVD and the robust dictionary learning (RDL) algorithm proposed by Lu et al.,\nboth in Gaussian and non-Gaussian noise conditions. We also show that, for\nfixed values of sparsity, number of dictionary atoms, and data-dimension, the\n$\\ell_1$-K-SVD algorithm outperforms the K-SVD and RDL algorithms when the\ntraining set available is small. We apply the proposed algorithm for denoising\nnatural images corrupted by additive Gaussian and Laplacian noise. The images\ndenoised using $\\ell_1$-K-SVD are observed to have slightly higher peak\nsignal-to-noise ratio (PSNR) over K-SVD for Laplacian noise, but the\nimprovement in structural similarity index (SSIM) is significant (approximately\n$0.1$) for lower values of input PSNR, indicating the efficacy of the $\\ell_1$\nmetric.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\mathbf{D^3}$: Deep Dual-Domain Based Fast Restoration of\n  JPEG-Compressed Images",
+        "  In this paper, we design a Deep Dual-Domain ($\\mathbf{D^3}$) based fast\nrestoration model to remove artifacts of JPEG compressed images. It leverages\nthe large learning capacity of deep networks, as well as the problem-specific\nexpertise that was hardly incorporated in the past design of deep\narchitectures. For the latter, we take into consideration both the prior\nknowledge of the JPEG compression scheme, and the successful practice of the\nsparsity-based dual-domain approach. We further design the One-Step Sparse\nInference (1-SI) module, as an efficient and light-weighted feed-forward\napproximation of sparse coding. Extensive experiments verify the superiority of\nthe proposed $D^3$ model over several state-of-the-art methods. Specifically,\nour best model is capable of outperforming the latest deep model for around 1\ndB in PSNR, and is 30 times faster.\n",
+        "computer-vision",
+    ],
+    [
+        "2D View Aggregation for Lymph Node Detection Using a Shallow Hierarchy\n  of Linear Classifiers",
+        "  Enlarged lymph nodes (LNs) can provide important information for cancer\ndiagnosis, staging, and measuring treatment reactions, making automated\ndetection a highly sought goal. In this paper, we propose a new algorithm\nrepresentation of decomposing the LN detection problem into a set of 2D object\ndetection subtasks on sampled CT slices, largely alleviating the curse of\ndimensionality issue. Our 2D detection can be effectively formulated as linear\nclassification on a single image feature type of Histogram of Oriented\nGradients (HOG), covering a moderate field-of-view of 45 by 45 voxels. We\nexploit both simple pooling and sparse linear fusion schemes to aggregate these\n2D detection scores for the final 3D LN detection. In this manner, detection is\nmore tractable and does not need to perform perfectly at instance level (as\nweak hypotheses) since our aggregation process will robustly harness collective\ninformation for LN detection. Two datasets (90 patients with 389 mediastinal\nLNs and 86 patients with 595 abdominal LNs) are used for validation.\nCross-validation demonstrates 78.0% sensitivity at 6 false positives/volume\n(FP/vol.) (86.1% at 10 FP/vol.) and 73.1% sensitivity at 6 FP/vol. (87.2% at 10\nFP/vol.), for the mediastinal and abdominal datasets respectively. Our results\ncompare favorably to previous state-of-the-art methods.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Consistent & Robust Segmentation of Cardiac Images by Deep Learning\n  with Spatial Propagation",
+        "  We propose a method based on deep learning to perform cardiac segmentation on\nshort axis MRI image stacks iteratively from the top slice (around the base) to\nthe bottom slice (around the apex). At each iteration, a novel variant of U-net\nis applied to propagate the segmentation of a slice to the adjacent slice below\nit. In other words, the prediction of a segmentation of a slice is dependent\nupon the already existing segmentation of an adjacent slice. 3D-consistency is\nhence explicitly enforced. The method is trained on a large database of 3078\ncases from UK Biobank. It is then tested on 756 different cases from UK Biobank\nand three other state-of-the-art cohorts (ACDC with 100 cases, Sunnybrook with\n30 cases, RVSC with 16 cases). Results comparable or even better than the\nstate-of-the-art in terms of distance measures are achieved. They also\nemphasize the assets of our method, namely enhanced spatial consistency\n(currently neither considered nor achieved by the state-of-the-art), and the\ngeneralization ability to unseen cases even from other databases.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Consistent Biventricular Myocardial Segmentation Using Deep Learning\n  for Mesh Generation",
+        "  We present a novel automated method to segment the myocardium of both left\nand right ventricles in MRI volumes. The segmentation is consistent in 3D\nacross the slices such that it can be directly used for mesh generation. Two\nspecific neural networks with multi-scale coarse-to-fine prediction structure\nare proposed to cope with the small training dataset and trained using an\noriginal loss function. The former segments a slice in the middle of the\nvolume. Then the latter iteratively propagates the slice segmentations towards\nthe base and the apex, in a spatially consistent way. We perform 5-fold\ncross-validation on the 15 cases from STACOM to validate the method. For\ntraining, we use real cases and their synthetic variants generated by combining\nmotion simulation and image synthesis. Accurate and consistent testing results\nare obtained.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Interpreter Networks for Viewer-Centered Wireframe Modeling",
+        "  Understanding 3D object structure from a single image is an important but\nchallenging task in computer vision, mostly due to the lack of 3D object\nannotations to real images. Previous research tackled this problem by either\nsearching for a 3D shape that best explains 2D annotations, or training purely\non synthetic data with ground truth 3D information. In this work, we propose 3D\nINterpreter Networks (3D-INN), an end-to-end trainable framework that\nsequentially estimates 2D keypoint heatmaps and 3D object skeletons and poses.\nOur system learns from both 2D-annotated real images and synthetic 3D data.\nThis is made possible mainly by two technical innovations. First, heatmaps of\n2D keypoints serve as an intermediate representation to connect real and\nsynthetic data. 3D-INN is trained on real images to estimate 2D keypoint\nheatmaps from an input image; it then predicts 3D object structure from\nheatmaps using knowledge learned from synthetic 3D shapes. By doing so, 3D-INN\nbenefits from the variation and abundance of synthetic 3D objects, without\nsuffering from the domain difference between real and synthesized images, often\ndue to imperfect rendering. Second, we propose a Projection Layer, mapping\nestimated 3D structure back to 2D. During training, it ensures 3D-INN to\npredict 3D structure whose projection is consistent with the 2D annotations to\nreal images. Experiments show that the proposed system performs well on both 2D\nkeypoint estimation and 3D structure recovery. We also demonstrate that the\nrecovered 3D information has wide vision applications, such as image retrieval.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Morphology Prediction of Progressive Spinal Deformities from\n  Probabilistic Modeling of Discriminant Manifolds",
+        "  We introduce a novel approach for predicting the progression of adolescent\nidiopathic scoliosis from 3D spine models reconstructed from biplanar X-ray\nimages. Recent progress in machine learning have allowed to improve\nclassification and prognosis rates, but lack a probabilistic framework to\nmeasure uncertainty in the data. We propose a discriminative probabilistic\nmanifold embedding where locally linear mappings transform data points from\nhigh-dimensional space to corresponding low-dimensional coordinates. A\ndiscriminant adjacency matrix is constructed to maximize the separation between\nprogressive and non-progressive groups of patients diagnosed with scoliosis,\nwhile minimizing the distance in latent variables belonging to the same class.\nTo predict the evolution of deformation, a baseline reconstruction is projected\nonto the manifold, from which a spatiotemporal regression model is built from\nparallel transport curves inferred from neighboring exemplars. Rate of\nprogression is modulated from the spine flexibility and curve magnitude of the\n3D spine deformation. The method was tested on 745 reconstructions from 133\nsubjects using longitudinal 3D reconstructions of the spine, with results\ndemonstrating the discriminatory framework can identify between progressive and\nnon-progressive of scoliotic patients with a classification rate of 81% and\nprediction differences of 2.1$^{o}$ in main curve angulation, outperforming\nother manifold learning methods. Our method achieved a higher prediction\naccuracy and improved the modeling of spatiotemporal morphological changes in\nhighly deformed spines compared to other learning methods.\n",
+        "computer-vision",
+    ],
+    [
+        "3D-PRNN: Generating Shape Primitives with Recurrent Neural Networks",
+        "  The success of various applications including robotics, digital content\ncreation, and visualization demand a structured and abstract representation of\nthe 3D world from limited sensor data. Inspired by the nature of human\nperception of 3D shapes as a collection of simple parts, we explore such an\nabstract shape representation based on primitives. Given a single depth image\nof an object, we present 3D-PRNN, a generative recurrent neural network that\nsynthesizes multiple plausible shapes composed of a set of primitives. Our\ngenerative model encodes symmetry characteristics of common man-made objects,\npreserves long-range structural coherence, and describes objects of varying\ncomplexity with a compact representation. We also propose a method based on\nGaussian Fields to generate a large scale dataset of primitive-based shape\nrepresentations to train our network. We evaluate our approach on a wide range\nof examples and show that it outperforms nearest-neighbor based shape retrieval\nmethods and is on-par with voxel-based generative models while using a\nsignificantly reduced parameter space.\n",
+        "computer-vision",
+    ],
+    [
+        "3LC: Lightweight and Effective Traffic Compression for Distributed\n  Machine Learning",
+        "  The performance and efficiency of distributed machine learning (ML) depends\nsignificantly on how long it takes for nodes to exchange state changes.\nOverly-aggressive attempts to reduce communication often sacrifice final model\naccuracy and necessitate additional ML techniques to compensate for this loss,\nlimiting their generality. Some attempts to reduce communication incur high\ncomputation overhead, which makes their performance benefits visible only over\nslow networks.\n  We present 3LC, a lossy compression scheme for state change traffic that\nstrikes balance between multiple goals: traffic reduction, accuracy,\ncomputation overhead, and generality. It combines three new\ntechniques---3-value quantization with sparsity multiplication, quartic\nencoding, and zero-run encoding---to leverage strengths of quantization and\nsparsification techniques and avoid their drawbacks. It achieves a data\ncompression ratio of up to 39--107X, almost the same test accuracy of trained\nmodels, and high compression speed. Distributed ML frameworks can employ 3LC\nwithout modifications to existing ML algorithms. Our experiments show that 3LC\nreduces wall-clock training time of ResNet-110--based image classifiers for\nCIFAR-10 on a 10-GPU cluster by up to 16--23X compared to TensorFlow's baseline\ndesign.\n",
+        "computer-vision",
+    ],
+    [
+        "8-Bit Approximations for Parallelism in Deep Learning",
+        "  The creation of practical deep learning data-products often requires\nparallelization across processors and computers to make deep learning feasible\non large data sets, but bottlenecks in communication bandwidth make it\ndifficult to attain good speedups through parallelism. Here we develop and test\n8-bit approximation algorithms which make better use of the available bandwidth\nby compressing 32-bit gradients and nonlinear activations to 8-bit\napproximations. We show that these approximations do not decrease predictive\nperformance on MNIST, CIFAR10, and ImageNet for both model and data parallelism\nand provide a data transfer speedup of 2x relative to 32-bit parallelism. We\nbuild a predictive model for speedups based on our experimental data, verify\nits validity on known speedup data, and show that we can obtain a speedup of\n50x and more on a system of 96 GPUs compared to a speedup of 23x for 32-bit. We\ncompare our data types with other methods and show that 8-bit approximations\nachieve state-of-the-art speedups for model parallelism. Thus 8-bit\napproximation is an efficient method to parallelize convolutional networks on\nvery large systems of GPUs.\n",
+        "computer-vision",
+    ],
+    [
+        "A Batchwise Monotone Algorithm for Dictionary Learning",
+        "  We propose a batchwise monotone algorithm for dictionary learning. Unlike the\nstate-of-the-art dictionary learning algorithms which impose sparsity\nconstraints on a sample-by-sample basis, we instead treat the samples as a\nbatch, and impose the sparsity constraint on the whole. The benefit of\nbatchwise optimization is that the non-zeros can be better allocated across the\nsamples, leading to a better approximation of the whole. To accomplish this, we\npropose procedures to switch non-zeros in both rows and columns in the support\nof the coefficient matrix to reduce the reconstruction error. We prove in the\nproposed support switching procedure the objective of the algorithm, i.e., the\nreconstruction error, decreases monotonically and converges. Furthermore, we\nintroduce a block orthogonal matching pursuit algorithm that also operates on\nsample batches to provide a warm start. Experiments on both natural image\npatches and UCI data sets show that the proposed algorithm produces a better\napproximation with the same sparsity levels compared to the state-of-the-art\nalgorithms.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian Nonparametric Approach to Image Super-resolution",
+        "  Super-resolution methods form high-resolution images from low-resolution\nimages. In this paper, we develop a new Bayesian nonparametric model for\nsuper-resolution. Our method uses a beta-Bernoulli process to learn a set of\nrecurring visual patterns, called dictionary elements, from the data. Because\nit is nonparametric, the number of elements found is also determined from the\ndata. We test the results on both benchmark and natural images, comparing with\nseveral other models from the research literature. We perform large-scale human\nevaluation experiments to assess the visual quality of the results. In a first\nimplementation, we use Gibbs sampling to approximate the posterior. However,\nthis algorithm is not feasible for large-scale data. To circumvent this, we\nthen develop an online variational Bayes (VB) algorithm. This algorithm finds\nhigh quality dictionaries in a fraction of the time needed by the Gibbs\nsampler.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian View of the Poisson-Dirichlet Process",
+        "  The two parameter Poisson-Dirichlet Process (PDP), a generalisation of the\nDirichlet Process, is increasingly being used for probabilistic modelling in\ndiscrete areas such as language technology, bioinformatics, and image analysis.\nThere is a rich literature about the PDP and its derivative distributions such\nas the Chinese Restaurant Process (CRP). This article reviews some of the basic\ntheory and then the major results needed for Bayesian modelling of discrete\nproblems including details of priors, posteriors and computation.\n  The PDP allows one to build distributions over countable partitions. The PDP\nhas two other remarkable properties: first it is partially conjugate to itself,\nwhich allows one to build hierarchies of PDPs, and second using a marginalised\nrelative the CRP, one gets fragmentation and clustering properties that lets\none layer partitions to build trees. This article presents the basic theory for\nunderstanding the notion of partitions and distributions over them, the PDP and\nthe CRP, and the important properties of conjugacy, fragmentation and\nclustering, as well as some key related properties such as consistency and\nconvergence. This article also presents a Bayesian interpretation of the\nPoisson-Dirichlet process based on an improper and infinite dimensional\nDirichlet distribution. This means we can understand the process as just\nanother Dirichlet and thus all its sampling properties emerge naturally.\n  The theory of PDPs is usually presented for continuous distributions (more\ngenerally referred to as non-atomic distributions), however, when applied to\ndiscrete distributions its remarkable conjugacy property emerges. This context\nand basic results are also presented, as well as techniques for computing the\nsecond order Stirling numbers that occur in the posteriors for discrete\ndistributions.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian non-parametric method for clustering high-dimensional binary\n  data",
+        "  In many real life problems, objects are described by large number of binary\nfeatures. For instance, documents are characterized by presence or absence of\ncertain keywords; cancer patients are characterized by presence or absence of\ncertain mutations etc. In such cases, grouping together similar\nobjects/profiles based on such high dimensional binary features is desirable,\nbut challenging. Here, I present a Bayesian non parametric algorithm for\nclustering high dimensional binary data. It uses a Dirichlet Process (DP)\nmixture model and simulated annealing to not only cluster binary data, but also\nfind optimal number of clusters in the data. The performance of the algorithm\nwas evaluated and compared with other algorithms using simulated datasets. It\noutperformed all other clustering methods that were tested in the simulation\nstudies. It was also used to cluster real datasets arising from document\nanalysis, handwritten image analysis and cancer research. It successfully\ndivided a set of documents based on their topics, hand written images based on\ndifferent styles of writing digits and identified tissue and mutation\nspecificity of chemotherapy treatments.\n",
+        "computer-vision",
+    ],
+]
+rows = 3000
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=2"
 
-[[cells]]
-id = "clusters"
-file = "clusters.py"
-language = "prompt"
-order = 5
+[artifacts.sample.display]
+bytes = 3526568
+columns = [
+    "title",
+    "abstract",
+    "topic",
+]
+content_type = "arrow/ipc"
+preview = [
+    [
+        "\"Mental Rotation\" by Optimizing Transforming Distance",
+        "  The human visual system is able to recognize objects despite transformations\nthat can drastically alter their appearance. To this end, much effort has been\ndevoted to the invariance properties of recognition systems. Invariance can be\nengineered (e.g. convolutional nets), or learned from data explicitly (e.g.\ntemporal coherence) or implicitly (e.g. by data augmentation). One idea that\nhas not, to date, been explored is the integration of latent variables which\npermit a search over a learned space of transformations. Motivated by evidence\nthat people mentally simulate transformations in space while comparing\nexamples, so-called \"mental rotation\", we propose a transforming distance.\nHere, a trained relational model actively transforms pairs of examples so that\nthey are maximally similar in some feature space yet respect the learned\ntransformational constraints. We apply our method to nearest-neighbour problems\non the Toronto Face Database and NORB.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Show me the cup\": Reference with Continuous Representations",
+        "  One of the most basic functions of language is to refer to objects in a\nshared scene. Modeling reference with continuous representations is challenging\nbecause it requires individuation, i.e., tracking and distinguishing an\narbitrary number of referents. We introduce a neural network model that, given\na definite description and a set of objects represented by natural images,\npoints to the intended object if the expression has a unique referent, or\nindicates a failure, if it does not. The model, directly trained on reference\nacts, is competitive with a pipeline manually engineered to perform the same\ntask, both when referents are purely visual, and when they are characterized by\na combination of visual and linguistic properties.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Why Should I Trust Interactive Learners?\" Explaining Interactive\n  Queries of Classifiers to Users",
+        "  Although interactive learning puts the user into the loop, the learner\nremains mostly a black box for the user. Understanding the reasons behind\nqueries and predictions is important when assessing how the learner works and,\nin turn, trust. Consequently, we propose the novel framework of explanatory\ninteractive learning: in each step, the learner explains its interactive query\nto the user, and she queries of any active classifier for visualizing\nexplanations of the corresponding predictions. We demonstrate that this can\nboost the predictive and explanatory powers of and the trust into the learned\nmodel, using text (e.g. SVMs) and image classification (e.g. neural networks)\nexperiments as well as a user study.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Why Should I Trust You?\": Explaining the Predictions of Any Classifier",
+        "  Despite widespread adoption, machine learning models remain mostly black\nboxes. Understanding the reasons behind predictions is, however, quite\nimportant in assessing trust, which is fundamental if one plans to take action\nbased on a prediction, or when choosing whether to deploy a new model. Such\nunderstanding also provides insights into the model, which can be used to\ntransform an untrustworthy model or prediction into a trustworthy one. In this\nwork, we propose LIME, a novel explanation technique that explains the\npredictions of any classifier in an interpretable and faithful manner, by\nlearning an interpretable model locally around the prediction. We also propose\na method to explain models by presenting representative individual predictions\nand their explanations in a non-redundant way, framing the task as a submodular\noptimization problem. We demonstrate the flexibility of these methods by\nexplaining different models for text (e.g. random forests) and image\nclassification (e.g. neural networks). We show the utility of explanations via\nnovel experiments, both simulated and with human subjects, on various scenarios\nthat require trust: deciding if one should trust a prediction, choosing between\nmodels, improving an untrustworthy classifier, and identifying why a classifier\nshould not be trusted.\n",
+        "computer-vision",
+    ],
+    [
+        "\"Zero-Shot\" Super-Resolution using Deep Internal Learning",
+        "  Deep Learning has led to a dramatic leap in Super-Resolution (SR) performance\nin the past few years. However, being supervised, these SR methods are\nrestricted to specific training data, where the acquisition of the\nlow-resolution (LR) images from their high-resolution (HR) counterparts is\npredetermined (e.g., bicubic downscaling), without any distracting artifacts\n(e.g., sensor noise, image compression, non-ideal PSF, etc). Real LR images,\nhowever, rarely obey these restrictions, resulting in poor SR results by SotA\n(State of the Art) methods. In this paper we introduce \"Zero-Shot\" SR, which\nexploits the power of Deep Learning, but does not rely on prior training. We\nexploit the internal recurrence of information inside a single image, and train\na small image-specific CNN at test time, on examples extracted solely from the\ninput image itself. As such, it can adapt itself to different settings per\nimage. This allows to perform SR of real old photos, noisy images, biological\ndata, and other images where the acquisition process is unknown or non-ideal.\nOn such images, our method outperforms SotA CNN-based SR methods, as well as\nprevious unsupervised SR methods. To the best of our knowledge, this is the\nfirst unsupervised CNN-based SR method.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\ell_0$ Sparsifying Transform Learning with Efficient Optimal Updates\n  and Convergence Guarantees",
+        "  Many applications in signal processing benefit from the sparsity of signals\nin a certain transform domain or dictionary. Synthesis sparsifying dictionaries\nthat are directly adapted to data have been popular in applications such as\nimage denoising, inpainting, and medical image reconstruction. In this work, we\nfocus instead on the sparsifying transform model, and study the learning of\nwell-conditioned square sparsifying transforms. The proposed algorithms\nalternate between a $\\ell_0$ \"norm\"-based sparse coding step, and a non-convex\ntransform update step. We derive the exact analytical solution for each of\nthese steps. The proposed solution for the transform update step achieves the\nglobal minimum in that step, and also provides speedups over iterative\nsolutions involving conjugate gradients. We establish that our alternating\nalgorithms are globally convergent to the set of local minimizers of the\nnon-convex transform learning problems. In practice, the algorithms are\ninsensitive to initialization. We present results illustrating the promising\nperformance and significant speed-ups of transform learning over synthesis\nK-SVD in image denoising.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\ell_1$-K-SVD: A Robust Dictionary Learning Algorithm With Simultaneous\n  Update",
+        "  We develop a dictionary learning algorithm by minimizing the $\\ell_1$\ndistortion metric on the data term, which is known to be robust for\nnon-Gaussian noise contamination. The proposed algorithm exploits the idea of\niterative minimization of weighted $\\ell_2$ error. We refer to this algorithm\nas $\\ell_1$-K-SVD, where the dictionary atoms and the corresponding sparse\ncoefficients are simultaneously updated to minimize the $\\ell_1$ objective,\nresulting in noise-robustness. We demonstrate through experiments that the\n$\\ell_1$-K-SVD algorithm results in higher atom recovery rate compared with the\nK-SVD and the robust dictionary learning (RDL) algorithm proposed by Lu et al.,\nboth in Gaussian and non-Gaussian noise conditions. We also show that, for\nfixed values of sparsity, number of dictionary atoms, and data-dimension, the\n$\\ell_1$-K-SVD algorithm outperforms the K-SVD and RDL algorithms when the\ntraining set available is small. We apply the proposed algorithm for denoising\nnatural images corrupted by additive Gaussian and Laplacian noise. The images\ndenoised using $\\ell_1$-K-SVD are observed to have slightly higher peak\nsignal-to-noise ratio (PSNR) over K-SVD for Laplacian noise, but the\nimprovement in structural similarity index (SSIM) is significant (approximately\n$0.1$) for lower values of input PSNR, indicating the efficacy of the $\\ell_1$\nmetric.\n",
+        "computer-vision",
+    ],
+    [
+        "$\\mathbf{D^3}$: Deep Dual-Domain Based Fast Restoration of\n  JPEG-Compressed Images",
+        "  In this paper, we design a Deep Dual-Domain ($\\mathbf{D^3}$) based fast\nrestoration model to remove artifacts of JPEG compressed images. It leverages\nthe large learning capacity of deep networks, as well as the problem-specific\nexpertise that was hardly incorporated in the past design of deep\narchitectures. For the latter, we take into consideration both the prior\nknowledge of the JPEG compression scheme, and the successful practice of the\nsparsity-based dual-domain approach. We further design the One-Step Sparse\nInference (1-SI) module, as an efficient and light-weighted feed-forward\napproximation of sparse coding. Extensive experiments verify the superiority of\nthe proposed $D^3$ model over several state-of-the-art methods. Specifically,\nour best model is capable of outperforming the latest deep model for around 1\ndB in PSNR, and is 30 times faster.\n",
+        "computer-vision",
+    ],
+    [
+        "2D View Aggregation for Lymph Node Detection Using a Shallow Hierarchy\n  of Linear Classifiers",
+        "  Enlarged lymph nodes (LNs) can provide important information for cancer\ndiagnosis, staging, and measuring treatment reactions, making automated\ndetection a highly sought goal. In this paper, we propose a new algorithm\nrepresentation of decomposing the LN detection problem into a set of 2D object\ndetection subtasks on sampled CT slices, largely alleviating the curse of\ndimensionality issue. Our 2D detection can be effectively formulated as linear\nclassification on a single image feature type of Histogram of Oriented\nGradients (HOG), covering a moderate field-of-view of 45 by 45 voxels. We\nexploit both simple pooling and sparse linear fusion schemes to aggregate these\n2D detection scores for the final 3D LN detection. In this manner, detection is\nmore tractable and does not need to perform perfectly at instance level (as\nweak hypotheses) since our aggregation process will robustly harness collective\ninformation for LN detection. Two datasets (90 patients with 389 mediastinal\nLNs and 86 patients with 595 abdominal LNs) are used for validation.\nCross-validation demonstrates 78.0% sensitivity at 6 false positives/volume\n(FP/vol.) (86.1% at 10 FP/vol.) and 73.1% sensitivity at 6 FP/vol. (87.2% at 10\nFP/vol.), for the mediastinal and abdominal datasets respectively. Our results\ncompare favorably to previous state-of-the-art methods.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Consistent & Robust Segmentation of Cardiac Images by Deep Learning\n  with Spatial Propagation",
+        "  We propose a method based on deep learning to perform cardiac segmentation on\nshort axis MRI image stacks iteratively from the top slice (around the base) to\nthe bottom slice (around the apex). At each iteration, a novel variant of U-net\nis applied to propagate the segmentation of a slice to the adjacent slice below\nit. In other words, the prediction of a segmentation of a slice is dependent\nupon the already existing segmentation of an adjacent slice. 3D-consistency is\nhence explicitly enforced. The method is trained on a large database of 3078\ncases from UK Biobank. It is then tested on 756 different cases from UK Biobank\nand three other state-of-the-art cohorts (ACDC with 100 cases, Sunnybrook with\n30 cases, RVSC with 16 cases). Results comparable or even better than the\nstate-of-the-art in terms of distance measures are achieved. They also\nemphasize the assets of our method, namely enhanced spatial consistency\n(currently neither considered nor achieved by the state-of-the-art), and the\ngeneralization ability to unseen cases even from other databases.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Consistent Biventricular Myocardial Segmentation Using Deep Learning\n  for Mesh Generation",
+        "  We present a novel automated method to segment the myocardium of both left\nand right ventricles in MRI volumes. The segmentation is consistent in 3D\nacross the slices such that it can be directly used for mesh generation. Two\nspecific neural networks with multi-scale coarse-to-fine prediction structure\nare proposed to cope with the small training dataset and trained using an\noriginal loss function. The former segments a slice in the middle of the\nvolume. Then the latter iteratively propagates the slice segmentations towards\nthe base and the apex, in a spatially consistent way. We perform 5-fold\ncross-validation on the 15 cases from STACOM to validate the method. For\ntraining, we use real cases and their synthetic variants generated by combining\nmotion simulation and image synthesis. Accurate and consistent testing results\nare obtained.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Interpreter Networks for Viewer-Centered Wireframe Modeling",
+        "  Understanding 3D object structure from a single image is an important but\nchallenging task in computer vision, mostly due to the lack of 3D object\nannotations to real images. Previous research tackled this problem by either\nsearching for a 3D shape that best explains 2D annotations, or training purely\non synthetic data with ground truth 3D information. In this work, we propose 3D\nINterpreter Networks (3D-INN), an end-to-end trainable framework that\nsequentially estimates 2D keypoint heatmaps and 3D object skeletons and poses.\nOur system learns from both 2D-annotated real images and synthetic 3D data.\nThis is made possible mainly by two technical innovations. First, heatmaps of\n2D keypoints serve as an intermediate representation to connect real and\nsynthetic data. 3D-INN is trained on real images to estimate 2D keypoint\nheatmaps from an input image; it then predicts 3D object structure from\nheatmaps using knowledge learned from synthetic 3D shapes. By doing so, 3D-INN\nbenefits from the variation and abundance of synthetic 3D objects, without\nsuffering from the domain difference between real and synthesized images, often\ndue to imperfect rendering. Second, we propose a Projection Layer, mapping\nestimated 3D structure back to 2D. During training, it ensures 3D-INN to\npredict 3D structure whose projection is consistent with the 2D annotations to\nreal images. Experiments show that the proposed system performs well on both 2D\nkeypoint estimation and 3D structure recovery. We also demonstrate that the\nrecovered 3D information has wide vision applications, such as image retrieval.\n",
+        "computer-vision",
+    ],
+    [
+        "3D Morphology Prediction of Progressive Spinal Deformities from\n  Probabilistic Modeling of Discriminant Manifolds",
+        "  We introduce a novel approach for predicting the progression of adolescent\nidiopathic scoliosis from 3D spine models reconstructed from biplanar X-ray\nimages. Recent progress in machine learning have allowed to improve\nclassification and prognosis rates, but lack a probabilistic framework to\nmeasure uncertainty in the data. We propose a discriminative probabilistic\nmanifold embedding where locally linear mappings transform data points from\nhigh-dimensional space to corresponding low-dimensional coordinates. A\ndiscriminant adjacency matrix is constructed to maximize the separation between\nprogressive and non-progressive groups of patients diagnosed with scoliosis,\nwhile minimizing the distance in latent variables belonging to the same class.\nTo predict the evolution of deformation, a baseline reconstruction is projected\nonto the manifold, from which a spatiotemporal regression model is built from\nparallel transport curves inferred from neighboring exemplars. Rate of\nprogression is modulated from the spine flexibility and curve magnitude of the\n3D spine deformation. The method was tested on 745 reconstructions from 133\nsubjects using longitudinal 3D reconstructions of the spine, with results\ndemonstrating the discriminatory framework can identify between progressive and\nnon-progressive of scoliotic patients with a classification rate of 81% and\nprediction differences of 2.1$^{o}$ in main curve angulation, outperforming\nother manifold learning methods. Our method achieved a higher prediction\naccuracy and improved the modeling of spatiotemporal morphological changes in\nhighly deformed spines compared to other learning methods.\n",
+        "computer-vision",
+    ],
+    [
+        "3D-PRNN: Generating Shape Primitives with Recurrent Neural Networks",
+        "  The success of various applications including robotics, digital content\ncreation, and visualization demand a structured and abstract representation of\nthe 3D world from limited sensor data. Inspired by the nature of human\nperception of 3D shapes as a collection of simple parts, we explore such an\nabstract shape representation based on primitives. Given a single depth image\nof an object, we present 3D-PRNN, a generative recurrent neural network that\nsynthesizes multiple plausible shapes composed of a set of primitives. Our\ngenerative model encodes symmetry characteristics of common man-made objects,\npreserves long-range structural coherence, and describes objects of varying\ncomplexity with a compact representation. We also propose a method based on\nGaussian Fields to generate a large scale dataset of primitive-based shape\nrepresentations to train our network. We evaluate our approach on a wide range\nof examples and show that it outperforms nearest-neighbor based shape retrieval\nmethods and is on-par with voxel-based generative models while using a\nsignificantly reduced parameter space.\n",
+        "computer-vision",
+    ],
+    [
+        "3LC: Lightweight and Effective Traffic Compression for Distributed\n  Machine Learning",
+        "  The performance and efficiency of distributed machine learning (ML) depends\nsignificantly on how long it takes for nodes to exchange state changes.\nOverly-aggressive attempts to reduce communication often sacrifice final model\naccuracy and necessitate additional ML techniques to compensate for this loss,\nlimiting their generality. Some attempts to reduce communication incur high\ncomputation overhead, which makes their performance benefits visible only over\nslow networks.\n  We present 3LC, a lossy compression scheme for state change traffic that\nstrikes balance between multiple goals: traffic reduction, accuracy,\ncomputation overhead, and generality. It combines three new\ntechniques---3-value quantization with sparsity multiplication, quartic\nencoding, and zero-run encoding---to leverage strengths of quantization and\nsparsification techniques and avoid their drawbacks. It achieves a data\ncompression ratio of up to 39--107X, almost the same test accuracy of trained\nmodels, and high compression speed. Distributed ML frameworks can employ 3LC\nwithout modifications to existing ML algorithms. Our experiments show that 3LC\nreduces wall-clock training time of ResNet-110--based image classifiers for\nCIFAR-10 on a 10-GPU cluster by up to 16--23X compared to TensorFlow's baseline\ndesign.\n",
+        "computer-vision",
+    ],
+    [
+        "8-Bit Approximations for Parallelism in Deep Learning",
+        "  The creation of practical deep learning data-products often requires\nparallelization across processors and computers to make deep learning feasible\non large data sets, but bottlenecks in communication bandwidth make it\ndifficult to attain good speedups through parallelism. Here we develop and test\n8-bit approximation algorithms which make better use of the available bandwidth\nby compressing 32-bit gradients and nonlinear activations to 8-bit\napproximations. We show that these approximations do not decrease predictive\nperformance on MNIST, CIFAR10, and ImageNet for both model and data parallelism\nand provide a data transfer speedup of 2x relative to 32-bit parallelism. We\nbuild a predictive model for speedups based on our experimental data, verify\nits validity on known speedup data, and show that we can obtain a speedup of\n50x and more on a system of 96 GPUs compared to a speedup of 23x for 32-bit. We\ncompare our data types with other methods and show that 8-bit approximations\nachieve state-of-the-art speedups for model parallelism. Thus 8-bit\napproximation is an efficient method to parallelize convolutional networks on\nvery large systems of GPUs.\n",
+        "computer-vision",
+    ],
+    [
+        "A Batchwise Monotone Algorithm for Dictionary Learning",
+        "  We propose a batchwise monotone algorithm for dictionary learning. Unlike the\nstate-of-the-art dictionary learning algorithms which impose sparsity\nconstraints on a sample-by-sample basis, we instead treat the samples as a\nbatch, and impose the sparsity constraint on the whole. The benefit of\nbatchwise optimization is that the non-zeros can be better allocated across the\nsamples, leading to a better approximation of the whole. To accomplish this, we\npropose procedures to switch non-zeros in both rows and columns in the support\nof the coefficient matrix to reduce the reconstruction error. We prove in the\nproposed support switching procedure the objective of the algorithm, i.e., the\nreconstruction error, decreases monotonically and converges. Furthermore, we\nintroduce a block orthogonal matching pursuit algorithm that also operates on\nsample batches to provide a warm start. Experiments on both natural image\npatches and UCI data sets show that the proposed algorithm produces a better\napproximation with the same sparsity levels compared to the state-of-the-art\nalgorithms.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian Nonparametric Approach to Image Super-resolution",
+        "  Super-resolution methods form high-resolution images from low-resolution\nimages. In this paper, we develop a new Bayesian nonparametric model for\nsuper-resolution. Our method uses a beta-Bernoulli process to learn a set of\nrecurring visual patterns, called dictionary elements, from the data. Because\nit is nonparametric, the number of elements found is also determined from the\ndata. We test the results on both benchmark and natural images, comparing with\nseveral other models from the research literature. We perform large-scale human\nevaluation experiments to assess the visual quality of the results. In a first\nimplementation, we use Gibbs sampling to approximate the posterior. However,\nthis algorithm is not feasible for large-scale data. To circumvent this, we\nthen develop an online variational Bayes (VB) algorithm. This algorithm finds\nhigh quality dictionaries in a fraction of the time needed by the Gibbs\nsampler.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian View of the Poisson-Dirichlet Process",
+        "  The two parameter Poisson-Dirichlet Process (PDP), a generalisation of the\nDirichlet Process, is increasingly being used for probabilistic modelling in\ndiscrete areas such as language technology, bioinformatics, and image analysis.\nThere is a rich literature about the PDP and its derivative distributions such\nas the Chinese Restaurant Process (CRP). This article reviews some of the basic\ntheory and then the major results needed for Bayesian modelling of discrete\nproblems including details of priors, posteriors and computation.\n  The PDP allows one to build distributions over countable partitions. The PDP\nhas two other remarkable properties: first it is partially conjugate to itself,\nwhich allows one to build hierarchies of PDPs, and second using a marginalised\nrelative the CRP, one gets fragmentation and clustering properties that lets\none layer partitions to build trees. This article presents the basic theory for\nunderstanding the notion of partitions and distributions over them, the PDP and\nthe CRP, and the important properties of conjugacy, fragmentation and\nclustering, as well as some key related properties such as consistency and\nconvergence. This article also presents a Bayesian interpretation of the\nPoisson-Dirichlet process based on an improper and infinite dimensional\nDirichlet distribution. This means we can understand the process as just\nanother Dirichlet and thus all its sampling properties emerge naturally.\n  The theory of PDPs is usually presented for continuous distributions (more\ngenerally referred to as non-atomic distributions), however, when applied to\ndiscrete distributions its remarkable conjugacy property emerges. This context\nand basic results are also presented, as well as techniques for computing the\nsecond order Stirling numbers that occur in the posteriors for discrete\ndistributions.\n",
+        "computer-vision",
+    ],
+    [
+        "A Bayesian non-parametric method for clustering high-dimensional binary\n  data",
+        "  In many real life problems, objects are described by large number of binary\nfeatures. For instance, documents are characterized by presence or absence of\ncertain keywords; cancer patients are characterized by presence or absence of\ncertain mutations etc. In such cases, grouping together similar\nobjects/profiles based on such high dimensional binary features is desirable,\nbut challenging. Here, I present a Bayesian non parametric algorithm for\nclustering high dimensional binary data. It uses a Dirichlet Process (DP)\nmixture model and simulated annealing to not only cluster binary data, but also\nfind optimal number of clusters in the data. The performance of the algorithm\nwas evaluated and compared with other algorithms using simulated datasets. It\noutperformed all other clustering methods that were tested in the simulation\nstudies. It was also used to cluster real datasets arising from document\nanalysis, handwritten image analysis and cancer research. It successfully\ndivided a set of documents based on their topics, hand written images based on\ndifferent styles of writing digits and identified tissue and mutation\nspecificity of chemotherapy treatments.\n",
+        "computer-vision",
+    ],
+]
+rows = 3000
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=2"
 
-[[cells]]
-id = "train"
-file = "train.py"
-language = "python"
-order = 6
+[[artifacts.embed.display_outputs]]
+bytes = 4608256
+content_type = "tensor/arrow"
+preview = "ndarray shape=(3000, 384) dtype=float32"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=2"
 
-[[cells]]
-id = "evaluate"
-file = "evaluate.py"
-language = "python"
-order = 7
+[artifacts.embed.display]
+bytes = 4608256
+content_type = "tensor/arrow"
+preview = "ndarray shape=(3000, 384) dtype=float32"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=2"
 
-[[cells]]
-id = "plot"
-file = "plot.py"
-language = "python"
-order = 8
+[[artifacts.train.display_outputs]]
+content_type = "json/object"
+bytes = 89
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=2"
 
-[artifacts]
+[artifacts.train.display_outputs.preview]
+train_size = 2400
+test_size = 600
+train_acc = 0.7679
+test_acc = 0.7183
+
+[artifacts.train.display]
+content_type = "json/object"
+bytes = 89
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=2"
+
+[artifacts.train.display.preview]
+train_size = 2400
+test_size = 600
+train_acc = 0.7679
+test_acc = 0.7183
+
+[[artifacts.evaluate.display_outputs]]
+content_type = "json/object"
+bytes = 1279
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=2"
+
+[artifacts.evaluate.display_outputs.preview]
+accuracy = 0.7183
+
+[artifacts.evaluate.display_outputs.preview.per_class]
+accuracy = 0.7183333333333334
+
+[artifacts.evaluate.display_outputs.preview.per_class.computer-vision]
+precision = 0.7653061224489796
+recall = 0.75
+f1-score = 0.7575757575757576
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class.generative]
+precision = 0.6770833333333334
+recall = 0.65
+f1-score = 0.6632653061224489
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class.nlp]
+precision = 0.6831683168316832
+recall = 0.69
+f1-score = 0.6865671641791045
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class.optimization]
+precision = 0.693069306930693
+recall = 0.7
+f1-score = 0.6965174129353234
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class.other]
+precision = 0.58
+recall = 0.58
+f1-score = 0.58
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class.reinforcement-learning]
+precision = 0.9038461538461539
+recall = 0.94
+f1-score = 0.9215686274509803
+support = 100.0
+
+[artifacts.evaluate.display_outputs.preview.per_class."macro avg"]
+precision = 0.7170788722318072
+recall = 0.7183333333333334
+f1-score = 0.7175823780439359
+support = 600.0
+
+[artifacts.evaluate.display_outputs.preview.per_class."weighted avg"]
+precision = 0.7170788722318072
+recall = 0.7183333333333334
+f1-score = 0.7175823780439358
+support = 600.0
+
+[artifacts.evaluate.display]
+content_type = "json/object"
+bytes = 1279
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=2"
+
+[artifacts.evaluate.display.preview]
+accuracy = 0.7183
+
+[artifacts.evaluate.display.preview.per_class]
+accuracy = 0.7183333333333334
+
+[artifacts.evaluate.display.preview.per_class.computer-vision]
+precision = 0.7653061224489796
+recall = 0.75
+f1-score = 0.7575757575757576
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class.generative]
+precision = 0.6770833333333334
+recall = 0.65
+f1-score = 0.6632653061224489
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class.nlp]
+precision = 0.6831683168316832
+recall = 0.69
+f1-score = 0.6865671641791045
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class.optimization]
+precision = 0.693069306930693
+recall = 0.7
+f1-score = 0.6965174129353234
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class.other]
+precision = 0.58
+recall = 0.58
+f1-score = 0.58
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class.reinforcement-learning]
+precision = 0.9038461538461539
+recall = 0.94
+f1-score = 0.9215686274509803
+support = 100.0
+
+[artifacts.evaluate.display.preview.per_class."macro avg"]
+precision = 0.7170788722318072
+recall = 0.7183333333333334
+f1-score = 0.7175823780439359
+support = 600.0
+
+[artifacts.evaluate.display.preview.per_class."weighted avg"]
+precision = 0.7170788722318072
+recall = 0.7183333333333334
+f1-score = 0.7175823780439358
+support = 600.0
+
+[[artifacts.plot.display_outputs]]
+content_type = "image/png"
+bytes = 42160
+width = 1600
+height = 1200
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=2"
+
+[artifacts.plot.display]
+content_type = "image/png"
+bytes = 42160
+width = 1600
+height = 1200
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=2"
 
 [environment]
+requested_python_version = "3.12"
+runtime_python_version = "3.12.11"
+lockfile_hash = "00af773046fc8809fb73ac8118e2786a5405ffcc83bf628bb2769163485d7460"
+python_version = "3.12.11"
+package_count = 7
+declared_package_count = 7
+resolved_package_count = 73
+has_lockfile = true
+last_synced_at = 1776039507180
 
 [cache]
+
+[env]
