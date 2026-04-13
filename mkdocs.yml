@@ -55,6 +55,8 @@ nav:
   - Notebook:
     - Quickstart: getting-started/notebook.md
     - Concepts: notebook/concepts.md
+    - Cell Annotations: notebook/annotations.md
+    - LLM Integration: notebook/llm.md
     - Environment: notebook/environment.md
     - Keyboard Shortcuts: notebook/keyboard.md
   - Core:
