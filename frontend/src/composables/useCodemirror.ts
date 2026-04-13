@@ -29,7 +29,7 @@ export function useCodemirror(
   onMounted(() => {
     if (!container.value) return
 
-    const langExt = python()
+    const langExt = opts.language === 'prompt' ? [] : python()
 
     const runKeymap = keymap.of([
       {
