@@ -156,21 +156,21 @@ class TestAnnotationOverrides:
         client, tmp = setup
         nb = NotebookBuilder(tmp).add_cell(
             "c1",
-            "import os\nvalue = os.getenv('TOKEN')",
+            "import os\nvalue = os.getenv('APP_MODE')",
         )
 
         with open_notebook_session(client, nb.path) as (sid, session):
-            notebook_env = _put_notebook_env(client, sid, {"TOKEN": "notebook"})
-            assert notebook_env["env"] == {"TOKEN": "notebook"}
+            notebook_env = _put_notebook_env(client, sid, {"APP_MODE": "notebook"})
+            assert notebook_env["env"] == {"APP_MODE": "notebook"}
 
-            cell_env = _put_cell_env(client, sid, "c1", {"TOKEN": "cell"})
-            assert cell_env["env"] == {"TOKEN": "cell"}
+            cell_env = _put_cell_env(client, sid, "c1", {"APP_MODE": "cell"})
+            assert cell_env["env"] == {"APP_MODE": "cell"}
 
             with ws_connect(client, sid) as ws:
                 _update_source_and_wait(
                     ws,
                     "c1",
-                    "# @env TOKEN=annotated\nimport os\nvalue = os.getenv('TOKEN')",
+                    "# @env APP_MODE=annotated\nimport os\nvalue = os.getenv('APP_MODE')",
                 )
 
                 result = execute_cell_and_wait(ws, "c1")
@@ -178,9 +178,9 @@ class TestAnnotationOverrides:
                 assert result["payload"]["outputs"]["value"]["preview"] == "annotated"
 
                 cell = _sync_cell(ws, "c1")
-                assert cell["env"] == {"TOKEN": "cell"}
-                assert cell["env_overrides"] == {"TOKEN": "cell"}
-                assert cell["annotations"]["env"] == {"TOKEN": "annotated"}
+                assert cell["env"] == {"APP_MODE": "cell"}
+                assert cell["env_overrides"] == {"APP_MODE": "cell"}
+                assert cell["annotations"]["env"] == {"APP_MODE": "annotated"}
 
     def test_timeout_annotation_beats_saved_timeouts(self, setup):
         client, tmp = setup

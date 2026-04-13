@@ -1603,12 +1603,12 @@ def test_update_notebook_timeout_and_env():
 
         env_response = client.put(
             f"/v1/notebooks/{session_id}/env",
-            json={"env": {"TOKEN": "secret"}},
+            json={"env": {"APP_MODE": "secret"}},
         )
         assert env_response.status_code == 200
         data = env_response.json()
-        assert data["env"] == {"TOKEN": "secret"}
-        assert data["cells"][0]["env"] == {"TOKEN": "secret"}
+        assert data["env"] == {"APP_MODE": "secret"}
+        assert data["cells"][0]["env"] == {"APP_MODE": "secret"}
 
 
 def test_update_cell_timeout_and_env():
@@ -1634,13 +1634,13 @@ def test_update_cell_timeout_and_env():
 
         env_response = client.put(
             f"/v1/notebooks/{session_id}/cells/cell-1/env",
-            json={"env": {"TOKEN": "override"}},
+            json={"env": {"APP_MODE": "override"}},
         )
         assert env_response.status_code == 200
         data = env_response.json()
-        assert data["env"] == {"TOKEN": "override"}
-        assert data["cell"]["env"] == {"TOKEN": "override"}
-        assert data["cell"]["env_overrides"] == {"TOKEN": "override"}
+        assert data["env"] == {"APP_MODE": "override"}
+        assert data["cell"]["env"] == {"APP_MODE": "override"}
+        assert data["cell"]["env_overrides"] == {"APP_MODE": "override"}
 
 
 def test_update_cell_source():

@@ -152,7 +152,7 @@ def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
             notebook_id="reload_env_state",
             name="reload_env_state",
             cells=[CellMeta(id="c1", file="c1.py", order=0)],
-            env={"TOKEN": "a"},
+            env={"APP_MODE": "a"},
         ),
     )
 
@@ -174,7 +174,7 @@ def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
             notebook_id="reload_env_state",
             name="reload_env_state",
             cells=[CellMeta(id="c1", file="c1.py", order=0)],
-            env={"TOKEN": "b"},
+            env={"APP_MODE": "b"},
         ),
     )
     session.reload()

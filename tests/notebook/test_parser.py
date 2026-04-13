@@ -270,7 +270,7 @@ def test_parse_notebook_resolves_notebook_and_cell_runtime_settings():
             created_at=now,
             updated_at=now,
             timeout=12.5,
-            env={"API_ROOT": "https://example.test", "TOKEN": "base"},
+            env={"API_ROOT": "https://example.test", "APP_MODE": "base"},
             cells=[
                 CellMeta(
                     id="cell-1",
@@ -284,7 +284,7 @@ def test_parse_notebook_resolves_notebook_and_cell_runtime_settings():
                     language="python",
                     order=1,
                     timeout=3.0,
-                    env={"TOKEN": "override"},
+                    env={"APP_MODE": "override"},
                 ),
             ],
         )
@@ -295,18 +295,18 @@ def test_parse_notebook_resolves_notebook_and_cell_runtime_settings():
         assert notebook_state.timeout == 12.5
         assert notebook_state.env == {
             "API_ROOT": "https://example.test",
-            "TOKEN": "base",
+            "APP_MODE": "base",
         }
         assert notebook_state.cells[0].timeout == 12.5
         assert notebook_state.cells[0].timeout_override is None
         assert notebook_state.cells[0].env == {
             "API_ROOT": "https://example.test",
-            "TOKEN": "base",
+            "APP_MODE": "base",
         }
         assert notebook_state.cells[1].timeout == 3.0
         assert notebook_state.cells[1].timeout_override == 3.0
         assert notebook_state.cells[1].env == {
             "API_ROOT": "https://example.test",
-            "TOKEN": "override",
+            "APP_MODE": "override",
         }
-        assert notebook_state.cells[1].env_overrides == {"TOKEN": "override"}
+        assert notebook_state.cells[1].env_overrides == {"APP_MODE": "override"}
