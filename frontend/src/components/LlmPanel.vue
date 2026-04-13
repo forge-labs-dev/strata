@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
+import { useStrata } from '../composables/useStrata'
 import { useNotebook } from '../stores/notebook'
 
 const {
+  notebook,
   connected,
   orderedCells,
   llmAvailable,
@@ -22,11 +24,54 @@ const {
   runAgentAction,
   cancelAgent,
 } = useNotebook()
+const strata = useStrata()
 
 const showPanel = ref(false)
 const userMessage = ref('')
 const selectedCellId = ref<string | null>(null)
 const messagesEl = ref<HTMLDivElement | null>(null)
+
+// Model selector
+const showModelPicker = ref(false)
+const availableModels = ref<string[]>([])
+const modelsLoading = ref(false)
+
+function sessionId(): string | null {
+  return (notebook as any).sessionId ?? null
+}
+
+async function fetchModels() {
+  const sid = sessionId()
+  if (!sid) return
+  modelsLoading.value = true
+  try {
+    const data = await strata.getLlmModels(sid)
+    availableModels.value = data.models
+  } catch {
+    availableModels.value = []
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+function toggleModelPicker() {
+  showModelPicker.value = !showModelPicker.value
+  if (showModelPicker.value) {
+    void fetchModels()
+  }
+}
+
+async function selectModel(model: string) {
+  const sid = sessionId()
+  if (!sid) return
+  showModelPicker.value = false
+  try {
+    await strata.updateLlmModel(sid, model)
+    void checkLlmStatus()
+  } catch {
+    // silently ignore
+  }
+}
 
 // Check status every time panel opens (env vars may have changed)
 watch(showPanel, (open) => {
@@ -110,10 +155,33 @@ const totalTokens = computed(() => {
     <button class="panel-toggle" @click="showPanel = !showPanel">
       <span class="toggle-label">
         AI Assistant
-        <span v-if="llmModel" class="model-badge">{{ llmModel }}</span>
+        <span
+          v-if="llmModel"
+          class="model-badge model-badge-clickable"
+          title="Click to change model"
+          @click.stop="toggleModelPicker"
+          >{{ llmModel }}</span
+        >
       </span>
       <span class="toggle-icon">{{ showPanel ? '\u25B2' : '\u25BC' }}</span>
     </button>
+
+    <!-- Model picker dropdown -->
+    <div v-if="showModelPicker && llmAvailable" class="model-picker">
+      <div v-if="modelsLoading" class="model-picker-loading">Loading models...</div>
+      <template v-else-if="availableModels.length > 0">
+        <button
+          v-for="m in availableModels"
+          :key="m"
+          class="model-picker-item"
+          :class="{ active: m === llmModel }"
+          @click="selectModel(m)"
+        >
+          {{ m }}
+        </button>
+      </template>
+      <div v-else class="model-picker-empty">No models found from provider</div>
+    </div>
 
     <div v-if="showPanel" class="panel-content">
       <!-- Not configured -->
@@ -289,6 +357,54 @@ const totalTokens = computed(() => {
   background: #313244;
   padding: 1px 6px;
   border-radius: 4px;
+}
+
+.model-badge-clickable {
+  cursor: pointer;
+}
+
+.model-badge-clickable:hover {
+  background: #45475a;
+  color: #cdd6f4;
+}
+
+.model-picker {
+  border: 1px solid #313244;
+  border-radius: 6px;
+  background: #181825;
+  margin-top: 4px;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.model-picker-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: #a6adc8;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  cursor: pointer;
+}
+
+.model-picker-item:hover {
+  background: #313244;
+  color: #cdd6f4;
+}
+
+.model-picker-item.active {
+  color: #89b4fa;
+  font-weight: 600;
+}
+
+.model-picker-loading,
+.model-picker-empty {
+  padding: 8px 12px;
+  color: #6c7086;
+  font-size: 11px;
 }
 
 .panel-content {
