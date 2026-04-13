@@ -622,13 +622,20 @@ def _serialize_tensor(value: Any, output_dir: Path, variable_name: str) -> dict[
 
 
 def _deserialize_tensor(file_path: Path) -> Any:
-    """Read an Arrow tensor IPC file back to a numpy ndarray."""
+    """Read an Arrow tensor IPC file back to a numpy ndarray.
+
+    Returns a writable copy. ``pa.Tensor.to_numpy()`` produces a
+    zero-copy **read-only** view of the IPC buffer; downstream code
+    (sklearn, numpy in-place ops) expects writable arrays. The copy
+    cost is negligible — we already paid for the I/O.
+    """
+    import numpy as np
     import pyarrow as pa
 
     with open(file_path, "rb") as f:
         buf = pa.py_buffer(f.read())
     tensor = pa.ipc.read_tensor(buf)
-    return tensor.to_numpy()
+    return np.array(tensor.to_numpy())
 
 
 def _deserialize_json(file_path: Path) -> Any:

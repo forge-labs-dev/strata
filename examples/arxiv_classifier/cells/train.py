@@ -1,9 +1,7 @@
-# @worker gpu-fly
-# @timeout 120
+# @worker local
 # Train a logistic regression classifier: embeddings → topic label.
-# Fast even on CPU (~1s for 3K × 384), but runs on the GPU worker so
-# it shares the embedding model's warm container and avoids data
-# transfer back to the client.
+# Runs locally — logistic regression on 3K × 384 takes <1s on CPU,
+# no reason to ship the data to a GPU worker and back.
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
