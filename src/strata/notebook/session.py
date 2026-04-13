@@ -556,6 +556,10 @@ class NotebookSession:
             return
 
         cell.execution_method = result.execution_method
+        if result.success:
+            cell.console_stdout = result.stdout or ""
+            cell.console_stderr = result.stderr or ""
+            self._persist_console_output(cell_id, result.stdout, result.stderr)
         if result.success and result.display_outputs:
             cell.display_outputs = [CellOutput(**output) for output in result.display_outputs]
             cell.display_output = cell.display_outputs[-1]
@@ -641,6 +645,12 @@ class NotebookSession:
             data["shadow_warnings"] = self.dag.shadow_warnings[cell.id]
 
         return data
+
+    def _persist_console_output(self, cell_id: str, stdout: str | None, stderr: str | None) -> None:
+        """Persist stdout/stderr to notebook.toml so they survive reopens."""
+        from strata.notebook.writer import update_cell_console_output
+
+        update_cell_console_output(self.path, cell_id, stdout or "", stderr or "")
 
     def persist_display_outputs(
         self, cell_id: str, display_outputs: list[dict[str, Any]] | None

@@ -301,6 +301,14 @@ class CellState(BaseModel):
         default=None,
         description="Primary persisted display output for the cell (legacy last-item shim)",
     )
+    console_stdout: str = Field(
+        default="",
+        description="Captured stdout from the last execution (persisted for reopen)",
+    )
+    console_stderr: str = Field(
+        default="",
+        description="Captured stderr from the last execution (persisted for reopen)",
+    )
     cache_hit: bool = Field(
         default=False,
         description="Whether last execution was a cache hit",

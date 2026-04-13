@@ -111,6 +111,15 @@ def parse_notebook(directory: Path) -> NotebookState:
                 except Exception:
                     display_outputs = []
 
+        # Restore console output from artifacts section
+        console_stdout = ""
+        console_stderr = ""
+        if isinstance(raw_artifacts, dict):
+            if isinstance(raw_artifacts.get("stdout"), str):
+                console_stdout = raw_artifacts["stdout"]
+            if isinstance(raw_artifacts.get("stderr"), str):
+                console_stderr = raw_artifacts["stderr"]
+
         cell_states.append(
             CellState(
                 id=cell_meta.id,
@@ -127,6 +136,8 @@ def parse_notebook(directory: Path) -> NotebookState:
                 mount_overrides=list(cell_meta.mounts),
                 display_outputs=display_outputs,
                 display_output=display_outputs[-1] if display_outputs else None,
+                console_stdout=console_stdout,
+                console_stderr=console_stderr,
             )
         )
 

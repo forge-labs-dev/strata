@@ -977,6 +977,21 @@ function parseBackendCellPayload(raw: any): Cell {
   )
 
   applySerializedExecutionMetadata(cell, raw)
+
+  // Restore persisted console output so it survives notebook reopens
+  const consoleStdout = typeof raw.console_stdout === 'string' ? raw.console_stdout : ''
+  const consoleStderr = typeof raw.console_stderr === 'string' ? raw.console_stderr : ''
+  const consoleText = [consoleStdout, consoleStderr].filter(Boolean).join('\n')
+  if (consoleText && cell.output) {
+    if (cell.output.scalar && typeof cell.output.scalar === 'object') {
+      ;(cell.output.scalar as Record<string, any>).console = consoleText
+    } else if (!cell.output.scalar) {
+      cell.output.scalar = { console: consoleText }
+    }
+  } else if (consoleText && !cell.output) {
+    cell.output = { contentType: 'json/object', scalar: { console: consoleText } }
+  }
+
   return cell
 }
 

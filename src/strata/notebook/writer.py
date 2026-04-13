@@ -837,6 +837,51 @@ def update_cell_display_outputs(
         tomli_w.dump(toml_data, out)
 
 
+def update_cell_console_output(
+    notebook_dir: Path,
+    cell_id: str,
+    stdout: str,
+    stderr: str,
+) -> None:
+    """Persist stdout/stderr for a cell so they survive notebook reopens.
+
+    Stored in the ``[artifacts.<cell_id>]`` section alongside display outputs.
+    Truncated to 10 KB per stream to avoid bloating notebook.toml.
+    """
+    max_len = 10_000
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    artifacts_data = toml_data.get("artifacts", {})
+    if not isinstance(artifacts_data, dict):
+        artifacts_data = {}
+
+    raw_cell = artifacts_data.get(cell_id, {})
+    cell_artifacts = dict(raw_cell) if isinstance(raw_cell, dict) else {}
+
+    if stdout:
+        cell_artifacts["stdout"] = stdout[:max_len]
+    else:
+        cell_artifacts.pop("stdout", None)
+    if stderr:
+        cell_artifacts["stderr"] = stderr[:max_len]
+    else:
+        cell_artifacts.pop("stderr", None)
+
+    if cell_artifacts:
+        artifacts_data[cell_id] = cell_artifacts
+    else:
+        artifacts_data.pop(cell_id, None)
+
+    toml_data["artifacts"] = artifacts_data
+
+    with open(notebook_toml_path, "wb") as out:
+        tomli_w.dump(toml_data, out)
+
+
 def update_cell_display_output(
     notebook_dir: Path,
     cell_id: str,
