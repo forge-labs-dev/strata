@@ -56,7 +56,7 @@ gpu_image = (
         "scikit-learn>=1.5",
         # Strata itself. Pinned to a specific commit so Modal's image
         # cache busts when the ref changes. Update after pushing fixes.
-        "strata @ git+https://github.com/forge-labs-dev/strata.git@bb56962",
+        "strata @ git+https://github.com/forge-labs-dev/strata.git@7b1fbd1",
     )
 )
 
