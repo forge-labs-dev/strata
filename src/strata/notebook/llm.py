@@ -29,11 +29,11 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _PROVIDER_DEFAULTS: dict[str, tuple[str, str]] = {
-    "ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1", "claude-sonnet-4-20250514"),
-    "OPENAI_API_KEY": ("https://api.openai.com/v1", "gpt-4o"),
+    "ANTHROPIC_API_KEY": ("https://api.anthropic.com/v1", "claude-sonnet-4-6"),
+    "OPENAI_API_KEY": ("https://api.openai.com/v1", "gpt-5.4"),
     "GEMINI_API_KEY": (
         "https://generativelanguage.googleapis.com/v1beta/openai",
-        "gemini-2.0-flash",
+        "gemini-3-flash",
     ),
     "MISTRAL_API_KEY": ("https://api.mistral.ai/v1", "mistral-large-latest"),
 }
@@ -145,7 +145,7 @@ def resolve_llm_config(
     return LlmConfig(
         base_url=base_url or "https://api.openai.com/v1",
         api_key=api_key,
-        model=model or "gpt-4o",
+        model=model or "gpt-5.4",
         max_context_tokens=max_context_tokens,
         max_output_tokens=max_output_tokens,
         timeout_seconds=timeout_seconds,

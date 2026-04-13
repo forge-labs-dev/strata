@@ -10,9 +10,9 @@ Set an API key in the **Runtime panel** under Environment Variables. The key det
 
 | Environment Variable | Provider | Default Model |
 |---------------------|----------|--------------|
-| `ANTHROPIC_API_KEY` | Anthropic | claude-sonnet-4-20250514 |
-| `OPENAI_API_KEY` | OpenAI | gpt-4o |
-| `GEMINI_API_KEY` | Google | gemini-2.0-flash |
+| `ANTHROPIC_API_KEY` | Anthropic | claude-sonnet-4-6 |
+| `OPENAI_API_KEY` | OpenAI | gpt-5.4 |
+| `GEMINI_API_KEY` | Google | gemini-3-flash |
 | `MISTRAL_API_KEY` | Mistral | mistral-large-latest |
 | `STRATA_AI_API_KEY` | Custom (requires `[ai]` config) | — |
 
