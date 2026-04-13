@@ -405,6 +405,23 @@ function overflowSummary(text: string): string {
   return hidden > 0 ? `${hidden} more lines` : 'more'
 }
 
+/** Lightweight JSON syntax highlighting via regex → colored spans. */
+function highlightJson(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/("(?:\\.|[^"\\])*")\s*:/g, '<span class="json-key">$1</span>:')
+    .replace(/:\s*("(?:\\.|[^"\\])*")/g, ': <span class="json-string">$1</span>')
+    .replace(/:\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)/g, ': <span class="json-number">$1</span>')
+    .replace(/:\s*(true|false|null)\b/g, ': <span class="json-bool">$1</span>')
+}
+
+function isJsonLike(text: string): boolean {
+  const trimmed = text.trimStart()
+  return trimmed.startsWith('{') || trimmed.startsWith('[')
+}
+
 /** Check if scalar is only console output (no display value) */
 function isConsoleOnly(scalar: unknown): boolean {
   if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
@@ -910,7 +927,17 @@ function outputKey(output: CellOutput, index: number): string {
               v-else-if="output.scalar !== undefined && !isConsoleOnly(output.scalar)"
               class="output-scalar"
             >
-              <pre>{{
+              <pre
+                v-if="isJsonLike(formatScalar(output.scalar))"
+                v-html="
+                  highlightJson(
+                    outputExpanded || !isLongText(formatScalar(output.scalar))
+                      ? formatScalar(output.scalar)
+                      : compactText(formatScalar(output.scalar)),
+                  )
+                "
+              ></pre>
+              <pre v-else>{{
                 outputExpanded || !isLongText(formatScalar(output.scalar))
                   ? formatScalar(output.scalar)
                   : compactText(formatScalar(output.scalar))
@@ -1670,9 +1697,21 @@ function outputKey(output: CellOutput, index: number): string {
   margin: 0;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 13px;
-  color: #a6e3a1;
+  color: #cdd6f4;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.output-scalar :deep(.json-key) {
+  color: #89b4fa;
+}
+.output-scalar :deep(.json-string) {
+  color: #a6e3a1;
+}
+.output-scalar :deep(.json-number) {
+  color: #fab387;
+}
+.output-scalar :deep(.json-bool) {
+  color: #cba6f7;
 }
 .output-markdown.collapsed {
   max-height: 200px;
