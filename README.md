@@ -61,19 +61,22 @@ time.
 
 ## Distributed Execution
 
-Each cell can declare which machine it runs on:
+Each cell can declare which worker it runs on via a single annotation:
 
 ```python
-# @worker gpu-fly
+# @worker my-gpu
 embeddings = model.encode(abstracts, batch_size=256)
 ```
 
-The notebook routes the cell to the declared worker — a GPU on Modal, a
-DataFusion cluster on Fly, or the local machine — via the Strata executor
-protocol. Workers are registered in `notebook.toml` and the UI shows a
-live "dispatching → gpu-fly" badge during execution.
+You define workers in `notebook.toml` — each one points at an HTTP
+endpoint that implements the Strata executor protocol. A worker can be
+a GPU box on RunPod, a DataFusion cluster on Fly, a beefy EC2 instance,
+or anything else that speaks HTTP. The notebook routes the cell to the
+declared worker at execution time, and the UI shows a live
+"dispatching → my-gpu" badge while it runs.
 
-No deployment code, no infrastructure glue. One annotation per cell.
+No deployment code, no infrastructure glue. Bring your own compute,
+one annotation per cell.
 
 ---
 
@@ -139,4 +142,4 @@ cd frontend && npm run dev       # Frontend dev server (hot reload)
 
 ## License
 
-MIT
+Apache 2.0
