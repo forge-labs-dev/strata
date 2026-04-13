@@ -837,6 +837,25 @@ def update_cell_display_outputs(
         tomli_w.dump(toml_data, out)
 
 
+def update_notebook_ai_model(notebook_dir: Path, model: str) -> None:
+    """Update the notebook's default LLM model in [ai] section."""
+    notebook_dir = Path(notebook_dir)
+    notebook_toml_path = notebook_dir / "notebook.toml"
+
+    with open(notebook_toml_path, "rb") as f:
+        toml_data = tomllib.load(f)
+
+    ai = toml_data.get("ai", {})
+    if not isinstance(ai, dict):
+        ai = {}
+    ai["model"] = model
+    toml_data["ai"] = ai
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+
+    with open(notebook_toml_path, "wb") as f:
+        tomli_w.dump(toml_data, f)
+
+
 def update_cell_console_output(
     notebook_dir: Path,
     cell_id: str,

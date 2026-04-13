@@ -1891,6 +1891,75 @@ async def llm_status(notebook_id: str) -> dict:
     }
 
 
+@router.get("/{notebook_id}/ai/models")
+async def llm_models(notebook_id: str) -> dict:
+    """Fetch available models from the configured LLM provider.
+
+    Queries the provider's ``/models`` endpoint (OpenAI-compatible) and
+    returns a list of model IDs sorted alphabetically.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    config = _get_llm_config(session)
+    if config is None:
+        return {"models": [], "current": None}
+
+    from strata.notebook.llm import infer_provider_name
+
+    models: list[str] = []
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{config.base_url.rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {config.api_key}"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                raw = data.get("data") or data.get("models") or []
+                for item in raw:
+                    model_id = item.get("id") if isinstance(item, dict) else str(item)
+                    if model_id:
+                        models.append(model_id)
+                models.sort()
+    except Exception:
+        logger.debug("Failed to fetch models from %s", config.base_url, exc_info=True)
+
+    return {
+        "models": models,
+        "current": config.model,
+        "provider": infer_provider_name(config.base_url),
+    }
+
+
+class UpdateAiModelRequest(BaseModel):
+    """Request to update the notebook's default LLM model."""
+
+    model: str = Field(..., max_length=200, description="Model ID")
+
+
+@router.put("/{notebook_id}/ai/model")
+async def update_ai_model(notebook_id: str, req: UpdateAiModelRequest) -> dict:
+    """Set the notebook's default LLM model.
+
+    Writes to the ``[ai]`` section of notebook.toml.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    from strata.notebook.writer import update_notebook_ai_model
+
+    update_notebook_ai_model(session.path, req.model)
+    session.reload()
+
+    config = _get_llm_config(session)
+    return {
+        "model": config.model if config else req.model,
+    }
+
+
 def _prepare_chat_request(session, req: LlmCompleteRequest):
     """Resolve config + build messages for a chat request.
 

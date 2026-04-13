@@ -958,6 +958,30 @@ async function getLlmStatus(notebookId: string): Promise<LlmStatusResponse> {
   return readJson<LlmStatusResponse>(resp)
 }
 
+async function getLlmModels(
+  notebookId: string,
+): Promise<{ models: string[]; current: string | null; provider: string | null }> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/models`, {
+    timeoutMs: 15_000,
+  })
+  if (!resp.ok) {
+    return { models: [], current: null, provider: null }
+  }
+  return readJson<{ models: string[]; current: string | null; provider: string | null }>(resp)
+}
+
+async function updateLlmModel(notebookId: string, model: string): Promise<{ model: string }> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/model`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to update model')
+  }
+  return readJson<{ model: string }>(resp)
+}
+
 /**
  * Stream a chat completion from /ai/stream via SSE.
  *
@@ -1130,6 +1154,8 @@ export function useStrata() {
     listSessions,
     getSession,
     getLlmStatus,
+    getLlmModels,
+    updateLlmModel,
     llmChatStream,
     agentRun,
   }
