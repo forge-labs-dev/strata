@@ -1,3 +1,4 @@
+# @name Load arXiv Papers
 # @worker local
 # Load arXiv ML papers from Hugging Face and assign topic categories.
 # 118K real papers with titles and abstracts. We sample 20K and assign

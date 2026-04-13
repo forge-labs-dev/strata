@@ -1,3 +1,4 @@
+# @name Train Classifier
 # @worker local
 # Train a logistic regression classifier: embeddings → topic label.
 # Runs locally — logistic regression on 3K × 384 takes <1s on CPU,

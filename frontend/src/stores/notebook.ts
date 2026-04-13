@@ -593,6 +593,7 @@ function applySerializedExecutionMetadata(cell: Cell, raw: Record<string, any>) 
 function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
   if (!raw) return undefined
   return {
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name : null,
     worker: raw.worker ?? null,
     timeout: raw.timeout ?? null,
     env: raw.env || {},

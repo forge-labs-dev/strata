@@ -1,3 +1,4 @@
+# @name Aggregate by Topic
 # @worker df-cluster
 # Aggregate paper counts per topic using DataFusion SQL.
 # Dispatched to the df-cluster worker which has DataFusion installed.

@@ -1,3 +1,4 @@
+# @name Evaluate Model
 # @worker local
 # Evaluation on the held-out test set. Small data, runs locally.
 from sklearn.metrics import accuracy_score, classification_report

@@ -1,3 +1,4 @@
+# @name Stratified Sample
 # @worker df-cluster
 # Stratified sample: take up to 500 papers per topic so the embedding
 # step runs in seconds, not minutes. Uses DataFusion window functions.

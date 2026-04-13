@@ -6,6 +6,7 @@ and environment variables.
 
 Supported annotations::
 
+    # @name <display name>        — Human-readable cell name for DAG display
     # @worker <name>              — Route to a named worker backend
     # @timeout <seconds>          — Override execution timeout
     # @mount <name> <uri> [mode]  — Add/override a filesystem mount
@@ -94,7 +95,7 @@ def parse_annotations(source: str) -> CellAnnotations:
                 result.env[env_key] = env_val
 
         elif key == "name":
-            if value and value.isidentifier():
+            if value:
                 result.name = value
 
         elif key == "model":

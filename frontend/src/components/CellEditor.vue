@@ -472,6 +472,13 @@ function outputKey(output: CellOutput, index: number): string {
         <div class="cell-meta-main">
           <span class="cell-lang">{{ cell.language }}</span>
           <span
+            v-if="cell.annotations?.name"
+            class="name-badge"
+            :title="`Cell name: ${cell.annotations.name}`"
+          >
+            {{ cell.annotations.name }}
+          </span>
+          <span
             v-if="cell.isLeaf"
             class="leaf-badge"
             title="This cell is a leaf (no downstream consumers)"
@@ -1041,6 +1048,13 @@ function outputKey(output: CellOutput, index: number): string {
 }
 .cell-lang {
   text-transform: uppercase;
+  font-weight: 600;
+}
+.name-badge {
+  background: #89b4fa22;
+  color: #89b4fa;
+  padding: 1px 6px;
+  border-radius: 3px;
   font-weight: 600;
 }
 .cell-vars code {

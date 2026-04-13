@@ -626,6 +626,7 @@ class NotebookSession:
         )
         annotations = parse_annotations(cell.source)
         data["annotations"] = {
+            "name": annotations.name,
             "worker": annotations.worker,
             "timeout": annotations.timeout,
             "env": annotations.env,

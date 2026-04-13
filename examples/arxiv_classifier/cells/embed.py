@@ -1,3 +1,4 @@
+# @name Embed Abstracts
 # @worker gpu-fly
 # @timeout 300
 # Generate sentence-transformer embeddings for each paper's abstract.

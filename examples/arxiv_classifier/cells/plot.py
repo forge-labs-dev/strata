@@ -1,3 +1,4 @@
+# @name Confusion Matrix
 # @worker local
 # Visualize the confusion matrix on the held-out test set.
 import matplotlib.pyplot as plt

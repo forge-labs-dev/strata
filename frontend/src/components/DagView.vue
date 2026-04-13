@@ -10,11 +10,13 @@ interface NodeLayout {
   x: number
   y: number
   label: string
+  fullLabel: string
   status: Cell['status']
   depth: number
 }
 
-const nodeSize = { w: 110, h: 36 }
+const nodeSize = { w: 140, h: 36 }
+const maxLabelLen = 18
 const layerGapY = 56
 const siblingGapX = 16
 const padding = 24
@@ -80,11 +82,19 @@ const nodes = computed<NodeLayout[]>(() => {
     for (let i = 0; i < ids.length; i++) {
       const c = cells.find((cell) => cell.id === ids[i])!
       const cellIdx = cells.indexOf(c)
+      // Label priority: @name annotation > variable defines > cell index
+      const name = c.annotations?.name
+      const defines = c.defines.length ? c.defines.join(', ') : null
+      const rawLabel = name || defines || `[${cellIdx + 1}]`
+      const label =
+        rawLabel.length > maxLabelLen ? rawLabel.slice(0, maxLabelLen - 1) + '\u2026' : rawLabel
+
       result.push({
         id: c.id,
         x: startX + i * (nodeSize.w + siblingGapX),
         y: padding + d * layerGapY + nodeSize.h / 2,
-        label: `[${cellIdx + 1}]`,
+        label,
+        fullLabel: rawLabel,
         status: c.status,
         depth: d,
       })
@@ -233,6 +243,7 @@ function edgePath(from: NodeLayout, to: NodeLayout): string {
           font-size="11"
           font-family="JetBrains Mono, Fira Code, monospace"
         >
+          <title>{{ n.fullLabel }}</title>
           {{ n.label }}
         </text>
       </g>

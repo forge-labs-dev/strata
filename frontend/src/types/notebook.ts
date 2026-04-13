@@ -60,6 +60,8 @@ export interface WorkerCatalogEntry extends WorkerSpec {
 }
 
 export interface CellAnnotations {
+  /** Human-readable cell name from @name annotation, displayed in DAG */
+  name?: string | null
   worker?: string | null
   timeout?: number | null
   env: Record<string, string>
