@@ -45,9 +45,26 @@ def _serialize_mounts(mounts: list[MountSpec]) -> list[dict[str, str]]:
     ]
 
 
+_SENSITIVE_KEY_PATTERNS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL")
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    """Return True if the env var name looks like a secret."""
+    upper = key.upper()
+    return any(pattern in upper for pattern in _SENSITIVE_KEY_PATTERNS)
+
+
 def _serialize_env(env: dict[str, str]) -> dict[str, str]:
-    """Convert env vars into a TOML-friendly dict."""
-    return {key: value for key, value in sorted(env.items())}
+    """Convert env vars into a TOML-friendly dict.
+
+    Values for sensitive-looking keys (API keys, tokens, passwords) are
+    stripped so they never reach disk. The key names are preserved so
+    the notebook remembers *which* vars are configured — the user
+    re-enters values via the Runtime panel on next open.
+    """
+    return {
+        key: ("" if _is_sensitive_env_key(key) else value) for key, value in sorted(env.items())
+    }
 
 
 def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:

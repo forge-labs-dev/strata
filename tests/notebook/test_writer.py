@@ -279,7 +279,7 @@ def test_write_notebook_toml():
                     order=0,
                     worker="gpu-worker",
                     timeout=2.0,
-                    env={"TOKEN": "cell-secret"},
+                    env={"CELL_MODE": "cell-secret"},
                     mounts=[
                         MountSpec(
                             name="scratch",
@@ -309,9 +309,9 @@ def test_write_notebook_toml():
         assert notebook_state.cells[0].timeout_override == 2.0
         assert notebook_state.cells[0].env == {
             "API_ROOT": "https://example.test",
-            "TOKEN": "cell-secret",
+            "CELL_MODE": "cell-secret",
         }
-        assert notebook_state.cells[0].env_overrides == {"TOKEN": "cell-secret"}
+        assert notebook_state.cells[0].env_overrides == {"CELL_MODE": "cell-secret"}
         assert notebook_state.cells[1].worker == "gpu-default"
         assert notebook_state.cells[1].timeout == 9.5
         assert len(notebook_state.cells[0].mounts) == 2
@@ -372,11 +372,11 @@ def test_update_notebook_timeout_and_env():
     with tempfile.TemporaryDirectory() as tmpdir:
         notebook_dir = create_notebook(Path(tmpdir), "Notebook Runtime")
         update_notebook_timeout(notebook_dir, 7.5)
-        update_notebook_env(notebook_dir, {"TOKEN": "secret"})
+        update_notebook_env(notebook_dir, {"DATABASE_URL": "postgres://localhost/db"})
 
         notebook_state = parse_notebook(notebook_dir)
         assert notebook_state.timeout == 7.5
-        assert notebook_state.env == {"TOKEN": "secret"}
+        assert notebook_state.env == {"DATABASE_URL": "postgres://localhost/db"}
 
 
 def test_update_notebook_env_preserves_ai_config():
@@ -387,16 +387,49 @@ def test_update_notebook_env_preserves_ai_config():
         with open(notebook_dir / "notebook.toml", "a", encoding="utf-8") as f:
             f.write('\n[ai]\nmodel = "gpt-4o"\nbase_url = "https://api.openai.com/v1"\n')
 
-        update_notebook_env(notebook_dir, {"TOKEN": "secret"})
+        update_notebook_env(notebook_dir, {"DATABASE_URL": "postgres://localhost/db"})
 
         with open(notebook_dir / "notebook.toml", "rb") as f:
             data = tomllib.load(f)
 
-        assert data["env"] == {"TOKEN": "secret"}
+        assert data["env"] == {"DATABASE_URL": "postgres://localhost/db"}
         assert data["ai"] == {
             "model": "gpt-4o",
             "base_url": "https://api.openai.com/v1",
         }
+
+
+def test_sensitive_env_values_stripped_on_write():
+    """API keys, tokens, and passwords should not be persisted to disk."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Secrets Test")
+
+        update_notebook_env(
+            notebook_dir,
+            {
+                "OPENAI_API_KEY": "sk-proj-secret123",
+                "ANTHROPIC_API_KEY": "sk-ant-secret456",
+                "MY_SECRET": "hunter2",
+                "AUTH_TOKEN": "tok_abc",
+                "DB_PASSWORD": "p@ssw0rd",
+                "DATABASE_URL": "postgres://localhost/db",
+                "DEBUG": "true",
+            },
+        )
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        env = data["env"]
+        # Sensitive values stripped to empty string
+        assert env["OPENAI_API_KEY"] == ""
+        assert env["ANTHROPIC_API_KEY"] == ""
+        assert env["MY_SECRET"] == ""
+        assert env["AUTH_TOKEN"] == ""
+        assert env["DB_PASSWORD"] == ""
+        # Non-sensitive values preserved
+        assert env["DATABASE_URL"] == "postgres://localhost/db"
+        assert env["DEBUG"] == "true"
 
 
 def test_update_cell_worker():
@@ -420,15 +453,15 @@ def test_update_cell_timeout_and_env():
         add_cell_to_notebook(notebook_dir, "cell-1")
 
         update_notebook_timeout(notebook_dir, 7.5)
-        update_notebook_env(notebook_dir, {"TOKEN": "base"})
+        update_notebook_env(notebook_dir, {"APP_MODE": "base"})
         update_cell_timeout(notebook_dir, "cell-1", 2.0)
-        update_cell_env(notebook_dir, "cell-1", {"TOKEN": "override"})
+        update_cell_env(notebook_dir, "cell-1", {"APP_MODE": "override"})
 
         notebook_state = parse_notebook(notebook_dir)
         assert notebook_state.cells[0].timeout == 2.0
         assert notebook_state.cells[0].timeout_override == 2.0
-        assert notebook_state.cells[0].env == {"TOKEN": "override"}
-        assert notebook_state.cells[0].env_overrides == {"TOKEN": "override"}
+        assert notebook_state.cells[0].env == {"APP_MODE": "override"}
+        assert notebook_state.cells[0].env_overrides == {"APP_MODE": "override"}
 
 
 def test_create_notebook_preserves_existing_id():
