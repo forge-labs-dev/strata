@@ -1322,6 +1322,11 @@ async def update_notebook_env_endpoint(
     try:
         update_notebook_env(session.path, req.env)
         session.reload()
+        # The disk writer strips sensitive values (API keys, tokens) so
+        # they don't leak into git. Restore the full values in the
+        # in-memory session so the LLM config and Runtime panel work
+        # for the duration of this session.
+        session.notebook_state.env.update(req.env)
         return {
             "env": session.notebook_state.env,
             "cells": session.serialize_cells(),
@@ -1414,6 +1419,9 @@ async def update_cell_env_endpoint(
         cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
         if cell is None:
             raise HTTPException(status_code=404, detail="Cell not found")
+        # Restore sensitive values stripped from disk (same as notebook env)
+        cell.env.update(req.env)
+        cell.env_overrides.update(req.env)
         return {
             "cell": session.serialize_cell(cell),
             "env": cell.env_overrides,
