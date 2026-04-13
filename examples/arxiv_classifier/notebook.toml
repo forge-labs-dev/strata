@@ -1,7 +1,7 @@
 notebook_id = "arxiv-classifier-001"
 name = "arXiv Paper Classifier (distributed)"
 created_at = 2026-04-10 00:00:00+00:00
-updated_at = "2026-04-13T01:03:11.707516+00:00"
+updated_at = "2026-04-13T06:24:00.143016+00:00"
 cells = [
     { id = "load", file = "load.py", language = "python", order = 0 },
     { id = "aggregate", file = "aggregate.py", language = "python", order = 1 },
@@ -143,7 +143,7 @@ preview = [
         "optimization",
     ],
 ]
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=5"
 
 [artifacts.load.display]
 content_type = "arrow/ipc"
@@ -256,7 +256,7 @@ preview = [
         "optimization",
     ],
 ]
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_load_var___display__0@v=5"
 
 [[artifacts.aggregate.display_outputs]]
 bytes = 1448
@@ -299,7 +299,7 @@ preview = [
     ],
 ]
 rows = 6
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=5"
 
 [artifacts.aggregate.display]
 bytes = 1448
@@ -342,7 +342,7 @@ preview = [
     ],
 ]
 rows = 6
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_aggregate_var___display__0@v=5"
 
 [[artifacts.sample.display_outputs]]
 bytes = 3526568
@@ -455,7 +455,7 @@ preview = [
     ],
 ]
 rows = 3000
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=3"
 
 [artifacts.sample.display]
 bytes = 3526568
@@ -568,24 +568,24 @@ preview = [
     ],
 ]
 rows = 3000
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___display__0@v=3"
 
 [[artifacts.embed.display_outputs]]
 bytes = 4608256
 content_type = "tensor/arrow"
 preview = "ndarray shape=(3000, 384) dtype=float32"
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=3"
 
 [artifacts.embed.display]
 bytes = 4608256
 content_type = "tensor/arrow"
 preview = "ndarray shape=(3000, 384) dtype=float32"
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=3"
 
 [[artifacts.train.display_outputs]]
 content_type = "json/object"
 bytes = 89
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=3"
 
 [artifacts.train.display_outputs.preview]
 train_size = 2400
@@ -596,7 +596,7 @@ test_acc = 0.7183
 [artifacts.train.display]
 content_type = "json/object"
 bytes = 89
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_train_var___display__0@v=3"
 
 [artifacts.train.display.preview]
 train_size = 2400
@@ -607,7 +607,7 @@ test_acc = 0.7183
 [[artifacts.evaluate.display_outputs]]
 content_type = "json/object"
 bytes = 1279
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=3"
 
 [artifacts.evaluate.display_outputs.preview]
 accuracy = 0.7183
@@ -666,7 +666,7 @@ support = 600.0
 [artifacts.evaluate.display]
 content_type = "json/object"
 bytes = 1279
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_evaluate_var___display__0@v=3"
 
 [artifacts.evaluate.display.preview]
 accuracy = 0.7183
@@ -727,14 +727,14 @@ content_type = "image/png"
 bytes = 42160
 width = 1600
 height = 1200
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=3"
 
 [artifacts.plot.display]
 content_type = "image/png"
 bytes = 42160
 width = 1600
 height = 1200
-artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=2"
+artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_plot_var___display__0@v=3"
 
 [environment]
 requested_python_version = "3.12"

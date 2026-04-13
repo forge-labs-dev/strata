@@ -66,8 +66,6 @@ class TestNameInRoutes:
     """Verify that @name flows through to the API response."""
 
     def test_cell_annotations_include_name(self, tmp_path):
-        from pathlib import Path
-
         from strata.notebook.parser import parse_notebook
         from strata.notebook.session import NotebookSession
         from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
@@ -84,8 +82,6 @@ class TestNameInRoutes:
         assert cell["annotations"]["name"] == "My Cool Cell"
 
     def test_cell_annotations_name_absent_when_not_set(self, tmp_path):
-        from pathlib import Path
-
         from strata.notebook.parser import parse_notebook
         from strata.notebook.session import NotebookSession
         from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
