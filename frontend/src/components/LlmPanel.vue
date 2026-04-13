@@ -166,23 +166,6 @@ const totalTokens = computed(() => {
       <span class="toggle-icon">{{ showPanel ? '\u25B2' : '\u25BC' }}</span>
     </button>
 
-    <!-- Model picker dropdown -->
-    <div v-if="showModelPicker && llmAvailable" class="model-picker">
-      <div v-if="modelsLoading" class="model-picker-loading">Loading models...</div>
-      <template v-else-if="availableModels.length > 0">
-        <button
-          v-for="m in availableModels"
-          :key="m"
-          class="model-picker-item"
-          :class="{ active: m === llmModel }"
-          @click="selectModel(m)"
-        >
-          {{ m }}
-        </button>
-      </template>
-      <div v-else class="model-picker-empty">No models found from provider</div>
-    </div>
-
     <div v-if="showPanel" class="panel-content">
       <!-- Not configured -->
       <div v-if="!llmAvailable" class="llm-unconfigured">
@@ -194,6 +177,29 @@ const totalTokens = computed(() => {
       </div>
 
       <template v-else>
+        <!-- Model selector -->
+        <div class="model-selector">
+          <span class="model-selector-label">Model:</span>
+          <button class="model-selector-btn" @click="toggleModelPicker">
+            {{ llmModel || 'Select model' }}
+            <span class="model-chevron">{{ showModelPicker ? '\u25B2' : '\u25BC' }}</span>
+          </button>
+        </div>
+        <div v-if="showModelPicker" class="model-picker">
+          <div v-if="modelsLoading" class="model-picker-loading">Loading models...</div>
+          <template v-else-if="availableModels.length > 0">
+            <button
+              v-for="m in availableModels"
+              :key="m"
+              class="model-picker-item"
+              :class="{ active: m === llmModel }"
+              @click="selectModel(m)"
+            >
+              {{ m }}
+            </button>
+          </template>
+          <div v-else class="model-picker-empty">No models found from provider</div>
+        </div>
         <!-- Messages -->
         <div ref="messagesEl" class="llm-messages">
           <div v-if="llmMessages.length === 0" class="llm-empty">
@@ -366,6 +372,44 @@ const totalTokens = computed(() => {
 .model-badge-clickable:hover {
   background: #45475a;
   color: #cdd6f4;
+}
+
+.model-selector {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid #2a2a3c;
+}
+
+.model-selector-label {
+  font-size: 11px;
+  color: #6c7086;
+  flex-shrink: 0;
+}
+
+.model-selector-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px;
+  background: #313244;
+  border: 1px solid #45475a;
+  border-radius: 4px;
+  color: #cdd6f4;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  cursor: pointer;
+}
+
+.model-selector-btn:hover {
+  border-color: #89b4fa;
+}
+
+.model-chevron {
+  font-size: 8px;
+  color: #6c7086;
 }
 
 .model-picker {
