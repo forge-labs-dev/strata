@@ -1655,6 +1655,30 @@ class CellExecutor:
                 execution_method="llm",
             )
 
+        # Compute and record the standard provenance hash so the staleness
+        # checker can recognise this cell as "ready" on subsequent recomputes.
+        # The prompt executor uses its own provenance (rendered text + model)
+        # for artifact caching, which is correct for dedup but invisible to
+        # compute_staleness. Recording the standard hash lets the
+        # "can_preserve_ready" path match.
+        #
+        # Must mirror compute_staleness exactly: same runtime_env, worker
+        # identity, and mount fingerprints, or the hashes diverge.
+        source_hash = compute_source_hash(source)
+        annotations = parse_annotations(source)
+        runtime_env = self._resolve_effective_runtime_env(cell_id, annotations.env)
+        effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
+        runtime_identity = worker_runtime_identity(self.session.notebook_state, effective_worker)
+        env_hash = compute_execution_env_hash(
+            self.session.path, runtime_env, runtime_identity=runtime_identity
+        )
+        input_hashes = self._collect_input_hashes(cell_id)
+        mount_specs = self._resolve_cell_mount_specs(cell_id, source)
+        mount_fingerprints, _ = await self._fingerprint_mounts(mount_specs)
+        standard_provenance = compute_provenance_hash(
+            input_hashes + mount_fingerprints, source_hash, env_hash
+        )
+
         result_dict = await execute_prompt_cell(
             self.session,
             cell_id,
@@ -1662,6 +1686,14 @@ class CellExecutor:
             llm_config,
             use_cache=use_cache,
         )
+
+        if result_dict.get("success"):
+            cell = next(
+                (c for c in self.session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            if cell is not None:
+                cell.last_provenance_hash = standard_provenance
 
         return CellExecutionResult(
             cell_id=cell_id,

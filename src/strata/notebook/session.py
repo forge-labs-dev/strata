@@ -493,7 +493,7 @@ class NotebookSession:
                     staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 else:
                     can_preserve_uncached_ready = (
-                        cell.is_leaf
+                        (cell.is_leaf or cell.language == "prompt")
                         and cell.status == CellStatus.READY
                         and cell.last_provenance_hash == provenance_hash
                     )
