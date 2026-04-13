@@ -601,4 +601,17 @@ function goHome() {
 .btn-danger:disabled {
   opacity: 0.6;
 }
+
+/* Flash highlight when jumping to a cell from the DAG view */
+:deep(.dag-jump-highlight) {
+  animation: dag-jump-flash 1.5s ease-out;
+}
+@keyframes dag-jump-flash {
+  0% {
+    box-shadow: 0 0 0 3px #89b4fa88;
+  }
+  100% {
+    box-shadow: none;
+  }
+}
 </style>

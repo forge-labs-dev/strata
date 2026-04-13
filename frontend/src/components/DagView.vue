@@ -163,6 +163,16 @@ function resetView() {
   zoom.value = 1
 }
 
+function scrollToCell(cellId: CellId) {
+  const el = document.querySelector(`[data-testid="notebook-cell"][data-cell-id="${cellId}"]`)
+  if (el) {
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    // Brief highlight flash
+    el.classList.add('dag-jump-highlight')
+    setTimeout(() => el.classList.remove('dag-jump-highlight'), 1500)
+  }
+}
+
 function statusColor(status: Cell['status']): string {
   switch (status) {
     case 'ready':
@@ -255,7 +265,7 @@ function edgePath(points: { x: number; y: number }[]): string {
         </text>
 
         <!-- Nodes -->
-        <g v-for="n in nodes" :key="n.id">
+        <g v-for="n in nodes" :key="n.id" class="dag-node" @dblclick.stop="scrollToCell(n.id)">
           <rect
             :x="n.x - nodeSize.w / 2"
             :y="n.y - nodeSize.h / 2"
@@ -328,5 +338,11 @@ function edgePath(points: { x: number; y: number }[]): string {
 }
 .dag-svg {
   display: block;
+}
+.dag-node {
+  cursor: pointer;
+}
+.dag-node:hover rect {
+  filter: brightness(1.3);
 }
 </style>

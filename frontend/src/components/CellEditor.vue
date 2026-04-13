@@ -473,6 +473,7 @@ function outputKey(output: CellOutput, index: number): string {
     class="cell"
     :class="[statusClass, { 'cell-prompt': cell.language === 'prompt' }]"
     data-testid="notebook-cell"
+    :data-cell-id="cell.id"
   >
     <!-- Left gutter -->
     <div class="cell-gutter">
