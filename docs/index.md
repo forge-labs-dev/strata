@@ -7,8 +7,6 @@ artifact. Same code + same inputs = instant cache hit. Change one cell,
 and only that cell and its dependents re-execute — everything else is
 served from the artifact store in milliseconds.
 
-**[Try it now](https://strata-notebook.fly.dev)** — hosted preview, no account needed.
-
 ---
 
 ## Strata Notebook
