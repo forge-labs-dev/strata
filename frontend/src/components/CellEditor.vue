@@ -385,6 +385,26 @@ async function installSuggestedPackage() {
   await addDependencyAction(pkg)
 }
 
+const outputExpanded = ref(false)
+const COMPACT_LINE_LIMIT = 10
+
+function isLongText(text: string | null | undefined): boolean {
+  if (!text) return false
+  return text.split('\n').length > COMPACT_LINE_LIMIT || text.length > 800
+}
+
+function compactText(text: string): string {
+  const lines = text.split('\n')
+  if (lines.length <= COMPACT_LINE_LIMIT && text.length <= 800) return text
+  return lines.slice(0, COMPACT_LINE_LIMIT).join('\n')
+}
+
+function overflowSummary(text: string): string {
+  const totalLines = text.split('\n').length
+  const hidden = totalLines - COMPACT_LINE_LIMIT
+  return hidden > 0 ? `${hidden} more lines` : 'more'
+}
+
 /** Check if scalar is only console output (no display value) */
 function isConsoleOnly(scalar: unknown): boolean {
   if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
@@ -774,7 +794,22 @@ function outputKey(output: CellOutput, index: number): string {
 
       <!-- Console output (stdout/stderr) -->
       <div v-if="!folded && cell.output && consoleOutput(cell.output.scalar)" class="cell-console">
-        <pre>{{ consoleOutput(cell.output.scalar) }}</pre>
+        <pre>{{
+          outputExpanded || !isLongText(consoleOutput(cell.output.scalar))
+            ? consoleOutput(cell.output.scalar)
+            : compactText(consoleOutput(cell.output.scalar)!)
+        }}</pre>
+        <button
+          v-if="isLongText(consoleOutput(cell.output.scalar))"
+          class="output-toggle"
+          @click="outputExpanded = !outputExpanded"
+        >
+          {{
+            outputExpanded
+              ? 'Show less'
+              : `Show more (${overflowSummary(consoleOutput(cell.output.scalar)!)})`
+          }}
+        </button>
       </div>
 
       <!-- Output -->
@@ -857,13 +892,40 @@ function outputKey(output: CellOutput, index: number): string {
             <div
               v-else-if="output.contentType === 'text/markdown' && output.markdownText"
               class="output-markdown"
+              :class="{ collapsed: !outputExpanded && isLongText(output.markdownText) }"
               v-html="renderedMarkdownOutput(output)"
             ></div>
+            <button
+              v-if="
+                output.contentType === 'text/markdown' &&
+                output.markdownText &&
+                isLongText(output.markdownText)
+              "
+              class="output-toggle"
+              @click="outputExpanded = !outputExpanded"
+            >
+              {{ outputExpanded ? 'Show less' : 'Show more' }}
+            </button>
             <div
               v-else-if="output.scalar !== undefined && !isConsoleOnly(output.scalar)"
               class="output-scalar"
             >
-              <pre>{{ formatScalar(output.scalar) }}</pre>
+              <pre>{{
+                outputExpanded || !isLongText(formatScalar(output.scalar))
+                  ? formatScalar(output.scalar)
+                  : compactText(formatScalar(output.scalar))
+              }}</pre>
+              <button
+                v-if="isLongText(formatScalar(output.scalar))"
+                class="output-toggle"
+                @click="outputExpanded = !outputExpanded"
+              >
+                {{
+                  outputExpanded
+                    ? 'Show less'
+                    : `Show more (${overflowSummary(formatScalar(output.scalar))})`
+                }}
+              </button>
             </div>
           </div>
         </template>
@@ -1404,8 +1466,6 @@ function outputKey(output: CellOutput, index: number): string {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   color: #a6adc8;
   white-space: pre-wrap;
-  max-height: 200px;
-  overflow-y: auto;
 }
 
 .editor-container {
@@ -1499,6 +1559,8 @@ function outputKey(output: CellOutput, index: number): string {
 }
 .output-table-wrap {
   overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
 }
 .output-image {
   overflow-x: auto;
@@ -1611,5 +1673,26 @@ function outputKey(output: CellOutput, index: number): string {
   color: #a6e3a1;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.output-markdown.collapsed {
+  max-height: 200px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 70%, transparent 100%);
+}
+.output-toggle {
+  display: block;
+  margin-top: 4px;
+  padding: 2px 8px;
+  background: none;
+  border: 1px solid #313244;
+  border-radius: 4px;
+  color: #6c7086;
+  font-size: 11px;
+  cursor: pointer;
+}
+.output-toggle:hover {
+  border-color: #89b4fa;
+  color: #89b4fa;
 }
 </style>
