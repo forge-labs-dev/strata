@@ -4,7 +4,7 @@ from sklearn.metrics import accuracy_score, classification_report
 from sklearn.model_selection import train_test_split
 
 X = embeddings
-y = sampled_papers["topic"].values
+y = sampled_papers["topic"].to_numpy()
 _, X_test, _, y_test = train_test_split(
     X, y, test_size=0.2, random_state=42, stratify=y
 )
