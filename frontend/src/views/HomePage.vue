@@ -142,15 +142,15 @@ async function deleteRecent(path: string, name: string) {
   dismissError()
   try {
     await strata.deleteNotebookByPath(path)
-    remove(path)
-    if (failedRecentPath.value === path) {
-      dismissError()
-    }
-  } catch (e: any) {
-    error.value = e?.message || 'Failed to delete notebook'
-  } finally {
-    loading.value = false
+  } catch {
+    // If the backend returns 404, the directory is already gone —
+    // fall through and remove from recents anyway.
   }
+  remove(path)
+  if (failedRecentPath.value === path) {
+    dismissError()
+  }
+  loading.value = false
 }
 
 function formatTime(ts: number): string {
