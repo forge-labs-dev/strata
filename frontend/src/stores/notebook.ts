@@ -2509,6 +2509,9 @@ async function updateNotebookEnvAction(env: Record<string, string>) {
   if (data.cells && Array.isArray(data.cells)) {
     syncCellsFromBackend(data.cells)
   }
+  // Re-check LLM availability — the user may have just added or
+  // removed an API key, which changes whether the AI panel is active.
+  void checkLlmStatus()
 }
 
 async function updateCellWorkerAction(cellId: CellId, worker: string | null) {
