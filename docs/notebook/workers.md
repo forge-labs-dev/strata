@@ -65,10 +65,10 @@ transport = "http"
 
 ## Running a Worker
 
-Strata ships a reference executor that implements the full protocol:
+Strata ships a reference executor as the `strata-worker` console script:
 
 ```bash
-python -m strata.notebook.remote_executor --host 0.0.0.0 --port 9000
+strata-worker --host 0.0.0.0 --port 9000
 ```
 
 This starts a FastAPI server that:
@@ -78,7 +78,7 @@ This starts a FastAPI server that:
 - Returns outputs as a gzipped bundle
 - Exposes `/health` for monitoring
 
-The worker runs cells using **its own Python environment** — whatever packages are installed in the worker's interpreter are available to cells. This is how you provide GPU libraries (torch, sentence-transformers) or data engines (datafusion) without installing them locally.
+The worker runs cells using **its own Python environment** — whatever packages are installed in the worker's interpreter are available to cells. This is how you provide GPU libraries (torch, sentence-transformers) or data engines (datafusion) without installing them locally. Install your workload dependencies before launching `strata-worker`.
 
 ### Deploying to Fly.io (CPU worker)
 
@@ -103,7 +103,7 @@ COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/pytho
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 EXPOSE 8080
-CMD ["python", "-m", "strata.notebook.remote_executor", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["strata-worker", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
 Deploy with `fly deploy`. Register the Fly URL as a worker in `notebook.toml`.
@@ -175,10 +175,10 @@ For local testing without cloud deployment, run multiple workers on different po
 
 ```bash
 # Terminal 1: DataFusion worker
-uv run --with datafusion python -m strata.notebook.remote_executor --port 9000
+uv run --with datafusion strata-worker --port 9000
 
 # Terminal 2: GPU worker (with ML packages)
-uv run --with torch --with sentence-transformers python -m strata.notebook.remote_executor --port 9001
+uv run --with torch --with sentence-transformers strata-worker --port 9001
 ```
 
 Point `notebook.toml` at `http://127.0.0.1:9000/v1/execute` and `http://127.0.0.1:9001/v1/execute` during development. Switch to cloud URLs when deploying.

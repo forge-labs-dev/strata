@@ -519,10 +519,16 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     parser = argparse.ArgumentParser(
-        prog="strata-notebook-executor",
-        description="Run the Strata notebook HTTP executor server.",
+        prog="strata-worker",
+        description=(
+            "Run a Strata notebook worker — an HTTP endpoint that accepts "
+            "cells and returns their outputs. Cells run in the Python "
+            "environment this process was started in, so install your "
+            "workload dependencies (pandas, torch, datafusion, ...) before "
+            "launching."
+        ),
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=9000, help="Bind port (default: 9000)")
     parser.add_argument(
         "--log-level",

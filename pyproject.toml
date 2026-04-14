@@ -68,6 +68,7 @@ docs = [
 [project.scripts]
 strata = "strata.cli:main"
 strata-server = "strata.server:main"
+strata-worker = "strata.notebook.remote_executor:main"
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
