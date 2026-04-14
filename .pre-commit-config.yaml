@@ -12,3 +12,6 @@ repos:
         entry: npx prettier --write --ignore-unknown
         language: system
         types_or: [javascript, jsx, ts, tsx, vue, css, json]
+        # Serialize — parallel `npx prettier` invocations race on the
+        # npm cache and fail with ENOTEMPTY in CI.
+        require_serial: true
