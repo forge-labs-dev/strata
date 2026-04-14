@@ -40,6 +40,7 @@ const {
   executeCellWebSocket,
   executeNotebookRunAllWebSocket,
   cleanupWebSocket,
+  ensureWorkersLoaded,
 } = useNotebook()
 
 const editingName = ref(false)
@@ -123,6 +124,11 @@ onMounted(async () => {
   measureNotebookPerf('create_route_ms', 'create_route_start', 'notebook_page_mount')
   measureNotebookPerf('open_route_ms', 'open_route_start', 'notebook_page_mount')
   await connectToSession(props.sessionId)
+  // Fetch the worker catalog on mount so the mode badge in the header
+  // reflects the backend's actual deployment mode. Without this, the
+  // badge stays at its fail-closed default (Service mode) until the
+  // user opens a worker panel.
+  void ensureWorkersLoaded()
 })
 
 watch(

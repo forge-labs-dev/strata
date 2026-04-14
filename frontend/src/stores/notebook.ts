@@ -782,7 +782,10 @@ function updateWorkerHealth(workerName: string, health: WorkerHealth) {
 }
 
 function syncWorkerDefinitionsEditableFromBackend(value: any) {
-  workerDefinitionsEditable.value = value !== false
+  // Fail closed: only treat as editable (personal mode) when the backend
+  // explicitly says so. Unknown / missing / errored responses default to
+  // service mode so the UI doesn't misreport mode before the first sync.
+  workerDefinitionsEditable.value = value === true
 }
 
 function syncServerManagedWorkersFromBackend(serverWorkers: any[]) {
@@ -802,7 +805,8 @@ function clearServerWorkerRegistryState() {
 function resetWorkerCatalogState() {
   availableWorkers.value = []
   workerCatalogLoaded.value = false
-  workerDefinitionsEditable.value = true
+  // Fail closed to service mode; backend will re-sync personal if applicable.
+  workerDefinitionsEditable.value = false
   workerHealthLoading.value = false
   workerHealthCheckedAt.value = null
   notebookWorkerError.value = null
@@ -834,7 +838,10 @@ function parseBackendNotebookRuntimeConfig(raw: any): NotebookRuntimeConfig {
       ? raw.default_python_version
       : availablePythonVersions[0] || ''
   return {
-    deploymentMode: raw?.deployment_mode === 'service' ? 'service' : 'personal',
+    // Fail closed to 'service' so the header doesn't falsely advertise
+    // personal mode before the runtime-defaults fetch succeeds. Personal
+    // is only reported when the backend explicitly says so.
+    deploymentMode: raw?.deployment_mode === 'personal' ? 'personal' : 'service',
     defaultParentPath:
       typeof raw?.default_parent_path === 'string' && raw.default_parent_path.trim()
         ? raw.default_parent_path
@@ -1401,7 +1408,10 @@ const environmentImportPreview = ref<EnvironmentImportPreview | null>(null)
 const environmentMutationActive = computed(() => environmentOperation.value?.status === 'running')
 const availableWorkers = ref<WorkerCatalogEntry[]>([])
 const workerCatalogLoaded = ref(false)
-const workerDefinitionsEditable = ref(true)
+// Default to service mode (non-editable) until the backend confirms
+// otherwise. Personal mode relaxes restrictions, so failing closed here
+// avoids the header briefly advertising the wrong mode on load.
+const workerDefinitionsEditable = ref(false)
 const workerHealthLoading = ref(false)
 const workerHealthCheckedAt = ref<number | null>(null)
 const notebookWorkerError = ref<string | null>(null)
