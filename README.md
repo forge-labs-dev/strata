@@ -27,6 +27,20 @@ uv run strata-server
 # Then open http://localhost:8765
 ```
 
+### Install as a dependency
+
+PyPI publishing is pending. Until then, install directly from Git:
+
+```bash
+pip install "strata @ git+https://github.com/forge-labs-dev/strata.git"
+
+# Or with uv:
+uv add "strata @ git+https://github.com/forge-labs-dev/strata.git"
+
+# Pin to a specific commit for reproducibility:
+pip install "strata @ git+https://github.com/forge-labs-dev/strata.git@<sha>"
+```
+
 ## Notebook Features
 
 - **Content-addressed caching** — same code + same inputs = instant cache hit, zero recomputation
