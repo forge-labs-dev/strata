@@ -155,11 +155,23 @@ def apply_env_overrides(manifest: dict):
                 os.environ[key] = value
 
 
-def execute_cell(source: str, inputs: dict) -> tuple[dict, list[Any], str, str, list[dict]]:
-    """Execute a cell and return (outputs, displays, stdout, stderr, mutation_warnings)."""
+def execute_cell(
+    source: str,
+    inputs: dict,
+    mutation_defines: list[str] | None = None,
+) -> tuple[dict, list[Any], str, str, list[dict]]:
+    """Execute a cell and return (outputs, displays, stdout, stderr, mutation_warnings).
+
+    ``mutation_defines`` lists variable names that the analyzer marked as
+    in-place mutations (``df["col"] = ...``). These are always serialized
+    as outputs even when the cell's execution preserved ``id()`` — the
+    identity check alone would miss them and downstream cells would get
+    the stale pre-mutation artifact.
+    """
     namespace = dict(inputs)
     display_capture = _display.DisplayCapture()
     display_capture.install(namespace)
+    mutation_set = set(mutation_defines or [])
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
     stdout_capture = io.StringIO()
@@ -181,7 +193,11 @@ def execute_cell(source: str, inputs: dict) -> tuple[dict, list[Any], str, str, 
         for name, value in namespace.items():
             if name.startswith("_") or name in _skip:
                 continue
-            if name not in namespace_before or id(value) != input_identities.get(name):
+            if (
+                name not in namespace_before
+                or id(value) != input_identities.get(name)
+                or name in mutation_set
+            ):
                 new_vars[name] = value
 
         display_values = display_capture.resolve(_display_value)
@@ -229,6 +245,7 @@ def main():
             outputs, display_values, stdout_text, stderr_text, mutation_warnings = execute_cell(
                 source,
                 inputs,
+                mutation_defines=manifest.get("mutation_defines") or [],
             )
 
         serialized: dict[str, Any] = {}
@@ -279,7 +296,13 @@ def main():
         result_path = Path(manifest.get("output_dir", "/tmp/strata_output")) / "manifest.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
         with open(result_path, "w") as f:
-            json.dump(result, f, indent=2)
+            # default=str so exotic types (datetime, Timestamp, Decimal,
+            # numpy scalars, custom objects) inside previews don't crash
+            # json.dump mid-write. A partial manifest.json leaves the
+            # executor with "Expecting value" JSON decode errors; a
+            # stringified value is harmless, we only use previews for
+            # UI display.
+            json.dump(result, f, indent=2, default=str)
 
 
 if __name__ == "__main__":

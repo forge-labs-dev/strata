@@ -284,7 +284,7 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
 
     preview = []
     for i in range(min(20, table.num_rows)):
-        preview.append([col[i].as_py() for col in table.columns])
+        preview.append([_json_safe_cell(col[i].as_py()) for col in table.columns])
 
     return {
         "content_type": "arrow/ipc",
@@ -294,6 +294,23 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
         "bytes": filepath.stat().st_size,
         "preview": preview,
     }
+
+
+def _json_safe_cell(value: Any) -> Any:
+    """Coerce a single preview cell to a JSON-safe primitive.
+
+    Arrow's ``as_py()`` can produce ``datetime.date``, ``datetime.datetime``,
+    ``Decimal``, and other types that ``json.dump`` rejects. Previews are
+    display-only, so stringifying non-primitive values is safe and keeps
+    the manifest writable.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_cell(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe_cell(v) for k, v in value.items()}
+    return str(value)
 
 
 def _is_png_display_value(value: Any) -> bool:
