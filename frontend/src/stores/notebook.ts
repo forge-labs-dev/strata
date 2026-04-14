@@ -211,14 +211,23 @@ async function updateSource(id: CellId, source: string) {
     } catch (err) {
       console.warn('Backend analysis failed, using regex fallback:', err)
       rebuildDag()
+      // Only mark downstream stale optimistically when the backend
+      // isn't going to tell us. When the backend call succeeded,
+      // syncCellsFromBackend already set the authoritative statuses
+      // (including "still ready" when the edit was semantically
+      // neutral — e.g., whitespace-only); eagerly marking downstream
+      // here would stomp on that correct state.
+      if (cell.status === 'ready') {
+        markDownstreamStale(id)
+      }
     }
   } else {
     rebuildDag()
+    if (cell.status === 'ready') {
+      markDownstreamStale(id)
+    }
   }
 
-  if (cell.status === 'ready') {
-    markDownstreamStale(id)
-  }
   notebook.updatedAt = Date.now()
 }
 
