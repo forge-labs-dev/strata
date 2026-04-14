@@ -152,6 +152,32 @@ def resolve_llm_config(
     )
 
 
+def _max_output_tokens_param(base_url: str) -> str:
+    """Return the correct max-output-tokens field name for this provider.
+
+    OpenAI's gpt-5 / o-series / gpt-4o reject ``max_tokens`` with
+    "unsupported_parameter" and require ``max_completion_tokens``. Other
+    OpenAI-compatible providers (Anthropic, Google, Mistral, local
+    servers) still accept ``max_tokens``, so we only switch for openai.
+    """
+    if "openai" in base_url.lower():
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def _raise_for_llm_status(resp: httpx.Response, model: str) -> None:
+    """Like ``resp.raise_for_status()`` but surface the provider's error body.
+
+    The default httpx error only includes URL + status; when a provider
+    returns 400 with "model not found" or "invalid parameter", the
+    message is in the body — which users need to debug.
+    """
+    if resp.is_success:
+        return
+    body = resp.text[:1000] if resp.text else "(empty body)"
+    raise RuntimeError(f"LLM provider returned HTTP {resp.status_code} for model {model!r}: {body}")
+
+
 def infer_provider_name(base_url: str) -> str:
     """Infer a human-readable provider name from the base URL."""
     url = base_url.lower()
@@ -183,7 +209,7 @@ async def chat_completion(
     body: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
-        "max_tokens": config.max_output_tokens,
+        _max_output_tokens_param(config.base_url): config.max_output_tokens,
     }
     if temperature is not None:
         body["temperature"] = temperature
@@ -197,7 +223,7 @@ async def chat_completion(
             },
             json=body,
         )
-        resp.raise_for_status()
+        _raise_for_llm_status(resp, config.model)
         data = resp.json()
 
     choice = data["choices"][0]
@@ -239,12 +265,17 @@ async def chat_completion_stream(
             json={
                 "model": config.model,
                 "messages": messages,
-                "max_tokens": config.max_output_tokens,
+                _max_output_tokens_param(config.base_url): config.max_output_tokens,
                 "stream": True,
                 "stream_options": {"include_usage": True},
             },
         ) as resp:
-            resp.raise_for_status()
+            if not resp.is_success:
+                body = (await resp.aread()).decode("utf-8", errors="replace")[:1000]
+                raise RuntimeError(
+                    f"LLM provider returned HTTP {resp.status_code} "
+                    f"for model {config.model!r}: {body}"
+                )
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
                     continue
@@ -683,7 +714,7 @@ async def agent_chat_completion(
     body: dict[str, Any] = {
         "model": config.model,
         "messages": messages,
-        "max_tokens": config.max_output_tokens,
+        _max_output_tokens_param(config.base_url): config.max_output_tokens,
     }
     if tools:
         body["tools"] = tools
@@ -697,7 +728,7 @@ async def agent_chat_completion(
             },
             json=body,
         )
-        resp.raise_for_status()
+        _raise_for_llm_status(resp, config.model)
         data = resp.json()
 
     choice = data["choices"][0]
