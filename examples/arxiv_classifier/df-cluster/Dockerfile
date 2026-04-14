@@ -25,7 +25,7 @@ ENV PATH="/root/.cargo/bin:$PATH"
 # Install Strata + your workload deps. Pin Strata to a commit or tag
 # for reproducible builds; PyPI users will just write "strata".
 RUN pip install --no-cache-dir \
-    "strata @ git+https://github.com/forge-labs-dev/strata.git@main" \
+    "strata @ git+https://github.com/forge-labs-dev/strata.git@aa133e9" \
     "datafusion>=42" \
     "pandas>=2" \
     "pyarrow>=18"
