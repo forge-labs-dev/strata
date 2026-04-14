@@ -15,6 +15,9 @@ const WorkersPanel = defineAsyncComponent(() => import('../components/WorkersPan
 const ProfilingPanel = defineAsyncComponent(() => import('../components/ProfilingPanel.vue'))
 const LlmPanel = defineAsyncComponent(() => import('../components/LlmPanel.vue'))
 const ImpactPreview = defineAsyncComponent(() => import('../components/ImpactPreview.vue'))
+const InspectSwapConfirm = defineAsyncComponent(
+  () => import('../components/InspectSwapConfirm.vue'),
+)
 
 const props = defineProps<{ sessionId: string }>()
 
@@ -356,6 +359,7 @@ function goHome() {
 
 <template>
   <div class="app" data-testid="notebook-page">
+    <InspectSwapConfirm />
     <!-- Header -->
     <header class="header">
       <div class="header-left">

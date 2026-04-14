@@ -1,23 +1,31 @@
 <script setup lang="ts">
 import { ref, nextTick, watch, computed } from 'vue'
 import { useNotebook } from '../stores/notebook'
+import type { CellId } from '../types/notebook'
 
-const { inspectCellId, inspectReady, inspectHistory, evalInspect, closeInspect, cellMap } =
-  useNotebook()
+const props = defineProps<{ cellId: CellId }>()
+
+const { inspectReadyFor, inspectHistoryFor, evalInspect, closeInspect, cellMap } = useNotebook()
 
 const inputExpr = ref('')
 const historyEl = ref<HTMLElement | null>(null)
 
-const cellName = computed(() => {
-  if (!inspectCellId.value) return ''
-  const cell = cellMap.value.get(inspectCellId.value)
-  if (cell && cell.defines.length) return cell.defines[0]
-  return inspectCellId.value.slice(0, 8)
+const ready = computed(() => inspectReadyFor(props.cellId))
+const history = computed(() => inspectHistoryFor(props.cellId))
+
+const cellLabel = computed(() => {
+  const cell = cellMap.value.get(props.cellId)
+  // Prefer the @name annotation (user-given cell name), falling back to
+  // the short cell id. We used to show cell.defines[0] here, but the
+  // REPL is scoped to the cell's *inputs*, not its defines — showing a
+  // define name was misleading.
+  if (cell?.annotations?.name) return cell.annotations.name
+  return props.cellId.slice(0, 8)
 })
 
 // Auto-scroll history when new entries arrive
 watch(
-  () => inspectHistory.value.length,
+  () => history.value.length,
   async () => {
     await nextTick()
     if (historyEl.value) {
@@ -29,7 +37,7 @@ watch(
 function submitExpr() {
   const expr = inputExpr.value.trim()
   if (!expr) return
-  evalInspect(expr)
+  evalInspect(props.cellId, expr)
   inputExpr.value = ''
 }
 
@@ -41,25 +49,25 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function close() {
-  closeInspect()
+  closeInspect(props.cellId)
 }
 </script>
 
 <template>
-  <div v-if="inspectCellId" class="inspect-panel">
+  <div class="inspect-panel">
     <div class="inspect-header">
       <span class="inspect-title">
-        Inspect: <code>{{ cellName }}</code>
+        Inspect inputs of <code>{{ cellLabel }}</code>
       </span>
-      <span v-if="!inspectReady" class="inspect-loading">loading...</span>
+      <span v-if="!ready" class="inspect-loading">loading...</span>
       <button class="inspect-close-btn" title="Close inspect REPL" @click="close">&times;</button>
     </div>
 
     <div ref="historyEl" class="inspect-history">
-      <div v-if="!inspectHistory.length && inspectReady" class="inspect-hint">
+      <div v-if="!history.length && ready" class="inspect-hint">
         Type an expression to inspect cell inputs. Variables from upstream cells are pre-loaded.
       </div>
-      <div v-for="(entry, i) in inspectHistory" :key="i" class="inspect-entry">
+      <div v-for="(entry, i) in history" :key="i" class="inspect-entry">
         <div class="inspect-expr">
           <span class="prompt-marker">&gt;&gt;&gt;</span> {{ entry.expr }}
         </div>
@@ -78,14 +86,10 @@ function close() {
         v-model="inputExpr"
         class="inspect-input"
         placeholder="expression..."
-        :disabled="!inspectReady"
+        :disabled="!ready"
         @keydown="handleKeydown"
       />
-      <button
-        class="inspect-run-btn"
-        :disabled="!inspectReady || !inputExpr.trim()"
-        @click="submitExpr"
-      >
+      <button class="inspect-run-btn" :disabled="!ready || !inputExpr.trim()" @click="submitExpr">
         Eval
       </button>
     </div>

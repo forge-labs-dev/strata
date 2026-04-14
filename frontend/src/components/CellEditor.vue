@@ -37,7 +37,8 @@ const {
   environmentOperation,
   updateSource,
   openInspect,
-  inspectCellId,
+  isInspecting: storeIsInspecting,
+  closeInspect,
   availableWorkers,
   ensureWorkersLoaded,
   cellWorkerErrorForCell,
@@ -48,11 +49,11 @@ const {
   updateCellMountsAction,
 } = useNotebook()
 
-const isInspecting = computed(() => inspectCellId.value === props.cell.id)
+const isInspecting = computed(() => storeIsInspecting(props.cell.id))
 
 function toggleInspect() {
   if (isInspecting.value) {
-    // Close handled inside InspectPanel
+    closeInspect(props.cell.id)
     return
   }
   openInspect(props.cell.id)
@@ -965,7 +966,7 @@ function outputKey(output: CellOutput, index: number): string {
       </div>
 
       <!-- Inspect REPL panel -->
-      <InspectPanel v-if="isInspecting" />
+      <InspectPanel v-if="isInspecting" :cell-id="cell.id" />
     </div>
   </div>
 </template>

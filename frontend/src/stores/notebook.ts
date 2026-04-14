@@ -1431,9 +1431,50 @@ interface InspectEntry {
   type?: string
   stdout?: string
 }
-const inspectCellId = ref<CellId | null>(null)
-const inspectReady = ref(false)
-const inspectHistory = ref<InspectEntry[]>([])
+// Inspect REPL state is per-cell. The backend supports N concurrent
+// inspect sessions per notebook; the frontend caps the visible panels
+// via maxInspectPanels (user-configurable, default 1). When the cap is
+// hit, opening a new inspect prompts the user to confirm closing the
+// oldest panel — see pendingInspectRequest.
+const inspectOpenOrder = ref<CellId[]>([])
+const inspectReadyMap = ref(new Map<CellId, boolean>())
+const inspectHistoryMap = ref(new Map<CellId, InspectEntry[]>())
+const pendingInspectRequest = ref<{ newCellId: CellId; evictCellId: CellId } | null>(null)
+
+function readInspectLimit(): number {
+  const raw = Number.parseInt(localStorage.getItem('strata.inspect.maxPanels') || '1', 10)
+  if (!Number.isFinite(raw) || raw < 1) return 1
+  return Math.min(raw, 8)
+}
+const maxInspectPanels = ref(readInspectLimit())
+function setMaxInspectPanels(n: number) {
+  const clamped = Math.max(1, Math.min(8, Math.floor(n)))
+  maxInspectPanels.value = clamped
+  localStorage.setItem('strata.inspect.maxPanels', String(clamped))
+}
+
+// Back-compat aliases for callers that still read a single inspect.
+// The first open cell (if any) is treated as "the current inspect" for
+// legacy code paths. Remove once no consumers reference these.
+const inspectCellId = computed<CellId | null>(() => inspectOpenOrder.value[0] ?? null)
+const inspectReady = computed(() => {
+  const id = inspectCellId.value
+  return id ? inspectReadyMap.value.get(id) === true : false
+})
+const inspectHistory = computed<InspectEntry[]>(() => {
+  const id = inspectCellId.value
+  return id ? (inspectHistoryMap.value.get(id) ?? []) : []
+})
+
+function isInspecting(cellId: CellId): boolean {
+  return inspectOpenOrder.value.includes(cellId)
+}
+function inspectReadyFor(cellId: CellId): boolean {
+  return inspectReadyMap.value.get(cellId) === true
+}
+function inspectHistoryFor(cellId: CellId): InspectEntry[] {
+  return inspectHistoryMap.value.get(cellId) ?? []
+}
 
 // LLM assistant state
 interface LlmMessage {
@@ -1750,28 +1791,47 @@ function initializeWebSocket() {
     wsInstance.onMessage('inspect_result', (msg: WsMessage) => {
       const p = msg.payload as Record<string, any>
       const action = p.action as string
+      const cellId = p.cell_id as CellId | undefined
+      if (!cellId) return
 
       if (action === 'open') {
-        inspectCellId.value = p.cell_id
-        inspectReady.value = p.ok === true
-        inspectHistory.value = []
-        if (!p.ok) {
-          inspectHistory.value.push({
+        if (!inspectOpenOrder.value.includes(cellId)) {
+          inspectOpenOrder.value = [...inspectOpenOrder.value, cellId]
+        }
+        const ready = p.ok === true
+        const nextReady = new Map(inspectReadyMap.value)
+        nextReady.set(cellId, ready)
+        inspectReadyMap.value = nextReady
+        const nextHistory = new Map(inspectHistoryMap.value)
+        const entries: InspectEntry[] = []
+        if (!ready) {
+          entries.push({
             expr: '(open)',
             error: p.error || p.result || 'Failed to open inspect session',
           })
         }
+        nextHistory.set(cellId, entries)
+        inspectHistoryMap.value = nextHistory
       } else if (action === 'eval') {
-        inspectHistory.value.push({
+        const nextHistory = new Map(inspectHistoryMap.value)
+        const entries = [...(nextHistory.get(cellId) ?? [])]
+        entries.push({
           expr: p.expr || '',
           result: p.ok ? p.result : undefined,
           error: p.ok ? undefined : p.error,
           type: p.type,
           stdout: p.stdout,
         })
+        nextHistory.set(cellId, entries)
+        inspectHistoryMap.value = nextHistory
       } else if (action === 'close') {
-        inspectCellId.value = null
-        inspectReady.value = false
+        inspectOpenOrder.value = inspectOpenOrder.value.filter((id) => id !== cellId)
+        const nextReady = new Map(inspectReadyMap.value)
+        nextReady.delete(cellId)
+        inspectReadyMap.value = nextReady
+        const nextHistory = new Map(inspectHistoryMap.value)
+        nextHistory.delete(cellId)
+        inspectHistoryMap.value = nextHistory
       }
     })
 
@@ -2649,20 +2709,44 @@ function requestProfilingSummary() {
 }
 
 function openInspect(cellId: CellId) {
-  if (wsInstance && wsInstance.connected()) {
-    wsInstance.inspectOpen(cellId)
+  if (!wsInstance || !wsInstance.connected()) return
+  // Already open? Nothing to do. (Toggle is the CellEditor's job.)
+  if (inspectOpenOrder.value.includes(cellId)) return
+  if (inspectOpenOrder.value.length >= maxInspectPanels.value) {
+    // At the user-configured panel cap. Ask the user to confirm closing
+    // the oldest panel before we open a new one. The actual swap happens
+    // in confirmInspectSwap() once the user says yes.
+    const evictCellId = inspectOpenOrder.value[0]
+    pendingInspectRequest.value = { newCellId: cellId, evictCellId }
+    return
+  }
+  wsInstance.inspectOpen(cellId)
+}
+
+function confirmInspectSwap() {
+  const req = pendingInspectRequest.value
+  if (!req || !wsInstance || !wsInstance.connected()) {
+    pendingInspectRequest.value = null
+    return
+  }
+  wsInstance.inspectClose(req.evictCellId)
+  wsInstance.inspectOpen(req.newCellId)
+  pendingInspectRequest.value = null
+}
+
+function cancelInspectSwap() {
+  pendingInspectRequest.value = null
+}
+
+function evalInspect(cellId: CellId, expr: string) {
+  if (wsInstance && wsInstance.connected() && inspectOpenOrder.value.includes(cellId)) {
+    wsInstance.inspectEval(cellId, expr)
   }
 }
 
-function evalInspect(expr: string) {
-  if (wsInstance && wsInstance.connected() && inspectCellId.value) {
-    wsInstance.inspectEval(inspectCellId.value, expr)
-  }
-}
-
-function closeInspect() {
-  if (wsInstance && wsInstance.connected() && inspectCellId.value) {
-    wsInstance.inspectClose(inspectCellId.value)
+function closeInspect(cellId: CellId) {
+  if (wsInstance && wsInstance.connected() && inspectOpenOrder.value.includes(cellId)) {
+    wsInstance.inspectClose(cellId)
   }
 }
 
@@ -2892,6 +2976,15 @@ export function useNotebook() {
     inspectCellId,
     inspectReady,
     inspectHistory,
+    inspectOpenOrder,
+    isInspecting,
+    inspectReadyFor,
+    inspectHistoryFor,
+    maxInspectPanels,
+    setMaxInspectPanels,
+    pendingInspectRequest,
+    confirmInspectSwap,
+    cancelInspectSwap,
     openInspect,
     evalInspect,
     closeInspect,
