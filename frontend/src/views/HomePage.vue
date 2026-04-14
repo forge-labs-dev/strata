@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { useStrata } from '../composables/useStrata'
+import { useStrata, type DiscoveredNotebook } from '../composables/useStrata'
 import { preloadNotebookRoute } from '../router'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import { primePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
@@ -19,7 +19,10 @@ const selectedPythonVersion = ref('')
 const pythonSelectionFixed = ref(true)
 const showNewForm = ref(false)
 const showOpenForm = ref(false)
-const openPath = ref('')
+const discoveredNotebooks = ref<DiscoveredNotebook[]>([])
+const discoveryRoot = ref<string | null>(null)
+const discoveryLoading = ref(false)
+const discoveryError = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const failedRecentPath = ref<string | null>(null)
@@ -84,8 +87,29 @@ async function createNotebook() {
   }
 }
 
+async function loadDiscoveredNotebooks() {
+  discoveryLoading.value = true
+  discoveryError.value = null
+  try {
+    const data = await strata.discoverNotebooks()
+    discoveredNotebooks.value = data.notebooks
+    discoveryRoot.value = data.root
+  } catch (e: any) {
+    discoveryError.value = e.message || 'Failed to scan notebook directory'
+    discoveredNotebooks.value = []
+  } finally {
+    discoveryLoading.value = false
+  }
+}
+
+// Refresh the list whenever the "Open Existing" panel becomes visible
+// so the user sees recent writes from other notebooks without a reload.
+watch(showOpenForm, (visible) => {
+  if (visible) void loadDiscoveredNotebooks()
+})
+
 async function openNotebook(path?: string) {
-  const target = path || openPath.value.trim()
+  const target = path
   if (!target) return
   loading.value = true
   dismissError()
@@ -275,26 +299,38 @@ function formatTime(ts: number): string {
       <!-- Open notebook form -->
       <div v-if="showOpenForm" class="form-card" data-testid="open-notebook-form">
         <h3>Open Notebook</h3>
-        <label class="form-label">
-          Path to notebook directory
-          <input
-            v-model="openPath"
-            type="text"
-            class="form-input"
-            data-testid="open-notebook-path"
-            placeholder="/path/to/notebook"
-            @keydown.enter="openNotebook()"
-          />
-        </label>
-        <div class="form-actions">
+        <div class="discovery-root">
+          Scanning <code>{{ discoveryRoot || '(storage root unknown)' }}</code>
           <button
-            class="btn"
-            data-testid="open-notebook-submit"
-            :disabled="loading"
-            @click="openNotebook()"
+            class="discovery-refresh"
+            :disabled="discoveryLoading"
+            title="Rescan for notebooks"
+            @click="loadDiscoveredNotebooks"
           >
-            Open
+            ↻
           </button>
+        </div>
+        <div v-if="discoveryLoading" class="discovery-status">Scanning…</div>
+        <div v-else-if="discoveryError" class="discovery-error">
+          {{ discoveryError }}
+        </div>
+        <div v-else-if="!discoveredNotebooks.length" class="discovery-status">
+          No notebooks found under the storage root.
+        </div>
+        <ul v-else class="discovery-list" data-testid="open-notebook-list">
+          <li
+            v-for="nb in discoveredNotebooks"
+            :key="nb.path"
+            class="discovery-item"
+            :class="{ disabled: loading }"
+            data-testid="open-notebook-item"
+            @click="!loading && openNotebook(nb.path)"
+          >
+            <div class="discovery-name">{{ nb.name || nb.path.split('/').pop() }}</div>
+            <div class="discovery-path">{{ nb.path }}</div>
+          </li>
+        </ul>
+        <div class="form-actions">
           <button class="btn btn-secondary" @click="showOpenForm = false">Cancel</button>
         </div>
       </div>
@@ -482,6 +518,81 @@ function formatTime(ts: number): string {
   border-radius: 6px;
   color: #cdd6f4;
   font-size: 14px;
+}
+
+.discovery-root {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #a6adc8;
+  margin-bottom: 10px;
+}
+.discovery-root code {
+  color: #cdd6f4;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+.discovery-refresh {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid #45475a;
+  color: #a6adc8;
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.discovery-refresh:hover:not(:disabled) {
+  background: #313244;
+  color: #cdd6f4;
+}
+.discovery-refresh:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.discovery-status,
+.discovery-error {
+  font-size: 12px;
+  color: #a6adc8;
+  padding: 12px 4px;
+}
+.discovery-error {
+  color: #f38ba8;
+}
+.discovery-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #313244;
+  border-radius: 6px;
+}
+.discovery-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #313244;
+}
+.discovery-item:last-child {
+  border-bottom: none;
+}
+.discovery-item:hover:not(.disabled) {
+  background: #313244;
+}
+.discovery-item.disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.discovery-name {
+  color: #cdd6f4;
+  font-size: 13px;
+  font-weight: 500;
+}
+.discovery-path {
+  color: #6c7086;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  margin-top: 2px;
 }
 
 .form-input:focus {

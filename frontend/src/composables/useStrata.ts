@@ -411,6 +411,26 @@ async function deleteNotebook(notebookId: string): Promise<NotebookDeleteRespons
   return readJson<NotebookDeleteResponse>(resp)
 }
 
+export interface DiscoveredNotebook {
+  path: string
+  name: string | null
+  notebook_id: string | null
+  updated_at: string | null
+}
+
+export interface DiscoverNotebooksResponse {
+  root: string | null
+  notebooks: DiscoveredNotebook[]
+}
+
+async function discoverNotebooks(): Promise<DiscoverNotebooksResponse> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/discover`)
+  if (!resp.ok) {
+    await throwApiError(resp, 'Failed to discover notebooks')
+  }
+  return readJson<DiscoverNotebooksResponse>(resp)
+}
+
 async function deleteNotebookByPath(path: string): Promise<{ deleted: boolean; path: string }> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/delete-by-path`, {
     method: 'POST',
@@ -1115,6 +1135,7 @@ export function useStrata() {
     materialize,
     fetchStream,
     openNotebook,
+    discoverNotebooks,
     createNotebook,
     renameNotebook,
     deleteNotebook,

@@ -8,10 +8,11 @@ import json
 import logging
 import re
 import time
+import tomllib
 import uuid
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -699,6 +700,116 @@ async def delete_notebook(notebook_id: str) -> dict:
         "name": notebook_name,
         "path": str(notebook_path),
     }
+
+
+# Names to skip while recursing into notebook_storage_dir. Large dirs
+# (node_modules, .venv) are noise; hidden dirs (starting with .) are
+# skipped wholesale except for the notebook's own .strata directory
+# which is handled by the ignore below rather than a name match.
+_DISCOVER_SKIP_DIRS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".git",
+        ".venv",
+        "venv",
+        "dist",
+        "build",
+        "target",
+        ".strata",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".ipynb_checkpoints",
+    }
+)
+
+
+def _read_notebook_metadata(notebook_toml_path: Path) -> dict[str, Any] | None:
+    """Cheaply read a notebook.toml's summary fields (name, id, updated_at).
+
+    Returns None if the file is unreadable; intentionally does not parse
+    cells — discovery should stay fast even on a directory with hundreds
+    of notebooks.
+    """
+    try:
+        raw = tomllib.loads(notebook_toml_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    name = raw.get("name")
+    notebook_id = raw.get("notebook_id")
+    updated_at = raw.get("updated_at")
+    return {
+        "name": str(name) if isinstance(name, str) and name.strip() else None,
+        "notebook_id": str(notebook_id) if isinstance(notebook_id, str) else None,
+        "updated_at": str(updated_at) if updated_at is not None else None,
+    }
+
+
+def _discover_notebooks(
+    root: Path, *, max_depth: int = 4, max_results: int = 500
+) -> list[dict[str, Any]]:
+    """Walk ``root`` looking for directories containing ``notebook.toml``.
+
+    Stops descending into any matched directory (notebooks don't nest) or
+    any name in ``_DISCOVER_SKIP_DIRS``. Bounded by ``max_depth`` and
+    ``max_results`` so a misconfigured storage root can't stall the
+    server scanning a huge tree.
+    """
+    results: list[dict[str, Any]] = []
+    if not root.exists() or not root.is_dir():
+        return results
+
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack and len(results) < max_results:
+        current, depth = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except (PermissionError, OSError):
+            continue
+
+        notebook_toml = current / "notebook.toml"
+        if notebook_toml.is_file():
+            metadata = _read_notebook_metadata(notebook_toml)
+            if metadata is not None:
+                results.append({"path": str(current.resolve()), **metadata})
+            # Don't descend into a notebook directory — nested notebooks
+            # aren't a supported layout and would create duplicate hits.
+            continue
+
+        if depth >= max_depth:
+            continue
+        for entry in entries:
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name.startswith(".") or name in _DISCOVER_SKIP_DIRS:
+                continue
+            stack.append((entry, depth + 1))
+
+    # Newest first when updated_at is present; fall back to path sort so
+    # ordering is stable when timestamps are missing or equal.
+    def sort_key(entry: dict[str, Any]) -> tuple[int, str]:
+        ts = entry.get("updated_at") or ""
+        return (0 if ts else 1, ts or entry["path"])
+
+    results.sort(key=sort_key, reverse=True)
+    return results
+
+
+@router.get("/discover")
+async def discover_notebooks() -> dict:
+    """List notebook directories found under the configured storage root.
+
+    Used by the "Open existing" UI so users pick from a list instead of
+    typing a filesystem path. Returns ``{"root", "notebooks"}`` where
+    ``root`` is the scan root (for display) and ``notebooks`` is a
+    ``[{path, name, notebook_id, updated_at}]`` list sorted newest first.
+    """
+    root = _get_notebook_storage_root()
+    if root is None:
+        return {"root": None, "notebooks": []}
+    return {"root": str(root), "notebooks": _discover_notebooks(root)}
 
 
 class DeleteNotebookByPathRequest(BaseModel):
