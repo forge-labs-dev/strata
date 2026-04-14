@@ -30,6 +30,12 @@ dependencies = [
     "pydantic>=2.0.0",  # For configuration validation
     "pydantic-settings>=2.0.0",  # For configuration with env var support
     "tomli_w>=1.0.0",  # For writing TOML files
+    # pandas and numpy are used by the notebook serializer for
+    # DataFrame / Series / ndarray round-trips. Pulled in transitively
+    # by pyiceberg today, but depended on directly so the contract
+    # doesn't rely on a transitive resolver.
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]
@@ -44,6 +50,15 @@ otel = [
 azure = [
     "azure-storage-blob>=12.20.0",
     "azure-identity>=1.15.0",
+]
+# Notebook display features — matplotlib figures, Pillow images,
+# cloudpickle for fallback serialization of closures / lambdas /
+# third-party classes. The core notebook runtime works without these;
+# they only light up inline plotting, image outputs, and safer pickle.
+notebook = [
+    "matplotlib>=3.8.0",
+    "Pillow>=10.0.0",
+    "cloudpickle>=3.0.0",
 ]
 
 [dependency-groups]
