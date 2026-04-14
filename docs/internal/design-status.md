@@ -34,7 +34,7 @@ The cleanest release target today is:
 - **ready for alpha**: core API, local/personal notebook workflow
 - **advanced / preview**: service mode, hosted personal-mode deployment,
   broader remote-worker operations
-- **roadmap**: AI-native notebook execution, named notebook environments,
+- **roadmap**: AI cost/visibility polish, named notebook environments,
   richer display/rendering polish
 
 ## Design Areas
@@ -155,18 +155,24 @@ Still on the roadmap:
 
 ### AI Integration
 
-- Doc: [docs/design-ai-integration.md](design-ai-integration.md)
-- Status: **Roadmap**
+- Doc: [design-ai-integration.md](design-ai-integration.md)
+- Status: **Partially implemented**
 
-Not implemented yet:
+Implemented now:
 
-- AI cell type
-- LLM transform executor
-- AI-assisted notebook authoring
+- prompt cells with provenance-aware caching
+- notebook-level LLM provider configuration via `[ai]`, runtime env vars, and
+  server defaults
+- assistant chat completion and streaming APIs
+- agent mode with notebook-editing tools and environment-job-aware package
+  installs
 
-Interpretation:
+Still on the roadmap:
 
-- this is still an exploratory design area, not current product scope
+- token/cost accounting and notebook-visible spend metrics
+- richer model/provider ergonomics and policy controls
+- broader multimodal / tool-use surface beyond the current notebook assistant
+- tighter operational semantics for hosted/service-mode AI usage
 
 ### Original Notebook Implementation Plan
 
@@ -185,9 +191,9 @@ Meaning:
 If you are trying to understand the current product, use this order:
 
 1. [README.md](../README.md)
-2. [docs/core-quickstart.md](core-quickstart.md) or
-   [docs/notebook-quickstart.md](notebook-quickstart.md)
-3. [docs/design-status.md](design-status.md)
+2. [getting-started/core.md](../getting-started/core.md) or
+   [getting-started/notebook.md](../getting-started/notebook.md)
+3. [design-status.md](design-status.md)
 4. the specific detailed design doc for the area you care about
 
 ## Next Active Roadmap Themes
@@ -199,9 +205,9 @@ The highest-value roadmap areas now are:
    change and continued UX polish
 3. display-output polish such as SVG and output chrome
 4. remote-worker and service-mode operational maturity
+5. AI polish, especially cost visibility and safer hosted defaults
 
 The following are intentionally later:
 
 - named notebook environments
-- AI-native notebook execution
 - collaboration / multi-user notebook semantics

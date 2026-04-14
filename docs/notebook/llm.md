@@ -8,13 +8,13 @@ Strata Notebook has two ways to use LLMs: **prompt cells** (declarative, part of
 
 Set an API key in the **Runtime panel** under Environment Variables. The key determines which provider is used:
 
-| Environment Variable | Provider | Default Model |
-|---------------------|----------|--------------|
-| `ANTHROPIC_API_KEY` | Anthropic | claude-sonnet-4-6 |
-| `OPENAI_API_KEY` | OpenAI | gpt-5.4 |
-| `GEMINI_API_KEY` | Google | gemini-3-flash |
-| `MISTRAL_API_KEY` | Mistral | mistral-large-latest |
-| `STRATA_AI_API_KEY` | Custom (requires `[ai]` config) | — |
+| Environment Variable | Provider                        | Default Model        |
+| -------------------- | ------------------------------- | -------------------- |
+| `ANTHROPIC_API_KEY`  | Anthropic                       | claude-sonnet-4-6    |
+| `OPENAI_API_KEY`     | OpenAI                          | gpt-5.4              |
+| `GEMINI_API_KEY`     | Google                          | gemini-3-flash       |
+| `MISTRAL_API_KEY`    | Mistral                         | mistral-large-latest |
+| `STRATA_AI_API_KEY`  | Custom (requires `[ai]` config) | —                    |
 
 **Resolution order** (highest priority wins):
 
@@ -23,7 +23,7 @@ Set an API key in the **Runtime panel** under Environment Variables. The key det
 3. Server config (`STRATA_AI_*` env vars) — admin default
 
 !!! note "Process environment is not consulted"
-    A shell-exported `OPENAI_API_KEY` does **not** leak into notebooks. This is intentional — each notebook must explicitly opt in to an LLM provider. See the [Annotations](annotations.md) page for how env vars flow.
+A shell-exported `OPENAI_API_KEY` does **not** leak into notebooks. This is intentional — each notebook must explicitly opt in to an LLM provider. See the [Annotations](annotations.md) page for how env vars flow.
 
 ### Custom Provider Configuration
 
@@ -35,7 +35,17 @@ base_url = "http://localhost:11434/v1"
 model = "llama3"
 ```
 
-The API key still comes from the Runtime panel env vars. The `[ai]` section only overrides the endpoint URL and model name.
+The recommended place for secrets is still the Runtime panel env vars, but the
+`[ai]` section can also override advanced fields such as:
+
+- `api_key`
+- `base_url`
+- `model`
+- `max_context_tokens`
+- `max_output_tokens`
+- `timeout_seconds`
+
+Use `[ai].api_key` sparingly, because it persists in `notebook.toml`.
 
 ### Supported Providers
 
@@ -73,13 +83,13 @@ The `{{ df }}` placeholder is replaced with a text representation of the upstrea
 
 Variables are injected using `{{ expression }}` syntax. The expression is resolved against upstream cell outputs:
 
-| Upstream Type | Text Representation |
-|--------------|-------------------|
-| pandas DataFrame | Markdown table (first 20 rows) |
-| pandas Series | String representation (first 20 values) |
-| numpy ndarray | Shape + dtype + first 10 elements |
-| dict / list | JSON (indented, truncated) |
-| str / int / float | Direct string conversion |
+| Upstream Type     | Text Representation                     |
+| ----------------- | --------------------------------------- |
+| pandas DataFrame  | Markdown table (first 20 rows)          |
+| pandas Series     | String representation (first 20 values) |
+| numpy ndarray     | Shape + dtype + first 10 elements       |
+| dict / list       | JSON (indented, truncated)              |
+| str / int / float | Direct string conversion                |
 
 Each variable has a token budget (default: 2,000 tokens). If the text representation exceeds the budget, it's truncated with a `... (truncated)` marker.
 
@@ -96,13 +106,13 @@ Only a small set of known-safe methods are allowed (`describe`, `head`, `tail` o
 
 ### Prompt Cell Annotations
 
-| Annotation | Description | Default |
-|-----------|------------|---------|
-| `@name` | Output variable name (must be a Python identifier) | `result` |
-| `@model` | Override the LLM model | From provider config |
-| `@temperature` | Sampling temperature (0.0 = deterministic) | `0.0` |
-| `@max_tokens` | Maximum response tokens | `4096` |
-| `@system` | System prompt prepended to the request | None |
+| Annotation     | Description                                        | Default              |
+| -------------- | -------------------------------------------------- | -------------------- |
+| `@name`        | Output variable name (must be a Python identifier) | `result`             |
+| `@model`       | Override the LLM model                             | From provider config |
+| `@temperature` | Sampling temperature (0.0 = deterministic)         | `0.0`                |
+| `@max_tokens`  | Maximum response tokens                            | `4096`               |
+| `@system`      | System prompt prepended to the request             | None                 |
 
 Example with all annotations:
 
@@ -154,14 +164,14 @@ Type an instruction and press Shift+Enter. The agent autonomously takes actions 
 
 **Available tools:**
 
-| Tool | Description |
-|------|------------|
+| Tool                 | Description                                     |
+| -------------------- | ----------------------------------------------- |
 | `get_notebook_state` | Read all cells, variables, and execution status |
-| `create_cell` | Add a new Python or prompt cell |
-| `edit_cell` | Modify an existing cell's source |
-| `delete_cell` | Remove a cell |
-| `run_cell` | Execute a cell and observe the result |
-| `add_package` | Install a Python package via uv |
+| `create_cell`        | Add a new Python or prompt cell                 |
+| `edit_cell`          | Modify an existing cell's source                |
+| `delete_cell`        | Remove a cell                                   |
+| `run_cell`           | Execute a cell and observe the result           |
+| `add_package`        | Install a Python package via uv                 |
 
 The agent runs as a background task with a 10-iteration limit. Progress events appear in the panel as they happen. You can cancel a running agent with the Cancel button.
 

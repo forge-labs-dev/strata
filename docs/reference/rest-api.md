@@ -3,7 +3,7 @@
 All notebook endpoints are under `/v1/notebooks`.
 
 !!! note "Session ID vs Notebook ID"
-    Route parameters use the **session ID** (a UUID generated when the notebook is opened), not the persistent `notebook_id` from `notebook.toml`. The session ID is returned by the `open` and `create` endpoints.
+Route parameters use the **session ID** (a UUID generated when the notebook is opened), not the persistent `notebook_id` from `notebook.toml`. The session ID is returned by the `open` and `create` endpoints.
 
 ## Notebook Lifecycle
 
@@ -45,6 +45,21 @@ DELETE /v1/notebooks/{session_id}
 ```
 
 Deletes the notebook directory and closes the session.
+
+### Delete Notebook By Path
+
+```
+POST /v1/notebooks/delete-by-path
+```
+
+```json
+{
+  "path": "/path/to/notebook"
+}
+```
+
+Deletes a notebook directory by filesystem path. This is primarily a personal-mode
+management endpoint.
 
 ### Rename Notebook
 
@@ -135,7 +150,7 @@ POST /v1/notebooks/{session_id}/cells/{cell_id}/execute
 ```
 
 !!! tip
-    For interactive use, prefer the WebSocket `cell_execute` message. The REST endpoint is for programmatic access.
+For interactive use, prefer the WebSocket `cell_execute` message. The REST endpoint is for programmatic access.
 
 ## DAG
 
@@ -179,6 +194,12 @@ DELETE /v1/notebooks/{session_id}/dependencies/{package_name}
 GET /v1/notebooks/{session_id}/environment
 ```
 
+### Get Current Environment Job
+
+```
+GET /v1/notebooks/{session_id}/environment/jobs/current
+```
+
 ### Start Environment Job
 
 ```
@@ -194,6 +215,8 @@ POST /v1/notebooks/{session_id}/environment/jobs
 
 Actions: `add`, `remove`, `sync`, `import`.
 
+For `import`, send exactly one of `requirements` or `environment_yaml`.
+
 ### Export Requirements
 
 ```
@@ -204,6 +227,24 @@ GET /v1/notebooks/{session_id}/environment/requirements.txt
 
 ```
 POST /v1/notebooks/{session_id}/environment/requirements.txt
+```
+
+### Preview Requirements Import
+
+```
+POST /v1/notebooks/{session_id}/environment/requirements.txt/preview
+```
+
+### Import environment.yaml
+
+```
+POST /v1/notebooks/{session_id}/environment/environment.yaml
+```
+
+### Preview environment.yaml Import
+
+```
+POST /v1/notebooks/{session_id}/environment/environment.yaml/preview
 ```
 
 ## Workers
@@ -232,6 +273,12 @@ PUT /v1/notebooks/{session_id}/worker
 PUT /v1/notebooks/{session_id}/cells/{cell_id}/worker
 ```
 
+### Update Worker Catalog
+
+```
+PUT /v1/notebooks/{session_id}/workers
+```
+
 ## Mounts
 
 ### Update Notebook Mounts
@@ -244,6 +291,62 @@ PUT /v1/notebooks/{session_id}/mounts
 
 ```
 PUT /v1/notebooks/{session_id}/cells/{cell_id}/mounts
+```
+
+## Export
+
+### Export Notebook Bundle
+
+```
+GET /v1/notebooks/{session_id}/export
+```
+
+Returns a zip bundle containing `notebook.toml`, cells, and environment files.
+
+## AI
+
+### Get AI Status
+
+```
+GET /v1/notebooks/{session_id}/ai/status
+```
+
+### List Provider Models
+
+```
+GET /v1/notebooks/{session_id}/ai/models
+```
+
+### Update Notebook AI Model
+
+```
+PUT /v1/notebooks/{session_id}/ai/model
+```
+
+```json
+{
+  "model": "gpt-5.4"
+}
+```
+
+### Chat Completion
+
+```
+POST /v1/notebooks/{session_id}/ai/complete
+```
+
+### Streaming Chat
+
+```
+POST /v1/notebooks/{session_id}/ai/stream
+```
+
+Server-Sent Events stream with `delta`, `done`, and `error` events.
+
+### Agent Run
+
+```
+POST /v1/notebooks/{session_id}/ai/agent
 ```
 
 ## Runtime Config

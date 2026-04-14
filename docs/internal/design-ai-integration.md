@@ -2,243 +2,177 @@
 
 ## Status (April 2026)
 
-This document describes how AI/LLM capabilities integrate into Strata Notebook.
-The design follows Strata's layering model: orchestration decides what to run,
-executors decide how to compute, and Strata decides whether the result already
-exists and persists it.
+This area is **partially implemented**.
 
-## Why This Matters for Strata
+Shipped now:
 
-LLM calls share every property that motivates Strata's existence:
+- prompt cells (`language="prompt"`) with provenance-aware caching
+- notebook-scoped LLM configuration resolution
+- assistant chat and streaming responses
+- assistant agent mode with notebook-editing tools
+- environment-job-aware `add_package` tool behavior
 
-- **Expensive** -- API calls cost real money and take seconds to minutes
-- **Iterative** -- prompt engineering is evaluate-then-refine
-- **Branching** -- try the same data with different models or temperatures
-- **Failure-prone** -- rate limits, timeouts, model outages
+Still on the roadmap:
 
-The insight is that `materialize(inputs, transform) -> artifact` already handles
-all of this. An LLM call with the same prompt, same model, and same input data
-should return the cached result -- not bill you again.
+- cost/token visibility in the notebook UI
+- richer provider/model management UX
+- broader multimodal support
+- more capable tool use beyond the current notebook-editing surface
+- stronger hosted/service-mode operational controls
 
-## Design Decisions
+See [design-status.md](design-status.md) for the consolidated shipped vs roadmap
+view.
 
-### 1. No SDK dependencies — OpenAI-compatible API only
+## Why AI Fits Strata
 
-All major providers (Anthropic, OpenAI, Google, Mistral) and local servers
-(Ollama, vLLM, LMStudio, llama.cpp) expose the OpenAI chat completions format.
-One `httpx` call covers all of them. No `anthropic`, `openai`, or `litellm`
-dependency needed.
+LLM calls share the same properties that motivated Strata's execution model:
 
-```python
-POST {base_url}/v1/chat/completions
-{
-  "model": "claude-sonnet-4-20250514",
-  "messages": [{"role": "user", "content": "..."}],
-  "temperature": 0.0,
-  "max_tokens": 4096
-}
+- they are expensive
+- they are iterative
+- they depend on explicit inputs and configuration
+- they benefit from deterministic reuse when the effective request is unchanged
+
+The important architectural point is unchanged:
+
+```text
+materialize(inputs, transform) -> artifact
 ```
 
-### 2. Token-aware variable injection
+Prompt cells fit this directly. If the rendered prompt text, provider/model
+configuration, and execution parameters are unchanged, the result should be a
+cache hit rather than another billable API call.
 
-Variables injected into prompts via `{{ var }}` are converted to text with size
-limits to prevent context window blowouts and runaway costs. Users see estimated
-token count before execution.
+## Current Product Surface
 
-### 3. Phase 1 is the AI assistant panel, not prompt cells
+### 1. Prompt Cells
 
-Highest-impact, lowest-effort: a chat panel that generates Python cells. No new
-execution model needed. Prompt cells come in Phase 2.
+Prompt cells are first-class notebook cells whose source is a prompt template.
 
-## Provider Configuration
+Current semantics:
 
-In `notebook.toml`:
+- upstream references inside `{{ ... }}` create notebook dependencies
+- the rendered prompt text participates in provenance
+- annotations such as `@name`, `@model`, `@temperature`, `@max_tokens`, and
+  `@system` affect execution and provenance
+- the prompt response is stored as a notebook artifact and reused on cache hit
 
-```toml
-[ai]
-base_url = "https://api.anthropic.com"  # or any OpenAI-compatible endpoint
-model = "claude-sonnet-4-20250514"
-temperature = 0.0
-max_tokens = 4096
-```
+### 2. AI Assistant
 
-Or a local model:
+The assistant is a sidebar surface outside the DAG.
 
-```toml
-[ai]
-base_url = "http://localhost:11434/v1"  # Ollama
-model = "llama3"
-```
+Current capabilities:
 
-API key from environment: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or
-`STRATA_AI_API_KEY` (checked in that order).
+- blocking completion endpoint
+- streaming chat endpoint
+- agent mode with iterative notebook tool use
+- notebook context injection so responses are aware of cells, variables, and
+  current state
 
-### Known provider base URLs
+The assistant is intentionally not the same thing as prompt-cell execution:
 
-| Provider | Base URL | Env var |
-|----------|----------|---------|
-| Anthropic | `https://api.anthropic.com` | `ANTHROPIC_API_KEY` |
-| OpenAI | `https://api.openai.com` | `OPENAI_API_KEY` |
-| Google AI | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
-| Mistral | `https://api.mistral.ai` | `MISTRAL_API_KEY` |
-| Ollama | `http://localhost:11434/v1` | (none) |
-| vLLM | `http://localhost:8000/v1` | (none) |
-| LMStudio | `http://localhost:1234/v1` | (none) |
+- assistant conversations are session-oriented
+- prompt cells are notebook artifacts with provenance and cache semantics
 
-## Variable Injection and Token Management
+## Configuration Resolution
 
-### Default text representations
+LLM configuration resolves from three layers, highest priority last:
 
-| Python type | Default representation | If too large |
-|---|---|---|
-| DataFrame | `.head(20).to_markdown()` | `.describe().to_markdown()` |
-| dict / list | `json.dumps(v, indent=2)` | Truncated with `... (N items)` |
-| str | Raw text | First N chars + `... (truncated)` |
-| int / float / bool / None | `str(v)` | Always fits |
-| ndarray | Shape + dtype + first 5 rows | Shape + dtype only |
+1. server config (`STRATA_AI_*`)
+2. notebook runtime env vars (for example `OPENAI_API_KEY`)
+3. notebook `[ai]` config in `notebook.toml`
 
-### Token estimation
+Current `[ai]` support includes:
 
-Approximate: `len(text) / 4`. No tokenizer dependency. Good enough for budget
-display and truncation decisions. Shown in the UI before execution.
+- `base_url`
+- `model`
+- `api_key`
+- `max_context_tokens`
+- `max_output_tokens`
+- `timeout_seconds`
 
-### Per-variable token budget
+Recommended practice:
 
-Each `{{ var }}` gets a default budget of 2000 tokens (~8K chars). Configurable:
+- keep API keys in notebook runtime env vars or server config
+- use `[ai]` primarily for model/endpoint overrides and notebook-specific tuning
 
-```
-{{ df }}                  → default representation (head + truncate)
-{{ df.describe() }}       → user controls what's injected (Python expression)
-{{ df | tokens(4000) }}   → explicit per-variable token budget
-```
+## Prompt Template Rules
 
-The `{{ expr }}` syntax evaluates arbitrary Python expressions against the
-upstream namespace. `{{ df.describe() }}` just works.
+Template rendering is intentionally constrained.
 
-### Provenance hashing
+Supported today:
 
-The **rendered text** (after truncation) participates in the provenance hash,
-not the raw variable. Same DataFrame truncated the same way = same hash = cache
-hit. This is correct because the LLM sees the rendered text.
+- direct variable references: `{{ df }}`
+- attribute access: `{{ obj.value }}`
+- a small allowlist of safe pandas methods:
+  - `describe()`
+  - `head()`
+  - `tail()`
 
-```
-provenance = sha256(
-    rendered_prompt_text
-    + model_id
-    + str(temperature)
-    + system_prompt_text
-)
-```
+Explicit non-goals in the current implementation:
 
-## Implementation Phases
+- arbitrary Python evaluation during template rendering
+- side-effecting method calls
+- Jinja-style filter syntax such as `{{ df | tokens(4000) }}`
 
-### Phase 1: AI Assistant Panel
+If a template expression is unsupported, it is not executed as arbitrary Python.
 
-A chat sidebar where users can:
-- "Write a cell that joins df1 and df2 on user_id" → generates Python code
-- Select error → "Explain this" → explanation + fix suggestion
-- "Describe this data" → generates EDA code
-- "Suggest a visualization" → generates matplotlib/seaborn code
+## Provider Model
 
-The generated code becomes a normal Python cell. No new execution model.
+The implementation intentionally uses the OpenAI-compatible chat-completions
+shape so the same code path can target:
 
-**Backend:**
+- OpenAI
+- Anthropic-compatible endpoints
+- Google Gemini's OpenAI-compatible endpoint
+- Mistral
+- Ollama
+- vLLM / TGI / LiteLLM-style deployments
 
-- `src/strata/notebook/ai.py` — provider abstraction (one function), prompt
-  templates for generate/explain/describe actions
-- `src/strata/notebook/routes.py` — `POST /v1/notebooks/{id}/ai/complete`
-  endpoint proxying to the configured provider
-- `src/strata/config.py` — AI config fields (`ai_base_url`, `ai_model`,
-  `ai_api_key`)
+That keeps the runtime dependency surface small and shifts provider choice into
+configuration rather than SDK branching.
 
-**Frontend:**
+## Provenance and Caching
 
-- `frontend/src/components/AiPanel.vue` — chat UI with action buttons
-- `frontend/src/composables/useStrata.ts` — `aiComplete()` API call
-- `frontend/src/stores/notebook.ts` — AI actions (generate cell, explain error)
+Prompt-cell provenance depends on the effective request, not the raw notebook
+source alone.
 
-**Context sent to LLM:**
+Important inputs include:
 
-The assistant receives notebook context so it can write relevant code:
-- Cell source code for all cells (truncated)
-- Variable defines/references from DAG
-- Current cell's error traceback (for explain action)
-- Installed packages list
+- rendered prompt text
+- selected model
+- temperature
+- system prompt
+- output name / artifact identity
 
-**Estimated effort:** 1-2 days.
+The cache contract is:
 
-### Phase 2: Prompt Cells
+- same effective request -> cache hit
+- changed upstream data or changed prompt/model config -> recompute
 
-New `language="prompt"` cell type where source is a prompt template.
+## Assistant / Agent Boundaries
 
-**Backend:**
+The assistant and agent are intentionally bounded by notebook execution rules.
 
-- `src/strata/notebook/prompt_analyzer.py` — extract `{{ var }}` references
-  for DAG building, estimate token usage per variable
-- `src/strata/notebook/prompt_executor.py` — resolve upstream artifacts to text,
-  render template, call LLM, parse response, store as artifact
-- Variable-to-text conversion with per-variable token budgets
-- Provenance hashing: `sha256(rendered_prompt + model + temperature + system)`
+Current guardrails:
 
-**Frontend:**
+- package installs go through notebook environment jobs
+- environment mutation and execution exclusion still applies
+- agent actions operate through notebook APIs rather than direct hidden state
 
-- `frontend/src/components/PromptCellEditor.vue` — prompt editor with:
-  - Model selector dropdown
-  - Temperature slider
-  - Token budget display (estimated input tokens, per-variable breakdown)
-  - Output type selector (text/json/code)
-- Syntax highlighting for `{{ var }}` references
+This is important because the assistant should not become a second, weaker
+execution plane that bypasses notebook semantics.
 
-**DAG integration:** `{{ var }}` references create the same DAG edges as Python
-variable references. An AI cell using `{{ df }}` depends on the cell defining `df`.
+## Remaining Roadmap
 
-**Output types:**
+### Near-term
 
-- `text` (default) — raw string, stored as `json/object`
-- `json` — parsed JSON, stored as `json/object`, downstream gets dict
-- `code` — Python code string, can be executed by downstream Python cells
+- notebook-visible token and cost accounting
+- better provider/model discovery UX
+- more precise documentation of hosted/service-mode AI behavior
 
-**Estimated effort:** 2-3 days.
+### Later
 
-### Phase 3: Token Tracking and Cost Visibility
-
-- Record per-execution: `input_tokens`, `output_tokens`, `model`, `cost_usd`
-- Store in artifact `transform_spec.params`
-- Profiling panel shows: tokens used, cost, cost saved by cache hits
-- Notebook-level token budget with warning when approaching limit
-
-**Estimated effort:** 1 day.
-
-### Phase 4: Server-Mode LLM Executor (Future)
-
-- Register `llm@v1` as a transform executor in the server registry
-- Centralized API key management (server holds keys, not notebooks)
-- Per-tenant token budget QoS
-- Audit log for all LLM calls
-
-## System Prompt Management
-
-- **Notebook-level:** `[ai] system_prompt = "..."` in `notebook.toml`
-- **Cell-level override:** `# @system_prompt You are a data analyst.`
-- Default system prompt provides notebook context (variables, packages, DAG)
-
-## Open Questions (Resolved)
-
-1. **Jinja2 vs simpler syntax?** → Simple `{{ expr }}` with Python eval. No
-   Jinja2. Expressions are evaluated against the upstream namespace.
-
-2. **System prompt?** → Notebook-level default + per-cell override via
-   annotation.
-
-3. **Streaming?** → No streaming for v1. Wait for completion, store artifact.
-   Streaming complicates provenance (can't hash partial output). Add in v2.
-
-4. **Multimodal?** → Defer to v2. Text-only for v1.
-
-5. **Tool use?** → Defer. Creates DAG cycles. Needs separate design.
-
-6. **SDK dependencies?** → None. OpenAI-compatible HTTP API via `httpx`. Works
-   with all providers out of the box.
-
-7. **Variable size?** → Per-variable token budget (default 2000). Token
-   estimation via `len(text) / 4`. UI shows budget before execution.
+- multimodal prompt inputs and outputs
+- broader assistant tool surface
+- hosted/service-mode authorization and policy controls for AI features
+- possible future LLM transform alignment with the broader Strata execution plane

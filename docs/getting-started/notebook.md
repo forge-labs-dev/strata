@@ -47,7 +47,7 @@ print(f"y = {y}")
 Strata automatically detects that this cell references `x` from the first cell. The DAG in the sidebar shows the dependency arrow.
 
 !!! info "Cascade execution"
-    If you change the first cell and re-run the second, Strata detects the staleness and offers to cascade-execute both cells in the correct order.
+If you change the first cell and re-run the second, Strata detects the staleness and offers to cascade-execute both cells in the correct order.
 
 ## 5. Rich Display Outputs
 
@@ -69,7 +69,7 @@ plt.show()
 ```
 
 !!! tip "Install matplotlib first"
-    Open the **Environment** panel in the sidebar and add `matplotlib` before running plot cells.
+Open the **Environment** panel in the sidebar and add `matplotlib` before running plot cells.
 
 ### Multiple Outputs
 
@@ -113,26 +113,38 @@ Change the source or any upstream cell, and the cache is automatically invalidat
 
 ## 8. Try an Example
 
-Open one of the bundled example notebooks to see a real workflow:
+Example notebooks must live under the configured notebook storage root
+(`STRATA_NOTEBOOK_STORAGE_DIR`, default `/tmp/strata-notebooks`).
 
-```
-examples/iris_classification/     # ML pipeline with scikit-learn
-examples/pandas_basics/           # DataFrame operations
-examples/titanic_ml/              # End-to-end ML with multiple models
+Copy one of the bundled examples there first:
+
+```bash
+cp -R examples/iris_classification /tmp/strata-notebooks/
 ```
 
-Use the **Open Existing** button on the landing page and paste the path.
+Then use **Open Existing** and open:
+
+```text
+/tmp/strata-notebooks/iris_classification
+```
+
+Other bundled examples:
+
+```text
+examples/pandas_basics
+examples/titanic_ml
+```
 
 ## Cell Operations
 
-| Action | How |
-|--------|-----|
-| Run cell | ++shift+enter++ or ▶ button |
-| Add cell | **+** button in gutter or header |
-| Delete cell | **×** button in gutter |
-| Duplicate cell | **⎘** button in gutter |
-| Move cell | **▲** / **▼** buttons in gutter |
-| Keyboard help | Press ++question++ |
+| Action         | How                              |
+| -------------- | -------------------------------- |
+| Run cell       | ++shift+enter++ or ▶ button      |
+| Add cell       | **+** button in gutter or header |
+| Delete cell    | **×** button in gutter           |
+| Duplicate cell | **⎘** button in gutter           |
+| Move cell      | **▲** / **▼** buttons in gutter  |
+| Keyboard help  | Press ++question++               |
 
 ## What's Next
 
