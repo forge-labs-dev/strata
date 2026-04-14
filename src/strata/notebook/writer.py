@@ -80,6 +80,28 @@ def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:
     ]
 
 
+def _strip_nones_for_toml(value: object) -> object:
+    """Recursively replace None with empty string inside TOML-bound structures.
+
+    tomli_w rejects None outright ("Object of type NoneType is not TOML
+    serializable"). DataFrame preview rows from Arrow deserialization
+    contain Python None for pandas/Arrow nulls (sns.load_dataset("titanic")
+    is a common source), so a top-level None filter isn't enough — we
+    also have to walk nested lists and dicts. Using "" as the sentinel
+    keeps the preview shape intact and round-trips as "missing" back to
+    the frontend.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return {k: _strip_nones_for_toml(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nones_for_toml(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_nones_for_toml(item) for item in value)
+    return value
+
+
 def _sanitize_display_output_for_toml(
     display_output: dict[str, object] | None,
 ) -> dict[str, object] | None:
@@ -91,7 +113,8 @@ def _sanitize_display_output_for_toml(
     persisted.pop("inline_data_url", None)
     persisted.pop("file", None)
     persisted.pop("markdown_text", None)
-    return {key: value for key, value in persisted.items() if value is not None}
+    cleaned = {key: value for key, value in persisted.items() if value is not None}
+    return _strip_nones_for_toml(cleaned)  # type: ignore[return-value]
 
 
 def _sanitize_display_outputs_for_toml(
