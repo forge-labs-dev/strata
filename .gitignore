@@ -219,3 +219,9 @@ site/
 
 # Internal design and planning docs — kept local only.
 docs/internal/
+
+# Per-notebook runtime state — artifacts, blobs, console output,
+# environment lockfiles. Generated whenever a notebook runs; never
+# meant to be shared.
+examples/*/.strata/
+examples/*/uv.lock
