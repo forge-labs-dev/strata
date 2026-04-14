@@ -87,12 +87,23 @@ class _CloudPickleObjectCodec:
 
 
 def _resolve_object_codec(codec_name: str | None = None) -> ObjectCodec:
-    """Return the configured object codec implementation."""
-    selected = (codec_name or os.environ.get(OBJECT_CODEC_ENV_VAR, "pickle")).strip().lower()
+    """Return the configured object codec implementation.
+
+    Default is cloudpickle — it's a strict superset of stdlib pickle
+    (handles lambdas, closures, nested classes, dynamically-defined
+    functions) and is a core install dependency. Users can opt out by
+    setting the env var to ``pickle``. As a defensive fallback, if
+    cloudpickle can't be imported at runtime (e.g. in a stripped-down
+    worker venv) we transparently use stdlib pickle.
+    """
+    selected = (codec_name or os.environ.get(OBJECT_CODEC_ENV_VAR, "cloudpickle")).strip().lower()
+    if selected == "cloudpickle":
+        try:
+            return _CloudPickleObjectCodec()
+        except ValueError:
+            return _PickleObjectCodec()
     if selected == "pickle":
         return _PickleObjectCodec()
-    if selected == "cloudpickle":
-        return _CloudPickleObjectCodec()
     raise ValueError(
         f"Unknown notebook object codec '{selected}'. Supported codecs: pickle, cloudpickle"
     )

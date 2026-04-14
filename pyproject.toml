@@ -36,6 +36,11 @@ dependencies = [
     # doesn't rely on a transitive resolver.
     "pandas>=2.0.0",
     "numpy>=1.26.0",
+    # cloudpickle is the default object codec for notebook cell
+    # outputs (see serializer._resolve_object_codec). Core dep rather
+    # than optional so behavior doesn't depend on which extras were
+    # installed.
+    "cloudpickle>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -51,14 +56,12 @@ azure = [
     "azure-storage-blob>=12.20.0",
     "azure-identity>=1.15.0",
 ]
-# Notebook display features — matplotlib figures, Pillow images,
-# cloudpickle for fallback serialization of closures / lambdas /
-# third-party classes. The core notebook runtime works without these;
-# they only light up inline plotting, image outputs, and safer pickle.
+# Notebook display features — matplotlib figures and Pillow images.
+# The core notebook runtime works without these; they only light up
+# inline plotting and image outputs.
 notebook = [
     "matplotlib>=3.8.0",
     "Pillow>=10.0.0",
-    "cloudpickle>=3.0.0",
 ]
 
 [dependency-groups]
