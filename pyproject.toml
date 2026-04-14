@@ -30,6 +30,12 @@ dependencies = [
     "pydantic>=2.0.0",  # For configuration validation
     "pydantic-settings>=2.0.0",  # For configuration with env var support
     "tomli_w>=1.0.0",  # For writing TOML files
+    # orjson is a compiled JSON codec that's ~3-10× faster than the
+    # stdlib and handles datetime, numpy scalars, and UUID natively.
+    # Used throughout: FastAPI responses, WebSocket message encoding,
+    # notebook harness manifest writes (which previously had to paper
+    # over datetime / Decimal via default=str).
+    "orjson>=3.10.0",
 ]
 
 [project.optional-dependencies]

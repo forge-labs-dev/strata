@@ -21,6 +21,33 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+# See note in harness.py — orjson is preferred for native datetime /
+# numpy / Decimal support but the notebook venv may not have it.
+try:
+    import orjson  # type: ignore[import-not-found]
+
+    _HAS_ORJSON = True
+except ImportError:
+    orjson = None  # type: ignore[assignment]
+    _HAS_ORJSON = False
+
+
+def _dumps_result(result: dict) -> str:
+    """Encode a harness result for stdout.
+
+    Uses orjson when available (handles datetime / numpy natively);
+    falls back to stdlib with default=str so previews containing
+    exotic types don't truncate the stream.
+    """
+    if _HAS_ORJSON:
+        return orjson.dumps(
+            result,
+            option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS,
+            default=str,
+        ).decode("utf-8")
+    return json.dumps(result, default=str)
+
+
 # ---------------------------------------------------------------------------
 # Load the shared serializer
 # ---------------------------------------------------------------------------
@@ -287,10 +314,10 @@ def main() -> None:
                 with open(manifest_path) as f:
                     manifest = json.load(f)
                 result = execute_harness(manifest)
-                print(json.dumps(result), flush=True)
+                print(_dumps_result(result), flush=True)
             except Exception as e:
                 print(
-                    json.dumps(
+                    _dumps_result(
                         {
                             "success": False,
                             "variables": {},

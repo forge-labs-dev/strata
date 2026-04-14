@@ -18,6 +18,19 @@ import sys
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
+
+# orjson writes ~3-10× faster than stdlib and serializes datetime,
+# numpy scalars, Decimal, and UUID natively — exactly the types that
+# previously truncated manifest.json mid-write. The harness runs in
+# the notebook's venv, which may not have orjson; fall back to stdlib
+# with default=str so we never hard-require it.
+try:
+    import orjson  # type: ignore[import-not-found]
+
+    _HAS_ORJSON = True
+except ImportError:
+    orjson = None  # type: ignore[assignment]
+    _HAS_ORJSON = False
 from typing import Any
 
 
@@ -295,14 +308,27 @@ def main():
     finally:
         result_path = Path(manifest.get("output_dir", "/tmp/strata_output")) / "manifest.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(result_path, "w") as f:
-            # default=str so exotic types (datetime, Timestamp, Decimal,
-            # numpy scalars, custom objects) inside previews don't crash
-            # json.dump mid-write. A partial manifest.json leaves the
-            # executor with "Expecting value" JSON decode errors; a
-            # stringified value is harmless, we only use previews for
-            # UI display.
-            json.dump(result, f, indent=2, default=str)
+        if _HAS_ORJSON:
+            # orjson handles datetime, Decimal, numpy, UUID natively;
+            # OPT_NON_STR_KEYS covers the rare case of non-string dict
+            # keys in previews. Writes bytes directly.
+            with open(result_path, "wb") as f:
+                f.write(
+                    orjson.dumps(
+                        result,
+                        option=orjson.OPT_INDENT_2
+                        | orjson.OPT_SERIALIZE_NUMPY
+                        | orjson.OPT_NON_STR_KEYS,
+                        default=str,
+                    )
+                )
+        else:
+            # Stdlib fallback: default=str so exotic types (datetime,
+            # Timestamp, Decimal, numpy scalars) inside previews don't
+            # crash json.dump mid-write. A partial manifest.json leaves
+            # the executor with "Expecting value" JSON decode errors.
+            with open(result_path, "w") as f:
+                json.dump(result, f, indent=2, default=str)
 
 
 if __name__ == "__main__":
