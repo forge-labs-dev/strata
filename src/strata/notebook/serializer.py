@@ -207,11 +207,21 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
     if content_type == "arrow/ipc":
         try:
             return _serialize_arrow(value, output_dir, variable_name)
-        except (ImportError, ValueError):
-            # pyarrow unavailable — fall back to JSON with table metadata
+        except (ImportError, ValueError, AttributeError):
+            # pyarrow unavailable (ImportError), unsupported value shape
+            # (ValueError), or an unexpected pandas/pyarrow type mismatch
+            # (AttributeError). Any of these mean the Arrow path failed;
+            # the JSON fallback still produces usable metadata + file.
             return _serialize_dataframe_json(value, output_dir, variable_name)
     elif content_type == "tensor/arrow":
-        return _serialize_tensor(value, output_dir, variable_name)
+        try:
+            return _serialize_tensor(value, output_dir, variable_name)
+        except Exception:
+            # pa.Tensor.from_numpy rejects certain dtypes — notably
+            # object arrays and unicode strings (e.g. sklearn's
+            # classifier.predict on string labels). Fall back to pickle,
+            # which preserves the ndarray exactly.
+            return _serialize_pickle(value, output_dir, variable_name)
     elif content_type == "image/png":
         return _serialize_image_png(value, output_dir, variable_name)
     elif content_type == "text/markdown":
@@ -237,7 +247,22 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
         try:
             import pandas as pd
 
-            if isinstance(value, (pd.DataFrame, pd.Series)):
+            if isinstance(value, pd.Series):
+                # pa.Table.from_pandas expects a DataFrame — calling it
+                # with a Series raises AttributeError (not ValueError),
+                # which historically wasn't caught and left the variable
+                # unwritten on disk. Promote to a single-column frame
+                # and stash the original Series name + a "_pd_type"
+                # marker in the schema metadata so the deserializer can
+                # round-trip back to Series (sklearn and most consumers
+                # expect 1D y vectors, not single-column DataFrames).
+                frame = value.to_frame()
+                table = pa.Table.from_pandas(frame)
+                existing_meta = dict(table.schema.metadata or {})
+                existing_meta[b"strata_pd_type"] = b"Series"
+                existing_meta[b"strata_pd_name"] = (value.name or "").encode("utf-8")
+                table = table.replace_schema_metadata(existing_meta)
+            elif isinstance(value, pd.DataFrame):
                 table = pa.Table.from_pandas(value)
             else:
                 import numpy as np
@@ -586,10 +611,26 @@ def _deserialize_arrow(file_path: Path) -> Any:
     # fails on DataFrames that survived an Arrow round-trip.
     table = table.combine_chunks()
 
+    # Round-trip pandas Series back to a Series (see _serialize_arrow).
+    # We stashed markers in the schema metadata during serialization.
+    meta = table.schema.metadata or {}
+    was_series = meta.get(b"strata_pd_type") == b"Series"
+    series_name_bytes = meta.get(b"strata_pd_name", b"")
+
     try:
-        return table.to_pandas()
+        frame = table.to_pandas()
     except Exception:
         return table
+
+    if was_series:
+        try:
+            series = frame.iloc[:, 0]
+            series_name = series_name_bytes.decode("utf-8") or None
+            series.name = series_name
+            return series
+        except Exception:
+            return frame
+    return frame
 
 
 def _serialize_tensor(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
