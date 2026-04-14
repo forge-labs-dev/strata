@@ -1439,7 +1439,16 @@ interface InspectEntry {
 const inspectOpenOrder = ref<CellId[]>([])
 const inspectReadyMap = ref(new Map<CellId, boolean>())
 const inspectHistoryMap = ref(new Map<CellId, InspectEntry[]>())
+// In-flight open requests that haven't received an 'inspect_result' yet.
+// Counted against the panel cap to prevent a race where two quick clicks
+// both pass the check before either response arrives, letting both panels
+// through and silently exceeding the cap.
+const inspectPendingOpens = ref(new Set<CellId>())
 const pendingInspectRequest = ref<{ newCellId: CellId; evictCellId: CellId } | null>(null)
+
+function inspectActiveCount(): number {
+  return inspectOpenOrder.value.length + inspectPendingOpens.value.size
+}
 
 function readInspectLimit(): number {
   const raw = Number.parseInt(localStorage.getItem('strata.inspect.maxPanels') || '1', 10)
@@ -1795,6 +1804,12 @@ function initializeWebSocket() {
       if (!cellId) return
 
       if (action === 'open') {
+        // Clear the in-flight marker regardless of success.
+        if (inspectPendingOpens.value.has(cellId)) {
+          const next = new Set(inspectPendingOpens.value)
+          next.delete(cellId)
+          inspectPendingOpens.value = next
+        }
         if (!inspectOpenOrder.value.includes(cellId)) {
           inspectOpenOrder.value = [...inspectOpenOrder.value, cellId]
         }
@@ -2710,16 +2725,23 @@ function requestProfilingSummary() {
 
 function openInspect(cellId: CellId) {
   if (!wsInstance || !wsInstance.connected()) return
-  // Already open? Nothing to do. (Toggle is the CellEditor's job.)
+  // Already open or mid-open for this cell? Nothing to do. (Toggle is
+  // the CellEditor's job — it closes on a second click rather than
+  // re-opening.)
   if (inspectOpenOrder.value.includes(cellId)) return
-  if (inspectOpenOrder.value.length >= maxInspectPanels.value) {
+  if (inspectPendingOpens.value.has(cellId)) return
+  if (inspectActiveCount() >= maxInspectPanels.value) {
     // At the user-configured panel cap. Ask the user to confirm closing
     // the oldest panel before we open a new one. The actual swap happens
-    // in confirmInspectSwap() once the user says yes.
-    const evictCellId = inspectOpenOrder.value[0]
+    // in confirmInspectSwap() once the user says yes. Evict the oldest
+    // *confirmed-open* panel, not a pending one — pending opens will
+    // resolve on their own and don't represent a user-visible panel yet.
+    const evictCellId = inspectOpenOrder.value[0] ?? Array.from(inspectPendingOpens.value)[0]
+    if (!evictCellId) return
     pendingInspectRequest.value = { newCellId: cellId, evictCellId }
     return
   }
+  inspectPendingOpens.value = new Set([...inspectPendingOpens.value, cellId])
   wsInstance.inspectOpen(cellId)
 }
 
@@ -2730,6 +2752,7 @@ function confirmInspectSwap() {
     return
   }
   wsInstance.inspectClose(req.evictCellId)
+  inspectPendingOpens.value = new Set([...inspectPendingOpens.value, req.newCellId])
   wsInstance.inspectOpen(req.newCellId)
   pendingInspectRequest.value = null
 }
