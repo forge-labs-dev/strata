@@ -84,45 +84,45 @@ def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
         dag.cell_downstream[cell_id] = []
         dag.consumed_variables[cell_id] = set()
 
-    # Build variable → producer map (last definition wins)
-    # This handles shadowing: if two cells define the same variable,
-    # the later one is the producer for downstream consumers.
-    # Track shadow warnings so the UI can alert the user.
+    # Single pass: walk cells in order, wiring each cell's references
+    # to whoever produced that variable *before* this cell, then record
+    # this cell's own defines as the new producer for cells that come
+    # after. This lets a mutating cell (``sales["col"] = ...``) both
+    # reference the prior ``sales`` and become the producer for
+    # downstream cells, without a spurious self-cycle error.
     for cell in cells:
+        # Resolve references against the producer map as it stands before
+        # this cell's defines are applied.
+        for var in cell.references:
+            producer_id = dag.variable_producer.get(var)
+            if not producer_id or producer_id == cell.id:
+                # Either the variable is external (no prior producer) or
+                # a producer for this cell hasn't been set yet — nothing
+                # to wire up. A mutating cell whose reference has no
+                # upstream producer simply has no edge; the runtime will
+                # raise NameError which is the right signal.
+                continue
+            edge = DagEdge(
+                from_cell_id=producer_id,
+                to_cell_id=cell.id,
+                variable=var,
+            )
+            dag.edges.append(edge)
+            if producer_id not in dag.cell_upstream[cell.id]:
+                dag.cell_upstream[cell.id].append(producer_id)
+            if cell.id not in dag.cell_downstream[producer_id]:
+                dag.cell_downstream[producer_id].append(cell.id)
+            dag.consumed_variables[producer_id].add(var)
+
+        # Now apply this cell's defines so later cells see it as the
+        # producer. Shadow warnings still fire when a later cell
+        # overwrites a prior producer.
         for var in cell.defines:
             previous_producer = dag.variable_producer.get(var)
             if previous_producer is not None and previous_producer != cell.id:
                 warning = f"Variable '{var}' shadows definition from cell {previous_producer[:8]}"
                 dag.shadow_warnings.setdefault(cell.id, []).append(warning)
             dag.variable_producer[var] = cell.id
-
-    # Build edges: for each reference, connect from the producer
-    for cell in cells:
-        for var in cell.references:
-            producer_id = dag.variable_producer.get(var)
-            if producer_id:
-                if producer_id == cell.id:
-                    # Self-cycle: cell references its own output
-                    raise ValueError(
-                        f"Cycle detected in DAG: cell {cell.id} references its own variable {var}"
-                    )
-                else:
-                    # Add edge from producer to consumer
-                    edge = DagEdge(
-                        from_cell_id=producer_id,
-                        to_cell_id=cell.id,
-                        variable=var,
-                    )
-                    dag.edges.append(edge)
-
-                    # Add upstream/downstream relationships (avoid duplicates)
-                    if producer_id not in dag.cell_upstream[cell.id]:
-                        dag.cell_upstream[cell.id].append(producer_id)
-                    if cell.id not in dag.cell_downstream[producer_id]:
-                        dag.cell_downstream[producer_id].append(cell.id)
-
-                    # Mark variable as consumed by the producer
-                    dag.consumed_variables[producer_id].add(var)
 
     # Identify leaves (cells with no downstream consumers)
     for cell_id in cell_ids:

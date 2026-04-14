@@ -19,6 +19,11 @@ class CellAnalysis:
 
     defines: list[str] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
+    # Subset of ``defines`` that came from in-place mutations
+    # (``df["col"] = ...``, ``obj.attr = ...``). The cell both reads
+    # and re-produces these names; the harness uses this to force
+    # serialization even when the mutation preserved ``id()``.
+    mutation_defines: list[str] = field(default_factory=list)
     error: str | None = None
 
 
@@ -29,6 +34,12 @@ class VariableAnalyzer(ast.NodeVisitor):
         """Initialize the analyzer."""
         self.defines: set[str] = set()
         self.references: set[str] = set()
+        # Subset of `defines` that came from subscript/attribute
+        # mutations (``df["col"] = ...``). These still need to appear
+        # in references so the DAG knows we depend on an upstream
+        # producer — unlike pure rebinds (``x = x + 1``) where the
+        # reference is intra-cell and should be filtered out.
+        self.mutation_defines: set[str] = set()
         self._in_nested_scope = False
         self._local_vars: set[str] = set()  # Track local scope variables
 
@@ -256,11 +267,19 @@ class VariableAnalyzer(ast.NodeVisitor):
             for elt in target.elts:
                 self._add_assign_target(elt)
         elif isinstance(target, ast.Subscript):
-            # Subscript mutation: df["col"] = ... → references df, does not define it
+            # Subscript mutation: df["col"] = ... — the cell both reads
+            # the existing df AND produces the mutated version that
+            # downstream cells will observe. Record both roles so the
+            # DAG routes downstream reads through the mutating cell
+            # (otherwise downstream cells can run before the mutation
+            # and KeyError on the new column).
             self._add_reference_target(target.value)
+            self._add_mutation_define(target.value)
         elif isinstance(target, ast.Attribute):
-            # Attribute mutation: obj.attr = ... → references obj, does not define it
+            # Attribute mutation: obj.attr = ... — same reasoning as
+            # subscript mutation above.
             self._add_reference_target(target.value)
+            self._add_mutation_define(target.value)
         elif isinstance(target, ast.Starred):
             # Starred assignment: *rest = ...
             self._add_assign_target(target.value)
@@ -275,6 +294,23 @@ class VariableAnalyzer(ast.NodeVisitor):
             self.references.add(node.id)
         elif isinstance(node, (ast.Attribute, ast.Subscript)):
             self._add_reference_target(node.value)
+
+    def _add_mutation_define(self, node: ast.expr) -> None:
+        """Record the root name of a mutated target as a define.
+
+        ``df["col"] = ...`` or ``obj.attr = ...`` mutates an existing
+        object. For DAG purposes the mutating cell is the producer of
+        the *post-mutation* view that downstream cells observe, so we
+        also treat the root name as a define. The name also stays in
+        references via ``_add_reference_target`` — the mutation reads
+        the prior value. Tracking it in ``mutation_defines`` tells the
+        caller not to strip it from the final references set.
+        """
+        if isinstance(node, ast.Name):
+            self.defines.add(node.id)
+            self.mutation_defines.add(node.id)
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            self._add_mutation_define(node.value)
 
 
 def analyze_cell(source: str) -> CellAnalysis:
@@ -307,18 +343,27 @@ def analyze_cell(source: str) -> CellAnalysis:
     # Filter: exclude private variables and builtins
     builtin_names = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__"}
     defines = [v for v in analyzer.defines if not v.startswith("_")]
+    # Mutation-defines stay in references (the cell depends on an
+    # upstream producer of the pre-mutation object). Pure defines are
+    # filtered from references as before — that handles intra-cell
+    # rebinds like ``x = x + 1``.
+    pure_defines = set(defines) - analyzer.mutation_defines
     references = [
         v
         for v in analyzer.references
-        if not v.startswith("_") and v not in builtin_names and v not in defines
+        if not v.startswith("_") and v not in builtin_names and v not in pure_defines
     ]
 
     # Remove duplicates and sort for consistency
     defines = sorted(set(defines))
     references = sorted(set(references))
+    mutation_defines = sorted(
+        v for v in analyzer.mutation_defines if not v.startswith("_") and v in defines
+    )
 
     return CellAnalysis(
         defines=defines,
         references=references,
+        mutation_defines=mutation_defines,
         error=None,
     )

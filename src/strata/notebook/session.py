@@ -289,10 +289,12 @@ class NotebookSession:
                 prompt_analysis = analyze_prompt_cell(cell.source)
                 defines = prompt_analysis.defines
                 references = prompt_analysis.references
+                mutation_defines: list[str] = []
             else:
                 analysis = analyze_cell(cell.source)
                 defines = analysis.defines
                 references = analysis.references
+                mutation_defines = analysis.mutation_defines
             cell_analyses.append(
                 CellAnalysisWithId(
                     id=cell.id,
@@ -303,6 +305,7 @@ class NotebookSession:
             # Update cell with analysis results
             cell.defines = defines
             cell.references = references
+            cell.mutation_defines = mutation_defines
 
         # Build DAG
         try:

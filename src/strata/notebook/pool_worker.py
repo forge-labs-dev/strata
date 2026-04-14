@@ -189,6 +189,7 @@ def execute_harness(manifest: dict) -> dict:
     namespace_before = set(namespace.keys())
     input_identities = {name: id(namespace[name]) for name in namespace_before}
     input_snapshots = _immut.snapshot_inputs(namespace, list(namespace_before))
+    mutation_set = set(manifest.get("mutation_defines") or [])
 
     old_stdout, old_stderr = sys.stdout, sys.stderr
     stdout_buf = io.StringIO()
@@ -210,7 +211,11 @@ def execute_harness(manifest: dict) -> dict:
         for key, value in namespace.items():
             if key.startswith("_") or key in _skip:
                 continue
-            if key not in namespace_before or id(value) != input_identities.get(key):
+            if (
+                key not in namespace_before
+                or id(value) != input_identities.get(key)
+                or key in mutation_set
+            ):
                 try:
                     variables[key] = _ser.serialize_value(value, output_dir, key)
                 except Exception as e:

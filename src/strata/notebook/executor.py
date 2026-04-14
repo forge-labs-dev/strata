@@ -702,6 +702,7 @@ class CellExecutor:
                     runtime_env,
                     timeout_seconds,
                     remote_build_id=remote_build_id,
+                    mutation_defines=list(getattr(cell, "mutation_defines", []) or []),
                 )
                 if remote_build_id and remote_metadata.get("remote_transport") == "signed":
                     remote_metadata["remote_build_state"] = "ready"
@@ -864,6 +865,7 @@ class CellExecutor:
         runtime_env: dict[str, str],
         timeout_seconds: float,
         remote_build_id: str | None = None,
+        mutation_defines: list[str] | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Dispatch one cell execution through the selected worker backend."""
         if worker_spec.backend == WorkerBackendType.LOCAL:
@@ -875,6 +877,7 @@ class CellExecutor:
                 venv_path,
                 runtime_env,
                 timeout_seconds,
+                mutation_defines=mutation_defines,
             )
 
         if is_embedded_executor_worker(worker_spec):
@@ -886,6 +889,7 @@ class CellExecutor:
                 venv_path,
                 runtime_env,
                 timeout_seconds,
+                mutation_defines=mutation_defines,
             )
 
         if is_http_executor_worker(worker_spec):
@@ -911,6 +915,7 @@ class CellExecutor:
         venv_path: Path,
         runtime_env: dict[str, str],
         timeout_seconds: float,
+        mutation_defines: list[str] | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Run the existing direct local execution path."""
         result = None
@@ -922,6 +927,7 @@ class CellExecutor:
             output_dir,
             runtime_env,
             resolved_mounts,
+            mutation_defines=mutation_defines,
         )
 
         if self.pool is not None:
@@ -959,6 +965,7 @@ class CellExecutor:
         venv_path: Path,
         runtime_env: dict[str, str],
         timeout_seconds: float,
+        mutation_defines: list[str] | None = None,
     ) -> tuple[dict[str, Any], Path, str, dict[str, ResolvedMount]]:
         """Run the bundle-based executor path locally for supported executor workers."""
         resolved_mounts = await self._prepare_mounts(mount_specs)
@@ -968,6 +975,7 @@ class CellExecutor:
             output_dir,
             runtime_env,
             resolved_mounts,
+            mutation_defines=mutation_defines,
         )
         result = await self._run_harness(manifest_path, venv_path, timeout_seconds)
 
@@ -1579,6 +1587,7 @@ class CellExecutor:
         output_dir: Path,
         runtime_env: dict[str, str],
         resolved_mounts: dict[str, ResolvedMount],
+        mutation_defines: list[str] | None = None,
     ) -> Path:
         """Write the harness manifest for one local execution."""
         manifest_mounts = {
@@ -1595,6 +1604,7 @@ class CellExecutor:
             "output_dir": str(output_dir),
             "mounts": manifest_mounts,
             "env": runtime_env,
+            "mutation_defines": list(mutation_defines or []),
         }
         manifest_path = output_dir / "manifest.json"
         with open(manifest_path, "w", encoding="utf-8") as f:

@@ -243,6 +243,14 @@ class CellState(BaseModel):
         default_factory=list,
         description="Variable names referenced by this cell",
     )
+    mutation_defines: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Subset of defines that came from in-place mutations "
+            "(df['col'] = ...); the harness must serialize these "
+            "even when id() is preserved across execution."
+        ),
+    )
     upstream_ids: list[str] = Field(
         default_factory=list, description="Cell IDs this cell depends on"
     )
