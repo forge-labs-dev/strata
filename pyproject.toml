@@ -30,17 +30,6 @@ dependencies = [
     "pydantic>=2.0.0",  # For configuration validation
     "pydantic-settings>=2.0.0",  # For configuration with env var support
     "tomli_w>=1.0.0",  # For writing TOML files
-    # pandas and numpy are used by the notebook serializer for
-    # DataFrame / Series / ndarray round-trips. Pulled in transitively
-    # by pyiceberg today, but depended on directly so the contract
-    # doesn't rely on a transitive resolver.
-    "pandas>=2.0.0",
-    "numpy>=1.26.0",
-    # cloudpickle is the default object codec for notebook cell
-    # outputs (see serializer._resolve_object_codec). Core dep rather
-    # than optional so behavior doesn't depend on which extras were
-    # installed.
-    "cloudpickle>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -56,10 +45,15 @@ azure = [
     "azure-storage-blob>=12.20.0",
     "azure-identity>=1.15.0",
 ]
-# Notebook display features — matplotlib figures and Pillow images.
-# The core notebook runtime works without these; they only light up
-# inline plotting and image outputs.
+# Strata Notebook runtime — DataFrame / Series / ndarray
+# serialization, display outputs (figures, images), and the
+# cloudpickle-backed object codec used for cell output values.
+# Strata core doesn't need any of these; install this extra only if
+# you use the notebook server or workers.
 notebook = [
+    "pandas>=2.0.0",
+    "numpy>=1.26.0",
+    "cloudpickle>=3.0.0",
     "matplotlib>=3.8.0",
     "Pillow>=10.0.0",
 ]

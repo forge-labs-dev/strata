@@ -91,10 +91,11 @@ def _resolve_object_codec(codec_name: str | None = None) -> ObjectCodec:
 
     Default is cloudpickle — it's a strict superset of stdlib pickle
     (handles lambdas, closures, nested classes, dynamically-defined
-    functions) and is a core install dependency. Users can opt out by
-    setting the env var to ``pickle``. As a defensive fallback, if
-    cloudpickle can't be imported at runtime (e.g. in a stripped-down
-    worker venv) we transparently use stdlib pickle.
+    functions) and ships with the ``notebook`` extra. Users can opt
+    out by setting the env var to ``pickle``. If cloudpickle can't be
+    imported (e.g. someone installed only core ``strata`` and still
+    spun up the notebook runtime), we transparently fall back to
+    stdlib pickle so cells don't fail to serialize.
     """
     selected = (codec_name or os.environ.get(OBJECT_CODEC_ENV_VAR, "cloudpickle")).strip().lower()
     if selected == "cloudpickle":

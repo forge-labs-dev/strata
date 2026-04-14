@@ -32,10 +32,15 @@ uv run strata-server
 PyPI publishing is pending. Until then, install directly from Git:
 
 ```bash
+# Strata core (materialization, artifact store, Iceberg scanning):
 pip install "strata @ git+https://github.com/forge-labs-dev/strata.git"
 
+# Strata Notebook adds DataFrame/Series/ndarray serialization, display
+# outputs, and the cloudpickle-backed object codec:
+pip install "strata[notebook] @ git+https://github.com/forge-labs-dev/strata.git"
+
 # Or with uv:
-uv add "strata @ git+https://github.com/forge-labs-dev/strata.git"
+uv add "strata[notebook] @ git+https://github.com/forge-labs-dev/strata.git"
 
 # Pin to a specific commit for reproducibility:
 pip install "strata @ git+https://github.com/forge-labs-dev/strata.git@<sha>"

@@ -2365,12 +2365,9 @@ name = "strata"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "cloudpickle" },
     { name = "duckdb" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "numpy" },
-    { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -2387,7 +2384,10 @@ azure = [
     { name = "azure-storage-blob" },
 ]
 notebook = [
+    { name = "cloudpickle" },
     { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
     { name = "pillow" },
 ]
 otel = [
@@ -2420,17 +2420,17 @@ docs = [
 requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.15.0" },
     { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.20.0" },
-    { name = "cloudpickle", specifier = ">=3.0.0" },
+    { name = "cloudpickle", marker = "extra == 'notebook'", specifier = ">=3.0.0" },
     { name = "duckdb", specifier = ">=1.1.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "matplotlib", marker = "extra == 'notebook'", specifier = ">=3.8.0" },
-    { name = "numpy", specifier = ">=1.26.0" },
+    { name = "numpy", marker = "extra == 'notebook'", specifier = ">=1.26.0" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.20.0" },
     { name = "opentelemetry-instrumentation-fastapi", marker = "extra == 'otel'", specifier = ">=0.41b0" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20.0" },
-    { name = "pandas", specifier = ">=2.0.0" },
+    { name = "pandas", marker = "extra == 'notebook'", specifier = ">=2.0.0" },
     { name = "pillow", marker = "extra == 'notebook'", specifier = ">=10.0.0" },
     { name = "pyarrow", specifier = ">=18.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
