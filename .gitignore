@@ -216,3 +216,6 @@ rust/target/
 demo-warehouse/
 benchmarks/results/
 site/
+
+# Internal design and planning docs — kept local only.
+docs/internal/
