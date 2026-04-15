@@ -303,7 +303,12 @@ def create_notebook(
     )
     write_notebook_toml(notebook_dir, notebook_toml)
 
-    # Create pyproject.toml (minimal)
+    # Create pyproject.toml (minimal). The notebook runtime expects
+    # pyarrow (DataFrame / Series / ndarray serialization), orjson
+    # (manifest I/O), and cloudpickle (default object codec) to be
+    # importable inside the notebook venv. They're cheap wheels on all
+    # supported platforms; baking them into the template avoids
+    # silent fallbacks to slower stdlib json / stdlib pickle.
     pyproject_content = f'''[project]
 name = "{name.lower().replace(" ", "-")}"
 version = "0.1.0"
@@ -311,6 +316,8 @@ description = ""
 requires-python = "{format_requires_python(requested_python_version)}"
 dependencies = [
     "pyarrow>=18.0.0",
+    "orjson>=3.10.0",
+    "cloudpickle>=3.0.0",
 ]
 
 [tool.uv]

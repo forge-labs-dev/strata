@@ -14,39 +14,32 @@ loaded via ``importlib.util``.
 
 import importlib.util
 import io
-import json
 import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-# See note in harness.py — orjson is preferred for native datetime /
-# numpy / Decimal support but the notebook venv may be minimal and
-# lack it (tests, stripped workers), so fall back to stdlib + default=str.
-try:
-    import orjson  # type: ignore[import-not-found]
-
-    _HAS_ORJSON = True
-except ImportError:
-    orjson = None  # type: ignore[assignment]
-    _HAS_ORJSON = False
+# orjson ships as a required dep in every notebook pyproject.toml we
+# generate, so it's guaranteed to be importable in the venv this
+# pool worker runs in. Native datetime / numpy / Decimal support
+# means we don't have to paper over exotic types at the application
+# level like stdlib json forced us to.
+import orjson
 
 
 def _dumps_result(result: dict) -> str:
     """Encode a harness result for stdout.
 
-    default=str catches anything the codec can't encode (previews are
+    default=str catches anything orjson can't encode (previews are
     display-only, so stringifying exotic values is safe). Returns str
     rather than bytes so callers can use ``print(..., flush=True)``.
     """
-    if _HAS_ORJSON:
-        return orjson.dumps(
-            result,
-            option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS,
-            default=str,
-        ).decode("utf-8")
-    return json.dumps(result, default=str)
+    return orjson.dumps(
+        result,
+        option=orjson.OPT_SERIALIZE_NUMPY | orjson.OPT_NON_STR_KEYS,
+        default=str,
+    ).decode("utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +305,8 @@ def main() -> None:
             if not manifest_path:
                 continue
             try:
-                if _HAS_ORJSON:
-                    with open(manifest_path, "rb") as f:
-                        manifest = orjson.loads(f.read())
-                else:
-                    with open(manifest_path) as f:
-                        manifest = json.load(f)
+                with open(manifest_path, "rb") as f:
+                    manifest = orjson.loads(f.read())
                 result = execute_harness(manifest)
                 print(_dumps_result(result), flush=True)
             except Exception as e:

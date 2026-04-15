@@ -57,11 +57,16 @@ class TestListDependencies:
     """list_dependencies() parses pyproject.toml."""
 
     def test_empty_notebook(self, tmp_path: Path):
-        """Newly created notebook includes pyarrow as the default dependency."""
+        """Newly created notebook ships the notebook-runtime baseline deps.
+
+        See writer.create_notebook — every generated pyproject.toml
+        pins pyarrow, orjson, and cloudpickle. The runtime (harness,
+        pool_worker, serializer) imports all three unconditionally.
+        """
         nb_dir = create_notebook(tmp_path, "empty")
         deps = list_dependencies(nb_dir)
-        names = [d.name for d in deps]
-        assert names == ["pyarrow"]
+        names = sorted(d.name for d in deps)
+        assert names == ["cloudpickle", "orjson", "pyarrow"]
 
     def test_after_add(self, tmp_path: Path):
         """After adding a dep, it appears in the list."""
@@ -413,13 +418,17 @@ dependencies:
 
         preview = preview_requirements_text(
             nb_dir,
-            "pyarrow>=18.0.0\nsix==1.17.0\n",
+            "pyarrow>=18.0.0\norjson>=3.10.0\ncloudpickle>=3.0.0\nsix==1.17.0\n",
         )
 
-        assert preview.imported_count == 2
+        assert preview.imported_count == 4
         assert [dep.name for dep in preview.additions] == ["six"]
         assert [dep.name for dep in preview.removals] == ["requests"]
-        assert [dep.name for dep in preview.unchanged] == ["pyarrow"]
+        assert sorted(dep.name for dep in preview.unchanged) == [
+            "cloudpickle",
+            "orjson",
+            "pyarrow",
+        ]
 
     def test_preview_environment_yaml_text_reports_warnings_and_diff(self, tmp_path: Path):
         """environment.yaml preview should translate, warn, and diff dependencies."""
@@ -442,8 +451,16 @@ dependencies:
         assert preview.imported_count == 2
         assert any("channels" in warning for warning in preview.warnings)
         assert any("python version pin" in warning for warning in preview.warnings)
+        # Current notebook baseline (pyarrow, orjson, cloudpickle) +
+        # requests. YAML pins pyarrow at a different version and adds
+        # six. Version differences produce matching remove+add entries.
         assert [dep.name for dep in preview.additions] == ["pyarrow", "six"]
-        assert [dep.name for dep in preview.removals] == ["pyarrow", "requests"]
+        assert sorted(dep.name for dep in preview.removals) == [
+            "cloudpickle",
+            "orjson",
+            "pyarrow",
+            "requests",
+        ]
         assert preview.unchanged == []
 
 
@@ -648,14 +665,22 @@ dependencies:
 
             resp = client.post(
                 f"/v1/notebooks/{sid}/environment/requirements.txt/preview",
-                json={"requirements": "pyarrow>=18.0.0\nsix==1.17.0\n"},
+                json={
+                    "requirements": (
+                        "pyarrow>=18.0.0\norjson>=3.10.0\ncloudpickle>=3.0.0\nsix==1.17.0\n"
+                    )
+                },
             )
             assert resp.status_code == 200
             data = resp.json()
-            assert data["imported_count"] == 2
+            assert data["imported_count"] == 4
             assert [dep["name"] for dep in data["additions"]] == ["six"]
             assert [dep["name"] for dep in data["removals"]] == ["requests"]
-            assert [dep["name"] for dep in data["unchanged"]] == ["pyarrow"]
+            assert sorted(dep["name"] for dep in data["unchanged"]) == [
+                "cloudpickle",
+                "orjson",
+                "pyarrow",
+            ]
             assert "resolved_dependencies" in data
 
     def test_preview_environment_yaml_rest(self, setup):
@@ -688,7 +713,12 @@ dependencies:
             assert data["imported_count"] == 2
             assert any("channels" in warning for warning in data["warnings"])
             assert [dep["name"] for dep in data["additions"]] == ["pyarrow", "six"]
-            assert [dep["name"] for dep in data["removals"]] == ["pyarrow", "requests"]
+            assert sorted(dep["name"] for dep in data["removals"]) == [
+                "cloudpickle",
+                "orjson",
+                "pyarrow",
+                "requests",
+            ]
             assert data["unchanged"] == []
 
     def test_add_bad_package_rest(self, setup):
