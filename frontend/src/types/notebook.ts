@@ -5,7 +5,7 @@ export type CellId = string
 export type CellLanguage = 'python' | 'prompt'
 export type MountMode = 'ro' | 'rw'
 export type WorkerBackend = 'local' | 'executor'
-export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable'
+export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable' | 'warming'
 export type WorkerTransport = 'local' | 'embedded' | 'direct' | 'signed' | 'executor'
 
 export interface MountSpec {

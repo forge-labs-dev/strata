@@ -248,6 +248,7 @@ watch(showPanel, (open) => {
                   :class="{
                     unhealthy: worker.health === 'unavailable',
                     unknown: worker.health === 'unknown',
+                    warming: worker.health === 'warming',
                   }"
                 >
                   {{ worker.health }}
@@ -666,6 +667,11 @@ watch(showPanel, (open) => {
 
 .workers-catalog-meta.unhealthy {
   color: #f38ba8;
+}
+
+.workers-catalog-meta.warming {
+  color: #89b4fa;
+  font-style: italic;
 }
 
 .workers-catalog-actions {

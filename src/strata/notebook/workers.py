@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import time
@@ -640,9 +641,20 @@ def _serialize_worker_health_record(
 async def probe_worker_health(
     worker: WorkerSpec,
     *,
-    timeout_seconds: float = 1.5,
+    timeout_seconds: float = 8.0,
     force_refresh: bool = False,
 ) -> WorkerHealthSnapshot:
+    """Probe a worker health endpoint and return a cached health snapshot.
+
+    The 8-second default accommodates serverless cold starts (Modal,
+    Fly scale-to-zero). Locally-running workers respond in a few
+    milliseconds; the timeout only kicks in when a remote backend is
+    waking up. Callers that iterate over multiple workers should do
+    so via ``asyncio.gather`` so the timeouts overlap rather than
+    compound. GPU cold boots >8 s will still show "unavailable"
+    briefly but recover on the next probe cycle once the container
+    is warm.
+    """
     """Probe a worker health endpoint and return a cached health snapshot."""
     now = time.time()
     if worker.backend == WorkerBackendType.LOCAL or is_embedded_executor_worker(worker):
@@ -703,6 +715,17 @@ async def probe_worker_health(
                     error=f"Executor reported status {status}",
                     duration_ms=duration_ms,
                 )
+    except httpx.TimeoutException:
+        # A timed-out probe usually means a serverless worker is
+        # cold-starting. Surface it as "warming" so the UI can render
+        # a distinct state (rather than lumping cold-start with real
+        # failures like DNS errors or 5xx responses).
+        snapshot = WorkerHealthSnapshot(
+            checked_at=now,
+            health="warming",
+            error=f"Probe timed out after {timeout_seconds:.0f}s; worker may be cold-starting",
+            duration_ms=int(timeout_seconds * 1000),
+        )
     except Exception as exc:
         snapshot = WorkerHealthSnapshot(
             checked_at=now,
@@ -728,6 +751,13 @@ async def build_worker_catalog_with_health(
         else {worker.name: worker for worker in policy.effective_workers.values()}
     )
 
+    # First pass: resolve static status (local, disabled) and collect
+    # the set of entries whose health needs a live probe. Gathering
+    # the probes in parallel keeps the catalog response fast even
+    # when one worker is cold-starting and the other is healthy —
+    # sequentially, the healthy one would have to wait for the cold
+    # one's 8 s timeout.
+    probe_targets: list[tuple[dict[str, Any], WorkerSpec, str | None]] = []
     for entry in catalog:
         name = str(entry.get("name", ""))
         if name == "local":
@@ -755,10 +785,16 @@ async def build_worker_catalog_with_health(
             entry.update(_serialize_worker_health_record(None))
             continue
 
-        snapshot = await probe_worker_health(
-            worker,
-            force_refresh=force_refresh,
+        probe_targets.append((entry, worker, policy_error))
+
+    snapshots = await asyncio.gather(
+        *(
+            probe_worker_health(worker, force_refresh=force_refresh)
+            for _, worker, _ in probe_targets
         )
+    )
+
+    for (entry, worker, policy_error), snapshot in zip(probe_targets, snapshots, strict=True):
         entry["health"] = snapshot.health
         entry["health_checked_at"] = int(snapshot.checked_at * 1000)
         entry["last_error"] = policy_error or snapshot.error
