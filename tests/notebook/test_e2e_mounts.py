@@ -139,9 +139,6 @@ class TestNotebookMountDefaults:
                 assert result["payload"].get("cache_hit") is not True
 
 
-class TestCellMountOverrides:
-    """Cell-level mount overrides should win over notebook defaults."""
-
 class TestMountInvalidation:
     """Changing mount config should invalidate dependent cells."""
 
