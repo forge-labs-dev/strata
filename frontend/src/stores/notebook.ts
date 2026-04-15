@@ -820,7 +820,6 @@ function resetWorkerCatalogState() {
   workerHealthCheckedAt.value = null
   notebookWorkerError.value = null
   workerRegistryError.value = null
-  cellWorkerErrors.value = {}
   clearServerWorkerRegistryState()
 }
 
@@ -1430,7 +1429,6 @@ const serverWorkerRegistryAvailable = ref(false)
 const serverWorkerRegistryLoading = ref(false)
 const serverWorkerActionLoading = ref<Record<string, boolean>>({})
 const serverWorkerRegistryError = ref<string | null>(null)
-const cellWorkerErrors = ref<Record<string, string>>({})
 
 // Inspect REPL state
 interface InspectEntry {
@@ -2623,93 +2621,6 @@ async function updateNotebookEnvAction(env: Record<string, string>) {
   void checkLlmStatus()
 }
 
-async function updateCellWorkerAction(cellId: CellId, worker: string | null) {
-  const sid = sessionId()
-  if (!sid) return
-  const strata = useStrata()
-  const nextCellWorkerErrors = { ...cellWorkerErrors.value }
-  delete nextCellWorkerErrors[cellId]
-  cellWorkerErrors.value = nextCellWorkerErrors
-  try {
-    const data = await strata.updateCellWorker(sid, cellId, worker)
-    if (data.cell) {
-      const cell = cellMap.value.get(cellId)
-      if (cell) {
-        applyBackendCellState(cell, data.cell)
-      }
-    }
-    if (data.cells && Array.isArray(data.cells)) {
-      syncCellsFromBackend(data.cells)
-    }
-    if (data.workers && Array.isArray(data.workers)) {
-      syncWorkerCatalogFromBackend(data.workers)
-      syncWorkerHealthCheckedAtFromBackend(data.health_checked_at)
-    } else {
-      fetchWorkers()
-    }
-    if ('definitions_editable' in data) {
-      syncWorkerDefinitionsEditableFromBackend(data.definitions_editable)
-    }
-  } catch (err: any) {
-    cellWorkerErrors.value = {
-      ...cellWorkerErrors.value,
-      [cellId]: err.message || 'Failed to update cell worker',
-    }
-  }
-}
-
-function cellWorkerErrorForCell(cellId: CellId): string | null {
-  return cellWorkerErrors.value[cellId] || null
-}
-
-async function updateCellTimeoutAction(cellId: CellId, timeout: number | null) {
-  const sid = sessionId()
-  if (!sid) return
-  const strata = useStrata()
-  const data = await strata.updateCellTimeout(sid, cellId, timeout)
-  if (data.cell) {
-    const cell = cellMap.value.get(cellId)
-    if (cell) {
-      applyBackendCellState(cell, data.cell)
-    }
-  }
-  if (data.cells && Array.isArray(data.cells)) {
-    syncCellsFromBackend(data.cells)
-  }
-}
-
-async function updateCellEnvAction(cellId: CellId, env: Record<string, string>) {
-  const sid = sessionId()
-  if (!sid) return
-  const strata = useStrata()
-  const data = await strata.updateCellEnv(sid, cellId, env)
-  if (data.cell) {
-    const cell = cellMap.value.get(cellId)
-    if (cell) {
-      applyBackendCellState(cell, data.cell)
-    }
-  }
-  if (data.cells && Array.isArray(data.cells)) {
-    syncCellsFromBackend(data.cells)
-  }
-}
-
-async function updateCellMountsAction(cellId: CellId, mounts: MountSpec[]) {
-  const sid = sessionId()
-  if (!sid) return
-  const strata = useStrata()
-  const data = await strata.updateCellMounts(sid, cellId, mounts)
-  if (data.cell) {
-    const cell = cellMap.value.get(cellId)
-    if (cell) {
-      applyBackendCellState(cell, data.cell)
-    }
-  }
-  if (data.cells && Array.isArray(data.cells)) {
-    syncCellsFromBackend(data.cells)
-  }
-}
-
 function updateSourceWebSocket(cellId: CellId, source: string) {
   if (wsInstance && wsInstance.connected()) {
     wsInstance.updateCellSource(cellId, source)
@@ -3044,7 +2955,6 @@ export function useNotebook() {
     serverWorkerRegistryLoading,
     isServerWorkerActionLoading,
     serverWorkerRegistryError,
-    cellWorkerErrorForCell,
     fetchWorkers,
     ensureWorkersLoaded,
     fetchServerWorkerRegistry,
@@ -3068,11 +2978,7 @@ export function useNotebook() {
     updateNotebookWorkerAction,
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,
-    updateCellWorkerAction,
-    updateCellTimeoutAction,
-    updateCellEnvAction,
     updateNotebookMountsAction,
-    updateCellMountsAction,
     // LLM assistant
     llmAvailable,
     llmModel,

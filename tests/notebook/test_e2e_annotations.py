@@ -1,7 +1,7 @@
 """E2E tests: source annotations overriding persisted notebook config.
 
 Exercises the live notebook REST + WebSocket path to prove that source
-annotations take precedence over saved notebook-level and cell-level config.
+annotations take precedence over saved notebook-level defaults.
 """
 
 from __future__ import annotations
@@ -39,37 +39,9 @@ def _put_notebook_env(client: TestClient, session_id: str, env: dict[str, str]) 
     return response.json()
 
 
-def _put_cell_env(
-    client: TestClient,
-    session_id: str,
-    cell_id: str,
-    env: dict[str, str],
-) -> dict:
-    response = client.put(
-        f"/v1/notebooks/{session_id}/cells/{cell_id}/env",
-        json={"env": env},
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
 def _put_notebook_timeout(client: TestClient, session_id: str, timeout: float) -> dict:
     response = client.put(
         f"/v1/notebooks/{session_id}/timeout",
-        json={"timeout": timeout},
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
-def _put_cell_timeout(
-    client: TestClient,
-    session_id: str,
-    cell_id: str,
-    timeout: float,
-) -> dict:
-    response = client.put(
-        f"/v1/notebooks/{session_id}/cells/{cell_id}/timeout",
         json={"timeout": timeout},
     )
     assert response.status_code == 200
@@ -89,20 +61,6 @@ def _put_notebook_mounts(
     return response.json()
 
 
-def _put_cell_mounts(
-    client: TestClient,
-    session_id: str,
-    cell_id: str,
-    mounts: list[dict[str, str]],
-) -> dict:
-    response = client.put(
-        f"/v1/notebooks/{session_id}/cells/{cell_id}/mounts",
-        json={"mounts": mounts},
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
 def _put_notebook_workers(
     client: TestClient,
     session_id: str,
@@ -111,20 +69,6 @@ def _put_notebook_workers(
     response = client.put(
         f"/v1/notebooks/{session_id}/workers",
         json={"workers": workers},
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
-def _put_cell_worker(
-    client: TestClient,
-    session_id: str,
-    cell_id: str,
-    worker: str | None,
-) -> dict:
-    response = client.put(
-        f"/v1/notebooks/{session_id}/cells/{cell_id}/worker",
-        json={"worker": worker},
     )
     assert response.status_code == 200
     return response.json()
@@ -152,7 +96,7 @@ def _sync_cell(ws, cell_id: str) -> dict:
 class TestAnnotationOverrides:
     """Source annotations should beat saved runtime config."""
 
-    def test_env_annotation_beats_notebook_and_cell_env(self, setup):
+    def test_env_annotation_beats_notebook_env(self, setup):
         client, tmp = setup
         nb = NotebookBuilder(tmp).add_cell(
             "c1",
@@ -162,9 +106,6 @@ class TestAnnotationOverrides:
         with open_notebook_session(client, nb.path) as (sid, session):
             notebook_env = _put_notebook_env(client, sid, {"APP_MODE": "notebook"})
             assert notebook_env["env"] == {"APP_MODE": "notebook"}
-
-            cell_env = _put_cell_env(client, sid, "c1", {"APP_MODE": "cell"})
-            assert cell_env["env"] == {"APP_MODE": "cell"}
 
             with ws_connect(client, sid) as ws:
                 _update_source_and_wait(
@@ -178,11 +119,10 @@ class TestAnnotationOverrides:
                 assert result["payload"]["outputs"]["value"]["preview"] == "annotated"
 
                 cell = _sync_cell(ws, "c1")
-                assert cell["env"] == {"APP_MODE": "cell"}
-                assert cell["env_overrides"] == {"APP_MODE": "cell"}
+                assert cell["env"] == {"APP_MODE": "notebook"}
                 assert cell["annotations"]["env"] == {"APP_MODE": "annotated"}
 
-    def test_timeout_annotation_beats_saved_timeouts(self, setup):
+    def test_timeout_annotation_beats_notebook_timeout(self, setup):
         client, tmp = setup
         nb = NotebookBuilder(tmp).add_cell(
             "c1",
@@ -192,9 +132,6 @@ class TestAnnotationOverrides:
         with open_notebook_session(client, nb.path) as (sid, session):
             notebook_timeout = _put_notebook_timeout(client, sid, 0.01)
             assert notebook_timeout["timeout"] == 0.01
-
-            cell_timeout = _put_cell_timeout(client, sid, "c1", 0.02)
-            assert cell_timeout["timeout"] == 0.02
 
             with ws_connect(client, sid) as ws:
                 _update_source_and_wait(
@@ -208,19 +145,14 @@ class TestAnnotationOverrides:
                 assert result["payload"]["outputs"]["value"]["preview"] == "done"
 
                 cell = _sync_cell(ws, "c1")
-                assert cell["timeout"] == 0.02
-                assert cell["timeout_override"] == 0.02
+                assert cell["timeout"] == 0.01
                 assert cell["annotations"]["timeout"] == 5.0
 
-    def test_mount_annotation_beats_saved_mount_config(self, setup):
+    def test_mount_annotation_beats_notebook_mount(self, setup):
         client, tmp = setup
         notebook_dir = tmp / "notebook-data"
         notebook_dir.mkdir()
         (notebook_dir / "data.txt").write_text("notebook", encoding="utf-8")
-
-        cell_dir = tmp / "cell-data"
-        cell_dir.mkdir()
-        (cell_dir / "data.txt").write_text("cell", encoding="utf-8")
 
         annotated_dir = tmp / "annotated-data"
         annotated_dir.mkdir()
@@ -233,7 +165,6 @@ class TestAnnotationOverrides:
 
         with open_notebook_session(client, nb.path) as (sid, session):
             _put_notebook_mounts(client, sid, [_mount_payload("raw_data", notebook_dir)])
-            _put_cell_mounts(client, sid, "c1", [_mount_payload("raw_data", cell_dir)])
 
             with ws_connect(client, sid) as ws:
                 _update_source_and_wait(
@@ -250,11 +181,10 @@ class TestAnnotationOverrides:
                 assert result["payload"]["outputs"]["value"]["preview"] == "annotated"
 
                 cell = _sync_cell(ws, "c1")
-                assert cell["mounts"][0]["uri"] == cell_dir.resolve().as_uri()
-                assert cell["mount_overrides"][0]["uri"] == cell_dir.resolve().as_uri()
+                assert cell["mounts"][0]["uri"] == notebook_dir.resolve().as_uri()
                 assert cell["annotations"]["mounts"][0]["uri"] == annotated_dir.resolve().as_uri()
 
-    def test_worker_annotation_beats_saved_cell_worker(self, setup, notebook_executor_server):
+    def test_worker_annotation_beats_notebook_worker(self, setup, notebook_executor_server):
         client, tmp = setup
         nb = NotebookBuilder(tmp).add_cell("c1", "value = 1")
 
@@ -273,8 +203,12 @@ class TestAnnotationOverrides:
             )
             assert any(worker["name"] == "gpu-http" for worker in worker_catalog["workers"])
 
-            cell_worker = _put_cell_worker(client, sid, "c1", "gpu-http")
-            assert cell_worker["worker"] == "gpu-http"
+            worker_response = client.put(
+                f"/v1/notebooks/{sid}/worker",
+                json={"worker": "gpu-http"},
+            )
+            assert worker_response.status_code == 200
+            assert worker_response.json()["worker"] == "gpu-http"
 
             with ws_connect(client, sid) as ws:
                 _update_source_and_wait(
@@ -291,6 +225,5 @@ class TestAnnotationOverrides:
 
                 cell = _sync_cell(ws, "c1")
                 assert cell["worker"] == "gpu-http"
-                assert cell["worker_override"] == "gpu-http"
                 assert cell["annotations"]["worker"] == "local"
                 assert cell["remote_worker"] is None

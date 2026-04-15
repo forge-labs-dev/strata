@@ -521,25 +521,6 @@ async function updateNotebookMounts(
   return readJson<NotebookMutationResponse>(resp)
 }
 
-async function updateCellMounts(
-  notebookId: string,
-  cellId: string,
-  mounts: MountSpec[],
-): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/mounts`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mounts }),
-    },
-  )
-  if (!resp.ok) {
-    throw new Error(`Failed to update cell mounts: ${resp.status}`)
-  }
-  return readJson<NotebookMutationResponse>(resp)
-}
-
 async function updateNotebookWorker(
   notebookId: string,
   worker: string | null,
@@ -551,25 +532,6 @@ async function updateNotebookWorker(
   })
   if (!resp.ok) {
     await throwApiError(resp, 'Failed to update notebook worker')
-  }
-  return readJson<NotebookMutationResponse>(resp)
-}
-
-async function updateCellWorker(
-  notebookId: string,
-  cellId: string,
-  worker: string | null,
-): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/worker`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ worker }),
-    },
-  )
-  if (!resp.ok) {
-    await throwApiError(resp, 'Failed to update cell worker')
   }
   return readJson<NotebookMutationResponse>(resp)
 }
@@ -589,25 +551,6 @@ async function updateNotebookTimeout(
   return readJson<NotebookMutationResponse>(resp)
 }
 
-async function updateCellTimeout(
-  notebookId: string,
-  cellId: string,
-  timeout: number | null,
-): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/timeout`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ timeout }),
-    },
-  )
-  if (!resp.ok) {
-    throw new Error(`Failed to update cell timeout: ${resp.status}`)
-  }
-  return readJson<NotebookMutationResponse>(resp)
-}
-
 async function updateNotebookEnv(
   notebookId: string,
   env: Record<string, string>,
@@ -619,25 +562,6 @@ async function updateNotebookEnv(
   })
   if (!resp.ok) {
     throw new Error(`Failed to update notebook env: ${resp.status}`)
-  }
-  return readJson<NotebookMutationResponse>(resp)
-}
-
-async function updateCellEnv(
-  notebookId: string,
-  cellId: string,
-  env: Record<string, string>,
-): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(
-    `${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/env`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ env }),
-    },
-  )
-  if (!resp.ok) {
-    throw new Error(`Failed to update cell env: ${resp.status}`)
   }
   return readJson<NotebookMutationResponse>(resp)
 }
@@ -1146,13 +1070,9 @@ export function useStrata() {
     removeCell,
     reorderCells,
     updateNotebookMounts,
-    updateCellMounts,
     updateNotebookWorker,
-    updateCellWorker,
     updateNotebookTimeout,
-    updateCellTimeout,
     updateNotebookEnv,
-    updateCellEnv,
     listWorkers,
     updateWorkers,
     listAdminNotebookWorkers,

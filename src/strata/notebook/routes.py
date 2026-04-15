@@ -44,10 +44,6 @@ from strata.notebook.writer import (
     remove_cell_from_notebook,
     rename_notebook,
     reorder_cells,
-    update_cell_env,
-    update_cell_mounts,
-    update_cell_timeout,
-    update_cell_worker,
     update_notebook_env,
     update_notebook_mounts,
     update_notebook_timeout,
@@ -1302,37 +1298,6 @@ async def update_notebook_mounts_endpoint(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.put("/{notebook_id}/cells/{cell_id}/mounts")
-async def update_cell_mounts_endpoint(
-    notebook_id: str,
-    cell_id: str,
-    req: MountConfigRequest,
-) -> dict:
-    """Replace cell-level mount overrides."""
-    session = _session_manager.get_session(notebook_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Notebook not found")
-
-    try:
-        update_cell_mounts(session.path, cell_id, req.mounts)
-        session.reload()
-        cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
-        if cell is None:
-            raise HTTPException(status_code=404, detail="Cell not found")
-        return {
-            "cell": session.serialize_cell(cell),
-            "mounts": [mount.model_dump() for mount in cell.mount_overrides],
-            "cells": session.serialize_cells(),
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Internal server error")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
 @router.get("/{notebook_id}/workers")
 async def list_notebook_workers(notebook_id: str, refresh: bool = False) -> dict:
     """List the worker catalog visible to a notebook."""
@@ -1442,106 +1407,6 @@ async def update_notebook_env_endpoint(
             "env": session.notebook_state.env,
             "cells": session.serialize_cells(),
         }
-    except Exception:
-        logger.exception("Internal server error")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.put("/{notebook_id}/cells/{cell_id}/worker")
-async def update_cell_worker_endpoint(
-    notebook_id: str,
-    cell_id: str,
-    req: WorkerConfigRequest,
-) -> dict:
-    """Replace a cell-level worker override."""
-    session = _session_manager.get_session(notebook_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Notebook not found")
-    policy_error = validate_worker_assignment(session.notebook_state, req.worker)
-    if policy_error is not None:
-        raise HTTPException(status_code=403, detail=policy_error)
-
-    try:
-        update_cell_worker(session.path, cell_id, req.worker)
-        session.reload()
-        cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
-        if cell is None:
-            raise HTTPException(status_code=404, detail="Cell not found")
-        return {
-            "cell": session.serialize_cell(cell),
-            "worker": cell.worker_override,
-            **await _serialize_worker_catalog(session),
-            "cells": session.serialize_cells(),
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Internal server error")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.put("/{notebook_id}/cells/{cell_id}/timeout")
-async def update_cell_timeout_endpoint(
-    notebook_id: str,
-    cell_id: str,
-    req: TimeoutConfigRequest,
-) -> dict:
-    """Replace a cell-level timeout override."""
-    session = _session_manager.get_session(notebook_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Notebook not found")
-
-    try:
-        update_cell_timeout(session.path, cell_id, req.timeout)
-        session.reload()
-        cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
-        if cell is None:
-            raise HTTPException(status_code=404, detail="Cell not found")
-        return {
-            "cell": session.serialize_cell(cell),
-            "timeout": cell.timeout_override,
-            "cells": session.serialize_cells(),
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Internal server error")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@router.put("/{notebook_id}/cells/{cell_id}/env")
-async def update_cell_env_endpoint(
-    notebook_id: str,
-    cell_id: str,
-    req: EnvConfigRequest,
-) -> dict:
-    """Replace a cell-level env override map."""
-    session = _session_manager.get_session(notebook_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="Notebook not found")
-
-    try:
-        update_cell_env(session.path, cell_id, req.env)
-        session.reload()
-        cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
-        if cell is None:
-            raise HTTPException(status_code=404, detail="Cell not found")
-        # Restore sensitive values stripped from disk (same as notebook env)
-        cell.env.update(req.env)
-        cell.env_overrides.update(req.env)
-        return {
-            "cell": session.serialize_cell(cell),
-            "env": cell.env_overrides,
-            "cells": session.serialize_cells(),
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

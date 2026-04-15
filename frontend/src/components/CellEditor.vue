@@ -2,10 +2,6 @@
 import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { useCodemirror } from '../composables/useCodemirror'
 import { useNotebook } from '../stores/notebook'
-import EnvVarsEditor from './EnvVarsEditor.vue'
-import MountListEditor from './MountListEditor.vue'
-import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
-import WorkerConfigEditor from './WorkerConfigEditor.vue'
 import type { Cell, CellOutput } from '../types/notebook'
 import {
   resolveEffectiveWorkerEntry,
@@ -15,8 +11,6 @@ import {
   workerWarningForEntry,
 } from '../utils/notebookWorkers'
 import { renderMarkdownToHtml } from '../utils/markdown'
-import { applySourceAnnotations } from '../utils/notebookAnnotations'
-import type { CellAnnotations, MountSpec } from '../types/notebook'
 
 const InspectPanel = defineAsyncComponent(() => import('./InspectPanel.vue'))
 
@@ -31,7 +25,6 @@ const emit = defineEmits<{
 }>()
 
 const {
-  connected,
   environmentMutationActive,
   environmentLastAction,
   environmentOperation,
@@ -40,13 +33,7 @@ const {
   isInspecting: storeIsInspecting,
   closeInspect,
   availableWorkers,
-  ensureWorkersLoaded,
-  cellWorkerErrorForCell,
   addDependencyAction,
-  updateCellEnvAction,
-  updateCellTimeoutAction,
-  updateCellWorkerAction,
-  updateCellMountsAction,
 } = useNotebook()
 
 const isInspecting = computed(() => storeIsInspecting(props.cell.id))
@@ -61,9 +48,7 @@ function toggleInspect() {
 
 const editorEl = ref<HTMLElement | null>(null)
 const showCausality = ref(false)
-const showInfra = ref(false)
 const folded = ref(false)
-const showAnnotationEditor = ref(false)
 const installRequestedPackage = ref<string | null>(null)
 
 const { view, setDoc } = useCodemirror(editorEl, {
@@ -182,29 +167,6 @@ watch(canExplainStaleness, (canExplain) => {
   }
 })
 
-watch(showInfra, (visible) => {
-  if (visible) {
-    void ensureWorkersLoaded()
-  }
-})
-
-watch(
-  () => props.cell.annotations,
-  (annotations) => {
-    const hasOverrides = Boolean(
-      annotations &&
-      (annotations.mounts.length ||
-        annotations.worker ||
-        annotations.timeout != null ||
-        Object.keys(annotations.env).length),
-    )
-    if (!hasOverrides) {
-      showAnnotationEditor.value = false
-    }
-  },
-  { deep: true },
-)
-
 const mountSummary = computed(() =>
   props.cell.mounts.map((mount) => `${mount.name}:${mount.mode}`).join(', '),
 )
@@ -310,47 +272,6 @@ const annotationSummaryTitle = computed(() => {
   }
   return `Source annotations: ${annotationSummaryChips.value.join(' · ')}`
 })
-
-function currentSourceAnnotations(): CellAnnotations {
-  return {
-    worker: props.cell.annotations?.worker ?? null,
-    timeout: props.cell.annotations?.timeout ?? null,
-    env: { ...(props.cell.annotations?.env || {}) },
-    mounts: (props.cell.annotations?.mounts || []).map((mount) => ({ ...mount })),
-  }
-}
-
-async function saveSourceAnnotations(next: Partial<CellAnnotations>) {
-  const annotations = currentSourceAnnotations()
-  const merged: CellAnnotations = {
-    worker: next.worker !== undefined ? next.worker : annotations.worker,
-    timeout: next.timeout !== undefined ? next.timeout : annotations.timeout,
-    env: next.env !== undefined ? next.env : annotations.env,
-    mounts: next.mounts !== undefined ? next.mounts : annotations.mounts,
-  }
-
-  await updateSource(props.cell.id, applySourceAnnotations(props.cell.source, merged))
-}
-
-function saveAnnotationWorker(worker: string | null) {
-  return saveSourceAnnotations({ worker })
-}
-
-function saveAnnotationTimeout(timeout: number | null) {
-  return saveSourceAnnotations({ timeout })
-}
-
-function saveAnnotationEnv(env: Record<string, string>) {
-  return saveSourceAnnotations({ env })
-}
-
-function saveAnnotationMounts(mounts: MountSpec[]) {
-  return saveSourceAnnotations({ mounts })
-}
-
-function toggleAnnotationEditor() {
-  showAnnotationEditor.value = !showAnnotationEditor.value
-}
 
 function normalizePackageName(pkg: string | null | undefined): string {
   return (pkg || '').trim().toLowerCase()
@@ -625,9 +546,6 @@ function outputKey(output: CellOutput, index: number): string {
           >
             Why stale?
           </button>
-          <button class="infra-btn" @click="showInfra = !showInfra">
-            {{ showInfra ? 'Hide infra' : 'Infra' }}
-          </button>
         </div>
       </div>
 
@@ -656,122 +574,6 @@ function outputKey(output: CellOutput, index: number): string {
         <span v-if="effectiveWorkerHealthLabel" class="remote-execution-pill">
           {{ effectiveWorkerHealthLabel }}
         </span>
-      </div>
-
-      <div v-if="!folded && showInfra" class="infra-panel">
-        <div v-if="workerWarning" class="infra-warning">
-          {{ workerWarning }}
-        </div>
-
-        <WorkerConfigEditor
-          :worker="cell.workerOverride"
-          :options="availableWorkers"
-          title="Cell Worker Override"
-          compact
-          :error="cellWorkerErrorForCell(cell.id)"
-          @save="(worker) => updateCellWorkerAction(cell.id, worker)"
-        />
-
-        <TimeoutConfigEditor
-          :timeout="cell.timeoutOverride"
-          title="Cell Timeout Override"
-          compact
-          @save="(timeout) => updateCellTimeoutAction(cell.id, timeout)"
-        />
-
-        <EnvVarsEditor
-          :env="cell.envOverrides"
-          title="Cell Env Overrides"
-          compact
-          @save="(env) => updateCellEnvAction(cell.id, env)"
-        />
-
-        <MountListEditor
-          :mounts="cell.mountOverrides"
-          title="Cell Mount Overrides"
-          compact
-          @save="(mounts) => updateCellMountsAction(cell.id, mounts)"
-        />
-
-        <div class="annotation-panel">
-          <div class="annotation-header">
-            <div>
-              <div class="annotation-title">Source Overrides</div>
-              <div class="annotation-copy">
-                Optional <code># @...</code> directives stored in cell source. These override saved
-                config when present.
-              </div>
-            </div>
-            <button
-              class="annotation-toggle"
-              :disabled="!connected"
-              @click="toggleAnnotationEditor"
-            >
-              {{
-                showAnnotationEditor
-                  ? 'Hide editor'
-                  : hasAnnotationOverrides
-                    ? 'Edit overrides'
-                    : 'Add override'
-              }}
-            </button>
-          </div>
-
-          <div
-            v-if="hasAnnotationOverrides"
-            class="annotation-summary-row"
-            :title="annotationSummaryTitle"
-          >
-            <span class="annotation-summary-label">Active</span>
-            <span
-              v-for="chip in annotationSummaryChips"
-              :key="`panel-${chip}`"
-              class="annotation-summary-chip"
-            >
-              {{ chip }}
-            </span>
-          </div>
-
-          <div v-else class="annotation-copy annotation-copy-muted">
-            No source overrides are currently set for this cell.
-          </div>
-
-          <div v-if="showAnnotationEditor" class="annotation-editor-grid">
-            <WorkerConfigEditor
-              :worker="cell.annotations?.worker ?? null"
-              :options="availableWorkers"
-              title="Annotation Worker"
-              compact
-              :read-only="!connected"
-              @save="saveAnnotationWorker"
-            />
-
-            <TimeoutConfigEditor
-              :timeout="cell.annotations?.timeout ?? null"
-              title="Annotation Timeout"
-              compact
-              :read-only="!connected"
-              @save="saveAnnotationTimeout"
-            />
-
-            <EnvVarsEditor
-              :env="cell.annotations?.env || {}"
-              title="Annotation Env"
-              compact
-              :read-only="!connected"
-              @save="saveAnnotationEnv"
-            />
-
-            <MountListEditor
-              :mounts="cell.annotations?.mounts || []"
-              title="Annotation Mounts"
-              compact
-              :read-only="!connected"
-              :show-pin="false"
-              @save="saveAnnotationMounts"
-            />
-          </div>
-        </div>
       </div>
 
       <!-- v1.1: Causality chain detail (expanded) -->
@@ -1240,22 +1042,6 @@ function outputKey(output: CellOutput, index: number): string {
 .duration {
   white-space: nowrap;
 }
-.infra-btn {
-  background: #313244;
-  border: 1px solid #45475a;
-  color: #cdd6f4;
-  padding: 3px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  cursor: pointer;
-}
-.infra-panel {
-  border-bottom: 1px solid #2a2a3c;
-  padding: 10px 12px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 .remote-execution-summary {
   display: flex;
   flex-wrap: wrap;
@@ -1305,29 +1091,6 @@ function outputKey(output: CellOutput, index: number): string {
 .remote-execution-summary.tone-error .remote-execution-pill {
   color: #f38ba8;
 }
-.infra-warning {
-  padding: 8px 10px;
-  border: 1px solid #f9e2af33;
-  background: #f9e2af14;
-  color: #f9e2af;
-  border-radius: 6px;
-  font-size: 12px;
-}
-.annotation-panel {
-  border: 1px solid #45475a;
-  border-radius: 8px;
-  padding: 10px;
-  background: #181825;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.annotation-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
 .annotation-badge {
   background: #f9e2af22;
   color: #f9e2af;
@@ -1342,69 +1105,6 @@ function outputKey(output: CellOutput, index: number): string {
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
-}
-.annotation-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: #f9e2af;
-}
-.annotation-toggle {
-  background: #313244;
-  border: 1px solid #45475a;
-  color: #f9e2af;
-  padding: 6px 10px;
-  border-radius: 6px;
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.annotation-toggle:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-.annotation-copy {
-  color: #a6adc8;
-  font-size: 12px;
-  line-height: 1.4;
-}
-.annotation-copy code {
-  color: #f9e2af;
-}
-.annotation-copy-muted {
-  color: #6c7086;
-}
-.annotation-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.annotation-summary-label {
-  color: #f9e2af;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.annotation-editor-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 4px;
-  border-top: 1px solid #313244;
-}
-.annotation-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: #a6adc8;
-}
-.annotation-key {
-  color: #f9e2af;
-  font-weight: 600;
 }
 
 /* v1.1: Causality inspector */
@@ -1433,11 +1133,6 @@ function outputKey(output: CellOutput, index: number): string {
     margin-left: 0;
     justify-content: flex-end;
     flex-wrap: wrap;
-  }
-
-  .annotation-header {
-    flex-direction: column;
-    align-items: stretch;
   }
 }
 

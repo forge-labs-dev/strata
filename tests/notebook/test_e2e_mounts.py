@@ -51,20 +51,6 @@ def _put_notebook_mounts(
     return response.json()
 
 
-def _put_cell_mounts(
-    client: TestClient,
-    session_id: str,
-    cell_id: str,
-    mounts: list[dict[str, str]],
-) -> dict:
-    response = client.put(
-        f"/v1/notebooks/{session_id}/cells/{cell_id}/mounts",
-        json={"mounts": mounts},
-    )
-    assert response.status_code == 200
-    return response.json()
-
-
 def _list_cells(client: TestClient, session_id: str) -> list[dict]:
     response = client.get(f"/v1/notebooks/{session_id}/cells")
     assert response.status_code == 200
@@ -155,37 +141,6 @@ class TestNotebookMountDefaults:
 
 class TestCellMountOverrides:
     """Cell-level mount overrides should win over notebook defaults."""
-
-    def test_cell_mount_override_wins_over_notebook_default(self, setup):
-        client, tmp = setup
-        notebook_dir = tmp / "default-data"
-        notebook_dir.mkdir()
-        (notebook_dir / "data.txt").write_text("default text", encoding="utf-8")
-
-        override_dir = tmp / "override-data"
-        override_dir.mkdir()
-        (override_dir / "data.txt").write_text("override text", encoding="utf-8")
-
-        nb = NotebookBuilder(tmp).add_cell("c1", 'value = (raw_data / "data.txt").read_text()')
-
-        with open_notebook_session(client, nb.path) as (sid, session):
-            _put_notebook_mounts(client, sid, [_mount_payload("raw_data", notebook_dir)])
-
-            override = _put_cell_mounts(
-                client,
-                sid,
-                "c1",
-                [_mount_payload("raw_data", override_dir)],
-            )
-            assert override["mounts"][0]["name"] == "raw_data"
-            assert override["cell"]["mount_overrides"][0]["uri"] == override_dir.resolve().as_uri()
-            assert override["cell"]["mounts"][0]["uri"] == override_dir.resolve().as_uri()
-
-            with ws_connect(client, sid) as ws:
-                result = execute_cell_and_wait(ws, "c1")
-                assert result["type"] == "cell_output"
-                assert result["payload"]["outputs"]["value"]["preview"] == "override text"
-
 
 class TestMountInvalidation:
     """Changing mount config should invalidate dependent cells."""

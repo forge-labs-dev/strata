@@ -267,12 +267,6 @@ PUT /v1/notebooks/{session_id}/worker
 }
 ```
 
-### Update Cell Worker
-
-```
-PUT /v1/notebooks/{session_id}/cells/{cell_id}/worker
-```
-
 ### Update Worker Catalog
 
 ```
@@ -285,12 +279,6 @@ PUT /v1/notebooks/{session_id}/workers
 
 ```
 PUT /v1/notebooks/{session_id}/mounts
-```
-
-### Update Cell Mounts
-
-```
-PUT /v1/notebooks/{session_id}/cells/{cell_id}/mounts
 ```
 
 ## Export

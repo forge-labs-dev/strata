@@ -28,9 +28,6 @@ from strata.notebook.writer import (
     remove_cell_from_notebook,
     rename_notebook,
     reorder_cells,
-    update_cell_env,
-    update_cell_timeout,
-    update_cell_worker,
     update_environment_metadata,
     update_notebook_env,
     update_notebook_timeout,
@@ -430,38 +427,6 @@ def test_sensitive_env_values_stripped_on_write():
         # Non-sensitive values preserved
         assert env["DATABASE_URL"] == "postgres://localhost/db"
         assert env["DEBUG"] == "true"
-
-
-def test_update_cell_worker():
-    """Test persisting cell-level worker overrides."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Cell Worker Notebook")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        update_notebook_worker(notebook_dir, "gpu-default")
-        update_cell_worker(notebook_dir, "cell-1", "gpu-override")
-
-        notebook_state = parse_notebook(notebook_dir)
-        assert notebook_state.cells[0].worker == "gpu-override"
-        assert notebook_state.cells[0].worker_override == "gpu-override"
-
-
-def test_update_cell_timeout_and_env():
-    """Test persisting cell-level timeout/env overrides."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Cell Runtime Notebook")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        update_notebook_timeout(notebook_dir, 7.5)
-        update_notebook_env(notebook_dir, {"APP_MODE": "base"})
-        update_cell_timeout(notebook_dir, "cell-1", 2.0)
-        update_cell_env(notebook_dir, "cell-1", {"APP_MODE": "override"})
-
-        notebook_state = parse_notebook(notebook_dir)
-        assert notebook_state.cells[0].timeout == 2.0
-        assert notebook_state.cells[0].timeout_override == 2.0
-        assert notebook_state.cells[0].env == {"APP_MODE": "override"}
-        assert notebook_state.cells[0].env_overrides == {"APP_MODE": "override"}
 
 
 def test_create_notebook_preserves_existing_id():

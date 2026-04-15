@@ -1118,39 +1118,6 @@ def test_update_notebook_mounts():
         assert data["cells"][0]["mounts"][0]["name"] == "raw_data"
 
 
-def test_update_cell_mounts():
-    """Test PUT /v1/notebooks/{id}/cells/{cell_id}/mounts endpoint."""
-    client = TestClient(create_test_app())
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Cell Mount Update Test")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)},
-        )
-        session_id = response.json()["session_id"]
-
-        response = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/mounts",
-            json={
-                "mounts": [
-                    {
-                        "name": "scratch",
-                        "uri": "file:///tmp/scratch",
-                        "mode": "rw",
-                    }
-                ]
-            },
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["mounts"][0]["name"] == "scratch"
-        assert data["cell"]["mount_overrides"][0]["name"] == "scratch"
-        assert data["cell"]["mounts"][0]["name"] == "scratch"
-
-
 def test_update_notebook_worker():
     """Test PUT /v1/notebooks/{id}/worker endpoint."""
     client = TestClient(create_test_app())
@@ -1174,32 +1141,6 @@ def test_update_notebook_worker():
         assert data["worker"] == "gpu-default"
         assert any(worker["name"] == "gpu-default" for worker in data["workers"])
         assert data["cells"][0]["worker"] == "gpu-default"
-
-
-def test_update_cell_worker():
-    """Test PUT /v1/notebooks/{id}/cells/{cell_id}/worker endpoint."""
-    client = TestClient(create_test_app())
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Cell Worker Update Test")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)},
-        )
-        session_id = response.json()["session_id"]
-
-        response = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/worker",
-            json={"worker": "gpu-override"},
-        )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["worker"] == "gpu-override"
-        assert any(worker["name"] == "gpu-override" for worker in data["workers"])
-        assert data["cell"]["worker"] == "gpu-override"
-        assert data["cell"]["worker_override"] == "gpu-override"
 
 
 def test_list_notebook_workers():
@@ -1512,40 +1453,6 @@ def test_update_notebook_worker_rejects_disabled_service_worker(
         assert "disabled by server policy" in blocked.json()["detail"]
 
 
-def test_update_cell_worker_requires_allowlisted_service_worker(
-    service_mode_worker_state,
-):
-    """Cell-level worker overrides should follow the same service-mode policy."""
-    service_mode_worker_state()
-    client = TestClient(create_test_app())
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Service Cell Worker Test")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)},
-        )
-        session_id = response.json()["session_id"]
-
-        blocked = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/worker",
-            json={"worker": "gpu-shadow"},
-        )
-        assert blocked.status_code == 403
-        assert "not allowed in service mode" in blocked.json()["detail"]
-
-        allowed = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/worker",
-            json={"worker": "gpu-a100"},
-        )
-        assert allowed.status_code == 200
-        payload = allowed.json()
-        assert payload["cell"]["worker"] == "gpu-a100"
-        assert payload["definitions_editable"] is False
-
-
 def test_update_notebook_workers_probes_executor_health(notebook_executor_server):
     """Configured notebook workers should surface healthy executor probes."""
     client = TestClient(create_test_app())
@@ -1609,38 +1516,6 @@ def test_update_notebook_timeout_and_env():
         data = env_response.json()
         assert data["env"] == {"APP_MODE": "secret"}
         assert data["cells"][0]["env"] == {"APP_MODE": "secret"}
-
-
-def test_update_cell_timeout_and_env():
-    """Test cell-level timeout/env endpoints."""
-    client = TestClient(create_test_app())
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        notebook_dir = create_notebook(Path(tmpdir), "Cell Runtime Update Test")
-        add_cell_to_notebook(notebook_dir, "cell-1")
-
-        response = client.post(
-            "/v1/notebooks/open",
-            json={"path": str(notebook_dir)},
-        )
-        session_id = response.json()["session_id"]
-
-        timeout_response = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/timeout",
-            json={"timeout": 2.0},
-        )
-        assert timeout_response.status_code == 200
-        assert timeout_response.json()["timeout"] == 2.0
-
-        env_response = client.put(
-            f"/v1/notebooks/{session_id}/cells/cell-1/env",
-            json={"env": {"APP_MODE": "override"}},
-        )
-        assert env_response.status_code == 200
-        data = env_response.json()
-        assert data["env"] == {"APP_MODE": "override"}
-        assert data["cell"]["env"] == {"APP_MODE": "override"}
-        assert data["cell"]["env_overrides"] == {"APP_MODE": "override"}
 
 
 def test_update_cell_source():
