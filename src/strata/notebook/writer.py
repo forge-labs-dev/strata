@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import tomli_w
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     pass
 
 
-def _serialize_mounts(mounts: list[MountSpec]) -> list[dict[str, str]]:
+def _serialize_mounts(mounts: list[MountSpec]) -> list[dict[str, Any]]:
     """Convert mount specs into TOML-friendly dicts."""
     return [
         {
@@ -40,6 +40,7 @@ def _serialize_mounts(mounts: list[MountSpec]) -> list[dict[str, str]]:
             "uri": mount.uri,
             "mode": mount.mode.value,
             **({"pin": mount.pin} if mount.pin is not None else {}),
+            **({"options": dict(mount.options)} if mount.options else {}),
         }
         for mount in mounts
     ]

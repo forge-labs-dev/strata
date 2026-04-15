@@ -45,6 +45,13 @@ class MountSpec(BaseModel):
         default=None,
         description="Pinned version/etag — disables fingerprinting when set",
     )
+    options: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Backend storage options passed to fsspec (e.g. anon=True, "
+            "endpoint_url, profile). Merged with executor-level credentials."
+        ),
+    )
 
 
 class WorkerBackendType(StrEnum):

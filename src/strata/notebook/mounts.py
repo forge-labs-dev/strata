@@ -248,7 +248,7 @@ class MountResolver:
         import fsspec
 
         protocol = _scheme_to_fsspec_protocol(scheme)
-        storage_options = self.credentials.get(scheme, {})
+        storage_options = {**self.credentials.get(scheme, {}), **mount.options}
         fingerprint = await MountFingerprinter.fingerprint_mount(mount)
         assert fingerprint is not None
 
@@ -295,7 +295,7 @@ class MountResolver:
         staging.mkdir(parents=True, exist_ok=True)
 
         protocol = _scheme_to_fsspec_protocol(scheme)
-        storage_options = self.credentials.get(scheme, {})
+        storage_options = {**self.credentials.get(scheme, {}), **mount.options}
 
         try:
             import fsspec
@@ -341,7 +341,7 @@ class MountResolver:
             import fsspec
 
             protocol = _scheme_to_fsspec_protocol(scheme)
-            storage_options = self.credentials.get(scheme, {})
+            storage_options = {**self.credentials.get(scheme, {}), **rm.spec.options}
 
             try:
                 fs = fsspec.filesystem(protocol, **storage_options)
@@ -478,7 +478,9 @@ class MountFingerprinter:
         if scheme == "file":
             return MountFingerprinter.fingerprint_local_sync(Path(path))
         else:
-            return MountFingerprinter.fingerprint_remote_sync(scheme, path)
+            return MountFingerprinter.fingerprint_remote_sync(
+                scheme, path, storage_options=mount.options or None
+            )
 
     @staticmethod
     async def fingerprint_mount(mount: MountSpec) -> str | None:
