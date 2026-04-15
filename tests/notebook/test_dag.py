@@ -1,7 +1,5 @@
 """Tests for DAG construction and analysis."""
 
-import pytest
-
 from strata.notebook.dag import (
     CellAnalysisWithId,
     DagEdge,
@@ -240,36 +238,54 @@ class TestCycleDetection:
         cycles = detect_cycles(dag, [c.id for c in cells])
         assert cycles == []
 
-    def test_simple_cycle(self):
-        """Detect simple cycle: A → B → A."""
+    def test_forward_reference_no_cycle(self):
+        """A references y (defined later by B): no cycle, no edge.
+
+        The single-pass DAG builder resolves each cell's references
+        against producers available at its own position. A forward
+        reference leaves the consuming cell without an upstream edge
+        and the runtime surfaces a NameError, which is the honest
+        signal. No error-style ValueError is raised at build time.
+        """
         cells = [
             CellAnalysisWithId(id="a", defines=["x"], references=["y"]),
             CellAnalysisWithId(id="b", defines=["y"], references=["x"]),
         ]
+        dag = build_dag(cells)
+        # b links to a via x; a has no predecessor for its y reference.
+        assert dag.cell_upstream["a"] == []
+        assert dag.cell_upstream["b"] == ["a"]
 
-        # build_dag should raise ValueError on cycle
-        with pytest.raises(ValueError, match="Cycle detected"):
-            build_dag(cells)
+    def test_self_reference_is_not_a_cycle(self):
+        """``x = x + 1`` with no upstream is valid intra-cell rebind.
 
-    def test_self_cycle(self):
-        """Detect self-cycle: A → A."""
+        Old behavior raised "cycle detected"; the new model treats a
+        reference-to-own-define as a pure rebind with no external
+        producer. (The filter in analyze_cell strips ``x`` from
+        references when it's a pure define, so this case rarely
+        reaches build_dag in practice.)
+        """
         cells = [
             CellAnalysisWithId(id="a", defines=["x"], references=["x"]),
         ]
+        dag = build_dag(cells)
+        assert dag.cell_upstream["a"] == []
 
-        with pytest.raises(ValueError, match="Cycle detected"):
-            build_dag(cells)
+    def test_forward_chain_no_cycle(self):
+        """A→z, B→x, C→y where producers appear after consumers.
 
-    def test_three_node_cycle(self):
-        """Detect cycle: A → B → C → A."""
+        Only B links to A (x is available); A and C's forward refs
+        resolve to nothing and leave them as roots in source order.
+        """
         cells = [
             CellAnalysisWithId(id="a", defines=["x"], references=["z"]),
             CellAnalysisWithId(id="b", defines=["y"], references=["x"]),
             CellAnalysisWithId(id="c", defines=["z"], references=["y"]),
         ]
-
-        with pytest.raises(ValueError, match="Cycle detected"):
-            build_dag(cells)
+        dag = build_dag(cells)
+        assert dag.cell_upstream["a"] == []
+        assert dag.cell_upstream["b"] == ["a"]
+        assert dag.cell_upstream["c"] == ["b"]
 
 
 class TestCascadePlan:

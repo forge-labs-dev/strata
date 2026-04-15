@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 # See note in harness.py — orjson is preferred for native datetime /
-# numpy / Decimal support but the notebook venv may not have it.
+# numpy / Decimal support but the notebook venv may be minimal and
+# lack it (tests, stripped workers), so fall back to stdlib + default=str.
 try:
     import orjson  # type: ignore[import-not-found]
 
@@ -35,9 +36,9 @@ except ImportError:
 def _dumps_result(result: dict) -> str:
     """Encode a harness result for stdout.
 
-    Uses orjson when available (handles datetime / numpy natively);
-    falls back to stdlib with default=str so previews containing
-    exotic types don't truncate the stream.
+    default=str catches anything the codec can't encode (previews are
+    display-only, so stringifying exotic values is safe). Returns str
+    rather than bytes so callers can use ``print(..., flush=True)``.
     """
     if _HAS_ORJSON:
         return orjson.dumps(
@@ -311,8 +312,12 @@ def main() -> None:
             if not manifest_path:
                 continue
             try:
-                with open(manifest_path) as f:
-                    manifest = json.load(f)
+                if _HAS_ORJSON:
+                    with open(manifest_path, "rb") as f:
+                        manifest = orjson.loads(f.read())
+                else:
+                    with open(manifest_path) as f:
+                        manifest = json.load(f)
                 result = execute_harness(manifest)
                 print(_dumps_result(result), flush=True)
             except Exception as e:

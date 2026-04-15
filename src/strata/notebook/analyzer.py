@@ -34,11 +34,18 @@ class VariableAnalyzer(ast.NodeVisitor):
         """Initialize the analyzer."""
         self.defines: set[str] = set()
         self.references: set[str] = set()
+        # Names that got into ``defines`` via a pure ``x = ...`` target
+        # (not a subscript/attribute mutation). Used to demote a
+        # variable out of ``mutation_defines`` when the same cell does
+        # both — ``df = ...`` followed by ``df["col"] = ...`` is
+        # locally-defined, not a mutation of an upstream.
+        self.pure_defines: set[str] = set()
         # Subset of `defines` that came from subscript/attribute
-        # mutations (``df["col"] = ...``). These still need to appear
-        # in references so the DAG knows we depend on an upstream
-        # producer — unlike pure rebinds (``x = x + 1``) where the
-        # reference is intra-cell and should be filtered out.
+        # mutations (``df["col"] = ...``) without a sibling pure
+        # assignment. These still need to appear in references so the
+        # DAG knows we depend on an upstream producer — unlike pure
+        # rebinds (``x = x + 1``) where the reference is intra-cell
+        # and should be filtered out.
         self.mutation_defines: set[str] = set()
         self._in_nested_scope = False
         self._local_vars: set[str] = set()  # Track local scope variables
@@ -262,6 +269,7 @@ class VariableAnalyzer(ast.NodeVisitor):
         if isinstance(target, ast.Name):
             # Simple assignment: x = ...
             self.defines.add(target.id)
+            self.pure_defines.add(target.id)
         elif isinstance(target, (ast.Tuple, ast.List)):
             # Tuple/list unpacking: (a, b) = ... or [a, b] = ...
             for elt in target.elts:
@@ -343,23 +351,30 @@ def analyze_cell(source: str) -> CellAnalysis:
     # Filter: exclude private variables and builtins
     builtin_names = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__"}
     defines = [v for v in analyzer.defines if not v.startswith("_")]
+    # A name only counts as a mutation-define if the cell didn't also
+    # pure-assign it. If a cell does ``df = ...`` and later
+    # ``df["col"] = ...``, the pure assignment supersedes — ``df`` is
+    # locally produced and shouldn't drag in a phantom upstream.
+    effective_mutation_defines = {
+        v
+        for v in analyzer.mutation_defines
+        if not v.startswith("_") and v in set(defines) and v not in analyzer.pure_defines
+    }
     # Mutation-defines stay in references (the cell depends on an
     # upstream producer of the pre-mutation object). Pure defines are
     # filtered from references as before — that handles intra-cell
     # rebinds like ``x = x + 1``.
-    pure_defines = set(defines) - analyzer.mutation_defines
+    pure_defined_names = set(defines) - effective_mutation_defines
     references = [
         v
         for v in analyzer.references
-        if not v.startswith("_") and v not in builtin_names and v not in pure_defines
+        if not v.startswith("_") and v not in builtin_names and v not in pure_defined_names
     ]
 
     # Remove duplicates and sort for consistency
     defines = sorted(set(defines))
     references = sorted(set(references))
-    mutation_defines = sorted(
-        v for v in analyzer.mutation_defines if not v.startswith("_") and v in defines
-    )
+    mutation_defines = sorted(effective_mutation_defines)
 
     return CellAnalysis(
         defines=defines,

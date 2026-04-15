@@ -94,33 +94,31 @@ def test_staleness_computation_multiple_calls(three_cell_notebook):
 
 
 def test_staleness_updates_cells_when_dag_is_invalid(tmp_path):
-    """Cycle/no-DAG notebooks should still have authoritative in-memory status."""
-    notebook_dir = tmp_path / "cycle_notebook"
+    """When session.dag is None, compute_staleness still authoritatively
+    marks cells idle and clears cached causality data.
+
+    The single-pass DAG builder no longer produces cycles from plain
+    cell sources (forward references simply leave the cell without an
+    upstream edge), so we exercise the ``dag is None`` branch directly
+    by nulling it after construction — simulating any future failure
+    mode that leaves the session without a DAG.
+    """
+    notebook_dir = tmp_path / "null_dag_notebook"
     notebook_dir.mkdir()
     (notebook_dir / "cells").mkdir()
-    (notebook_dir / "pyproject.toml").write_text("[project]\nname = 'cycle'\n")
+    (notebook_dir / "pyproject.toml").write_text("[project]\nname = 'null_dag'\n")
 
     notebook_state = NotebookState(
-        id="cycle_nb",
-        name="Cycle",
+        id="null_dag_nb",
+        name="NullDag",
         cells=[
-            CellState(
-                id="a",
-                source="x = y + 1",
-                language="python",
-                order=0,
-            ),
-            CellState(
-                id="b",
-                source="y = x + 1",
-                language="python",
-                order=1,
-            ),
+            CellState(id="a", source="x = y + 1", language="python", order=0),
+            CellState(id="b", source="y = x + 1", language="python", order=1),
         ],
     )
 
     session = NotebookSession(notebook_state, notebook_dir)
-    assert session.dag is None
+    session.dag = None  # simulate failed DAG build
 
     for cell in session.notebook_state.cells:
         cell.status = "ready"

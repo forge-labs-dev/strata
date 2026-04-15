@@ -63,22 +63,25 @@ class TestAnalyzerAssignmentTypes:
         assert result.defines == ["x"]
 
     def test_subscript_assignment(self):
-        """Subscript mutation: df["col"] = ... references df (does not define it)."""
+        """Subscript mutation defines AND references the root (see analyzer docs)."""
         result = analyze_cell('df["col"] = 1')
-        assert result.defines == []
+        assert result.defines == ["df"]
         assert "df" in result.references
+        assert result.mutation_defines == ["df"]
 
     def test_attribute_assignment(self):
-        """Attribute mutation: obj.attr = ... references obj (does not define it)."""
+        """Attribute mutation defines AND references the root."""
         result = analyze_cell("obj.attr = 1")
-        assert result.defines == []
+        assert result.defines == ["obj"]
         assert "obj" in result.references
+        assert result.mutation_defines == ["obj"]
 
     def test_nested_attribute_assignment(self):
-        """Nested attribute: obj.inner.attr = ... references obj (does not define it)."""
+        """Nested attribute mutation defines AND references the root name."""
         result = analyze_cell("obj.inner.attr = 1")
-        assert result.defines == []
+        assert result.defines == ["obj"]
         assert "obj" in result.references
+        assert result.mutation_defines == ["obj"]
 
     def test_annotated_assignment(self):
         """Annotated assignment: x: int = ..."""

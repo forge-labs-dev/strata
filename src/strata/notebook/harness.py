@@ -18,12 +18,14 @@ import sys
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 # orjson writes ~3-10× faster than stdlib and serializes datetime,
 # numpy scalars, Decimal, and UUID natively — exactly the types that
-# previously truncated manifest.json mid-write. The harness runs in
-# the notebook's venv, which may not have orjson; fall back to stdlib
-# with default=str so we never hard-require it.
+# previously truncated manifest.json mid-write under stdlib json. It
+# ships with strata core, but the harness runs in the notebook's
+# venv which may be more minimal (tests, stripped-down workers), so
+# fall back to stdlib + default=str when orjson isn't importable.
 try:
     import orjson  # type: ignore[import-not-found]
 
@@ -31,7 +33,6 @@ try:
 except ImportError:
     orjson = None  # type: ignore[assignment]
     _HAS_ORJSON = False
-from typing import Any
 
 
 def _load_local_module(filename: str, module_name: str):
@@ -57,6 +58,9 @@ _display = _load_local_module("display_runtime.py", "_nb_display_runtime")
 
 
 def load_manifest(manifest_path: str) -> dict:
+    if _HAS_ORJSON:
+        with open(manifest_path, "rb") as f:
+            return orjson.loads(f.read())
     with open(manifest_path) as f:
         return json.load(f)
 
@@ -308,10 +312,13 @@ def main():
     finally:
         result_path = Path(manifest.get("output_dir", "/tmp/strata_output")) / "manifest.json"
         result_path.parent.mkdir(parents=True, exist_ok=True)
+        # orjson handles datetime, Decimal, numpy, UUID natively;
+        # OPT_NON_STR_KEYS covers the rare case of non-string dict
+        # keys in previews. default=str catches anything even orjson
+        # can't encode so previews never truncate the manifest
+        # mid-write. Stdlib fallback keeps the same default=str
+        # safety net when orjson isn't importable in the notebook venv.
         if _HAS_ORJSON:
-            # orjson handles datetime, Decimal, numpy, UUID natively;
-            # OPT_NON_STR_KEYS covers the rare case of non-string dict
-            # keys in previews. Writes bytes directly.
             with open(result_path, "wb") as f:
                 f.write(
                     orjson.dumps(
@@ -323,10 +330,6 @@ def main():
                     )
                 )
         else:
-            # Stdlib fallback: default=str so exotic types (datetime,
-            # Timestamp, Decimal, numpy scalars) inside previews don't
-            # crash json.dump mid-write. A partial manifest.json leaves
-            # the executor with "Expecting value" JSON decode errors.
             with open(result_path, "w") as f:
                 json.dump(result, f, indent=2, default=str)
 

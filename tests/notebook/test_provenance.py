@@ -23,13 +23,28 @@ def test_source_hash_changes_with_source():
     assert hash1 != hash2
 
 
-def test_source_hash_whitespace_sensitive():
-    """Whitespace changes should affect hash (intentional)."""
-    source1 = "x = 1 + 1"
-    source2 = "x = 1 +  1"  # Extra space
-    hash1 = compute_source_hash(source1)
-    hash2 = compute_source_hash(source2)
-    assert hash1 != hash2
+def test_source_hash_ignores_cosmetic_whitespace():
+    """Cosmetic whitespace / blank line / comment edits must NOT invalidate.
+
+    The hash is taken over the AST's canonical unparse form, so reformatting
+    a cell (autoformatter, trailing newlines, extra spacing around
+    operators) keeps the cached artifact. Only semantic changes invalidate.
+    """
+    variants = [
+        "x = 1 + 1",
+        "x = 1 +  1",  # double space
+        "x = 1 + 1\n",  # trailing newline
+        "x = 1 + 1\n\n\n",  # trailing blank lines
+        "x = 1 + 1   ",  # trailing spaces
+        "# intro comment\nx = 1 + 1",  # added comment
+    ]
+    hashes = {compute_source_hash(v) for v in variants}
+    assert len(hashes) == 1
+
+
+def test_source_hash_detects_semantic_change():
+    """Swapping a literal value changes the hash."""
+    assert compute_source_hash("x = 1 + 1") != compute_source_hash("x = 1 + 2")
 
 
 def test_provenance_hash_stability():

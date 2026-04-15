@@ -303,7 +303,10 @@ class TestPickleSerialization:
             result = serialize_value(obj, Path(tmpdir), "obj")
 
             assert result["content_type"] == "pickle/object"
-            assert result["codec"] == "pickle"
+            # cloudpickle is the default codec (strict superset of
+            # stdlib pickle); stdlib "pickle" is available as an opt-in
+            # via STRATA_NOTEBOOK_OBJECT_CODEC.
+            assert result["codec"] in {"cloudpickle", "pickle"}
             assert result["type"] == "_PickleTestCustomClass"
             assert result["bytes"] > 0
 
@@ -333,7 +336,8 @@ class TestPickleSerialization:
                 payload = pickle.load(f)
 
             assert payload["__strata_object_codec__"] == "strata.notebook.object_codec.v1"
-            assert payload["codec"] == "pickle"
+            # Default codec is now cloudpickle; "pickle" is opt-in.
+            assert payload["codec"] in {"cloudpickle", "pickle"}
             assert isinstance(payload["payload"], bytes)
 
     def test_deserialize_legacy_raw_pickle(self):
