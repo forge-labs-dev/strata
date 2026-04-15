@@ -1,7 +1,8 @@
 """Shared serialization/deserialization for notebook cell values.
 
-Supports seven content types:
-  arrow/ipc    — PyArrow Tables, pandas DataFrames/Series, numpy arrays
+Supports eight content types:
+  arrow/ipc    — PyArrow Tables, pandas DataFrames/Series
+  tensor/arrow — numpy ndarrays
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
   image/png    — Displayable PNG output (figures, images)
   text/markdown — Displayable markdown output
@@ -70,6 +71,7 @@ class ContentType(StrEnum):
 OBJECT_CODEC_ENV_VAR = "STRATA_NOTEBOOK_OBJECT_CODEC"
 _CODEC_ENVELOPE_TAG = "strata.notebook.object_codec.v1"
 _CELL_INSTANCE_STATE_TAG = "strata.notebook.cell_instance_state.v1"
+_ARROW_JSON_FALLBACK_TAG = "strata.notebook.arrow_json_fallback.v1"
 
 
 class ObjectCodec(Protocol):
@@ -99,7 +101,7 @@ class _CloudPickleObjectCodec:
 
     def __init__(self) -> None:
         try:
-            import cloudpickle  # type: ignore[import-not-found]
+            import cloudpickle
         except ImportError as exc:  # pragma: no cover - optional backend
             raise ValueError(
                 "Object codec 'cloudpickle' requires the 'cloudpickle' package to be installed"
@@ -232,7 +234,7 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
     """Serialize *value* to *output_dir* and return a metadata dict.
 
     The metadata dict always contains:
-      content_type  — one of the four content types above
+      content_type  — one of the supported content types above
       file          — filename written (relative to output_dir)
       bytes         — file size in bytes
       preview       — a JSON-safe preview of the value
@@ -246,12 +248,10 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
     if content_type == ContentType.ARROW_IPC:
         try:
             return _serialize_arrow(value, output_dir, variable_name)
-        except (ImportError, ValueError, AttributeError):
-            # pyarrow unavailable (ImportError), unsupported value shape
-            # (ValueError), or an unexpected pandas/pyarrow type mismatch
-            # (AttributeError). Any of these mean the Arrow path failed;
-            # the JSON fallback still produces usable metadata + file.
-            return _serialize_dataframe_json(value, output_dir, variable_name)
+        except Exception as exc:
+            if _should_fallback_from_arrow_error(exc):
+                return _serialize_dataframe_json(value, output_dir, variable_name)
+            raise
     elif content_type == ContentType.TENSOR_ARROW:
         try:
             return _serialize_tensor(value, output_dir, variable_name)
@@ -335,6 +335,19 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
     }
 
 
+def _should_fallback_from_arrow_error(exc: Exception) -> bool:
+    """Return whether Arrow serialization errors should use the JSON table fallback."""
+    if isinstance(exc, (ImportError, ValueError, AttributeError)):
+        return True
+
+    try:
+        import pyarrow as pa
+    except ImportError:
+        return False
+
+    return isinstance(exc, pa.ArrowException)
+
+
 def _json_safe_cell(value: Any) -> Any:
     """Coerce a single preview cell to a JSON-safe primitive.
 
@@ -350,6 +363,10 @@ def _json_safe_cell(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _json_safe_cell(v) for k, v in value.items()}
     return str(value)
+
+
+def _json_safe_row(values: list[Any] | tuple[Any, ...]) -> list[Any]:
+    return [_json_safe_cell(value) for value in values]
 
 
 def _is_png_display_value(value: Any) -> bool:
@@ -478,27 +495,46 @@ def _serialize_image_png(value: Any, output_dir: Path, variable_name: str) -> di
 
 
 def _serialize_dataframe_json(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
-    """JSON fallback for DataFrames when pyarrow is unavailable.
+    """JSON fallback for DataFrames when Arrow serialization fails.
 
-    Produces the same metadata shape as ``_serialize_arrow`` so the
-    frontend renders it as a table.
+    The fallback still uses ``arrow/ipc`` metadata and a ``.arrow`` artifact
+    name so downstream dependency loading treats the value as table-shaped.
+    The file contents are JSON, tagged with a serializer-local marker that
+    ``_deserialize_arrow`` understands even when ``pyarrow`` is unavailable.
     """
+    payload: dict[str, Any] = {
+        "__strata_arrow_json_fallback__": True,
+        "format": _ARROW_JSON_FALLBACK_TAG,
+        "kind": "dataframe",
+        "columns": [],
+        "data": [],
+        "series_name": None,
+    }
+
     try:
         import pandas as pd
 
-        if isinstance(value, pd.Series):
-            value = value.to_frame()
-        columns = list(value.columns)
-        num_rows = len(value)
-        preview = value.head(20).values.tolist()
-        payload = value.to_dict(orient="list")
+        is_series = isinstance(value, pd.Series)
+        frame = value.to_frame() if is_series else value
+        columns = [_json_safe_cell(column) for column in list(frame.columns)]
+        num_rows = len(frame)
+        rows = [_json_safe_row(row) for row in frame.itertuples(index=False, name=None)]
+        preview = rows[:20]
+        payload.update(
+            {
+                "kind": "series" if is_series else "dataframe",
+                "columns": columns,
+                "data": rows,
+                "series_name": _json_safe_cell(value.name) if is_series else None,
+            }
+        )
     except Exception:
         columns = []
         num_rows = 0
         preview = []
-        payload = {}
+        payload.update({"columns": [], "data": [], "series_name": None})
 
-    filename = f"{variable_name}.json"
+    filename = f"{variable_name}.arrow"
     filepath = output_dir / filename
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(payload, f)
@@ -658,6 +694,10 @@ def _deserialize_arrow(file_path: Path) -> Any:
     Returns a pandas DataFrame when pandas is available; falls back to
     a pyarrow Table.  Users expect DataFrames, not raw Arrow.
     """
+    fallback_payload = _read_arrow_json_fallback(file_path)
+    if fallback_payload is not None:
+        return _deserialize_arrow_json_fallback(fallback_payload)
+
     import pyarrow as pa
 
     with open(file_path, "rb") as f:
@@ -689,6 +729,46 @@ def _deserialize_arrow(file_path: Path) -> Any:
             return series
         except Exception:
             return frame
+    return frame
+
+
+def _read_arrow_json_fallback(file_path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("__strata_arrow_json_fallback__") is not True:
+        return None
+    if payload.get("format") != _ARROW_JSON_FALLBACK_TAG:
+        return None
+    return payload
+
+
+def _deserialize_arrow_json_fallback(payload: dict[str, Any]) -> Any:
+    columns = payload.get("columns")
+    rows = payload.get("data")
+    kind = payload.get("kind")
+    series_name = payload.get("series_name")
+
+    if not isinstance(columns, list) or not isinstance(rows, list):
+        raise ValueError("Invalid notebook JSON table fallback payload")
+
+    try:
+        import pandas as pd
+    except ImportError:
+        return payload
+
+    frame = pd.DataFrame(rows, columns=columns)
+    if kind == "series":
+        if frame.shape[1] == 0:
+            series = pd.Series(dtype=object)
+        else:
+            series = frame.iloc[:, 0]
+        series.name = series_name
+        return series
     return frame
 
 
@@ -785,8 +865,11 @@ def _ensure_cell_module(
     module.__dict__["__strata_cell_module_source__"] = module_source
     module.__dict__["__strata_cell_module__"] = True
     for value in module.__dict__.values():
-        if isinstance(value, type):
-            setattr(value, "__strata_cell_exported_class__", True)
+        if isinstance(value, type) and getattr(value, "__module__", None) == module_name:
+            try:
+                setattr(value, "__strata_cell_exported_class__", True)
+            except (AttributeError, TypeError):
+                continue
     return module
 
 

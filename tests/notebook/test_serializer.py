@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import pickle
 import tempfile
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +14,7 @@ import pyarrow as pa
 import pytest
 
 from strata.notebook import Markdown
+from strata.notebook import serializer as serializer_module
 from strata.notebook.serializer import (
     deserialize_value,
     serialize_value,
@@ -180,6 +183,91 @@ class TestArrowSerialization:
             assert result.iloc[0, 0] == 1
             assert pd.isna(result.iloc[1, 0])
             assert pd.isna(result.iloc[0, 1])
+
+    def test_arrow_json_fallback_roundtrips_dataframe_after_pyarrow_error(self, monkeypatch):
+        """PyArrow conversion errors should fall back to a JSON-backed table artifact."""
+        df = pd.DataFrame(
+            {
+                "when": [date(2024, 1, 2), date(2024, 1, 3)],
+                "amount": [Decimal("1.25"), Decimal("2.50")],
+            }
+        )
+
+        def _raise_arrow_invalid(value, output_dir, variable_name):
+            raise pa.ArrowInvalid("unsupported dtype")
+
+        monkeypatch.setattr(serializer_module, "_serialize_arrow", _raise_arrow_invalid)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(df, tmpdir, "data")
+            file_path = tmpdir / meta["file"]
+
+            assert meta["content_type"] == "arrow/ipc"
+            assert meta["file"] == "data.arrow"
+            assert meta["columns"] == ["when", "amount"]
+            assert meta["preview"] == [["2024-01-02", "1.25"], ["2024-01-03", "2.50"]]
+
+            payload = json.loads(file_path.read_text(encoding="utf-8"))
+            assert payload["__strata_arrow_json_fallback__"] is True
+            assert payload["kind"] == "dataframe"
+
+            loaded = deserialize_value(meta["content_type"], file_path)
+            assert isinstance(loaded, pd.DataFrame)
+            assert list(loaded.columns) == ["when", "amount"]
+            assert loaded.to_dict(orient="records") == [
+                {"when": "2024-01-02", "amount": "1.25"},
+                {"when": "2024-01-03", "amount": "2.50"},
+            ]
+
+    def test_arrow_json_fallback_roundtrips_series(self, monkeypatch):
+        """Series should keep Series shape and name through the JSON fallback path."""
+        series = pd.Series([10, 20, 30], name="target")
+
+        def _raise_arrow_value_error(value, output_dir, variable_name):
+            raise ValueError("force JSON fallback")
+
+        monkeypatch.setattr(serializer_module, "_serialize_arrow", _raise_arrow_value_error)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(series, tmpdir, "target")
+            loaded = deserialize_value(meta["content_type"], tmpdir / meta["file"])
+
+            assert isinstance(loaded, pd.Series)
+            assert loaded.name == "target"
+            assert loaded.tolist() == [10, 20, 30]
+
+    def test_deserialize_arrow_json_fallback_without_pyarrow(self, monkeypatch):
+        """JSON-backed Arrow fallbacks should remain readable even if pyarrow is unavailable."""
+        fallback_path = None
+
+        df = pd.DataFrame({"label": ["a", "b"]})
+
+        def _raise_arrow_value_error(value, output_dir, variable_name):
+            raise ValueError("force JSON fallback")
+
+        monkeypatch.setattr(serializer_module, "_serialize_arrow", _raise_arrow_value_error)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            meta = serialize_value(df, tmpdir, "labels")
+            fallback_path = tmpdir / meta["file"]
+
+            import builtins
+
+            real_import = builtins.__import__
+
+            def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "pyarrow":
+                    raise ImportError("pyarrow unavailable")
+                return real_import(name, globals, locals, fromlist, level)
+
+            monkeypatch.setattr(builtins, "__import__", _blocked_import)
+            loaded = deserialize_value(meta["content_type"], fallback_path)
+
+            assert isinstance(loaded, pd.DataFrame)
+            assert loaded.to_dict(orient="records") == [{"label": "a"}, {"label": "b"}]
 
 
 class TestJsonSerialization:
