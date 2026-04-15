@@ -37,8 +37,35 @@ import json
 import os
 import pickle
 import sys
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
+
+
+class ContentType(StrEnum):
+    """Content type strings used by the notebook serializer.
+
+    StrEnum rather than bare strings so call sites get autocomplete,
+    typos become import-time errors, and the complete set is
+    inventoried here. StrEnum values remain plain ``str``, so existing
+    code comparing against ``"arrow/ipc"`` continues to interop
+    cleanly during migration.
+
+    Defined inside serializer.py (not a sibling module) because this
+    file is loaded via ``importlib.util`` inside the notebook venv,
+    which doesn't have ``strata`` importable.
+    """
+
+    ARROW_IPC = "arrow/ipc"
+    TENSOR_ARROW = "tensor/arrow"
+    JSON_OBJECT = "json/object"
+    PICKLE_OBJECT = "pickle/object"
+    IMAGE_PNG = "image/png"
+    TEXT_MARKDOWN = "text/markdown"
+    MODULE_IMPORT = "module/import"
+    MODULE_CELL = "module/cell"
+    MODULE_CELL_INSTANCE = "module/cell-instance"
+
 
 OBJECT_CODEC_ENV_VAR = "STRATA_NOTEBOOK_OBJECT_CODEC"
 _CODEC_ENVELOPE_TAG = "strata.notebook.object_codec.v1"
@@ -135,8 +162,8 @@ def _unwrap_codec_payload(obj: Any) -> tuple[str, bytes] | None:
 # ---------------------------------------------------------------------------
 
 
-def detect_content_type(value: Any, variable_name: str | None = None) -> str:
-    """Return the content type string for *value*.
+def detect_content_type(value: Any, variable_name: str | None = None) -> ContentType:
+    """Return the content type for *value*.
 
     Probes pyarrow, pandas, and numpy with separate try/except blocks so
     that the absence of one package does not mask another.
@@ -147,7 +174,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         import pyarrow as pa
 
         if isinstance(value, (pa.Table, pa.RecordBatch)):
-            return "arrow/ipc"
+            return ContentType.ARROW_IPC
     except ImportError:
         pass
 
@@ -155,7 +182,7 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         import pandas as pd
 
         if isinstance(value, (pd.DataFrame, pd.Series)):
-            return "arrow/ipc"
+            return ContentType.ARROW_IPC
     except ImportError:
         pass
 
@@ -163,30 +190,30 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> str:
         import numpy as np
 
         if isinstance(value, np.ndarray):
-            return "tensor/arrow"
+            return ContentType.TENSOR_ARROW
     except ImportError:
         pass
 
     if _is_display_variable_name(variable_name) and _is_markdown_display_value(value):
-        return "text/markdown"
+        return ContentType.TEXT_MARKDOWN
 
     if _is_display_variable_name(variable_name) and _is_png_display_value(value):
-        return "image/png"
+        return ContentType.IMAGE_PNG
 
     if isinstance(value, (dict, list, int, float, str, bool, type(None))):
         try:
             json.dumps(value)
-            return "json/object"
+            return ContentType.JSON_OBJECT
         except (TypeError, ValueError):
             pass
 
     if isinstance(value, types.ModuleType):
-        return "module/import"
+        return ContentType.MODULE_IMPORT
 
     if _is_cell_module_instance(value):
-        return "module/cell-instance"
+        return ContentType.MODULE_CELL_INSTANCE
 
-    return "pickle/object"
+    return ContentType.PICKLE_OBJECT
 
 
 def _is_display_variable_name(variable_name: str | None) -> bool:
@@ -216,7 +243,7 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
 
     content_type = detect_content_type(value, variable_name)
 
-    if content_type == "arrow/ipc":
+    if content_type == ContentType.ARROW_IPC:
         try:
             return _serialize_arrow(value, output_dir, variable_name)
         except (ImportError, ValueError, AttributeError):
@@ -225,7 +252,7 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
             # (AttributeError). Any of these mean the Arrow path failed;
             # the JSON fallback still produces usable metadata + file.
             return _serialize_dataframe_json(value, output_dir, variable_name)
-    elif content_type == "tensor/arrow":
+    elif content_type == ContentType.TENSOR_ARROW:
         try:
             return _serialize_tensor(value, output_dir, variable_name)
         except Exception:
@@ -234,15 +261,15 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
             # classifier.predict on string labels). Fall back to pickle,
             # which preserves the ndarray exactly.
             return _serialize_pickle(value, output_dir, variable_name)
-    elif content_type == "image/png":
+    elif content_type == ContentType.IMAGE_PNG:
         return _serialize_image_png(value, output_dir, variable_name)
-    elif content_type == "text/markdown":
+    elif content_type == ContentType.TEXT_MARKDOWN:
         return _serialize_markdown(value, output_dir, variable_name)
-    elif content_type == "json/object":
+    elif content_type == ContentType.JSON_OBJECT:
         return _serialize_json(value, output_dir, variable_name)
-    elif content_type == "module/import":
+    elif content_type == ContentType.MODULE_IMPORT:
         return _serialize_module(value, output_dir, variable_name)
-    elif content_type == "module/cell-instance":
+    elif content_type == ContentType.MODULE_CELL_INSTANCE:
         return _serialize_cell_instance(value, output_dir, variable_name)
     else:
         return _serialize_pickle(value, output_dir, variable_name)
@@ -299,7 +326,7 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
         preview.append([_json_safe_cell(col[i].as_py()) for col in table.columns])
 
     return {
-        "content_type": "arrow/ipc",
+        "content_type": ContentType.ARROW_IPC,
         "file": filename,
         "rows": table.num_rows,
         "columns": table.column_names,
@@ -373,7 +400,7 @@ def _serialize_markdown(value: Any, output_dir: Path, variable_name: str) -> dic
     filepath = output_dir / filename
     filepath.write_text(markdown_text, encoding="utf-8")
     return {
-        "content_type": "text/markdown",
+        "content_type": ContentType.TEXT_MARKDOWN,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "markdown_text": markdown_text,
@@ -440,7 +467,7 @@ def _serialize_image_png(value: Any, output_dir: Path, variable_name: str) -> di
         f.write(png_bytes)
 
     return {
-        "content_type": "image/png",
+        "content_type": ContentType.IMAGE_PNG,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "inline_data_url": (f"data:image/png;base64,{base64.b64encode(png_bytes).decode('ascii')}"),
@@ -477,7 +504,7 @@ def _serialize_dataframe_json(value: Any, output_dir: Path, variable_name: str) 
         json.dump(payload, f)
 
     return {
-        "content_type": "arrow/ipc",
+        "content_type": ContentType.ARROW_IPC,
         "file": filename,
         "rows": num_rows,
         "columns": columns,
@@ -492,7 +519,7 @@ def _serialize_json(value: Any, output_dir: Path, variable_name: str) -> dict[st
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump(value, f, indent=2)
     return {
-        "content_type": "json/object",
+        "content_type": ContentType.JSON_OBJECT,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "preview": value,
@@ -506,7 +533,7 @@ def _serialize_module(value: Any, output_dir: Path, variable_name: str) -> dict[
     with open(filepath, "w", encoding="utf-8") as f:
         json.dump({"module_name": module_name}, f)
     return {
-        "content_type": "module/import",
+        "content_type": ContentType.MODULE_IMPORT,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "preview": f"<module '{module_name}'>",
@@ -539,7 +566,7 @@ def _serialize_cell_instance(value: Any, output_dir: Path, variable_name: str) -
 
     type_name = type(value).__name__
     return {
-        "content_type": "module/cell-instance",
+        "content_type": ContentType.MODULE_CELL_INSTANCE,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "codec": codec.name,
@@ -560,7 +587,7 @@ def _serialize_pickle(value: Any, output_dir: Path, variable_name: str) -> dict[
             pickle.dump(envelope, f, protocol=5)
     except Exception as e:
         return {
-            "content_type": "pickle/object",
+            "content_type": ContentType.PICKLE_OBJECT,
             "file": None,
             "bytes": 0,
             "type": type_name,
@@ -568,7 +595,7 @@ def _serialize_pickle(value: Any, output_dir: Path, variable_name: str) -> dict[
             "error": f"Failed to pickle: {e}",
         }
     return {
-        "content_type": "pickle/object",
+        "content_type": ContentType.PICKLE_OBJECT,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "codec": codec.name,
@@ -582,14 +609,14 @@ def _serialize_pickle(value: Any, output_dir: Path, variable_name: str) -> dict[
 # ---------------------------------------------------------------------------
 
 # Extension → content-type mapping (also used by executor._store_outputs)
-EXT_TO_CONTENT_TYPE: dict[str, str] = {
-    ".arrow": "arrow/ipc",
-    ".md": "text/markdown",
-    ".json": "json/object",
-    ".pickle": "pickle/object",
-    ".module.json": "module/import",
-    ".cell_module.json": "module/cell",
-    ".cell_instance.pickle": "module/cell-instance",
+EXT_TO_CONTENT_TYPE: dict[str, ContentType] = {
+    ".arrow": ContentType.ARROW_IPC,
+    ".md": ContentType.TEXT_MARKDOWN,
+    ".json": ContentType.JSON_OBJECT,
+    ".pickle": ContentType.PICKLE_OBJECT,
+    ".module.json": ContentType.MODULE_IMPORT,
+    ".cell_module.json": ContentType.MODULE_CELL,
+    ".cell_instance.pickle": ContentType.MODULE_CELL_INSTANCE,
 }
 
 
@@ -600,23 +627,26 @@ def deserialize_value(
 
     *output_dir* is accepted for API compatibility but not required —
     *file_path* is always treated as an absolute (or relative-to-cwd) path.
+    Accepts either a ContentType enum value or the raw string form; since
+    ContentType is a StrEnum, either compares equal to the literal
+    ``"arrow/ipc"`` etc.
     """
     file_path = Path(file_path)
-    if content_type == "arrow/ipc":
+    if content_type == ContentType.ARROW_IPC:
         return _deserialize_arrow(file_path)
-    elif content_type == "tensor/arrow":
+    elif content_type == ContentType.TENSOR_ARROW:
         return _deserialize_tensor(file_path)
-    elif content_type == "text/markdown":
+    elif content_type == ContentType.TEXT_MARKDOWN:
         return _deserialize_markdown(file_path)
-    elif content_type == "json/object":
+    elif content_type == ContentType.JSON_OBJECT:
         return _deserialize_json(file_path)
-    elif content_type == "pickle/object":
+    elif content_type == ContentType.PICKLE_OBJECT:
         return _deserialize_pickle(file_path)
-    elif content_type == "module/import":
+    elif content_type == ContentType.MODULE_IMPORT:
         return _deserialize_module(file_path)
-    elif content_type == "module/cell":
+    elif content_type == ContentType.MODULE_CELL:
         return _deserialize_cell_module(file_path)
-    elif content_type == "module/cell-instance":
+    elif content_type == ContentType.MODULE_CELL_INSTANCE:
         return _deserialize_cell_instance(file_path)
     else:
         raise ValueError(f"Unknown content type: {content_type!r}")
@@ -684,7 +714,7 @@ def _serialize_tensor(value: Any, output_dir: Path, variable_name: str) -> dict[
         f.write(buf.getvalue())
 
     return {
-        "content_type": "tensor/arrow",
+        "content_type": ContentType.TENSOR_ARROW,
         "file": filename,
         "bytes": filepath.stat().st_size,
         "preview": f"ndarray shape={arr.shape} dtype={arr.dtype}",
