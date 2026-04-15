@@ -206,7 +206,14 @@ async function runOpenFlow(page, options, notebookPath) {
   await page
     .getByTestId('open-notebook-form')
     .waitFor({ state: 'visible', timeout: options.timeoutMs })
-  await page.getByTestId('open-notebook-path').fill(notebookPath)
+  // The Open Existing UI is now a discovered-notebook list keyed by
+  // absolute path (see HomePage.vue, loadDiscoveredNotebooks). Wait
+  // for the list to populate then click the entry whose data-
+  // notebook-path matches the target.
+  const targetItem = page.locator(
+    `[data-testid="open-notebook-item"][data-notebook-path="${notebookPath}"]`,
+  )
+  await targetItem.waitFor({ state: 'visible', timeout: options.timeoutMs })
 
   const startedAt = Date.now()
   const responsePromise = page.waitForResponse(
@@ -214,7 +221,7 @@ async function runOpenFlow(page, options, notebookPath) {
       response.request().method() === 'POST' && response.url().endsWith('/v1/notebooks/open'),
     { timeout: options.timeoutMs },
   )
-  await page.getByTestId('open-notebook-submit').click()
+  await targetItem.click()
   const response = await responsePromise
   await waitForNotebookReady(page, options.timeoutMs)
   await waitForOptionalMeasure(page, 'store_session_ws_connect_ms', 2_000)

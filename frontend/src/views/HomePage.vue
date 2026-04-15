@@ -324,6 +324,7 @@ function formatTime(ts: number): string {
             class="discovery-item"
             :class="{ disabled: loading }"
             data-testid="open-notebook-item"
+            :data-notebook-path="nb.path"
             @click="!loading && openNotebook(nb.path)"
           >
             <div class="discovery-name">{{ nb.name || nb.path.split('/').pop() }}</div>
