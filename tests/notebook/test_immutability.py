@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import cast
-
 import pandas as pd
 
 from strata.notebook.immutability import (
@@ -40,13 +37,7 @@ class TestMutationDetection:
 
         # Should detect the mutation
         assert len(warnings) > 0
-        warning = warnings[0]
-        if isinstance(warning, dict):
-            warning_dict = cast(Mapping[str, object], warning)
-            message = str(warning_dict.get("message", ""))
-        else:
-            message = warning.message
-        assert "mutated" in message.lower()
+        assert "mutated" in warnings[0]["message"].lower()
 
     def test_no_mutation_on_reassignment(self):
         """Test that reassignment is not detected as mutation."""
@@ -115,13 +106,7 @@ class TestMutationDetection:
         warnings = detect_mutations(namespace, snapshots)
         assert isinstance(warnings, list)
         assert len(warnings) == 1, "Expected one warning for deleted variable"
-        warning = warnings[0]
-        if isinstance(warning, dict):
-            warning_dict = cast(Mapping[str, object], warning)
-            var_name = str(warning_dict.get("var_name", ""))
-        else:
-            var_name = warning.var_name
-        assert "df" in var_name
+        assert "df" in warnings[0]["var_name"]
 
     def test_defensive_copy_arrow(self):
         """Test defensive copy for arrow content type."""

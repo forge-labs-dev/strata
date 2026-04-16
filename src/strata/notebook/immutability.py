@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 
 @dataclass
@@ -20,13 +20,18 @@ class InputSnapshot:
     content_hash: str | None  # sample-based hash for DataFrames
 
 
-@dataclass
-class MutationWarning:
-    """Warning about a detected mutation."""
+class MutationWarning(TypedDict):
+    """Warning about a detected mutation.
+
+    TypedDict rather than a dataclass because the only consumers
+    are JSON writers (manifest.json, WS cell_output payloads), so
+    keeping the wire format identical to the detection format
+    eliminates a round of serialization.
+    """
 
     var_name: str
     message: str
-    suggestion: str | None = None
+    suggestion: str | None
 
 
 def snapshot_inputs(namespace: dict[str, Any], input_names: list[str]) -> list[InputSnapshot]:

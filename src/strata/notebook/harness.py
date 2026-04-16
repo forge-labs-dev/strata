@@ -17,7 +17,7 @@ import sys
 import traceback
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 # orjson writes ~3-10× faster than stdlib and serializes datetime,
 # numpy scalars, Decimal, and UUID natively — exactly the types that
@@ -82,29 +82,6 @@ def deserialize_inputs(manifest: dict) -> dict[str, Any]:
             print(f"Error deserializing {var_name}: {e}", file=sys.stderr)
 
     return inputs
-
-
-class _MutationWarningLike(Protocol):
-    """Duck-typed view of immutability.MutationWarning.
-
-    harness.py loads immutability.py via importlib from the notebook
-    venv, so the runtime class identity differs from a direct import.
-    A Protocol captures the attribute contract without requiring
-    class identity.
-    """
-
-    var_name: str
-    message: str
-    suggestion: str | None
-
-
-def _serialize_mutation_warning(warning: _MutationWarningLike) -> dict[str, Any]:
-    """Convert a mutation warning to a JSON-safe dict."""
-    return {
-        "var_name": warning.var_name,
-        "message": warning.message,
-        "suggestion": warning.suggestion,
-    }
 
 
 def _exec_with_display(source: str, namespace: dict) -> Any | None:
@@ -220,10 +197,7 @@ def execute_cell(
 
         display_values = display_capture.resolve(_display_value)
 
-        mutation_warnings = [
-            _serialize_mutation_warning(warning)
-            for warning in _immut.detect_mutations(namespace, input_snapshots)
-        ]
+        mutation_warnings = list(_immut.detect_mutations(namespace, input_snapshots))
         return (
             new_vars,
             display_values,
