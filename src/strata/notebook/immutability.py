@@ -71,7 +71,7 @@ def snapshot_inputs(namespace: dict[str, Any], input_names: list[str]) -> list[I
 
 def detect_mutations(
     namespace: dict[str, Any], snapshots: list[InputSnapshot]
-) -> list[MutationWarning] | list[dict[str, Any]]:
+) -> list[MutationWarning]:
     """Detect mutations by comparing current state against snapshots.
 
     Detection strategies:
@@ -85,7 +85,7 @@ def detect_mutations(
         snapshots: List of InputSnapshot objects from before execution
 
     Returns:
-        List of MutationWarning objects or dicts (empty if no mutations detected)
+        List of MutationWarning objects (empty if no mutations detected)
     """
     warnings = []
 

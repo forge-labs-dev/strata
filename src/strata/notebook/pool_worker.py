@@ -19,7 +19,7 @@ import sys
 import tomllib
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 # orjson ships as a required dep in every notebook pyproject.toml we
 # generate, so it's guaranteed to be importable in the venv this
@@ -64,14 +64,26 @@ _immut = _load_local_module("immutability.py", "_nb_immutability")
 _display = _load_local_module("display_runtime.py", "_nb_display_runtime")
 
 
-def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
-    """Convert mutation warnings to JSON-safe dicts."""
-    if isinstance(warning, dict):
-        return warning
+class _MutationWarningLike(Protocol):
+    """Duck-typed view of immutability.MutationWarning.
+
+    pool_worker.py loads immutability.py via importlib from the
+    notebook venv, so the runtime class identity differs from a
+    direct import. A Protocol captures the attribute contract
+    without requiring class identity.
+    """
+
+    var_name: str
+    message: str
+    suggestion: str | None
+
+
+def _serialize_mutation_warning(warning: _MutationWarningLike) -> dict[str, Any]:
+    """Convert a mutation warning to a JSON-safe dict."""
     return {
-        "var_name": getattr(warning, "var_name", ""),
-        "message": getattr(warning, "message", ""),
-        "suggestion": getattr(warning, "suggestion", None),
+        "var_name": warning.var_name,
+        "message": warning.message,
+        "suggestion": warning.suggestion,
     }
 
 
