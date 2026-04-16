@@ -167,42 +167,47 @@ def _unwrap_codec_payload(obj: Any) -> tuple[str, bytes] | None:
 def detect_content_type(value: Any, variable_name: str | None = None) -> ContentType:
     """Return the content type for *value*.
 
-    Probes pyarrow, pandas, and numpy with separate try/except blocks so
-    that the absence of one package does not mask another.
+    Called from the notebook subprocess (harness / pool_worker), which
+    runs in a venv with pyarrow (core dep) and pandas/numpy (notebook
+    extra) installed. Imports stay lazy inside the function so that
+    loading this module doesn't pay ~400ms of pyarrow+pandas+numpy init
+    cost when detection never fires.
+
+    Detection order (first match wins):
+      1. PyArrow Table / RecordBatch → arrow/ipc
+      2. pandas DataFrame / Series   → arrow/ipc
+      3. numpy ndarray                → tensor/arrow
+      4. Markdown / PNG display value → text/markdown or image/png
+      5. JSON-serializable primitive  → json/object
+      6. Python module                → module/import
+      7. Cell-defined class instance  → module/cell-instance
+      8. Anything else                → pickle/object (fallback)
     """
     import types
 
-    try:
-        import pyarrow as pa
+    import numpy as np
+    import pandas as pd
+    import pyarrow as pa
 
-        if isinstance(value, (pa.Table, pa.RecordBatch)):
-            return ContentType.ARROW_IPC
-    except ImportError:
-        pass
+    if isinstance(value, (pa.Table, pa.RecordBatch)):
+        return ContentType.ARROW_IPC
 
-    try:
-        import pandas as pd
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        return ContentType.ARROW_IPC
 
-        if isinstance(value, (pd.DataFrame, pd.Series)):
-            return ContentType.ARROW_IPC
-    except ImportError:
-        pass
+    if isinstance(value, np.ndarray):
+        return ContentType.TENSOR_ARROW
 
-    try:
-        import numpy as np
-
-        if isinstance(value, np.ndarray):
-            return ContentType.TENSOR_ARROW
-    except ImportError:
-        pass
-
-    if _is_display_variable_name(variable_name) and _is_markdown_display_value(value):
-        return ContentType.TEXT_MARKDOWN
-
-    if _is_display_variable_name(variable_name) and _is_png_display_value(value):
-        return ContentType.IMAGE_PNG
+    if _is_display_variable_name(variable_name):
+        if _is_markdown_display_value(value):
+            return ContentType.TEXT_MARKDOWN
+        if _is_png_display_value(value):
+            return ContentType.IMAGE_PNG
 
     if isinstance(value, (dict, list, int, float, str, bool, type(None))):
+        # Typed structurally JSON-safe but could still contain NaN, Inf,
+        # non-string dict keys, or nested non-primitives. A probe write
+        # confirms the value survives the actual JSON writer.
         try:
             json.dumps(value)
             return ContentType.JSON_OBJECT
