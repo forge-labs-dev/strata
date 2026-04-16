@@ -323,7 +323,7 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
 
     preview = []
     for i in range(min(20, table.num_rows)):
-        preview.append([_json_safe_cell(col[i].as_py()) for col in table.columns])
+        preview.append([to_serialization_safe(col[i].as_py()) for col in table.columns])
 
     return {
         "content_type": ContentType.ARROW_IPC,
@@ -348,25 +348,50 @@ def _should_fallback_from_arrow_error(exc: Exception) -> bool:
     return isinstance(exc, pa.ArrowException)
 
 
-def _json_safe_cell(value: Any) -> Any:
-    """Coerce a single preview cell to a JSON-safe primitive.
+def to_serialization_safe(value: Any) -> Any:
+    """Return a JSON- and TOML-compatible form of *value*.
 
-    Arrow's ``as_py()`` can produce ``datetime.date``, ``datetime.datetime``,
-    ``Decimal``, and other types that ``json.dump`` rejects. Previews are
-    display-only, so stringifying non-primitive values is safe and keeps
-    the manifest writable.
+    This is the **single sanitization boundary** for all downstream
+    writers (manifest.json, notebook.toml, REST/WS response payloads).
+    Callers can trust that the output contains only ``bool``, ``int``,
+    ``float``, ``str``, ``list``, or ``dict[str, ...]`` — no ``None``,
+    ``datetime``, ``Decimal``, ``bytes``, numpy scalars, or other types
+    that trip up ``json.dump`` or ``tomli_w.dump``.
+
+    Rules:
+      - ``None`` → ``""`` (TOML rejects ``None``; empty string is safe
+        for both JSON and TOML, preserves preview shape)
+      - ``bool``, ``int``, ``float``, ``str`` → pass through
+      - ``list`` / ``tuple`` → recursed list
+      - ``dict`` → recursed dict with stringified keys
+      - Everything else → ``str(value)``
     """
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
         return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return value
+    # numpy 2.0+ scalars no longer subclass Python int/float.
+    # Convert to native Python types before they reach JSON/TOML writers.
+    try:
+        import numpy as np
+
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        if isinstance(value, np.bool_):
+            return bool(value)
+    except ImportError:
+        pass
     if isinstance(value, (list, tuple)):
-        return [_json_safe_cell(item) for item in value]
+        return [to_serialization_safe(item) for item in value]
     if isinstance(value, dict):
-        return {str(k): _json_safe_cell(v) for k, v in value.items()}
+        return {str(k): to_serialization_safe(v) for k, v in value.items()}
     return str(value)
-
-
-def _json_safe_row(values: list[Any] | tuple[Any, ...]) -> list[Any]:
-    return [_json_safe_cell(value) for value in values]
 
 
 def _is_png_display_value(value: Any) -> bool:
@@ -516,16 +541,19 @@ def _serialize_dataframe_json(value: Any, output_dir: Path, variable_name: str) 
 
         is_series = isinstance(value, pd.Series)
         frame = value.to_frame() if is_series else value
-        columns = [_json_safe_cell(column) for column in list(frame.columns)]
+        columns = [to_serialization_safe(column) for column in list(frame.columns)]
         num_rows = len(frame)
-        rows = [_json_safe_row(row) for row in frame.itertuples(index=False, name=None)]
+        rows = [
+            [to_serialization_safe(v) for v in row]
+            for row in frame.itertuples(index=False, name=None)
+        ]
         preview = rows[:20]
         payload.update(
             {
                 "kind": "series" if is_series else "dataframe",
                 "columns": columns,
                 "data": rows,
-                "series_name": _json_safe_cell(value.name) if is_series else None,
+                "series_name": to_serialization_safe(value.name) if is_series else None,
             }
         )
     except Exception:
