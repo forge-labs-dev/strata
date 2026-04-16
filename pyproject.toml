@@ -30,12 +30,6 @@ dependencies = [
     "pydantic>=2.0.0",  # For configuration validation
     "pydantic-settings>=2.0.0",  # For configuration with env var support
     "tomli_w>=1.0.0",  # For writing TOML files
-    # orjson is a compiled JSON codec that's ~3-10× faster than the
-    # stdlib and handles datetime, numpy scalars, and UUID natively.
-    # Used throughout: FastAPI responses, WebSocket message encoding,
-    # notebook harness manifest writes (which previously had to paper
-    # over datetime / Decimal via default=str).
-    "orjson>=3.10.0",
 ]
 
 [project.optional-dependencies]
@@ -56,9 +50,13 @@ azure = [
 # cloudpickle-backed object codec used for cell output values.
 # Strata core doesn't need any of these; install this extra only if
 # you use the notebook server or workers.
+# Notebook cell execution runtime: harness + pool_worker + serializer.
+# orjson is used for manifest I/O in the harness/pool_worker subprocesses.
+# cloudpickle is the default object codec for cell outputs.
 notebook = [
     "pandas>=2.0.0",
     "numpy>=1.26.0",
+    "orjson>=3.10.0",
     "cloudpickle>=3.0.0",
     "matplotlib>=3.8.0",
     "Pillow>=10.0.0",
