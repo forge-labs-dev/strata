@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import time
+import tomllib
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -462,8 +463,6 @@ def build_notebook_context(
     try:
         pyproject = session.path / "pyproject.toml"
         if pyproject.exists():
-            import tomllib
-
             with open(pyproject, "rb") as f:
                 data = tomllib.load(f)
             deps = data.get("project", {}).get("dependencies", [])

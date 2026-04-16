@@ -824,8 +824,6 @@ class NotebookSession:
             return 0
 
         try:
-            import tomllib
-
             with open(lockfile, "rb") as f:
                 data = tomllib.load(f)
         except Exception:

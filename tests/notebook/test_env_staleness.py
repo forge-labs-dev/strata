@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -234,8 +235,6 @@ class TestEnvironmentMetadata:
 
     def test_environment_populated_on_create(self, tmp_path):
         """create_notebook populates [environment] in notebook.toml."""
-        import tomllib
-
         nb_dir = create_notebook(tmp_path, "env_meta")
         with open(nb_dir / "notebook.toml", "rb") as f:
             data = tomllib.load(f)
@@ -247,8 +246,6 @@ class TestEnvironmentMetadata:
 
     def test_environment_updated_after_dep_change(self, tmp_path):
         """update_environment_metadata refreshes lockfile_hash."""
-        import tomllib
-
         nb_dir = create_notebook(tmp_path, "env_update")
 
         with open(nb_dir / "notebook.toml", "rb") as f:

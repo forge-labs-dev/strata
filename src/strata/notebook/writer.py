@@ -250,8 +250,6 @@ def create_notebook(
     existing_cells: list[CellMeta] = []
     if existing_toml_path.exists():
         try:
-            import tomllib
-
             with open(existing_toml_path, "rb") as f:
                 raw = tomllib.load(f)
             existing_notebook_id = raw.get("notebook_id")

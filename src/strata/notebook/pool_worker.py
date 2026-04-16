@@ -16,6 +16,7 @@ import importlib.util
 import io
 import os
 import sys
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -82,8 +83,6 @@ def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
 def parse_common_imports() -> list[str]:
     """Parse pyproject.toml to find packages to pre-import."""
     try:
-        import tomllib
-
         notebook_dir = Path(sys.argv[1])
         pyproject_path = notebook_dir / "pyproject.toml"
         if not pyproject_path.exists():

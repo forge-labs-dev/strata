@@ -1825,8 +1825,6 @@ def _read_notebook_ai_config(session) -> dict | None:
     if not notebook_toml.exists():
         return None
     try:
-        import tomllib
-
         with open(notebook_toml, "rb") as f:
             data = tomllib.load(f)
         ai_section = data.get("ai")

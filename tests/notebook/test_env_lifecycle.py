@@ -516,8 +516,6 @@ class TestEnvironmentMetadata:
 
     def test_update_environment_metadata_records_runtime_fields(self, tmp_path: Path):
         """Environment metadata should include richer sidebar status fields."""
-        import tomllib
-
         nb_dir = create_notebook(tmp_path, "env_metadata")
         update_environment_metadata(nb_dir)
 
