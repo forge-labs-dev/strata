@@ -445,12 +445,24 @@ cells = [
 6. **Store outputs**: Each consumed variable becomes an artifact: `nb_{notebook_id}_cell_{cell_id}_var_{var_name}`
 7. **Broadcast**: WebSocket sends `cell_status`, `cell_output`, `cell_console` to connected clients
 
-Serialization formats (determined by value type):
-- `arrow/ipc` — PyArrow tables, pandas DataFrames, numpy arrays
+Serialization formats (determined by value type, see `serializer.py::ContentType`):
+- `arrow/ipc` — PyArrow Tables, pandas DataFrames/Series
+- `tensor/arrow` — numpy ndarrays (via `pa.Tensor`)
 - `json/object` — dicts, lists, scalars (int, float, str, bool, None)
-- `pickle/object` — everything else
+- `pickle/object` — everything else (cloudpickle by default)
+- `image/png` — display-only figure/image outputs
+- `text/markdown` — display-only markdown outputs
+- `module/import`, `module/cell`, `module/cell-instance` — module objects and cell-defined classes
 
 Content type is stored in the artifact's `transform_spec.params.content_type` so the read side knows how to deserialize.
+
+All preview values, manifest writes, and TOML persistence go through
+`serializer.to_serialization_safe` — a single boundary that coerces
+None/datetime/Decimal/numpy scalars to JSON- and TOML-safe primitives.
+
+The object codec is configurable via `STRATA_NOTEBOOK_OBJECT_CODEC`
+(default: `cloudpickle`; falls back to stdlib `pickle` if cloudpickle
+is missing).
 
 ### DAG & Variable Analysis
 
@@ -462,6 +474,40 @@ Each cell is analyzed via AST to extract `defines` (top-level assignments) and `
 - **Cycle detection**: Self-references and cycles raise errors
 
 The DAG is rebuilt on every cell source change (`re_analyze_cell` → `_analyze_and_build_dag`).
+
+### Source Annotations
+
+Cells can carry metadata in leading `#` comments, parsed by
+`annotations.py`. Annotations always win over persisted notebook
+defaults — they are the canonical cell-level config surface.
+
+- `# @name Human Readable Name` — display name shown in DAG
+- `# @worker <name>` — route execution to a named worker
+- `# @timeout 30` — override execution timeout (seconds)
+- `# @env KEY=value` — per-cell environment variable
+- `# @mount data s3://bucket/prefix ro` — declare a filesystem mount
+
+Mounts inject `pathlib.Path` variables into the cell namespace. URI
+schemes: `file://`, `s3://`, `gs://`, `az://`. Notebook-level mounts
+live in `notebook.toml`; `# @mount` overrides them per-cell.
+`MountSpec.options` carries fsspec storage options (e.g. `anon=true`
+for public S3). See `mounts.py::MountResolver`.
+
+### Annotation Validation
+
+`annotation_validation.py` cross-checks parsed annotations against
+notebook-wide context and emits `AnnotationDiagnostic` warnings:
+
+- `worker_unknown` — `@worker` name not in catalog
+- `mount_uri_unsupported` — unrecognized URI scheme
+- `mount_shadows_notebook` — overrides a notebook-level mount (info)
+- `timeout_not_numeric` — non-numeric or non-positive `@timeout`
+- `env_malformed` — `@env` missing `KEY=value` format
+
+Validation runs on notebook open, reload (worker catalog change), and
+after each WS source flush — never on every keystroke. Diagnostics
+are advisory: they surface as a header pill and backend log warnings,
+but never block execution.
 
 ### Cascade Execution
 
@@ -508,25 +554,33 @@ Note: `{id}` in routes is the **session ID** (from `session_id` field in create/
 
 ### Notebook Backend Modules
 
-- **models.py** — `NotebookToml`, `CellState`, `NotebookState`, `CellStaleness`, `ArtifactInfo`
+- **models.py** — `NotebookToml`, `CellState`, `NotebookState`, `CellStaleness`, `AnnotationDiagnostic`, `ArtifactInfo`
 - **parser.py** — `parse_notebook()` reads notebook.toml + cell files
 - **writer.py** — `create_notebook()`, `write_cell()`, `add_cell_to_notebook()`, `remove_cell_from_notebook()`
 - **session.py** — `NotebookSession` (state, DAG, artifact manager, execution history), `SessionManager`
 - **analyzer.py** — `VariableAnalyzer` AST visitor extracts defines/references
+- **annotations.py** — Parse `# @worker|@mount|@timeout|@env|@name` directives
+- **annotation_validation.py** — Cross-reference validation → `AnnotationDiagnostic` warnings
+- **mounts.py** — `MountResolver` materializes file/s3/gs/az mounts via fsspec
 - **dag.py** — `NotebookDag`, `build_dag()` with topological sort and cycle detection
 - **cascade.py** — `CascadePlanner` determines upstream cells that need re-execution
 - **impact.py** — `ImpactAnalyzer` shows full consequences (upstream cascade + downstream staleness)
 - **executor.py** — `CellExecutor` orchestrates execution: provenance check → resolve inputs → spawn harness → store outputs
-- **harness.py** — Subprocess entry point: loads manifest, deserializes inputs, `exec(source)`, serializes outputs
+- **harness.py**, **pool_worker.py** — Subprocess entry points (load manifest, exec source, serialize outputs)
+- **serializer.py** — Content-type detection, serialize/deserialize, `to_serialization_safe` boundary, `ContentType` StrEnum
 - **artifact_integration.py** — `NotebookArtifactManager` wraps ArtifactStore with notebook-specific ID scheme
-- **provenance.py** — `compute_provenance_hash()`, `compute_source_hash()`
+- **provenance.py** — `compute_provenance_hash()`, `compute_source_hash()` (AST-normalized, whitespace-insensitive)
 - **env.py** — `compute_lockfile_hash()` for environment-based cache invalidation
 - **causality.py** — `CausalityChain` explains why a cell is stale
 - **routes.py** — FastAPI REST router (`/v1/notebooks`)
 - **ws.py** — WebSocket handler with per-notebook connections and execution state
 - **inspect_repl.py** — Interactive REPL for exploring cell artifacts
-- **pool.py**, **pool_worker.py** — Warm process pool for faster subprocess reuse
-- **immutability.py** — Mutation detection on input variables (v1.1)
+- **pool.py** — Warm process pool for faster subprocess reuse
+- **workers.py** — Worker catalog, health probes, transport resolution
+- **remote_executor.py**, **remote_bundle.py** — HTTP executor protocol for remote workers
+- **prompt_analyzer.py**, **prompt_executor.py**, **llm.py** — LLM-powered prompt cells
+- **immutability.py** — Mutation detection on input variables (`MutationWarning` TypedDict)
+- **dependencies.py** — `uv add`/`uv remove`, requirements/environment.yaml import, lockfile sync
 
 ### Frontend (`frontend/`)
 
@@ -534,7 +588,12 @@ Vue 3 + TypeScript + Vite. Dev server connects to `http://localhost:8765` (via `
 
 **Store** (`stores/notebook.ts`):
 - `boot()` — Creates scratch notebook + adds one cell + connects WebSocket
-- All cell mutations (add, remove, update source) go through the backend API
+- `updateSource(id, src)` is **local-only**: updates `cell.source` and
+  marks the cell dirty. No network call during typing.
+- Dirty cells flush via WS `cell_source_update` after 2s of idle, on
+  editor blur (focusout), or immediately before Shift+Enter execution.
+  The backend broadcasts `dag_update` + `cell_status` asynchronously.
+- Other cell mutations (add, remove, reorder) still go through REST.
 - `cascade_prompt` handler auto-accepts (no user confirmation needed)
 - `executeCellWebSocket()` waits for WS connection before sending
 
@@ -566,6 +625,8 @@ cd frontend && npm run dev
 
 2. **Cell IDs are backend-generated** (8-char UUID prefix). The frontend never generates cell IDs.
 
-3. **DAG is authoritative on the backend**. The frontend does local DAG computation for instant feedback but syncs from the backend after every cell edit.
+3. **DAG is authoritative on the backend**. The frontend sends source updates via WebSocket (debounced, fire-and-forget). Backend re-analyzes, rebuilds the DAG, and broadcasts `dag_update` + `cell_status` messages asynchronously. The frontend merges authoritative defines/references/upstream/downstream and staleness from these broadcasts — it never blocks on a round-trip during typing.
 
 4. **Cell status is tracked on the session object**. After execution, `session.notebook_state.cells[i].status` is updated to "ready" or "error". This is critical — the cascade planner checks these statuses to decide if upstream cells need re-execution.
+
+5. **Annotations beat persisted config**. `# @worker`, `# @mount`, `# @timeout`, `# @env` in cell source always override notebook-level defaults at resolution time. There is no UI editor for per-cell persisted overrides — annotations are the single per-cell configuration surface.
