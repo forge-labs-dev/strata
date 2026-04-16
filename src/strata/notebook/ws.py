@@ -994,6 +994,7 @@ async def _handle_cell_source_update(
 
         # Re-analyze cell and rebuild DAG
         session.re_analyze_cell(cell_id)
+        session._run_annotation_validation()
 
         # Recompute staleness
         staleness_map = session.compute_staleness()
@@ -1010,6 +1011,21 @@ async def _handle_cell_source_update(
                     }
                 )
 
+        # Include per-cell analysis so the frontend can merge
+        # authoritative defines/references without a REST round-trip.
+        cells_analysis = [
+            {
+                "id": cell.id,
+                "defines": cell.defines,
+                "references": cell.references,
+                "upstream_ids": cell.upstream_ids,
+                "downstream_ids": cell.downstream_ids,
+                "is_leaf": cell.is_leaf,
+                "annotation_diagnostics": [d.model_dump() for d in cell.annotation_diagnostics],
+            }
+            for cell in session.notebook_state.cells
+        ]
+
         # Send DAG update
         await _broadcast_message(
             notebook_id,
@@ -1022,6 +1038,7 @@ async def _handle_cell_source_update(
                     "roots": list(session.dag.roots) if session.dag else [],
                     "leaves": list(session.dag.leaves) if session.dag else [],
                     "topological_order": (session.dag.topological_order if session.dag else []),
+                    "cells": cells_analysis,
                 },
             },
         )

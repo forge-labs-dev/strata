@@ -29,6 +29,7 @@ const {
   environmentLastAction,
   environmentOperation,
   updateSource,
+  flushCellSource,
   openInspect,
   isInspecting: storeIsInspecting,
   closeInspect,
@@ -272,6 +273,16 @@ const annotationSummaryTitle = computed(() => {
   }
   return `Source annotations: ${annotationSummaryChips.value.join(' · ')}`
 })
+
+const annotationDiagnostics = computed(() => props.cell.annotationDiagnostics ?? [])
+const annotationDiagnosticsLabel = computed(() => {
+  const n = annotationDiagnostics.value.length
+  if (!n) return ''
+  return n === 1 ? '1 annotation issue' : `${n} annotation issues`
+})
+const annotationDiagnosticsTitle = computed(() =>
+  annotationDiagnostics.value.map((d) => `${d.code}: ${d.message}`).join('\n'),
+)
 
 function normalizePackageName(pkg: string | null | undefined): string {
   return (pkg || '').trim().toLowerCase()
@@ -518,6 +529,13 @@ function outputKey(output: CellOutput, index: number): string {
             +{{ hiddenAnnotationSummaryCount }}
           </span>
           <span
+            v-if="annotationDiagnosticsLabel"
+            class="annotation-diagnostic-badge"
+            :title="annotationDiagnosticsTitle"
+          >
+            &#x26A0; {{ annotationDiagnosticsLabel }}
+          </span>
+          <span
             v-if="cell.output?.cacheHit"
             class="cache-badge"
             :title="
@@ -611,7 +629,12 @@ function outputKey(output: CellOutput, index: number): string {
         </span>
       </div>
 
-      <div v-show="!folded" ref="editorEl" class="editor-container" />
+      <div
+        v-show="!folded"
+        ref="editorEl"
+        class="editor-container"
+        @focusout="flushCellSource(cell.id)"
+      />
 
       <!-- Console output (stdout/stderr) -->
       <div v-if="!folded && cell.output && consoleOutput(cell.output.scalar)" class="cell-console">
@@ -1105,6 +1128,15 @@ function outputKey(output: CellOutput, index: number): string {
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
+}
+.annotation-diagnostic-badge {
+  background: #f38ba822;
+  color: #f38ba8;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: help;
 }
 
 /* v1.1: Causality inspector */

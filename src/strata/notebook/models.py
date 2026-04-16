@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -111,6 +111,15 @@ class ContentType(StrEnum):
     TEXT_MARKDOWN = "text/markdown"
     PICKLE = "pickle/object"
     ERROR = "error"
+
+
+class AnnotationDiagnostic(BaseModel):
+    """A validation finding for a cell's source annotations."""
+
+    severity: Literal["warn", "info"] = Field(..., description="Diagnostic severity")
+    code: str = Field(..., description="Stable identifier, e.g. 'worker_unknown'")
+    message: str = Field(..., description="Human-readable explanation")
+    line: int | None = Field(default=None, description="1-based line in cell source")
 
 
 class CellStaleness(BaseModel):
@@ -295,6 +304,10 @@ class CellState(BaseModel):
     mount_overrides: list[MountSpec] = Field(
         default_factory=list,
         description="Persisted cell-level mount overrides from notebook.toml",
+    )
+    annotation_diagnostics: list[AnnotationDiagnostic] = Field(
+        default_factory=list,
+        description="Validation findings for the cell's source annotations",
     )
     is_leaf: bool = Field(
         default=False,

@@ -177,58 +177,57 @@ function removeCell(id: CellId) {
     })
 }
 
-async function updateSource(id: CellId, source: string) {
+// --- Local-first source editing ------------------------------------------------
+// Editing is instant and local. Backend sync happens asynchronously via
+// WebSocket — the editor never blocks on a round-trip during typing.
+// The backend broadcasts dag_update + cell_status when analysis finishes.
+
+const dirtyCells = new Set<CellId>()
+let idleFlushTimer: ReturnType<typeof setTimeout> | null = null
+const IDLE_FLUSH_MS = 2000
+
+function updateSource(id: CellId, source: string) {
   const cell = cellMap.value.get(id)
   if (!cell) return
   cell.source = source
 
-  // Regex as instant preview
-  cell.defines = extractDefines(source)
-  cell.references = extractReferences(source, cell.defines)
-
-  // Send to backend for authoritative analysis
-  const sid = sessionId()
-  if (sid) {
-    const strata = useStrata()
-    try {
-      const response = await strata.updateCellSource(sid, id, source)
-      if (response.cell) {
-        cell.defines = response.cell.defines || []
-        cell.references = response.cell.references || []
-        cell.upstreamIds = response.cell.upstream_ids || []
-        cell.downstreamIds = response.cell.downstream_ids || []
-        cell.isLeaf = response.cell.is_leaf || false
-      }
-      if (response.dag) {
-        applyBackendDag(response.dag)
-      }
-      // Sync cell statuses from backend — compute_staleness runs
-      // on the server after every edit, so the backend is the
-      // authoritative source for which cells are stale.
-      if (response.cells && Array.isArray(response.cells)) {
-        syncCellsFromBackend(response.cells)
-      }
-    } catch (err) {
-      console.warn('Backend analysis failed, using regex fallback:', err)
-      rebuildDag()
-      // Only mark downstream stale optimistically when the backend
-      // isn't going to tell us. When the backend call succeeded,
-      // syncCellsFromBackend already set the authoritative statuses
-      // (including "still ready" when the edit was semantically
-      // neutral — e.g., whitespace-only); eagerly marking downstream
-      // here would stomp on that correct state.
-      if (cell.status === 'ready') {
-        markDownstreamStale(id)
-      }
-    }
-  } else {
-    rebuildDag()
-    if (cell.status === 'ready') {
-      markDownstreamStale(id)
-    }
-  }
+  // Mark dirty for async backend sync. No local regex extraction —
+  // defines/references/DAG update from the backend after flush to
+  // avoid noisy partial-word references mid-typing.
+  dirtyCells.add(id)
+  scheduleIdleFlush()
 
   notebook.updatedAt = Date.now()
+}
+
+function scheduleIdleFlush() {
+  if (idleFlushTimer) clearTimeout(idleFlushTimer)
+  idleFlushTimer = setTimeout(() => {
+    idleFlushTimer = null
+    flushDirtyCells()
+  }, IDLE_FLUSH_MS)
+}
+
+function flushDirtyCells() {
+  if (idleFlushTimer) {
+    clearTimeout(idleFlushTimer)
+    idleFlushTimer = null
+  }
+  if (dirtyCells.size === 0) return
+  for (const cellId of dirtyCells) {
+    const cell = cellMap.value.get(cellId)
+    if (!cell) continue
+    updateSourceWebSocket(cellId, cell.source)
+  }
+  dirtyCells.clear()
+}
+
+function flushCellSource(cellId: CellId) {
+  if (!dirtyCells.has(cellId)) return
+  const cell = cellMap.value.get(cellId)
+  if (!cell) return
+  updateSourceWebSocket(cellId, cell.source)
+  dirtyCells.delete(cellId)
 }
 
 function setCellStatus(id: CellId, status: CellStatus) {
@@ -733,6 +732,16 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
     ? serverCell.mount_overrides.map(parseMountSpec)
     : []
   localCell.annotations = parseBackendAnnotations(serverCell.annotations)
+  localCell.annotationDiagnostics = Array.isArray(serverCell.annotation_diagnostics)
+    ? serverCell.annotation_diagnostics
+        .filter((d: any) => d && typeof d.code === 'string')
+        .map((d: any) => ({
+          severity: d.severity === 'info' ? ('info' as const) : ('warn' as const),
+          code: String(d.code),
+          message: String(d.message ?? ''),
+          line: typeof d.line === 'number' ? d.line : null,
+        }))
+    : undefined
   localCell.stalenessReasons = supportsStalenessDetail(localCell.status)
     ? serverCell.staleness_reasons || serverCell.staleness?.reasons || []
     : []
@@ -1071,43 +1080,6 @@ async function duplicateCell(id: CellId) {
   }
 }
 
-// --- DAG helpers -----------------------------------------------------------
-
-function rebuildDag() {
-  const defMap = new Map<string, CellId>()
-  for (const c of notebook.cells) {
-    for (const v of c.defines) defMap.set(v, c.id)
-  }
-  for (const c of notebook.cells) {
-    c.upstreamIds = []
-    c.downstreamIds = []
-  }
-  for (const c of notebook.cells) {
-    for (const v of c.references) {
-      const fromId = defMap.get(v)
-      if (fromId && fromId !== c.id) {
-        if (!c.upstreamIds.includes(fromId)) c.upstreamIds.push(fromId)
-        const upstream = cellMap.value.get(fromId)
-        if (upstream && !upstream.downstreamIds.includes(c.id)) {
-          upstream.downstreamIds.push(c.id)
-        }
-      }
-    }
-  }
-}
-
-function markDownstreamStale(id: CellId) {
-  const cell = cellMap.value.get(id)
-  if (!cell) return
-  for (const downId of cell.downstreamIds) {
-    const down = cellMap.value.get(downId)
-    if (down && down.status === 'ready') {
-      down.status = 'stale'
-      markDownstreamStale(downId)
-    }
-  }
-}
-
 function applyBackendDag(backendDag: any) {
   for (const cell of notebook.cells) {
     cell.upstreamIds = []
@@ -1128,80 +1100,6 @@ function applyBackendDag(backendDag: any) {
       }
     }
   }
-}
-
-// --- Simple variable extraction -------------------------------------------
-
-function extractDefines(source: string): string[] {
-  const defs: string[] = []
-  const re = /^([a-zA-Z_]\w*)\s*=[^=]/gm
-  let m: RegExpExecArray | null
-  while ((m = re.exec(source)) !== null) {
-    if (!defs.includes(m[1])) defs.push(m[1])
-  }
-  return defs
-}
-
-function extractReferences(source: string, localDefs: string[]): string[] {
-  const refs: string[] = []
-  const keywords = new Set([
-    'and',
-    'as',
-    'assert',
-    'async',
-    'await',
-    'break',
-    'class',
-    'continue',
-    'def',
-    'del',
-    'elif',
-    'else',
-    'except',
-    'finally',
-    'for',
-    'from',
-    'global',
-    'if',
-    'import',
-    'in',
-    'is',
-    'lambda',
-    'nonlocal',
-    'not',
-    'or',
-    'pass',
-    'raise',
-    'return',
-    'try',
-    'while',
-    'with',
-    'yield',
-    'True',
-    'False',
-    'None',
-    'print',
-    'len',
-    'range',
-    'int',
-    'str',
-    'float',
-    'list',
-    'dict',
-    'set',
-    'tuple',
-    'type',
-    'isinstance',
-  ])
-  const re = /\b([a-zA-Z_]\w*)\b/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(source)) !== null) {
-    const name = m[1]
-    if (!keywords.has(name) && !localDefs.includes(name) && !refs.includes(name)) {
-      refs.push(name)
-    }
-  }
-  return refs
 }
 
 // --- API Integration -------------------------------------------------------
@@ -1711,6 +1609,30 @@ function initializeWebSocket() {
           topological_order: dagData.topological_order,
         })
       }
+      // Merge authoritative cell analysis from backend (defines,
+      // references, upstream/downstream). Arrives asynchronously
+      // after WS cell_source_update — no blocking round-trip.
+      if (dagData.cells && Array.isArray(dagData.cells)) {
+        for (const sc of dagData.cells) {
+          const cell = cellMap.value.get(sc.id as CellId)
+          if (!cell) continue
+          if (Array.isArray(sc.defines)) cell.defines = sc.defines
+          if (Array.isArray(sc.references)) cell.references = sc.references
+          if (Array.isArray(sc.upstream_ids)) cell.upstreamIds = sc.upstream_ids
+          if (Array.isArray(sc.downstream_ids)) cell.downstreamIds = sc.downstream_ids
+          if (typeof sc.is_leaf === 'boolean') cell.isLeaf = sc.is_leaf
+          if (Array.isArray(sc.annotation_diagnostics)) {
+            cell.annotationDiagnostics = sc.annotation_diagnostics
+              .filter((d: any) => d && typeof d.code === 'string')
+              .map((d: any) => ({
+                severity: d.severity === 'info' ? ('info' as const) : ('warn' as const),
+                code: String(d.code),
+                message: String(d.message ?? ''),
+                line: typeof d.line === 'number' ? d.line : null,
+              }))
+          }
+        }
+      }
     })
 
     wsInstance.onMessage('cascade_prompt', (msg: WsMessage) => {
@@ -2005,6 +1927,10 @@ async function executeCellWebSocket(cellId: CellId) {
       return
     }
   }
+  // Flush any pending source edits so the backend has the latest
+  // source before execution begins.
+  flushCellSource(cellId)
+
   setCellStatus(cellId, 'running')
   wsInstance.executeCell(cellId)
 }
@@ -2897,6 +2823,8 @@ export function useNotebook() {
     addCell,
     removeCell,
     updateSource,
+    flushDirtyCells,
+    flushCellSource,
     setCellStatus,
     setCellOutput,
     moveCell,

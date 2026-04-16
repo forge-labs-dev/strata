@@ -206,6 +206,16 @@ export interface Cell {
   suggestInstall?: string
   /** Shadow warnings from the DAG builder */
   shadowWarnings?: string[]
+  /** Annotation validation diagnostics (set on open/reload, never during typing) */
+  annotationDiagnostics?: AnnotationDiagnostic[]
+}
+
+/** A warning or info about a source annotation. */
+export interface AnnotationDiagnostic {
+  severity: 'warn' | 'info'
+  code: string
+  message: string
+  line?: number | null
 }
 
 /** Causality chain — explains why a cell is stale */

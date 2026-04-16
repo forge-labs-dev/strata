@@ -21,6 +21,7 @@ except ModuleNotFoundError:
     import tomli as tomllib  # type: ignore
 
 from strata.notebook.analyzer import analyze_cell
+from strata.notebook.annotation_validation import validate_cell_annotations
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.causality import CausalityChain, compute_causality_on_staleness
 from strata.notebook.dag import CellAnalysisWithId, NotebookDag, build_dag
@@ -243,6 +244,21 @@ class NotebookSession:
 
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
+        self._run_annotation_validation()
+
+    def _run_annotation_validation(self) -> None:
+        """Validate annotations across all cells. Called on open/reload only."""
+        for cell in self.notebook_state.cells:
+            diagnostics = validate_cell_annotations(cell, self.notebook_state)
+            cell.annotation_diagnostics = diagnostics
+            for d in diagnostics:
+                logger.warning(
+                    "annotation diagnostic notebook=%s cell=%s code=%s: %s",
+                    self.notebook_state.id,
+                    cell.id,
+                    d.code,
+                    d.message,
+                )
 
     def mark_environment_pending(self, notice: str | None = None) -> None:
         """Mark the notebook environment as pending background initialization."""
@@ -272,6 +288,7 @@ class NotebookSession:
         self.notebook_state = parse_notebook(self.path)
         # Re-analyze all cells and rebuild DAG
         self._analyze_and_build_dag()
+        self._run_annotation_validation()
         self.compute_staleness()
         self._restore_ready_runtime_state(previous_cells, previous_runtime_identities)
 
