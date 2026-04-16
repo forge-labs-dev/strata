@@ -440,37 +440,51 @@ function outputKey(output: CellOutput, index: number): string {
     <!-- Editor + output -->
     <div class="cell-body">
       <div class="cell-meta">
-        <div class="cell-meta-main">
-          <span class="cell-lang">{{ cell.language }}</span>
-          <span
-            v-if="cell.annotations?.name"
-            class="name-badge"
-            :title="`Cell name: ${cell.annotations.name}`"
-          >
-            {{ cell.annotations.name }}
-          </span>
-          <span
-            v-if="cell.isLeaf"
-            class="leaf-badge"
-            title="This cell is a leaf (no downstream consumers)"
-            >leaf</span
-          >
-          <span v-if="cell.defines.length" class="cell-vars">
-            defines: <code>{{ cell.defines.join(', ') }}</code>
-          </span>
-          <span
-            v-if="cell.shadowWarnings && cell.shadowWarnings.length"
-            class="shadow-badge"
-            :title="cell.shadowWarnings.join('\n')"
-          >
-            shadows
-          </span>
-          <span v-if="cell.upstreamIds.length" class="cell-vars">
-            reads: <code>{{ cell.references.join(', ') }}</code>
-          </span>
-          <span v-if="cell.mounts.length" class="mount-badge" :title="mountSummary">
-            mounts: {{ cell.mounts.length }}
-          </span>
+        <!-- Line 1: identity — name, defines, reads -->
+        <div class="cell-meta-row">
+          <div class="cell-meta-main">
+            <span class="cell-lang">{{ cell.language }}</span>
+            <span
+              v-if="cell.annotations?.name"
+              class="name-badge"
+              :title="`Cell name: ${cell.annotations.name}`"
+            >
+              {{ cell.annotations.name }}
+            </span>
+            <span
+              v-if="cell.isLeaf"
+              class="leaf-badge"
+              title="This cell is a leaf (no downstream consumers)"
+              >leaf</span
+            >
+            <span v-if="cell.defines.length" class="cell-vars">
+              defines: <code>{{ cell.defines.join(', ') }}</code>
+            </span>
+            <span
+              v-if="cell.shadowWarnings && cell.shadowWarnings.length"
+              class="shadow-badge"
+              :title="cell.shadowWarnings.join('\n')"
+            >
+              shadows
+            </span>
+            <span v-if="cell.upstreamIds.length" class="cell-vars">
+              reads: <code>{{ cell.references.join(', ') }}</code>
+            </span>
+          </div>
+          <div class="cell-meta-actions">
+            <span v-if="durationLabel" class="duration">{{ durationLabel }}</span>
+            <button
+              v-if="canExplainStaleness"
+              class="causality-btn"
+              :title="causalityTooltip"
+              @click="toggleCausality"
+            >
+              Why stale?
+            </button>
+          </div>
+        </div>
+        <!-- Line 2: runtime — worker, mounts, timeout, env, annotations, cache -->
+        <div class="cell-meta-row cell-meta-runtime">
           <span class="worker-badge" :title="`Worker: ${effectiveWorkerLabel}`">
             worker: {{ effectiveWorkerLabel }}
           </span>
@@ -495,6 +509,9 @@ function outputKey(output: CellOutput, index: number): string {
             :title="workerWarning || `Worker health: ${effectiveWorkerHealthLabel}`"
           >
             {{ workerWarning ? 'attention' : effectiveWorkerHealthLabel }}
+          </span>
+          <span v-if="cell.mounts.length" class="mount-badge" :title="mountSummary">
+            mounts: {{ cell.mounts.length }}
           </span>
           <span
             v-if="effectiveTimeoutLabel"
@@ -553,17 +570,6 @@ function outputKey(output: CellOutput, index: number): string {
           >
             {{ executionMethodLabel }}
           </span>
-        </div>
-        <div class="cell-meta-actions">
-          <span v-if="durationLabel" class="duration">{{ durationLabel }}</span>
-          <button
-            v-if="canExplainStaleness"
-            class="causality-btn"
-            :title="causalityTooltip"
-            @click="toggleCausality"
-          >
-            Why stale?
-          </button>
         </div>
       </div>
 
@@ -939,12 +945,18 @@ function outputKey(output: CellOutput, index: number): string {
 
 .cell-meta {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
   padding: 4px 12px;
   font-size: 11px;
   color: #6c7086;
   border-bottom: 1px solid #2a2a3c;
+  min-width: 0;
+  gap: 2px;
+}
+.cell-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 .cell-meta-main {
@@ -954,6 +966,10 @@ function outputKey(output: CellOutput, index: number): string {
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+.cell-meta-runtime {
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .cell-meta-actions {
   display: flex;
@@ -1156,7 +1172,7 @@ function outputKey(output: CellOutput, index: number): string {
 }
 
 @media (max-width: 900px) {
-  .cell-meta {
+  .cell-meta-row {
     flex-direction: column;
     align-items: stretch;
   }
