@@ -1,16 +1,11 @@
 """Tests for notebook writer."""
 
 import tempfile
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
-# Python 3.10 compatibility
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
 
 from strata.notebook import writer as writer_module
 from strata.notebook.models import (

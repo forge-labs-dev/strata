@@ -10,15 +10,11 @@ import logging
 import subprocess
 import threading
 import time as _time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
-
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
 
 from strata.notebook.analyzer import analyze_cell
 from strata.notebook.annotation_validation import validate_cell_annotations

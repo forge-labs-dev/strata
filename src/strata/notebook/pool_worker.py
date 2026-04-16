@@ -82,10 +82,7 @@ def _serialize_mutation_warning(warning: Any) -> dict[str, Any]:
 def parse_common_imports() -> list[str]:
     """Parse pyproject.toml to find packages to pre-import."""
     try:
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib  # type: ignore
+        import tomllib
 
         notebook_dir = Path(sys.argv[1])
         pyproject_path = notebook_dir / "pyproject.toml"

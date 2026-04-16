@@ -234,10 +234,7 @@ class TestEnvironmentMetadata:
 
     def test_environment_populated_on_create(self, tmp_path):
         """create_notebook populates [environment] in notebook.toml."""
-        try:
-            import tomllib
-        except ModuleNotFoundError:
-            import tomli as tomllib  # type: ignore
+        import tomllib
 
         nb_dir = create_notebook(tmp_path, "env_meta")
         with open(nb_dir / "notebook.toml", "rb") as f:
@@ -250,10 +247,7 @@ class TestEnvironmentMetadata:
 
     def test_environment_updated_after_dep_change(self, tmp_path):
         """update_environment_metadata refreshes lockfile_hash."""
-        try:
-            import tomllib
-        except ModuleNotFoundError:
-            import tomli as tomllib  # type: ignore
+        import tomllib
 
         nb_dir = create_notebook(tmp_path, "env_update")
 

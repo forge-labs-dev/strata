@@ -6,6 +6,7 @@ import logging
 import shutil
 import subprocess
 import time
+import tomllib
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,12 +22,6 @@ from strata.notebook.python_versions import (
     read_requested_python_minor,
     read_venv_runtime_python_version,
 )
-
-# Python 3.10 compatibility
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
 
 if TYPE_CHECKING:
     pass

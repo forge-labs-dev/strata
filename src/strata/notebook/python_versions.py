@@ -4,14 +4,8 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
-
-# Python 3.10 compatibility
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
-
 
 _MINOR_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)$")
 _PATCH_VERSION_RE = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)$")

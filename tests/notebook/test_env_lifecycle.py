@@ -11,18 +11,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 import tomli_w
-
-# Python 3.10 compatibility
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib  # type: ignore
 
 from strata.notebook.dependencies import EnvironmentOperationLog, RequirementsImportResult
 from strata.notebook.env import compute_lockfile_hash

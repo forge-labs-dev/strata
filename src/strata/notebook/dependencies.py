@@ -13,6 +13,7 @@ import shlex
 import subprocess
 import threading
 import time
+import tomllib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -363,12 +364,6 @@ def list_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
 
 def list_resolved_dependencies(notebook_dir: Path) -> list[DependencyInfo]:
     """List resolved packages from ``uv.lock`` when present."""
-    # Python 3.10 compat
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore
-
     lockfile_path = notebook_dir / "uv.lock"
     if not lockfile_path.exists():
         return []
@@ -441,12 +436,6 @@ def import_requirements_text(
 ) -> RequirementsImportResult:
     """Replace direct notebook dependencies from ``requirements.txt`` text."""
     normalized_requirements = parse_requirements_text(requirements_text)
-    # Python 3.10 compat
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore
-
     pyproject_path = notebook_dir / "pyproject.toml"
     if not pyproject_path.exists():
         return RequirementsImportResult(
@@ -526,12 +515,6 @@ async def import_requirements_text_streaming(
 ) -> RequirementsImportResult:
     """Replace direct notebook dependencies from ``requirements.txt`` with live logs."""
     normalized_requirements = parse_requirements_text(requirements_text)
-    # Python 3.10 compat
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore
-
     pyproject_path = notebook_dir / "pyproject.toml"
     if not pyproject_path.exists():
         return RequirementsImportResult(
@@ -884,12 +867,6 @@ def parse_environment_yaml_text(environment_yaml_text: str) -> tuple[list[str], 
 
 def _read_project_dependency_strings(notebook_dir: Path) -> list[str]:
     """Read raw dependency strings from ``pyproject.toml``."""
-    # Python 3.10 compat
-    try:
-        import tomllib
-    except ModuleNotFoundError:
-        import tomli as tomllib  # type: ignore
-
     pyproject_path = notebook_dir / "pyproject.toml"
     if not pyproject_path.exists():
         return []
