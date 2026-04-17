@@ -204,7 +204,11 @@ class TestOrphanRecovery:
 
     def test_list_expired_leases_finds_orphans(self, build_store, artifact_store):
         """list_expired_leases should find builds with expired leases."""
-        # Create and claim build with very short lease
+        # Create and claim build with a short lease. Use 1.0s + 1.1s sleep
+        # rather than 0.1s + 0.15s: Windows' time.time() has ~15ms
+        # resolution and writes/reads to SQLite shift lease_expires_at
+        # by tens of ms, so a 100ms window can flap either side of "now"
+        # before the test's first assertion runs.
         artifact_id = str(uuid.uuid4())
         version = artifact_store.create_artifact(
             artifact_id=artifact_id,
@@ -218,15 +222,14 @@ class TestOrphanRecovery:
             executor_ref="test_executor@v1",
         )
 
-        # Claim with 0.1s lease
-        build_store.claim_build(build_id, "runner-1", 0.1)
+        build_store.claim_build(build_id, "runner-1", 1.0)
 
         # Initially no expired leases
         expired = build_store.list_expired_leases()
         assert len(expired) == 0
 
         # Wait for lease to expire
-        time.sleep(0.15)
+        time.sleep(1.1)
 
         # Now should find expired lease
         expired = build_store.list_expired_leases()
@@ -235,7 +238,8 @@ class TestOrphanRecovery:
 
     def test_reclaim_expired_build(self, build_store, artifact_store):
         """reclaim_expired_build should take over orphaned builds."""
-        # Create and claim build with very short lease
+        # Same Windows-clock-resolution concern as
+        # test_list_expired_leases_finds_orphans — use a 1s lease.
         artifact_id = str(uuid.uuid4())
         version = artifact_store.create_artifact(
             artifact_id=artifact_id,
@@ -248,10 +252,10 @@ class TestOrphanRecovery:
             version=version,
             executor_ref="test_executor@v1",
         )
-        build_store.claim_build(build_id, "runner-1", 0.1)
+        build_store.claim_build(build_id, "runner-1", 1.0)
 
         # Wait for lease to expire
-        time.sleep(0.15)
+        time.sleep(1.1)
 
         # Reclaim as different runner
         result = build_store.reclaim_expired_build(build_id, "runner-2", 60.0)

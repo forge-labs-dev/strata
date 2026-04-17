@@ -1,5 +1,6 @@
 """Tests for filter functionality and two-tier pruning."""
 
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from strata.types import (
 @pytest.fixture
 def temp_warehouse_multi_files(tmp_path):
     """Create a warehouse with multiple Parquet files for file-level pruning tests."""
+    if sys.platform == "win32":
+        pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 

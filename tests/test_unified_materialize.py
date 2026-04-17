@@ -1,5 +1,6 @@
 """Tests for the unified /v1/materialize endpoint."""
 
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -25,6 +26,8 @@ from strata.transforms.build_qos import (
 @pytest.fixture
 def temp_warehouse(tmp_path):
     """Create a temporary warehouse with a sample Iceberg table."""
+    if sys.platform == "win32":
+        pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 
