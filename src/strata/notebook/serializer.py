@@ -294,11 +294,15 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
         try:
             return _serialize_arrow(value, output_dir, variable_name)
         except Exception as exc:
-            if _should_fallback_from_arrow_error(exc):
+            # Pandas-specific Arrow failures (Series shape mismatch,
+            # mixed dtypes pa.Table.from_pandas can't coerce) use the
+            # JSON table fallback so downstream code still sees a
+            # table-shaped artifact. Non-pandas failures (complex
+            # ndarray, structured dtype, unencodable scalar) pickle —
+            # the JSON fallback assumes a pandas shape and silently
+            # drops non-pandas values.
+            if _is_pandas_value(value) and _should_fallback_from_arrow_error(exc):
                 return _serialize_dataframe_json(value, output_dir, variable_name)
-            # Arrow refused this value (e.g., object-dtype ndarray with
-            # heterogeneous types, complex nested struct). Pickle it
-            # rather than letting the cell fail.
             return _serialize_pickle(value, output_dir, variable_name)
     elif content_type == ContentType.IMAGE_PNG:
         return _serialize_image_png(value, output_dir, variable_name)
@@ -521,6 +525,15 @@ def _should_fallback_from_arrow_error(exc: Exception) -> bool:
         return False
 
     return isinstance(exc, pa.ArrowException)
+
+
+def _is_pandas_value(value: Any) -> bool:
+    """Return True when *value* is a pandas DataFrame or Series."""
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(value, (pd.DataFrame, pd.Series))
 
 
 def to_serialization_safe(value: Any) -> Any:
