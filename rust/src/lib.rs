@@ -1,17 +1,19 @@
 //! Rust acceleration for Strata's data plane.
 //!
-//! This module provides fast Arrow IPC read/write operations,
-//! eliminating Python from the hot path for cache hits.
+//! Narrow scope: two functions that sit on genuine hot paths.
 //!
-//! Two approaches:
-//! 1. Fast path: Low-level byte manipulation to convert between IPC File and Stream
-//!    formats without deserializing Arrow data (much faster for cached data)
-//! 2. Fallback: Full Arrow parsing when low-level manipulation isn't possible
+//! 1. `read_file_bytes` — mmap-based cache read, called from the
+//!    cache hit fast path in `cache.py`.
+//! 2. `concat_ipc_streams` — byte-level concatenation of Arrow IPC
+//!    streams, skipping Arrow deserialize/reserialize. Used for
+//!    buffered multi-row-group responses.
 //!
-//! Arrow IPC File format:  ARROW1 + schema + [record batches] + footer
-//! Arrow IPC Stream format: schema + [record batches] + EOS marker
+//! Everything else lives in Python / PyArrow — those libraries are
+//! already C++ under the hood and Rust wouldn't add value.
+//!
+//! Arrow IPC Stream format: schema + [record batches] + EOS marker.
 
-use arrow::ipc::reader::FileReader;
+use arrow::ipc::reader::StreamReader;
 use arrow::ipc::writer::StreamWriter;
 use memmap2::Mmap;
 use pyo3::exceptions::{PyIOError, PyValueError};
@@ -45,47 +47,6 @@ impl From<StrataError> for PyErr {
     }
 }
 
-/// Read an Arrow IPC file from disk and return it as IPC stream bytes.
-///
-/// This is the core optimization: we memory-map the file, parse the Arrow
-/// schema, and immediately re-serialize to IPC stream format for network
-/// transfer. No Python object creation for the actual data.
-///
-/// Args:
-///     path: Path to the Arrow IPC file (.arrowfile)
-///
-/// Returns:
-///     bytes: Arrow IPC stream format bytes ready for network transfer
-#[pyfunction]
-fn read_arrow_ipc_as_stream<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBytes>> {
-    // Memory-map the file for zero-copy read
-    let file = File::open(path).map_err(StrataError::from)?;
-    let mmap = unsafe { Mmap::map(&file) }.map_err(StrataError::from)?;
-
-    // Parse as Arrow IPC File format using the Arrow library
-    let cursor = Cursor::new(&mmap[..]);
-    let reader = FileReader::try_new(cursor, None).map_err(StrataError::from)?;
-
-    let schema = reader.schema();
-
-    // Pre-allocate buffer (estimate: same size as input)
-    let mut buffer = Vec::with_capacity(mmap.len());
-
-    // Write as IPC stream format
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema).map_err(StrataError::from)?;
-
-        for batch_result in reader {
-            let batch = batch_result.map_err(StrataError::from)?;
-            writer.write(&batch).map_err(StrataError::from)?;
-        }
-        writer.finish().map_err(StrataError::from)?;
-    }
-
-    // Return as Python bytes
-    Ok(PyBytes::new(py, &buffer))
-}
-
 /// Read an Arrow IPC file and return raw bytes (for cache passthrough).
 ///
 /// Even simpler: just read the file bytes. Python can decide whether
@@ -101,38 +62,6 @@ fn read_file_bytes<'py>(py: Python<'py>, path: &str) -> PyResult<Bound<'py, PyBy
     let file = File::open(path).map_err(StrataError::from)?;
     let mmap = unsafe { Mmap::map(&file) }.map_err(StrataError::from)?;
     Ok(PyBytes::new(py, &mmap[..]))
-}
-
-/// Convert Arrow IPC file format to stream format.
-///
-/// Takes file format bytes (what's on disk) and returns stream format
-/// bytes (what goes on the network). This is useful when you already
-/// have the bytes in memory.
-///
-/// Args:
-///     data: Arrow IPC file format bytes
-///
-/// Returns:
-///     bytes: Arrow IPC stream format bytes
-#[pyfunction]
-fn file_to_stream_format<'py>(py: Python<'py>, data: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-    let cursor = Cursor::new(data);
-    let reader = FileReader::try_new(cursor, None).map_err(StrataError::from)?;
-
-    let schema = reader.schema();
-    let mut buffer = Vec::with_capacity(data.len());
-
-    {
-        let mut writer = StreamWriter::try_new(&mut buffer, &schema).map_err(StrataError::from)?;
-
-        for batch_result in reader {
-            let batch = batch_result.map_err(StrataError::from)?;
-            writer.write(&batch).map_err(StrataError::from)?;
-        }
-        writer.finish().map_err(StrataError::from)?;
-    }
-
-    Ok(PyBytes::new(py, &buffer))
 }
 
 /// Fast concatenation of Arrow IPC streams by byte manipulation.
@@ -219,99 +148,6 @@ fn concat_streams_fast(segments: &[Vec<u8>]) -> Result<Vec<u8>, StrataError> {
     Ok(result)
 }
 
-/// Fast concatenation of Arrow IPC streams using a pre-concatenated buffer.
-///
-/// This avoids the PyO3 Vec<Vec<u8>> copy overhead by accepting a single
-/// buffer with offset information.
-///
-/// Args:
-///     data: Pre-concatenated bytes of all segments
-///     offsets: List of (start, end) tuples for each segment
-///
-/// Returns:
-///     bytes: Single combined Arrow IPC stream
-#[pyfunction]
-fn concat_ipc_streams_fast<'py>(
-    py: Python<'py>,
-    data: &[u8],
-    offsets: Vec<(usize, usize)>,
-) -> PyResult<Bound<'py, PyBytes>> {
-    if offsets.is_empty() {
-        return Ok(PyBytes::new(py, &[]));
-    }
-
-    if offsets.len() == 1 {
-        let (start, end) = offsets[0];
-        return Ok(PyBytes::new(py, &data[start..end]));
-    }
-
-    // Estimate output size (slightly less than input due to removed schemas)
-    let mut result = Vec::with_capacity(data.len());
-
-    // Process first segment - keep everything except EOS marker
-    let (start, end) = offsets[0];
-    let first = &data[start..end];
-
-    if first.len() < 8 {
-        return Err(StrataError::InvalidFile("First segment too small".into()).into());
-    }
-
-    // Verify EOS marker
-    if &first[first.len() - 8..] != &EOS_MARKER {
-        return Err(StrataError::InvalidFile("First segment missing EOS marker".into()).into());
-    }
-
-    // Copy first segment without EOS
-    result.extend_from_slice(&first[..first.len() - 8]);
-
-    // Process remaining segments - skip schema, keep record batches
-    for &(start, end) in &offsets[1..] {
-        let segment = &data[start..end];
-
-        if segment.len() < 8 {
-            continue;
-        }
-
-        // Verify EOS marker
-        if &segment[segment.len() - 8..] != &EOS_MARKER {
-            return Err(StrataError::InvalidFile("Segment missing EOS marker".into()).into());
-        }
-
-        // Find where record batches start
-        let mut offset = 0;
-
-        // Skip continuation marker if present
-        if segment.len() >= 4 && &segment[0..4] == &CONTINUATION_MARKER {
-            offset = 4;
-        }
-
-        // Read schema message size
-        if offset + 4 > segment.len() {
-            continue;
-        }
-        let schema_size = u32::from_le_bytes([
-            segment[offset],
-            segment[offset + 1],
-            segment[offset + 2],
-            segment[offset + 3],
-        ]) as usize;
-        offset += 4 + schema_size;
-
-        // Align to 8 bytes
-        offset = (offset + 7) & !7;
-
-        // Copy record batches (everything from offset to len-8)
-        if offset < segment.len() - 8 {
-            result.extend_from_slice(&segment[offset..segment.len() - 8]);
-        }
-    }
-
-    // Add final EOS marker
-    result.extend_from_slice(&EOS_MARKER);
-
-    Ok(PyBytes::new(py, &result))
-}
-
 /// Concatenate multiple Arrow IPC stream segments into one.
 ///
 /// When serving multiple row groups, we need to combine them into
@@ -329,12 +165,9 @@ fn concat_ipc_streams<'py>(py: Python<'py>, segments: Vec<Vec<u8>>) -> PyResult<
     match concat_streams_fast(&segments) {
         Ok(result) => return Ok(PyBytes::new(py, &result)),
         Err(_) => {
-            // Fall back to full Arrow parsing
+            // Fall back to full Arrow parsing (slower but handles edge cases)
         }
     }
-
-    // Fallback: Full Arrow parsing (slower but handles edge cases)
-    use arrow::ipc::reader::StreamReader;
 
     if segments.is_empty() {
         return Ok(PyBytes::new(py, &[]));
@@ -374,42 +207,11 @@ fn concat_ipc_streams<'py>(py: Python<'py>, segments: Vec<Vec<u8>>) -> PyResult<
     Ok(PyBytes::new(py, &buffer))
 }
 
-/// Get statistics about an Arrow IPC file without fully parsing it.
-///
-/// Returns (num_batches, total_rows, schema_json) for quick inspection.
-#[pyfunction]
-fn ipc_file_stats(path: &str) -> PyResult<(usize, usize, String)> {
-    let file = File::open(path).map_err(StrataError::from)?;
-    let mmap = unsafe { Mmap::map(&file) }.map_err(StrataError::from)?;
-
-    let cursor = Cursor::new(&mmap[..]);
-    let reader = FileReader::try_new(cursor, None).map_err(StrataError::from)?;
-
-    let schema = reader.schema();
-    let num_batches = reader.num_batches();
-
-    // Count total rows
-    let mut total_rows = 0;
-    for batch_result in reader {
-        let batch = batch_result.map_err(StrataError::from)?;
-        total_rows += batch.num_rows();
-    }
-
-    // Simple schema representation
-    let schema_str = format!("{:?}", schema);
-
-    Ok((num_batches, total_rows, schema_str))
-}
-
 /// Python module definition
 #[pymodule]
 #[pyo3(name = "_strata_core")]
 fn strata_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(read_arrow_ipc_as_stream, m)?)?;
     m.add_function(wrap_pyfunction!(read_file_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(file_to_stream_format, m)?)?;
     m.add_function(wrap_pyfunction!(concat_ipc_streams, m)?)?;
-    m.add_function(wrap_pyfunction!(concat_ipc_streams_fast, m)?)?;
-    m.add_function(wrap_pyfunction!(ipc_file_stats, m)?)?;
     Ok(())
 }

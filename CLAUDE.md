@@ -256,12 +256,17 @@ Response: Arrow IPC stream
 
 ### Rust Extension
 
-Located in `rust/`, built via maturin. Provides:
-- `read_arrow_ipc_as_stream` - Memory-mapped file read → IPC stream conversion
-- `concat_ipc_streams` - Fast stream concatenation by byte manipulation
-- `file_to_stream_format` - IPC file → stream format conversion
+Located in `rust/`, built via maturin. Narrow scope — only two live
+entry points, both on genuine hot paths:
+
+- `read_file_bytes` — mmap-based cache read (wrapped by `fast_io.read_file_mmap`)
+- `concat_ipc_streams` — byte-level Arrow IPC stream concatenation for
+  buffered multi-row-group responses, skipping deserialize/reserialize
+  (wrapped by `fast_io.concat_stream_bytes`)
 
 The extension is exposed as `strata._strata_core` and wrapped by `fast_io.py`.
+Everything else in the data plane stays in Python / PyArrow / orjson —
+those are already C/C++ under the hood.
 
 ## Client SDK Usage
 

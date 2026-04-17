@@ -29,9 +29,9 @@ class TestFastIoAvailability:
         if fast_io.is_rust_available():
             from strata import _strata_core
 
-            # Rust module should have these utility functions
+            # Only two live entry points — see rust/src/lib.rs.
             assert hasattr(_strata_core, "read_file_bytes")
-            assert hasattr(_strata_core, "ipc_file_stats")
+            assert hasattr(_strata_core, "concat_ipc_streams")
 
 
 class TestConcatStreamBytes:
