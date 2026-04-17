@@ -44,7 +44,16 @@ class PersistedParquetMeta:
 
 
 def _local_path_for_stat(file_path: str) -> Path | None:
-    """Return a local path for stat-based validation, or None for remote URIs."""
+    """Return a local path for stat-based validation, or None for remote URIs.
+
+    Windows paths like ``C:\\Users\\...`` parse with scheme ``"c"``
+    because ``urlparse`` treats single letters followed by ``:`` as a
+    scheme. Detect that pattern first and treat it as a local path.
+    """
+    # Windows drive letter, e.g. "C:\..." — a real URI scheme is always
+    # >= 2 chars, so a 1-char "scheme" can only be a Windows drive.
+    if len(file_path) >= 2 and file_path[1] == ":" and file_path[0].isalpha():
+        return Path(file_path)
     parsed = urlparse(file_path)
     if not parsed.scheme:
         return Path(file_path)

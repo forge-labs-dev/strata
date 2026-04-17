@@ -8,7 +8,7 @@ Provides comprehensive health checks for all server dependencies:
 - Thread pool saturation
 """
 
-import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -131,10 +131,12 @@ def check_disk_cache(cache_dir: Path, max_size_bytes: int) -> DependencyCheck:
                 message=f"Cache directory not writable: {e}",
             )
 
-        # Check available disk space
-        stat = os.statvfs(cache_dir)
-        available_bytes = stat.f_bavail * stat.f_frsize
-        total_bytes = stat.f_blocks * stat.f_frsize
+        # Check available disk space. shutil.disk_usage is cross-platform
+        # (Windows uses GetDiskFreeSpaceEx; POSIX uses statvfs). Prefer it
+        # over os.statvfs, which doesn't exist on Windows.
+        usage = shutil.disk_usage(cache_dir)
+        available_bytes = usage.free
+        total_bytes = usage.total
         usage_percent = ((total_bytes - available_bytes) / total_bytes) * 100
 
         details: JsonObject = {

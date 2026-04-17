@@ -1,6 +1,7 @@
 """Tests for filter functionality and two-tier pruning."""
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pyarrow as pa
 import pytest
@@ -247,9 +248,14 @@ class TestBuildColumnIndexMap:
             }
         )
 
-        with tempfile.NamedTemporaryFile(suffix=".parquet") as f:
-            pq.write_table(table, f.name)
-            meta = pq.read_metadata(f.name)
+        # Windows locks NamedTemporaryFile exclusively, blocking pyarrow
+        # from opening the path a second time. delete=False + manual
+        # unlink gets us the same cleanup with cross-platform behaviour.
+        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as f:
+            tmp_path = f.name
+        try:
+            pq.write_table(table, tmp_path)
+            meta = pq.read_metadata(tmp_path)
 
             # Build using parquet schema
             pq_schema = meta.schema
@@ -259,6 +265,8 @@ class TestBuildColumnIndexMap:
             assert "value" in col_map
             assert "name" in col_map
             assert len(col_map) == 3
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
 
 class TestCompileFilters:

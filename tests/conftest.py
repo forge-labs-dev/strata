@@ -281,12 +281,17 @@ def temp_warehouse(tmp_path):
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 
-    # Create a SQL catalog - use "strata" to match PyIcebergCatalog
+    # On Windows, tmp_path is of the form ``C:\Users\...``. pyiceberg
+    # parses the warehouse string as a URI; `C:` looks like a scheme
+    # and raises ValueError. Feed it a ``file:///C:/Users/...`` URI
+    # and use POSIX-separated paths for SQLAlchemy.
+    warehouse_uri = warehouse_path.as_uri()
+    catalog_db = (warehouse_path / "catalog.db").as_posix()
     catalog = SqlCatalog(
         "strata",
         **{
-            "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
-            "warehouse": str(warehouse_path),
+            "uri": f"sqlite:///{catalog_db}",
+            "warehouse": warehouse_uri,
         },
     )
 
@@ -324,7 +329,7 @@ def temp_warehouse(tmp_path):
 
     return {
         "warehouse_path": warehouse_path,
-        "table_uri": f"file://{warehouse_path}#test_db.events",
+        "table_uri": f"{warehouse_uri}#test_db.events",
         "catalog": catalog,
         "table": table,
     }

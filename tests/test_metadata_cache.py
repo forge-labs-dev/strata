@@ -585,11 +585,13 @@ class TestPlannerWithMetadataCache:
             base.mkdir(parents=True, exist_ok=True)
             warehouse_path = base / "warehouse"
             warehouse_path.mkdir()
+            warehouse_uri = warehouse_path.as_uri()
+            catalog_db = (warehouse_path / "catalog.db").as_posix()
             catalog = SqlCatalog(
                 "strata",
                 **{
-                    "uri": f"sqlite:///{warehouse_path / 'catalog.db'}",
-                    "warehouse": str(warehouse_path),
+                    "uri": f"sqlite:///{catalog_db}",
+                    "warehouse": warehouse_uri,
                 },
             )
             catalog.create_namespace("test_ns")
@@ -601,7 +603,7 @@ class TestPlannerWithMetadataCache:
                 }
             )
             table.append(pa.Table.from_batches([batch]))
-            return f"file://{warehouse_path}#test_ns.events"
+            return f"{warehouse_uri}#test_ns.events"
 
         table_uri_one = _create_warehouse(tmp_path / "one", [1, 2, 3])
         table_uri_two = _create_warehouse(tmp_path / "two", [10, 11, 12])
@@ -748,8 +750,11 @@ class TestMetadataStore:
         assert store.get_parquet_meta(str(file_path)) is not None
         initial_stale = store.stale_invalidations
 
-        # Modify the file
-        time.sleep(0.01)  # Ensure mtime changes
+        # Modify the file. Sleep covers the coarser mtime resolution on
+        # Windows/FAT32 (~1s) so the second write definitively bumps
+        # the timestamp; POSIX tmpfs has sub-second precision so this
+        # is just generous padding.
+        time.sleep(1.1)
         table2 = pa.table({"x": [4, 5, 6, 7]})
         pq.write_table(table2, file_path)
 
