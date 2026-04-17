@@ -72,7 +72,7 @@ def pack_notebook_output_bundle(
         bundle_meta["file"] = bundle_file
         bundle_manifest["variables"][var_name] = bundle_meta
 
-    with tarfile.open(bundle_path, "w:gz") as tar:
+    with tarfile.open(bundle_path, "w") as tar:
         _add_bytes(
             tar,
             "manifest.json",
@@ -104,7 +104,7 @@ def unpack_notebook_output_bundle(
     """Unpack a transport bundle into a harness-style output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    with tarfile.open(bundle_path, "r:gz") as tar:
+    with tarfile.open(bundle_path, "r") as tar:
         manifest_data = json.loads(_read_member(tar, "manifest.json").decode("utf-8"))
 
         if manifest_data.get("schema_version") != SCHEMA_VERSION:
@@ -164,7 +164,7 @@ def unpack_notebook_output_bundle(
 
 def read_notebook_output_bundle_manifest(data: bytes) -> dict[str, Any]:
     """Read and validate the top-level manifest from bundle bytes."""
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r") as tar:
         manifest_data = json.loads(_read_member(tar, "manifest.json").decode("utf-8"))
         _validate_bundle_manifest(manifest_data, tar)
 

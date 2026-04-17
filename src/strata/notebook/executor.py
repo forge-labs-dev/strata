@@ -979,7 +979,7 @@ class CellExecutor:
         )
         result = await self._run_harness(manifest_path, venv_path, timeout_seconds)
 
-        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+        bundle_path = output_dir / "notebook-output-bundle.tar"
         pack_notebook_output_bundle(bundle_path, result, output_dir)
 
         unpacked_dir = output_dir / "_executor_result"
@@ -1120,7 +1120,7 @@ class CellExecutor:
                 remote_error_code="PROTOCOL_ERROR",
             )
 
-        bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+        bundle_path = output_dir / "notebook-output-bundle.tar"
         with open(bundle_path, "wb") as f:
             f.write(response.content)
 
@@ -1391,7 +1391,7 @@ class CellExecutor:
                     remote_error_code="INVALID_NOTEBOOK_BUNDLE",
                 ) from exc
 
-            bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+            bundle_path = output_dir / "notebook-output-bundle.tar"
             with open(bundle_path, "wb") as f:
                 f.write(blob)
 

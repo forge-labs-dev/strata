@@ -30,7 +30,7 @@ def test_remote_bundle_round_trip_success(tmp_path):
         "mutation_warnings": [],
     }
 
-    bundle_path = tmp_path / "bundle.tar.gz"
+    bundle_path = tmp_path / "bundle.tar"
     pack_notebook_output_bundle(bundle_path, result, output_dir)
 
     unpacked_dir = tmp_path / "unpacked"
@@ -56,7 +56,7 @@ def test_remote_bundle_round_trip_failure(tmp_path):
         "traceback": "Traceback...",
     }
 
-    bundle_path = tmp_path / "bundle.tar.gz"
+    bundle_path = tmp_path / "bundle.tar"
     pack_notebook_output_bundle(bundle_path, result, output_dir)
 
     unpacked_dir = tmp_path / "unpacked"
@@ -71,7 +71,7 @@ def test_remote_bundle_round_trip_failure(tmp_path):
     # Bundle schema version is the transport contract, not the harness result contract.
     import tarfile
 
-    with tarfile.open(bundle_path, "r:gz") as tar:
+    with tarfile.open(bundle_path, "r") as tar:
         extracted = tar.extractfile("manifest.json")
         assert extracted is not None
         bundle_manifest = json.loads(extracted.read().decode("utf-8"))

@@ -68,7 +68,7 @@ def test_remote_executor_executes_simple_cell_via_notebook_endpoint(
         == NOTEBOOK_EXECUTOR_PROTOCOL_VERSION
     )
 
-    bundle_path = tmp_path / "bundle.tar.gz"
+    bundle_path = tmp_path / "bundle.tar"
     bundle_path.write_bytes(response.content)
     unpacked = unpack_notebook_output_bundle(bundle_path, tmp_path / "unpacked")
 
@@ -121,7 +121,7 @@ def test_remote_executor_executes_simple_cell_via_executor_v1(
         == NOTEBOOK_EXECUTOR_PROTOCOL_VERSION
     )
 
-    bundle_path = tmp_path / "bundle-v1.tar.gz"
+    bundle_path = tmp_path / "bundle-v1.tar"
     bundle_path.write_bytes(response.content)
     unpacked = unpack_notebook_output_bundle(bundle_path, tmp_path / "unpacked-v1")
 
@@ -261,7 +261,7 @@ def test_remote_executor_executes_signed_manifest_build(
 
     blob = artifact_store.read_blob(output_artifact_id, output_version)
     assert blob is not None
-    bundle_path = notebook_build_server["config"].cache_dir / "manifest-bundle.tar.gz"
+    bundle_path = notebook_build_server["config"].cache_dir / "manifest-bundle.tar"
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
     bundle_path.write_bytes(blob)
     unpacked = unpack_notebook_output_bundle(bundle_path, bundle_path.parent / "manifest-bundle")
@@ -390,7 +390,7 @@ def test_service_finalize_rejects_incomplete_notebook_bundle(notebook_build_serv
     build_store.start_build(build_id)
 
     bundle_bytes = io.BytesIO()
-    with tarfile.open(fileobj=bundle_bytes, mode="w:gz") as tar:
+    with tarfile.open(fileobj=bundle_bytes, mode="w") as tar:
         manifest_bytes = json.dumps(
             {
                 "schema_version": SCHEMA_VERSION,

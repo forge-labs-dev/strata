@@ -180,11 +180,11 @@ def create_notebook_executor_app() -> FastAPI:
             finally:
                 active_executions -= 1
 
-            bundle_path = output_dir / "notebook-output-bundle.tar.gz"
+            bundle_path = output_dir / "notebook-output-bundle.tar"
             pack_notebook_output_bundle(bundle_path, result, output_dir)
             return Response(
                 content=bundle_path.read_bytes(),
-                media_type="application/gzip",
+                media_type="application/x-tar",
                 headers={
                     "X-Strata-Notebook-Executor-Protocol": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
                     EXECUTOR_PROTOCOL_HEADER: EXECUTOR_PROTOCOL_VERSION,
@@ -455,7 +455,7 @@ def create_notebook_executor_app() -> FastAPI:
                 upload_response = await client.post(
                     upload_url,
                     content=bundle_bytes,
-                    headers={"Content-Type": "application/gzip"},
+                    headers={"Content-Type": "application/x-tar"},
                 )
                 if upload_response.status_code != 200:
                     raise HTTPException(
