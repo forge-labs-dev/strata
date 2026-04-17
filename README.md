@@ -6,10 +6,14 @@
 
 **Content-addressed notebooks for ML and data workflows.**
 
-Strata Notebook is an interactive notebook where every cell output is an
-artifact. Same code + same inputs = instant cache hit. Change one cell,
-and only that cell and its dependents re-execute — everything else is
-served from the artifact store in milliseconds.
+Strata Notebook treats every cell output as an immutable, content-addressed
+artifact. Same code + same inputs = instant cache hit. Change one cell, and
+only that cell and its dependents re-execute — everything else is served
+from the artifact store in milliseconds.
+
+One source annotation (`# @worker gpu-fly`) dispatches a cell to a remote
+GPU. Another (`# @mount data s3://bucket/prefix ro`) makes an S3 prefix
+available as a local `pathlib.Path` inside the cell. No glue code.
 
 **Docs:** [forge-labs-dev.github.io/strata](https://forge-labs-dev.github.io/strata/)
 
@@ -94,6 +98,54 @@ declared worker at execution time, and the UI shows a live
 
 No deployment code, no infrastructure glue. Bring your own compute,
 one annotation per cell.
+
+## Source Annotations
+
+Every piece of per-cell metadata is a comment directive in the cell's
+source. The source is the single canonical place for cell config —
+annotations always win over any stored defaults.
+
+```python
+# @name Extract embeddings
+# @worker gpu-fly
+# @timeout 600
+# @env MODEL_PATH=/models/bge-large
+# @mount dataset s3://corpus/2024-q4 ro
+embeddings = model.encode(dataset / "abstracts.jsonl")
+```
+
+Diagnostics fire on open, reload, and after an edit settles:
+`worker_unknown`, `mount_uri_unsupported`, `mount_shadows_notebook`,
+`timeout_not_numeric`, `env_malformed`. They surface as a pill in the
+cell header and log structured warnings for headless runs.
+
+## Mounts
+
+Mounts bind a remote URI to a local path inside the cell. Supported
+schemes: `file://`, `s3://`, `gs://`, `az://`. Credentials flow through
+fsspec options — set `anon = true` for public buckets, or drop it to
+use the standard credential chain.
+
+```toml
+[[mounts]]
+name = "taxi_zones"
+uri = "s3://nyc-tlc/misc"
+mode = "ro"
+options = { anon = true }
+```
+
+Inside the cell, `taxi_zones` is a `pathlib.Path`. Strata materializes
+it on first read and caches the bytes locally for the session.
+
+## Examples
+
+| Example | What it shows |
+|---|---|
+| [pandas_basics](examples/pandas_basics) | Linear DataFrame chain — caching, staleness propagation |
+| [iris_classification](examples/iris_classification) | End-to-end ML, DAG branching, mixed output types |
+| [titanic_ml](examples/titanic_ml) | Feature engineering + model comparison |
+| [s3_mount](examples/s3_mount) | Reading a public S3 bucket via a mount |
+| [arxiv_classifier](examples/arxiv_classifier) | Distributed execution via `@worker` + Modal GPU + Fly cluster |
 
 ---
 
