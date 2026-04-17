@@ -225,3 +225,6 @@ docs/internal/
 # meant to be shared.
 examples/*/.strata/
 examples/*/uv.lock
+
+# Claude Code session state
+.claude/
