@@ -673,6 +673,144 @@ class TestContentTypeDetection:
 
         assert detect_content_type(MyClass()) == "pickle/object"
 
+    def test_detect_ndarray_goes_to_arrow_ipc(self):
+        """Unified codec: ndarray detects as arrow/ipc, not tensor/arrow."""
+        import numpy as np
+
+        from strata.notebook.serializer import detect_content_type
+
+        assert detect_content_type(np.array([1, 2, 3])) == "arrow/ipc"
+        assert detect_content_type(np.zeros((2, 3))) == "arrow/ipc"
+
+    def test_detect_numpy_scalar_goes_to_arrow_ipc(self):
+        """numpy scalars route through the typed arrow/ipc codec."""
+        import numpy as np
+
+        from strata.notebook.serializer import detect_content_type
+
+        assert detect_content_type(np.int64(42)) == "arrow/ipc"
+        assert detect_content_type(np.float64(1.5)) == "arrow/ipc"
+
+    def test_detect_typed_primitives_go_to_arrow_ipc(self):
+        """Typed Python primitives route through arrow/ipc for fidelity."""
+        from datetime import datetime, timedelta
+        from uuid import uuid4
+
+        from strata.notebook.serializer import detect_content_type
+
+        assert detect_content_type(datetime.now()) == "arrow/ipc"
+        assert detect_content_type(date.today()) == "arrow/ipc"
+        assert detect_content_type(timedelta(seconds=1)) == "arrow/ipc"
+        assert detect_content_type(Decimal("3.14")) == "arrow/ipc"
+        assert detect_content_type(b"bytes") == "arrow/ipc"
+        assert detect_content_type(uuid4()) == "arrow/ipc"
+        assert detect_content_type(1 + 2j) == "arrow/ipc"
+
+
+class TestUnifiedArrowCodec:
+    """Round-trip tests for the unified arrow/ipc content type."""
+
+    def test_roundtrip_ndarray_1d(self):
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            arr = np.array([1, 2, 3, 4, 5])
+            meta = serialize_value(arr, tmp, "x")
+            assert meta["content_type"] == "arrow/ipc"
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, np.ndarray)
+            assert back.shape == arr.shape
+            assert back.dtype == arr.dtype
+            assert (back == arr).all()
+
+    def test_roundtrip_ndarray_multidim(self):
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            arr = np.arange(24, dtype=np.float32).reshape(2, 3, 4)
+            meta = serialize_value(arr, tmp, "x")
+            assert meta["content_type"] == "arrow/ipc"
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert back.shape == (2, 3, 4)
+            assert back.dtype == np.float32
+            assert (back == arr).all()
+
+    def test_roundtrip_numpy_scalar(self):
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = serialize_value(np.int64(42), tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            # Numpy flavor is lost on round-trip; equality is preserved.
+            assert back == 42
+
+    def test_roundtrip_datetime(self):
+        from datetime import datetime
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dt = datetime(2026, 4, 16, 12, 34, 56)
+            meta = serialize_value(dt, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, datetime)
+            assert back == dt
+
+    def test_roundtrip_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = date(2026, 4, 16)
+            meta = serialize_value(d, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert back == d
+
+    def test_roundtrip_decimal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v = Decimal("3.14159")
+            meta = serialize_value(v, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, Decimal)
+            assert back == v
+
+    def test_roundtrip_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v = b"hello world"
+            meta = serialize_value(v, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert back == v
+
+    def test_roundtrip_uuid(self):
+        from uuid import UUID, uuid4
+
+        with tempfile.TemporaryDirectory() as tmp:
+            v = uuid4()
+            meta = serialize_value(v, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, UUID)
+            assert back == v
+
+    def test_roundtrip_complex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            v = 3.0 + 4.0j
+            meta = serialize_value(v, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, complex)
+            assert back == v
+
+    def test_roundtrip_dataframe_preserves_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            df = pd.DataFrame({"a": [1, 2], "b": [3.0, 4.0]})
+            meta = serialize_value(df, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, pd.DataFrame)
+            assert back.equals(df)
+
+    def test_roundtrip_series_preserves_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = pd.Series([1, 2, 3], name="my_series")
+            meta = serialize_value(s, tmp, "x")
+            back = deserialize_value(meta["content_type"], Path(tmp) / meta["file"])
+            assert isinstance(back, pd.Series)
+            assert back.name == "my_series"
+            assert list(back) == [1, 2, 3]
+
 
 class TestLargeDataFrames:
     """Test serialization of larger DataFrames."""

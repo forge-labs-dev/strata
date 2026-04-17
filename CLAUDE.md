@@ -446,8 +446,12 @@ cells = [
 7. **Broadcast**: WebSocket sends `cell_status`, `cell_output`, `cell_console` to connected clients
 
 Serialization formats (determined by value type, see `serializer.py::ContentType`):
-- `arrow/ipc` — PyArrow Tables, pandas DataFrames/Series
-- `tensor/arrow` — numpy ndarrays (via `pa.Tensor`)
+- `arrow/ipc` — Anything Arrow-representable: pyarrow Tables/RecordBatch,
+  pandas DataFrames/Series, numpy ndarrays (any dim), numpy scalars,
+  and typed Python primitives (datetime, Decimal, UUID, bytes, complex).
+  Shape is encoded in schema metadata (`strata.arrow.shape` =
+  "table" | "tensor" | "scalar"). One wire format; the reader
+  reconstructs the exact Python type on the way out.
 - `json/object` — dicts, lists, scalars (int, float, str, bool, None)
 - `pickle/object` — everything else (cloudpickle by default)
 - `image/png` — display-only figure/image outputs

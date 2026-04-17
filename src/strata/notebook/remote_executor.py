@@ -63,7 +63,6 @@ def create_notebook_executor_app() -> FastAPI:
     def _input_extension(content_type: str) -> str:
         return {
             "arrow/ipc": ".arrow",
-            "tensor/arrow": ".tensor",
             "json/object": ".json",
             "pickle/object": ".pickle",
             "module/import": ".module.json",

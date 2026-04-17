@@ -1,8 +1,12 @@
 """Shared serialization/deserialization for notebook cell values.
 
-Supports eight content types:
-  arrow/ipc    — PyArrow Tables, pandas DataFrames/Series
-  tensor/arrow — numpy ndarrays
+Supports seven content types:
+  arrow/ipc    — Anything Arrow-representable (PyArrow Tables/RecordBatch,
+                 pandas DataFrames/Series, numpy ndarrays of any dim,
+                 numpy scalars, typed Python primitives like datetime /
+                 Decimal / UUID / bytes / complex). Shape is encoded in
+                 schema metadata: ``strata.arrow.shape`` = "table" |
+                 "tensor" | "scalar".
   json/object  — dicts, lists, scalars (int/float/str/bool/None)
   image/png    — Displayable PNG output (figures, images)
   text/markdown — Displayable markdown output
@@ -58,7 +62,6 @@ class ContentType(StrEnum):
     """
 
     ARROW_IPC = "arrow/ipc"
-    TENSOR_ARROW = "tensor/arrow"
     JSON_OBJECT = "json/object"
     PICKLE_OBJECT = "pickle/object"
     IMAGE_PNG = "image/png"
@@ -174,29 +177,20 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> Content
     cost when detection never fires.
 
     Detection order (first match wins):
-      1. PyArrow Table / RecordBatch → arrow/ipc
-      2. pandas DataFrame / Series   → arrow/ipc
-      3. numpy ndarray                → tensor/arrow
-      4. Markdown / PNG display value → text/markdown or image/png
-      5. JSON-serializable primitive  → json/object
-      6. Python module                → module/import
-      7. Cell-defined class instance  → module/cell-instance
-      8. Anything else                → pickle/object (fallback)
+      1. Anything Arrow-representable → arrow/ipc
+         (pyarrow Table/RecordBatch, pandas DataFrame/Series, numpy
+         ndarray of any dim, numpy scalars, typed Python primitives
+         like datetime/Decimal/UUID/bytes/complex)
+      2. Markdown / PNG display value → text/markdown or image/png
+      3. JSON-serializable primitive  → json/object
+      4. Python module                → module/import
+      5. Cell-defined class instance  → module/cell-instance
+      6. Anything else                → pickle/object (fallback)
     """
     import types
 
-    import numpy as np
-    import pandas as pd
-    import pyarrow as pa
-
-    if isinstance(value, (pa.Table, pa.RecordBatch)):
+    if _is_arrow_representable(value):
         return ContentType.ARROW_IPC
-
-    if isinstance(value, (pd.DataFrame, pd.Series)):
-        return ContentType.ARROW_IPC
-
-    if isinstance(value, np.ndarray):
-        return ContentType.TENSOR_ARROW
 
     if _is_display_variable_name(variable_name):
         if _is_markdown_display_value(value):
@@ -221,6 +215,52 @@ def detect_content_type(value: Any, variable_name: str | None = None) -> Content
         return ContentType.MODULE_CELL_INSTANCE
 
     return ContentType.PICKLE_OBJECT
+
+
+def _is_arrow_representable(value: Any) -> bool:
+    """Return whether *value* should flow through the unified arrow/ipc codec.
+
+    Covers everything we know how to encode as an Arrow Table with
+    schema metadata: tables (pyarrow / pandas), n-d numpy arrays, numpy
+    scalars, and typed Python primitives that have a native Arrow
+    representation (datetime family, Decimal, bytes) plus two that
+    don't but that we handle via metadata tags (UUID, complex).
+
+    pyarrow is a guaranteed dep of notebook venvs; pandas and numpy
+    are only installed when the user adds them (they're in the
+    [notebook] extra on the strata side, but not baked into generated
+    notebook pyprojects). Their imports are guarded so missing-package
+    notebooks still classify correctly.
+    """
+    import datetime as _dt
+    from decimal import Decimal
+    from uuid import UUID
+
+    import pyarrow as pa
+
+    if isinstance(value, (pa.Table, pa.RecordBatch)):
+        return True
+    try:
+        import pandas as pd
+
+        if isinstance(value, (pd.DataFrame, pd.Series)):
+            return True
+    except ImportError:
+        pass
+    try:
+        import numpy as np
+
+        if isinstance(value, (np.ndarray, np.generic)):
+            return True
+    except ImportError:
+        pass
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)):
+        return True
+    if isinstance(value, (Decimal, bytes, bytearray, UUID)):
+        return True
+    if isinstance(value, complex):
+        return True
+    return False
 
 
 def _is_display_variable_name(variable_name: str | None) -> bool:
@@ -256,15 +296,9 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
         except Exception as exc:
             if _should_fallback_from_arrow_error(exc):
                 return _serialize_dataframe_json(value, output_dir, variable_name)
-            raise
-    elif content_type == ContentType.TENSOR_ARROW:
-        try:
-            return _serialize_tensor(value, output_dir, variable_name)
-        except Exception:
-            # pa.Tensor.from_numpy rejects certain dtypes — notably
-            # object arrays and unicode strings (e.g. sklearn's
-            # classifier.predict on string labels). Fall back to pickle,
-            # which preserves the ndarray exactly.
+            # Arrow refused this value (e.g., object-dtype ndarray with
+            # heterogeneous types, complex nested struct). Pickle it
+            # rather than letting the cell fail.
             return _serialize_pickle(value, output_dir, variable_name)
     elif content_type == ContentType.IMAGE_PNG:
         return _serialize_image_png(value, output_dir, variable_name)
@@ -280,56 +314,64 @@ def serialize_value(value: Any, output_dir: Path | str, variable_name: str) -> d
         return _serialize_pickle(value, output_dir, variable_name)
 
 
+# Schema-metadata keys for the unified arrow/ipc format. The shape key
+# tells the reader which reconstruction path to take; the rest are
+# shape-specific.
+_META_SHAPE = b"strata.arrow.shape"  # b"table" | b"tensor" | b"scalar"
+_META_SOURCE = b"strata.arrow.source"  # b"pandas.DataFrame" | b"pandas.Series"
+_META_PD_NAME = b"strata.arrow.pandas.name"  # Series name
+_META_TENSOR_SHAPE = b"strata.arrow.tensor.shape"  # JSON-encoded list[int]
+_META_TENSOR_DTYPE = b"strata.arrow.tensor.dtype"  # e.g. b"int32", b"float64"
+_META_SCALAR_TYPE = b"strata.arrow.scalar.type"  # b"uuid" | b"complex" | ...
+
+
 def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
+    """Unified writer for the arrow/ipc codec.
+
+    Dispatches to one of three shape encoders (table / tensor / scalar)
+    and stamps schema metadata so the reader can reconstruct the exact
+    Python type. All three shapes use the same on-disk format — an
+    Arrow IPC stream of a single Table — so readers only need one
+    entry point.
+    """
     import pyarrow as pa
 
-    if isinstance(value, pa.RecordBatch):
-        table = pa.Table.from_batches([value])
-    elif isinstance(value, pa.Table):
-        table = value
-    else:
-        try:
-            import pandas as pd
-
-            if isinstance(value, pd.Series):
-                # pa.Table.from_pandas expects a DataFrame — calling it
-                # with a Series raises AttributeError (not ValueError),
-                # which historically wasn't caught and left the variable
-                # unwritten on disk. Promote to a single-column frame
-                # and stash the original Series name + a "_pd_type"
-                # marker in the schema metadata so the deserializer can
-                # round-trip back to Series (sklearn and most consumers
-                # expect 1D y vectors, not single-column DataFrames).
-                frame = value.to_frame()
-                table = pa.Table.from_pandas(frame)
-                existing_meta = dict(table.schema.metadata or {})
-                existing_meta[b"strata_pd_type"] = b"Series"
-                existing_meta[b"strata_pd_name"] = (value.name or "").encode("utf-8")
-                table = table.replace_schema_metadata(existing_meta)
-            elif isinstance(value, pd.DataFrame):
-                table = pa.Table.from_pandas(value)
-            else:
-                import numpy as np
-
-                if isinstance(value, np.ndarray):
-                    table = pa.table({"array": value})
-                else:
-                    raise ValueError(f"Cannot convert {type(value)} to Arrow")
-        except ImportError:
-            raise ValueError("pandas/numpy not available for Arrow conversion")
+    table = _to_arrow_table(value)
 
     filename = f"{variable_name}.arrow"
     filepath = output_dir / filename
-
     with open(filepath, "wb") as f:
         writer = pa.ipc.new_stream(f, table.schema)
         writer.write_table(table)
         writer.close()
 
+    meta = table.schema.metadata or {}
+    shape = meta.get(_META_SHAPE, b"table")
+
+    if shape == b"tensor":
+        tensor_shape = json.loads(meta.get(_META_TENSOR_SHAPE, b"[]").decode("utf-8"))
+        tensor_dtype = meta.get(_META_TENSOR_DTYPE, b"").decode("utf-8")
+        preview = f"ndarray shape={tuple(tensor_shape)} dtype={tensor_dtype}"
+        return {
+            "content_type": ContentType.ARROW_IPC,
+            "file": filename,
+            "bytes": filepath.stat().st_size,
+            "preview": preview,
+        }
+
+    if shape == b"scalar":
+        scalar_value = _extract_scalar_from_table(table)
+        return {
+            "content_type": ContentType.ARROW_IPC,
+            "file": filename,
+            "bytes": filepath.stat().st_size,
+            "preview": to_serialization_safe(scalar_value),
+        }
+
+    # shape == table
     preview = []
     for i in range(min(20, table.num_rows)):
         preview.append([to_serialization_safe(col[i].as_py()) for col in table.columns])
-
     return {
         "content_type": ContentType.ARROW_IPC,
         "file": filename,
@@ -338,6 +380,134 @@ def _serialize_arrow(value: Any, output_dir: Path, variable_name: str) -> dict[s
         "bytes": filepath.stat().st_size,
         "preview": preview,
     }
+
+
+def _to_arrow_table(value: Any) -> Any:
+    """Dispatch *value* to an Arrow Table with shape metadata stamped."""
+    import datetime as _dt
+    from decimal import Decimal
+    from uuid import UUID
+
+    import pyarrow as pa
+
+    if isinstance(value, pa.RecordBatch):
+        return _stamp_shape(pa.Table.from_batches([value]), b"table")
+
+    if isinstance(value, pa.Table):
+        return _stamp_shape(value, b"table")
+
+    try:
+        import pandas as pd
+
+        if isinstance(value, pd.DataFrame):
+            table = pa.Table.from_pandas(value)
+            return _stamp_metadata(
+                table, {_META_SHAPE: b"table", _META_SOURCE: b"pandas.DataFrame"}
+            )
+
+        if isinstance(value, pd.Series):
+            # pa.Table.from_pandas expects a DataFrame — calling it with a
+            # Series historically raised AttributeError. Promote to a
+            # single-column frame and stash the original name so the
+            # deserializer can round-trip back to Series.
+            frame = value.to_frame()
+            table = pa.Table.from_pandas(frame)
+            return _stamp_metadata(
+                table,
+                {
+                    _META_SHAPE: b"table",
+                    _META_SOURCE: b"pandas.Series",
+                    _META_PD_NAME: str(value.name or "").encode("utf-8"),
+                },
+            )
+    except ImportError:
+        pass
+
+    try:
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            return _ndarray_to_table(value)
+
+        if isinstance(value, np.generic):
+            # numpy scalar — lose the numpy flavor on round-trip, treat as
+            # the equivalent Python primitive. Users who depend on
+            # type(x) is np.int64 are vanishingly rare.
+            return _python_scalar_to_table(value.item())
+    except ImportError:
+        pass
+
+    # Typed Python primitives
+    if isinstance(value, UUID):
+        pa_arr = pa.array([value.bytes], type=pa.binary(16))
+        table = pa.table({"value": pa_arr})
+        return _stamp_metadata(table, {_META_SHAPE: b"scalar", _META_SCALAR_TYPE: b"uuid"})
+
+    if isinstance(value, complex):
+        struct_type = pa.struct([("real", pa.float64()), ("imag", pa.float64())])
+        pa_arr = pa.array([{"real": value.real, "imag": value.imag}], type=struct_type)
+        table = pa.table({"value": pa_arr})
+        return _stamp_metadata(table, {_META_SHAPE: b"scalar", _META_SCALAR_TYPE: b"complex"})
+
+    _dt_types = (_dt.datetime, _dt.date, _dt.time, _dt.timedelta)
+    if isinstance(value, _dt_types) or isinstance(value, (Decimal, bytes, bytearray)):
+        return _python_scalar_to_table(value)
+
+    raise ValueError(f"Cannot convert {type(value).__name__} to Arrow")
+
+
+def _python_scalar_to_table(value: Any) -> Any:
+    """Wrap a single primitive in a 1-row, 1-column Table via pa.array."""
+    import pyarrow as pa
+
+    pa_arr = pa.array([value])
+    table = pa.table({"value": pa_arr})
+    return _stamp_metadata(table, {_META_SHAPE: b"scalar"})
+
+
+def _ndarray_to_table(arr: Any) -> Any:
+    """Encode an ndarray as a 1-column Table + tensor shape metadata."""
+    import numpy as np
+    import pyarrow as pa
+
+    contiguous = np.ascontiguousarray(arr)
+    flat = contiguous.reshape(-1)
+    pa_arr = pa.array(flat)
+    table = pa.table({"values": pa_arr})
+    return _stamp_metadata(
+        table,
+        {
+            _META_SHAPE: b"tensor",
+            _META_TENSOR_SHAPE: json.dumps(list(contiguous.shape)).encode("utf-8"),
+            _META_TENSOR_DTYPE: str(contiguous.dtype).encode("utf-8"),
+        },
+    )
+
+
+def _stamp_shape(table: Any, shape: bytes) -> Any:
+    return _stamp_metadata(table, {_META_SHAPE: shape})
+
+
+def _stamp_metadata(table: Any, extra: dict[bytes, bytes]) -> Any:
+    meta = dict(table.schema.metadata or {})
+    meta.update(extra)
+    return table.replace_schema_metadata(meta)
+
+
+def _extract_scalar_from_table(table: Any) -> Any:
+    """Read back a single Python scalar from a 1-row, 1-column Table."""
+    meta = table.schema.metadata or {}
+    scalar_type = meta.get(_META_SCALAR_TYPE, b"")
+    col = table.column(0)
+    raw = col[0].as_py()
+
+    if scalar_type == b"uuid":
+        from uuid import UUID
+
+        return UUID(bytes=raw)
+    if scalar_type == b"complex":
+        return complex(raw["real"], raw["imag"])
+    return raw
 
 
 def _should_fallback_from_arrow_error(exc: Exception) -> bool:
@@ -703,8 +873,6 @@ def deserialize_value(
     file_path = Path(file_path)
     if content_type == ContentType.ARROW_IPC:
         return _deserialize_arrow(file_path)
-    elif content_type == ContentType.TENSOR_ARROW:
-        return _deserialize_tensor(file_path)
     elif content_type == ContentType.TEXT_MARKDOWN:
         return _deserialize_markdown(file_path)
     elif content_type == ContentType.JSON_OBJECT:
@@ -724,8 +892,10 @@ def deserialize_value(
 def _deserialize_arrow(file_path: Path) -> Any:
     """Read an Arrow IPC stream.
 
-    Returns a pandas DataFrame when pandas is available; falls back to
-    a pyarrow Table.  Users expect DataFrames, not raw Arrow.
+    Branches on the ``strata.arrow.shape`` schema-metadata tag to
+    reconstruct the original Python type: table (DataFrame/Series/
+    pa.Table), tensor (numpy ndarray with original shape+dtype), or
+    scalar (typed primitive).
     """
     fallback_payload = _read_arrow_json_fallback(file_path)
     if fallback_payload is not None:
@@ -743,26 +913,53 @@ def _deserialize_arrow(file_path: Path) -> Any:
     # fails on DataFrames that survived an Arrow round-trip.
     table = table.combine_chunks()
 
-    # Round-trip pandas Series back to a Series (see _serialize_arrow).
-    # We stashed markers in the schema metadata during serialization.
     meta = table.schema.metadata or {}
-    was_series = meta.get(b"strata_pd_type") == b"Series"
-    series_name_bytes = meta.get(b"strata_pd_name", b"")
+    shape = meta.get(_META_SHAPE, b"table")
+
+    if shape == b"tensor":
+        return _tensor_from_table(table)
+
+    if shape == b"scalar":
+        return _extract_scalar_from_table(table)
+
+    # Default / b"table" shape — pandas DataFrame or pa.Table.
+    return _table_to_pandas_or_arrow(table)
+
+
+def _table_to_pandas_or_arrow(table: Any) -> Any:
+    """Decode a shape=table Arrow Table back to pandas or pyarrow."""
+    meta = table.schema.metadata or {}
+    source = meta.get(_META_SOURCE, b"")
 
     try:
         frame = table.to_pandas()
     except Exception:
         return table
 
-    if was_series:
+    if source == b"pandas.Series":
         try:
             series = frame.iloc[:, 0]
-            series_name = series_name_bytes.decode("utf-8") or None
-            series.name = series_name
+            name_bytes = meta.get(_META_PD_NAME, b"")
+            series.name = name_bytes.decode("utf-8") or None
             return series
         except Exception:
             return frame
     return frame
+
+
+def _tensor_from_table(table: Any) -> Any:
+    """Decode a shape=tensor Arrow Table back to a numpy ndarray."""
+    import numpy as np
+
+    meta = table.schema.metadata or {}
+    raw_shape = meta.get(_META_TENSOR_SHAPE, b"[]").decode("utf-8")
+    dtype_str = meta.get(_META_TENSOR_DTYPE, b"").decode("utf-8")
+    shape = tuple(json.loads(raw_shape))
+
+    flat = table.column(0).to_numpy(zero_copy_only=False)
+    if dtype_str:
+        flat = flat.astype(np.dtype(dtype_str), copy=False)
+    return np.ascontiguousarray(flat).reshape(shape)
 
 
 def _read_arrow_json_fallback(file_path: Path) -> dict[str, Any] | None:
@@ -803,52 +1000,6 @@ def _deserialize_arrow_json_fallback(payload: dict[str, Any]) -> Any:
         series.name = series_name
         return series
     return frame
-
-
-def _serialize_tensor(value: Any, output_dir: Path, variable_name: str) -> dict[str, Any]:
-    """Serialize a numpy ndarray using Arrow's tensor IPC format.
-
-    Arrow Tensor preserves shape, dtype, and strides exactly, provides
-    zero-copy reads on deserialization, and has no arbitrary-code-execution
-    surface (unlike pickle).
-    """
-    import numpy as np
-    import pyarrow as pa
-
-    arr = np.ascontiguousarray(value)
-    tensor = pa.Tensor.from_numpy(arr)
-
-    filename = f"{variable_name}.tensor"
-    filepath = output_dir / filename
-
-    buf = pa.BufferOutputStream()
-    pa.ipc.write_tensor(tensor, buf)
-    with open(filepath, "wb") as f:
-        f.write(buf.getvalue())
-
-    return {
-        "content_type": ContentType.TENSOR_ARROW,
-        "file": filename,
-        "bytes": filepath.stat().st_size,
-        "preview": f"ndarray shape={arr.shape} dtype={arr.dtype}",
-    }
-
-
-def _deserialize_tensor(file_path: Path) -> Any:
-    """Read an Arrow tensor IPC file back to a numpy ndarray.
-
-    Returns a writable copy. ``pa.Tensor.to_numpy()`` produces a
-    zero-copy **read-only** view of the IPC buffer; downstream code
-    (sklearn, numpy in-place ops) expects writable arrays. The copy
-    cost is negligible — we already paid for the I/O.
-    """
-    import numpy as np
-    import pyarrow as pa
-
-    with open(file_path, "rb") as f:
-        buf = pa.py_buffer(f.read())
-    tensor = pa.ipc.read_tensor(buf)
-    return np.array(tensor.to_numpy())
 
 
 def _deserialize_json(file_path: Path) -> Any:

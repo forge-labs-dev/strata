@@ -572,13 +572,13 @@ artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_sample_var___disp
 
 [[artifacts.embed.display_outputs]]
 bytes = 4608256
-content_type = "tensor/arrow"
+content_type = "arrow/ipc"
 preview = "ndarray shape=(3000, 384) dtype=float32"
 artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=3"
 
 [artifacts.embed.display]
 bytes = 4608256
-content_type = "tensor/arrow"
+content_type = "arrow/ipc"
 preview = "ndarray shape=(3000, 384) dtype=float32"
 artifact_uri = "strata://artifact/nb_arxiv-classifier-001_cell_embed_var___display__0@v=3"
 
