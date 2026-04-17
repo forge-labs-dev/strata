@@ -567,6 +567,10 @@ class TestPlannerWithMetadataCache:
 
     def test_manifest_cache_isolated_per_warehouse(self, tmp_path):
         """Different warehouses with the same table name should not share manifests."""
+        import sys
+
+        if sys.platform == "win32":
+            pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
         reset_caches()
 
         from pyiceberg.catalog.sql import SqlCatalog
