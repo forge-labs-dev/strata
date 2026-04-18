@@ -40,7 +40,7 @@ from strata.artifact_store import TransformSpec as ArtifactTransformSpec
 from strata.artifact_store import get_artifact_store
 from strata.blob_store import BLOB_STREAM_CHUNK_BYTES
 from strata.notebook.annotations import parse_annotations
-from strata.notebook.env import compute_execution_env_hash
+from strata.notebook.env import compute_execution_env_hash, narrow_env_for_provenance
 from strata.notebook.models import MountSpec, WorkerBackendType
 from strata.notebook.module_export import build_module_export_plan
 from strata.notebook.mounts import (
@@ -500,9 +500,17 @@ class CellExecutor:
                 self.session.notebook_state,
                 effective_worker,
             )
+            cell_state = next(
+                (c for c in self.session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            declared_env_keys = set(annotations.env) | set(
+                getattr(cell_state, "env_overrides", {}) or {}
+            )
+            provenance_env = narrow_env_for_provenance(source, runtime_env, declared_env_keys)
             env_hash = compute_execution_env_hash(
                 self.session.path,
-                runtime_env,
+                provenance_env,
                 runtime_identity=runtime_identity,
             )
             input_hashes = self._collect_input_hashes(cell_id)
@@ -1683,8 +1691,16 @@ class CellExecutor:
         runtime_env = self._resolve_effective_runtime_env(cell_id, annotations.env)
         effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
         runtime_identity = worker_runtime_identity(self.session.notebook_state, effective_worker)
+        cell_state = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        declared_env_keys = set(annotations.env) | set(
+            getattr(cell_state, "env_overrides", {}) or {}
+        )
+        provenance_env = narrow_env_for_provenance(source, runtime_env, declared_env_keys)
         env_hash = compute_execution_env_hash(
-            self.session.path, runtime_env, runtime_identity=runtime_identity
+            self.session.path, provenance_env, runtime_identity=runtime_identity
         )
         input_hashes = self._collect_input_hashes(cell_id)
         mount_specs = self._resolve_cell_mount_specs(cell_id, source)

@@ -33,7 +33,11 @@ from strata.notebook.dependencies import (
     list_dependencies,
     run_uv_command_streaming,
 )
-from strata.notebook.env import compute_execution_env_hash, compute_lockfile_hash
+from strata.notebook.env import (
+    compute_execution_env_hash,
+    compute_lockfile_hash,
+    narrow_env_for_provenance,
+)
 from strata.notebook.models import (
     CellOutput,
     CellStaleness,
@@ -285,6 +289,12 @@ class NotebookSession:
         # Re-analyze all cells and rebuild DAG
         self._analyze_and_build_dag()
         self._run_annotation_validation()
+        # Restore prior display outputs and provenance history *before*
+        # computing staleness. compute_staleness() compares the cell's
+        # ``last_provenance_hash`` against the newly-resolved env / source
+        # / inputs — without restoring it first, every cell falls back to
+        # IDLE and we lose the ability to mark cells as STALE.
+        self._restore_execution_history(previous_cells)
         self.compute_staleness()
         self._restore_ready_runtime_state(previous_cells, previous_runtime_identities)
 
@@ -335,12 +345,57 @@ class NotebookSession:
             logger.warning("Cycle detected in DAG: %s", e)
             self.dag = None
 
+    def _restore_execution_history(self, previous_cells: dict[str, Any]) -> None:
+        """Restore per-cell execution history that's not persisted to notebook.toml.
+
+        Display outputs, artifact URIs, and the last-seen provenance / source
+        / env hashes all live only in the session. After a reload() the
+        newly-parsed cells are at their defaults, so we copy the history
+        back from the pre-reload snapshot whenever the cell is unambiguously
+        the same (same id, same source). Status and staleness are not
+        touched here — compute_staleness() runs afterwards and may
+        legitimately downgrade a previously-READY cell to STALE if the
+        resolved env / upstream provenance has changed.
+        """
+        for cell in self.notebook_state.cells:
+            previous = previous_cells.get(cell.id)
+            if previous is None or previous.source != cell.source:
+                continue
+
+            cell.artifact_uri = previous.artifact_uri
+            cell.artifact_uris = dict(previous.artifact_uris)
+            cell.display_outputs = [
+                output.model_copy(deep=True) for output in previous.display_outputs
+            ]
+            cell.display_output = (
+                previous.display_output.model_copy(deep=True)
+                if previous.display_output is not None
+                else None
+            )
+            cell.cache_hit = previous.cache_hit
+            cell.execution_method = previous.execution_method
+            cell.remote_worker = previous.remote_worker
+            cell.remote_transport = previous.remote_transport
+            cell.remote_build_id = previous.remote_build_id
+            cell.remote_build_state = previous.remote_build_state
+            cell.remote_error_code = previous.remote_error_code
+            cell.last_provenance_hash = previous.last_provenance_hash
+            cell.last_source_hash = previous.last_source_hash
+            cell.last_env_hash = previous.last_env_hash
+
     def _restore_ready_runtime_state(
         self,
         previous_cells: dict[str, Any],
         previous_runtime_identities: dict[str, str | None],
     ) -> None:
-        """Preserve ready leaf-like runtime state across metadata-only reloads."""
+        """Preserve READY status for cells whose runtime identity is unchanged.
+
+        Runs after compute_staleness(): for cells that staleness could not
+        classify as READY (e.g., leaves without canonical artifacts) we
+        promote them back to READY when the entire runtime identity
+        matches the pre-reload snapshot. History fields were already
+        restored by ``_restore_execution_history``.
+        """
         for cell in self.notebook_state.cells:
             previous = previous_cells.get(cell.id)
             can_restore_ready_state = (
@@ -362,29 +417,8 @@ class NotebookSession:
             if not can_restore_ready_state:
                 continue
 
-            assert previous is not None
             cell.status = CellStatus.READY
             cell.staleness = CellStaleness(status=CellStatus.READY, reasons=[])
-            cell.artifact_uri = previous.artifact_uri
-            cell.artifact_uris = dict(previous.artifact_uris)
-            cell.display_outputs = [
-                output.model_copy(deep=True) for output in previous.display_outputs
-            ]
-            cell.display_output = (
-                previous.display_output.model_copy(deep=True)
-                if previous.display_output is not None
-                else None
-            )
-            cell.cache_hit = previous.cache_hit
-            cell.execution_method = previous.execution_method
-            cell.remote_worker = previous.remote_worker
-            cell.remote_transport = previous.remote_transport
-            cell.remote_build_id = previous.remote_build_id
-            cell.remote_build_state = previous.remote_build_state
-            cell.remote_error_code = previous.remote_error_code
-            cell.last_provenance_hash = previous.last_provenance_hash
-            cell.last_source_hash = previous.last_source_hash
-            cell.last_env_hash = previous.last_env_hash
             self.causality_map.pop(cell.id, None)
 
     def re_analyze_cell(self, cell_id: str) -> None:
@@ -1105,11 +1139,19 @@ class NotebookSession:
         return mount_fingerprints, has_rw_mount
 
     def _collect_runtime_env(self, cell: Any) -> dict[str, str]:
-        """Return the effective runtime env for a cell with annotation precedence."""
+        """Return the provenance-relevant runtime env for a cell.
+
+        The cell receives every notebook-level env var as ambient process
+        environment at execution time, but only the keys it actually
+        declares or references participate in its provenance hash. This
+        prevents unrelated cells from being invalidated when an API key
+        or similar ambient secret is added at the notebook level.
+        """
         annotations = parse_annotations(cell.source)
-        runtime_env = dict(cell.env)
-        runtime_env.update(annotations.env)
-        return runtime_env
+        resolved = dict(cell.env)
+        resolved.update(annotations.env)
+        declared = set(annotations.env) | set(getattr(cell, "env_overrides", {}) or {})
+        return narrow_env_for_provenance(cell.source, resolved, declared)
 
     def _effective_worker_name(self, cell: Any) -> str | None:
         """Return the effective worker name with annotation precedence."""

@@ -8,6 +8,7 @@ from typing import cast
 
 from strata.notebook.models import (
     CellMeta,
+    CellStatus,
     MountMode,
     MountSpec,
     NotebookToml,
@@ -140,11 +141,11 @@ def test_reload_does_not_restore_ready_state_after_mount_change(tmp_path: Path):
     assert cell.status == "idle"
 
 
-def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
-    """Reload should not preserve ready state when runtime env provenance changed."""
+def _prime_env_reload_session(tmp_path: Path, source: str, notebook_env: dict[str, str]):
+    """Set up a minimal notebook with one executed cell for env-reload tests."""
     notebook_dir = create_notebook(tmp_path, "reload_env_state")
     add_cell_to_notebook(notebook_dir, "c1")
-    write_cell(notebook_dir, "c1", "x = 1")
+    write_cell(notebook_dir, "c1", source)
 
     write_notebook_toml(
         notebook_dir,
@@ -152,7 +153,7 @@ def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
             notebook_id="reload_env_state",
             name="reload_env_state",
             cells=[CellMeta(id="c1", file="c1.py", order=0)],
-            env={"APP_MODE": "a"},
+            env=notebook_env,
         ),
     )
 
@@ -163,10 +164,26 @@ def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
 
     async def _prime() -> None:
         executor = CellExecutor(session)
-        assert (await executor.execute_cell("c1", "x = 1")).success
+        assert (await executor.execute_cell("c1", source)).success
 
     asyncio.run(_prime())
     session.mark_executed_ready("c1")
+
+    primed = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert primed.status == CellStatus.READY
+    return notebook_dir, session, primed
+
+
+def test_reload_preserves_outputs_when_referenced_env_changes(tmp_path: Path):
+    """A cell that reads ``APP_MODE`` should turn non-ready when the value
+    changes, but its historical display outputs and artifact URIs must
+    survive the reload so the UI can still render them."""
+    source = "import os\nmode = os.environ['APP_MODE']\nmode"
+    notebook_dir, session, primed = _prime_env_reload_session(tmp_path, source, {"APP_MODE": "a"})
+    previous_display_outputs = [out.model_copy(deep=True) for out in primed.display_outputs]
+    previous_artifact_uri = primed.artifact_uri
+    previous_artifact_uris = dict(primed.artifact_uris)
+    assert previous_display_outputs, "cell should have primed display outputs"
 
     write_notebook_toml(
         notebook_dir,
@@ -180,7 +197,35 @@ def test_reload_does_not_restore_ready_state_after_env_change(tmp_path: Path):
     session.reload()
 
     cell = next(c for c in session.notebook_state.cells if c.id == "c1")
-    assert cell.status == "idle"
+    assert cell.status != CellStatus.READY
+    assert cell.display_outputs == previous_display_outputs
+    assert cell.artifact_uri == previous_artifact_uri
+    assert cell.artifact_uris == previous_artifact_uris
+
+
+def test_reload_keeps_unrelated_cells_ready_after_env_change(tmp_path: Path):
+    """Adding a new notebook-level env var must not invalidate a cell
+    that neither references it nor declares it — this is the common case
+    when the user saves an ambient API key for an LLM helper and every
+    other cell previously went gray."""
+    source = "x = 1\nx"
+    notebook_dir, session, primed = _prime_env_reload_session(tmp_path, source, {"APP_MODE": "a"})
+    previous_display_outputs = [out.model_copy(deep=True) for out in primed.display_outputs]
+
+    write_notebook_toml(
+        notebook_dir,
+        NotebookToml(
+            notebook_id="reload_env_state",
+            name="reload_env_state",
+            cells=[CellMeta(id="c1", file="c1.py", order=0)],
+            env={"APP_MODE": "a", "OPENAI_API_KEY": "sk-new"},
+        ),
+    )
+    session.reload()
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell.status == CellStatus.READY
+    assert cell.display_outputs == previous_display_outputs
 
 
 def test_reload_does_not_restore_ready_state_after_worker_runtime_change(tmp_path: Path):

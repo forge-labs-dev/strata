@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from strata.notebook.annotations import parse_annotations
-from strata.notebook.env import compute_execution_env_hash
+from strata.notebook.env import compute_execution_env_hash, narrow_env_for_provenance
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 from strata.notebook.workers import worker_runtime_identity
 
@@ -306,10 +306,12 @@ def compute_causality_on_staleness(
         source_hash = compute_source_hash(cell.source)
         runtime_env = dict(cell.env)
         runtime_env.update(annotations.env)
+        declared_env_keys = set(annotations.env) | set(cell.env_overrides or {})
+        provenance_env = narrow_env_for_provenance(cell.source, runtime_env, declared_env_keys)
         effective_worker = annotations.worker or cell.worker or session.notebook_state.worker
         env_hash = compute_execution_env_hash(
             session.path,
-            runtime_env,
+            provenance_env,
             runtime_identity=worker_runtime_identity(
                 session.notebook_state,
                 effective_worker,
