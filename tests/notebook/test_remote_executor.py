@@ -544,17 +544,13 @@ def test_remote_executor_round_trips_large_input_bundle(
     import pickle
 
     payload_size = 8 * 1024 * 1024
-    payload_bytes = (b"\xAB\xCD\xEF\x01" * (payload_size // 4))[:payload_size]
+    payload_bytes = (b"\xab\xcd\xef\x01" * (payload_size // 4))[:payload_size]
     expected_digest = hashlib.sha256(payload_bytes).hexdigest()
     pickled_payload = pickle.dumps(payload_bytes)
 
     metadata = {
         "protocol_version": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
-        "source": (
-            "import hashlib\n"
-            "digest = hashlib.sha256(blob).hexdigest()\n"
-            "size = len(blob)\n"
-        ),
+        "source": ("import hashlib\ndigest = hashlib.sha256(blob).hexdigest()\nsize = len(blob)\n"),
         "timeout_seconds": 30.0,
         "inputs": {
             "blob": {
