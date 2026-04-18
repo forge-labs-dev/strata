@@ -607,6 +607,36 @@ function parseBackendAnnotations(raw: any): CellAnnotations | undefined {
     timeout: raw.timeout ?? null,
     env: raw.env || {},
     mounts: Array.isArray(raw.mounts) ? raw.mounts.map(parseMountSpec) : [],
+    loop: parseBackendLoopAnnotation(raw.loop),
+  }
+}
+
+function parseBackendLoopAnnotation(raw: any): CellAnnotations['loop'] {
+  if (!raw || typeof raw !== 'object') return null
+  const maxIter = Number(raw.max_iter ?? raw.maxIter ?? 0)
+  const carry = typeof raw.carry === 'string' ? raw.carry : ''
+  if (!maxIter || !carry) return null
+  return {
+    maxIter,
+    carry,
+    untilExpr:
+      typeof raw.until_expr === 'string'
+        ? raw.until_expr
+        : typeof raw.untilExpr === 'string'
+          ? raw.untilExpr
+          : null,
+    startFromCell:
+      typeof raw.start_from_cell === 'string'
+        ? raw.start_from_cell
+        : typeof raw.startFromCell === 'string'
+          ? raw.startFromCell
+          : null,
+    startFromIter:
+      raw.start_from_iter !== undefined && raw.start_from_iter !== null
+        ? Number(raw.start_from_iter)
+        : raw.startFromIter !== undefined && raw.startFromIter !== null
+          ? Number(raw.startFromIter)
+          : null,
   }
 }
 

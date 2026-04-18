@@ -66,6 +66,16 @@ export interface CellAnnotations {
   timeout?: number | null
   env: Record<string, string>
   mounts: MountSpec[]
+  /** Loop cell annotations — present only when the cell declares ``# @loop``. */
+  loop?: LoopAnnotationInfo | null
+}
+
+export interface LoopAnnotationInfo {
+  maxIter: number
+  carry: string
+  untilExpr?: string | null
+  startFromCell?: string | null
+  startFromIter?: number | null
 }
 
 export type CellStatus =

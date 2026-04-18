@@ -694,12 +694,22 @@ class NotebookSession:
             else []
         )
         annotations = parse_annotations(cell.source)
+        loop_payload: dict[str, Any] | None = None
+        if annotations.loop is not None:
+            loop_payload = {
+                "max_iter": annotations.loop.max_iter,
+                "carry": annotations.loop.carry,
+                "until_expr": annotations.loop.until_expr,
+                "start_from_cell": annotations.loop.start_from_cell,
+                "start_from_iter": annotations.loop.start_from_iter,
+            }
         data["annotations"] = {
             "name": annotations.name,
             "worker": annotations.worker,
             "timeout": annotations.timeout,
             "env": annotations.env,
             "mounts": [mount.model_dump() for mount in annotations.mounts],
+            "loop": loop_payload,
         }
         causality = self.causality_map.get(cell.id)
         if causality is not None:

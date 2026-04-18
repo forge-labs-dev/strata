@@ -172,3 +172,54 @@ class TestLoopAnnotation:
         assert result.loop.until_expr == "x > 0"
         assert result.loop.max_iter == 0
         assert result.loop.carry == ""
+
+    def test_loop_annotation_surfaces_in_cell_serialization(self, tmp_path):
+        """``session.serialize_cell`` must include the loop annotation so
+        the frontend can populate the iteration picker without a second
+        round-trip to parse the cell source itself."""
+        from strata.notebook.parser import parse_notebook
+        from strata.notebook.session import NotebookSession
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "LoopAnnotTest", initialize_environment=False)
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(
+            notebook_dir,
+            "c1",
+            (
+                "# @loop max_iter=5 carry=state start_from=donor@iter=2\n"
+                "# @loop_until state['done']\n"
+                "state = step(state)\n"
+            ),
+        )
+
+        state = parse_notebook(notebook_dir)
+        session = NotebookSession(state, notebook_dir)
+        data = session.serialize_notebook_state()
+
+        cell = next(c for c in data["cells"] if c["id"] == "c1")
+        loop_payload = cell["annotations"]["loop"]
+        assert loop_payload is not None
+        assert loop_payload["max_iter"] == 5
+        assert loop_payload["carry"] == "state"
+        assert loop_payload["until_expr"] == "state['done']"
+        assert loop_payload["start_from_cell"] == "donor"
+        assert loop_payload["start_from_iter"] == 2
+
+    def test_cell_annotations_loop_none_for_regular_cell(self, tmp_path):
+        """Regular (non-loop) cells must emit ``loop: None`` so the
+        frontend's annotation parser doesn't trip on a missing key."""
+        from strata.notebook.parser import parse_notebook
+        from strata.notebook.session import NotebookSession
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "NoLoopTest", initialize_environment=False)
+        add_cell_to_notebook(notebook_dir, "c1")
+        write_cell(notebook_dir, "c1", "x = 1")
+
+        state = parse_notebook(notebook_dir)
+        session = NotebookSession(state, notebook_dir)
+        data = session.serialize_notebook_state()
+
+        cell = next(c for c in data["cells"] if c["id"] == "c1")
+        assert cell["annotations"]["loop"] is None
