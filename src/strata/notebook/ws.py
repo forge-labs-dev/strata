@@ -1102,6 +1102,35 @@ async def _handle_notebook_sync(
 # ============================================================================
 
 
+def _make_executor_with_progress(
+    session: NotebookSession,
+    notebook_id: str,
+) -> CellExecutor:
+    """Build a CellExecutor whose loop iterations broadcast progress.
+
+    Each iteration of a ``@loop`` cell fires an ``on_iteration_complete``
+    callback; we forward it as a ``cell_iteration_progress`` WS message so
+    the frontend can keep its per-cell iteration badge in sync with the
+    live execution.
+    """
+    executor = CellExecutor(session, session.warm_pool)
+
+    async def _broadcast_iteration_progress(progress: dict[str, Any]) -> None:
+        seq = next_notebook_sequence(notebook_id)
+        await _broadcast_message(
+            notebook_id,
+            {
+                "type": "cell_iteration_progress",
+                "seq": seq,
+                "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                "payload": progress,
+            },
+        )
+
+    executor.on_iteration_complete = _broadcast_iteration_progress
+    return executor
+
+
 async def _execute_cell_directly(
     websocket: WebSocket,
     session: NotebookSession,
@@ -1136,7 +1165,7 @@ async def _execute_cell_directly(
     )
 
     # Execute
-    executor = CellExecutor(session, session.warm_pool)
+    executor = _make_executor_with_progress(session, notebook_id)
     try:
         if force:
             result = await executor.execute_cell_force(cell_id, cell.source)
@@ -1327,7 +1356,7 @@ async def _execute_cascade(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    executor = CellExecutor(session, session.warm_pool)
+    executor = _make_executor_with_progress(session, notebook_id)
 
     logger.info(
         "Cascade %s: executing %d steps: %s",
@@ -1618,7 +1647,7 @@ async def _execute_run_all(
     execution_state["sequence"] += 1
     seq = execution_state["sequence"]
 
-    executor = CellExecutor(session, session.warm_pool)
+    executor = _make_executor_with_progress(session, notebook_id)
 
     logger.info(
         "Run all for notebook %s: executing %d cells: %s",
@@ -2149,12 +2178,11 @@ async def execute_cell_for_agent(
     executes, broadcasts result, and cleans up — same as user-initiated
     execution but without a WebSocket sender.
     """
-    from strata.notebook.executor import CellExecutor
 
     execution_state = _notebook_execution_state.get(notebook_id)
     if execution_state is None:
         # No WS clients — execute directly without state tracking
-        executor = CellExecutor(session, session.warm_pool)
+        executor = _make_executor_with_progress(session, notebook_id)
         return await executor.execute_cell(cell_id, source)
 
     async with execution_state["control_lock"]:
@@ -2178,7 +2206,7 @@ async def execute_cell_for_agent(
         cell.status = CellStatus.RUNNING
 
     try:
-        executor = CellExecutor(session, session.warm_pool)
+        executor = _make_executor_with_progress(session, notebook_id)
         result = await executor.execute_cell(cell_id, source)
 
         # Update cell status

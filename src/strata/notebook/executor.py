@@ -29,6 +29,7 @@ import logging
 import tempfile
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -265,6 +266,10 @@ class CellExecutor:
         self._mount_resolver = MountResolver(
             cache_dir=session.path / ".strata" / "mount_cache",
         )
+        # Optional callback fired after every loop iteration completes. Set
+        # by the WS handler so the frontend can update its progress badge
+        # in real time; unset for non-streaming callers (REST, CLI).
+        self.on_iteration_complete: Callable[[dict[str, Any]], Awaitable[None]] | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -2505,6 +2510,26 @@ class CellExecutor:
                 carry_content_type = new_content_type
 
                 loop_state = result.get("loop") or {}
+                iter_duration_ms = (time.time() - start_time) * 1000
+                if self.on_iteration_complete is not None:
+                    try:
+                        await self.on_iteration_complete(
+                            {
+                                "cell_id": cell_id,
+                                "iteration": k,
+                                "max_iter": loop.max_iter,
+                                "artifact_uri": final_artifact_uri,
+                                "content_type": new_content_type,
+                                "until_reached": bool(loop_state.get("until_reached")),
+                                "duration_ms": int(iter_duration_ms),
+                            }
+                        )
+                    except Exception:
+                        logger.exception(
+                            "on_iteration_complete callback failed for cell %s iter %d",
+                            cell_id,
+                            k,
+                        )
                 if loop_state.get("until_reached"):
                     break
 

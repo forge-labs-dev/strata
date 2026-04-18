@@ -1957,6 +1957,74 @@ class TestLoopCellExecution:
         assert forked_iter0 == {"n": 20}
 
     @pytest.mark.asyncio
+    async def test_loop_iteration_progress_callback_fires_per_iter(self, loop_notebook):
+        """``on_iteration_complete`` fires exactly once per completed iter,
+        with the artifact URI of the iter just stored. The WS handler wires
+        this callback to broadcast a ``cell_iteration_progress`` message
+        so the UI can update a per-cell progress badge in real time."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        loop_source = (
+            "# @loop max_iter=3 carry=state\n"
+            "state = {'n': state['n'] + 1, 'history': state['history'] + [state['n']]}\n"
+        )
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+        progress_events: list[dict] = []
+
+        async def _record(event: dict) -> None:
+            progress_events.append(event)
+
+        executor.on_iteration_complete = _record
+
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        result = await executor.execute_cell("loop", loop_source)
+
+        assert result.success, result.error
+        assert [event["iteration"] for event in progress_events] == [0, 1, 2]
+        assert all(event["max_iter"] == 3 for event in progress_events)
+        assert all(event["cell_id"] == "loop" for event in progress_events)
+        assert all(
+            event["artifact_uri"].endswith(f"@iter={event['iteration']}@v=1")
+            for event in progress_events
+        )
+        assert all("duration_ms" in event for event in progress_events)
+
+    @pytest.mark.asyncio
+    async def test_loop_progress_stops_when_until_reached(self, loop_notebook):
+        """Early termination via ``@loop_until`` is visible on the last
+        progress event so the UI can mark the loop as completed."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        loop_source = (
+            "# @loop max_iter=10 carry=state\n"
+            "# @loop_until state['n'] >= 2\n"
+            "state = {'n': state['n'] + 1, 'history': state['history'] + [state['n']]}\n"
+        )
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+        progress_events: list[dict] = []
+
+        async def _record(event: dict) -> None:
+            progress_events.append(event)
+
+        executor.on_iteration_complete = _record
+
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        await executor.execute_cell("loop", loop_source)
+
+        assert [event["iteration"] for event in progress_events] == [0, 1]
+        assert progress_events[-1]["until_reached"] is True
+        # Earlier iterations must not mark the loop complete.
+        assert all(not event["until_reached"] for event in progress_events[:-1])
+
+    @pytest.mark.asyncio
     async def test_loop_start_from_missing_cell_raises_clear_error(self, tmp_path):
         """A ``start_from`` pointing at a non-existent iteration fails cleanly."""
         from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
