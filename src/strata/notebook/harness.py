@@ -154,14 +154,21 @@ def execute_cell(
     source: str,
     inputs: dict,
     mutation_defines: list[str] | None = None,
-) -> tuple[dict, list[Any], str, str, list[dict]]:
-    """Execute a cell and return (outputs, displays, stdout, stderr, mutation_warnings).
+    loop_until_expr: str | None = None,
+) -> tuple[dict, list[Any], str, str, list[dict], dict[str, Any] | None]:
+    """Execute a cell and return its outputs, displays, captured streams, mutations, and loop state.
 
     ``mutation_defines`` lists variable names that the analyzer marked as
     in-place mutations (``df["col"] = ...``). These are always serialized
     as outputs even when the cell's execution preserved ``id()`` — the
     identity check alone would miss them and downstream cells would get
     the stale pre-mutation artifact.
+
+    ``loop_until_expr``, when supplied, is a Python expression evaluated
+    in the cell namespace after the body runs. The returned ``loop_state``
+    dict carries ``until_reached`` (truthy result of the expression) and,
+    on failure to compile/evaluate, an ``error`` field. When the caller
+    passes ``None``, ``loop_state`` is ``None`` and no loop work happens.
     """
     namespace = dict(inputs)
     display_capture = _display.DisplayCapture()
@@ -182,6 +189,10 @@ def execute_cell(
 
         with display_capture.capture_side_effects():
             _display_value = _exec_with_display(source, namespace)
+
+        loop_state: dict[str, Any] | None = None
+        if loop_until_expr is not None:
+            loop_state = _eval_loop_until(loop_until_expr, namespace)
 
         _skip = {"__builtins__", "__name__", "__doc__", "__package__"}
         new_vars: dict[str, Any] = {}
@@ -204,11 +215,39 @@ def execute_cell(
             stdout_capture.getvalue(),
             stderr_capture.getvalue(),
             mutation_warnings,
+            loop_state,
         )
 
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
+
+
+def _eval_loop_until(expr: str, namespace: dict[str, Any]) -> dict[str, Any]:
+    """Evaluate ``@loop_until`` in the cell namespace.
+
+    Returns a dict with ``until_reached`` (bool) and, on any failure to
+    compile or evaluate, an ``error`` field carrying a short message.
+    Evaluation failures do not abort cell execution — they bubble up as
+    a termination signal the executor can surface to the user.
+    """
+    try:
+        code = compile(expr, "<loop_until>", "eval")
+    except SyntaxError as exc:
+        return {
+            "until_reached": False,
+            "error": f"@loop_until syntax error: {exc.msg}",
+        }
+
+    try:
+        result = eval(code, namespace)  # noqa: S307 — predicate is declared by the user
+    except Exception as exc:
+        return {
+            "until_reached": False,
+            "error": f"@loop_until evaluation failed: {type(exc).__name__}: {exc}",
+        }
+
+    return {"until_reached": bool(result)}
 
 
 # ---------------------------------------------------------------------------
@@ -233,11 +272,21 @@ def main():
 
         inputs = deserialize_inputs(manifest)
         inject_mounts(manifest, inputs)
+        loop_config = manifest.get("loop") or {}
+        loop_until_expr = loop_config.get("until_expr") if isinstance(loop_config, dict) else None
         with apply_env_overrides(manifest):
-            outputs, display_values, stdout_text, stderr_text, mutation_warnings = execute_cell(
+            (
+                outputs,
+                display_values,
+                stdout_text,
+                stderr_text,
+                mutation_warnings,
+                loop_state,
+            ) = execute_cell(
                 source,
                 inputs,
                 mutation_defines=manifest.get("mutation_defines") or [],
+                loop_until_expr=loop_until_expr,
             )
 
         serialized: dict[str, Any] = {}
@@ -270,6 +319,8 @@ def main():
             "stderr": stderr_text,
             "mutation_warnings": mutation_warnings,
         }
+        if loop_state is not None:
+            result["loop"] = loop_state
 
     except Exception as e:
         result = {

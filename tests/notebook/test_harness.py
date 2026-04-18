@@ -371,3 +371,102 @@ x = 1
         # But lock variable might have serialization error
         # x should still be there
         assert "x" in result["variables"]
+
+
+class TestHarnessLoopUntil:
+    """The harness evaluates ``@loop_until`` in the cell namespace after the body.
+
+    These tests drive the harness directly via its subprocess entry point so
+    they cover the full manifest → result round-trip, not just the in-process
+    execute_cell function.
+    """
+
+    def test_loop_until_truthy_returns_until_reached(self, harness_script):
+        manifest = {
+            "source": "state = {'confidence': 0.95}",
+            "inputs": {},
+            "loop": {"until_expr": "state['confidence'] > 0.9"},
+        }
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert result["loop"]["until_reached"] is True
+        assert result["loop"].get("error") is None
+
+    def test_loop_until_falsy_reports_not_reached(self, harness_script):
+        manifest = {
+            "source": "state = {'confidence': 0.4}",
+            "inputs": {},
+            "loop": {"until_expr": "state['confidence'] > 0.9"},
+        }
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert result["loop"]["until_reached"] is False
+
+    def test_loop_until_runtime_error_is_captured(self, harness_script):
+        manifest = {
+            "source": "x = 1",
+            "inputs": {},
+            "loop": {"until_expr": "undefined_name > 0"},
+        }
+        result = run_harness(harness_script, manifest)
+
+        # Cell body still succeeded — the predicate failure is reported on
+        # the loop record rather than aborting execution, so the executor
+        # can decide how to surface it.
+        assert result["success"] is True
+        assert result["loop"]["until_reached"] is False
+        assert "NameError" in result["loop"]["error"]
+
+    def test_loop_absent_when_no_until_expr(self, harness_script):
+        """A manifest without a ``loop`` key produces no ``loop`` record."""
+        manifest = {"source": "x = 1", "inputs": {}}
+        result = run_harness(harness_script, manifest)
+
+        assert result["success"] is True
+        assert "loop" not in result
+
+    def test_loop_until_sees_carry_passed_as_input(self, harness_script, tmp_path):
+        """The executor seeds the carry by writing iter k-1's artifact into
+        the manifest as a regular input. The harness picks it up via normal
+        deserialization, and the ``@loop_until`` expression sees the updated
+        value after the body runs."""
+        state_path = Path("state.pickle")
+        seed = {"confidence": 0.5, "iteration": 0}
+
+        # Write the seed as a pickle the harness can deserialize.
+        import pickle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            state_full = tmpdir / state_path.name
+            with open(state_full, "wb") as f:
+                pickle.dump(seed, f)
+
+            manifest = {
+                "source": "state = {**state, 'confidence': state['confidence'] + 0.5}",
+                "inputs": {
+                    "state": {
+                        "content_type": "pickle/object",
+                        "file": str(state_path),
+                    }
+                },
+                "loop": {"until_expr": "state['confidence'] >= 1.0"},
+                "output_dir": str(tmpdir),
+            }
+            manifest_path = tmpdir / "request_manifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f)
+
+            subprocess.run(
+                [sys.executable, str(harness_script), str(manifest_path)],
+                cwd=str(tmpdir),
+                capture_output=True,
+            )
+
+            with open(tmpdir / "manifest.json") as f:
+                result = json.load(f)
+
+        assert result["success"] is True
+        assert result["loop"]["until_reached"] is True
