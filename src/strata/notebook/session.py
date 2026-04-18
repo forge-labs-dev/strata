@@ -318,6 +318,21 @@ class NotebookSession:
                 defines = analysis.defines
                 references = analysis.references
                 mutation_defines = analysis.mutation_defines
+
+            # Loop cells read the carry variable from upstream on iter 0
+            # even when Python scoping sees it as a local (because the
+            # body both reads and rebinds it). Record the carry as a
+            # reference so the DAG links the loop cell to the upstream
+            # that seeds its initial state.
+            annotations = parse_annotations(cell.source)
+            if (
+                annotations.loop is not None
+                and annotations.loop.carry
+                and annotations.loop.carry not in references
+                and annotations.loop.start_from_cell is None
+            ):
+                references = references + [annotations.loop.carry]
+
             cell_analyses.append(
                 CellAnalysisWithId(
                     id=cell.id,

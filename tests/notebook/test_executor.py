@@ -1786,3 +1786,201 @@ class TestPromptCellExecution:
 
         c1 = next(c for c in session.notebook_state.cells if c.id == "c1")
         assert "p1" in c1.downstream_ids
+
+
+class TestLoopCellExecution:
+    """End-to-end tests for loop cell execution.
+
+    These exercise the real harness subprocess round-trip, so they are
+    slower than the in-process annotation tests but cover the full path:
+    upstream carry resolution, per-iteration subprocess spawn, ``@loop_until``
+    termination, ``start_from`` forking, and the per-iteration artifact ids.
+    """
+
+    @pytest.fixture
+    def loop_notebook(self, tmp_path):
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "loop_test")
+        # Upstream cell seeds the carry.
+        add_cell_to_notebook(notebook_dir, "seed")
+        write_cell(notebook_dir, "seed", "state = {'n': 0, 'history': []}")
+        # Loop cell itself — must carry `state` and rebind it each iter.
+        add_cell_to_notebook(notebook_dir, "loop", after_cell_id="seed")
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        return notebook_dir, session
+
+    @pytest.mark.asyncio
+    async def test_loop_runs_until_max_iter(self, loop_notebook):
+        """Without ``@loop_until`` the loop runs exactly ``max_iter`` times."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        loop_source = (
+            "# @loop max_iter=3 carry=state\n"
+            "state = {'n': state['n'] + 1, 'history': state['history'] + [state['n']]}\n"
+        )
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        result = await executor.execute_cell("loop", loop_source)
+
+        assert result.success, result.error
+        assert result.execution_method == "loop"
+        # Final iteration is iter=2 (k=0, 1, 2 with max_iter=3).
+        assert "iter=2" in (result.artifact_uri or "")
+
+    @pytest.mark.asyncio
+    async def test_loop_until_terminates_early(self, loop_notebook):
+        """``@loop_until`` terminates as soon as the predicate is truthy."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        loop_source = (
+            "# @loop max_iter=10 carry=state\n"
+            "# @loop_until state['n'] >= 3\n"
+            "state = {'n': state['n'] + 1, 'history': state['history'] + [state['n']]}\n"
+        )
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        result = await executor.execute_cell("loop", loop_source)
+
+        assert result.success, result.error
+        # seed=0 → iter 0: n=1, iter 1: n=2, iter 2: n=3 (until truthy).
+        assert "iter=2" in (result.artifact_uri or "")
+
+        # All three iteration artifacts should exist.
+        artifact_mgr = session.get_artifact_manager()
+        for k in range(3):
+            iter_artifact = artifact_mgr.get_iteration_artifact("loop", "state", k)
+            assert iter_artifact is not None, f"iter={k} artifact missing"
+
+    @pytest.mark.asyncio
+    async def test_loop_carry_missing_from_outputs_is_surfaced(self, loop_notebook):
+        """If the body forgets to rebind the carry, the cell fails with a
+        clear error and the loop does not silently reuse the old value."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        # The body mutates in place but never rebinds `state`, so the harness
+        # won't emit a fresh ``state`` output — the loop must surface this.
+        loop_source = "# @loop max_iter=2 carry=state\nstate['n'] += 1\n"
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        result = await executor.execute_cell("loop", loop_source)
+
+        assert not result.success
+        assert "carry" in (result.error or "").lower()
+        assert result.execution_method == "loop"
+
+    @pytest.mark.asyncio
+    async def test_loop_body_failure_returns_error(self, loop_notebook):
+        """A Python error inside the cell body stops the loop cleanly."""
+        from strata.notebook.writer import write_cell
+
+        notebook_dir, session = loop_notebook
+        loop_source = (
+            "# @loop max_iter=5 carry=state\n"
+            "raise RuntimeError('boom at iter ' + str(state['n']))\n"
+        )
+        write_cell(notebook_dir, "loop", loop_source)
+        session.reload()
+
+        executor = CellExecutor(session)
+        await executor.execute_cell("seed", "state = {'n': 0, 'history': []}")
+        result = await executor.execute_cell("loop", loop_source)
+
+        assert not result.success
+        assert "boom" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_loop_start_from_seeds_from_prior_iteration(self, tmp_path):
+        """Forking a loop cell: duplicate cell with ``start_from`` seeds
+        iter 0 from the donor cell's persisted iteration artifact."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "loop_fork_test")
+        add_cell_to_notebook(notebook_dir, "seed")
+        write_cell(notebook_dir, "seed", "state = {'n': 0}")
+        add_cell_to_notebook(notebook_dir, "donor", after_cell_id="seed")
+        write_cell(
+            notebook_dir,
+            "donor",
+            "# @loop max_iter=3 carry=state\nstate = {'n': state['n'] + 1}\n",
+        )
+        add_cell_to_notebook(notebook_dir, "forked", after_cell_id="donor")
+        write_cell(
+            notebook_dir,
+            "forked",
+            (
+                "# @loop max_iter=2 carry=state start_from=donor@iter=1\n"
+                "state = {'n': state['n'] * 10}\n"
+            ),
+        )
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        await executor.execute_cell("seed", "state = {'n': 0}")
+        donor_src = "# @loop max_iter=3 carry=state\nstate = {'n': state['n'] + 1}\n"
+        donor_result = await executor.execute_cell("donor", donor_src)
+        assert donor_result.success, donor_result.error
+
+        # donor iter 1 should hold state['n'] == 2 (seed 0 → iter0 1 → iter1 2).
+        artifact_mgr = session.get_artifact_manager()
+        donor_iter1_blob = artifact_mgr.load_iteration_blob("donor", "state", 1)
+        assert donor_iter1_blob is not None
+
+        forked_src = (
+            "# @loop max_iter=2 carry=state start_from=donor@iter=1\n"
+            "state = {'n': state['n'] * 10}\n"
+        )
+        forked_result = await executor.execute_cell("forked", forked_src)
+        assert forked_result.success, forked_result.error
+
+        # Forked iter 0 multiplies the donor's iter 1 state (n=2) → 20.
+        forked_iter0_blob = artifact_mgr.load_iteration_blob("forked", "state", 0)
+        assert forked_iter0_blob is not None
+        import json
+
+        forked_iter0 = json.loads(forked_iter0_blob)
+        assert forked_iter0 == {"n": 20}
+
+    @pytest.mark.asyncio
+    async def test_loop_start_from_missing_cell_raises_clear_error(self, tmp_path):
+        """A ``start_from`` pointing at a non-existent iteration fails cleanly."""
+        from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+        notebook_dir = create_notebook(tmp_path, "loop_fork_missing")
+        add_cell_to_notebook(notebook_dir, "loop")
+        write_cell(
+            notebook_dir,
+            "loop",
+            (
+                "# @loop max_iter=1 carry=state start_from=ghost@iter=0\n"
+                "state = {'n': state['n'] + 1}\n"
+            ),
+        )
+
+        session = NotebookSession(parse_notebook(notebook_dir), notebook_dir)
+        executor = CellExecutor(session)
+
+        result = await executor.execute_cell(
+            "loop",
+            (
+                "# @loop max_iter=1 carry=state start_from=ghost@iter=0\n"
+                "state = {'n': state['n'] + 1}\n"
+            ),
+        )
+        assert not result.success
+        assert "seed" in (result.error or "").lower()

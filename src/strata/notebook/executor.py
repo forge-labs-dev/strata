@@ -39,7 +39,7 @@ import httpx
 from strata.artifact_store import TransformSpec as ArtifactTransformSpec
 from strata.artifact_store import get_artifact_store
 from strata.blob_store import BLOB_STREAM_CHUNK_BYTES
-from strata.notebook.annotations import parse_annotations
+from strata.notebook.annotations import LoopAnnotation, parse_annotations
 from strata.notebook.env import compute_execution_env_hash, narrow_env_for_provenance
 from strata.notebook.models import MountSpec, WorkerBackendType
 from strata.notebook.module_export import build_module_export_plan
@@ -108,6 +108,19 @@ def _detect_missing_module(error: str, stderr: str) -> str | None:
         return None
     module = m.group(1).split(".")[0]  # top-level module
     return _MODULE_TO_PACKAGE.get(module, module)
+
+
+def _artifact_content_type(artifact: Any) -> str:
+    """Read an artifact's stored content_type from its transform_spec params."""
+    spec_json = getattr(artifact, "transform_spec", None)
+    if not spec_json:
+        return "pickle/object"
+    try:
+        spec = json.loads(spec_json)
+    except (ValueError, TypeError):
+        return "pickle/object"
+    ct = spec.get("params", {}).get("content_type")
+    return str(ct) if isinstance(ct, str) and ct else "pickle/object"
 
 
 @dataclass(kw_only=True)
@@ -306,6 +319,36 @@ class CellExecutor:
             timeout_seconds,
             annotations.timeout,
         )
+
+        # Loop-cell dispatcher: only if the annotation is well-formed enough
+        # to run. Validation diagnostics surface malformed loops separately.
+        if (
+            annotations.loop is not None
+            and annotations.loop.max_iter > 0
+            and annotations.loop.carry
+        ):
+            start_time = time.time()
+            if cell_id in self._materializing:
+                return CellExecutionResult(
+                    cell_id=cell_id,
+                    success=False,
+                    error=(
+                        f"Cycle detected: cell {cell_id} is already being "
+                        f"materialised (stack: {self._materializing})"
+                    ),
+                )
+            self._materializing.add(cell_id)
+            try:
+                return await self._execute_loop_cell(
+                    cell_id,
+                    source,
+                    annotations.loop,
+                    timeout_seconds,
+                    start_time,
+                    materialize_upstreams=materialize_upstreams,
+                )
+            finally:
+                self._materializing.discard(cell_id)
         effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
         worker_spec = resolve_worker_spec(
             self.session.notebook_state,
@@ -1600,6 +1643,7 @@ class CellExecutor:
         runtime_env: dict[str, str],
         resolved_mounts: dict[str, ResolvedMount],
         mutation_defines: list[str] | None = None,
+        loop_config: dict[str, Any] | None = None,
     ) -> Path:
         """Write the harness manifest for one local execution."""
         manifest_mounts = {
@@ -1610,7 +1654,7 @@ class CellExecutor:
             }
             for name, rm in resolved_mounts.items()
         }
-        manifest = {
+        manifest: dict[str, Any] = {
             "source": source,
             "inputs": input_specs,
             "output_dir": str(output_dir),
@@ -1618,6 +1662,8 @@ class CellExecutor:
             "env": runtime_env,
             "mutation_defines": list(mutation_defines or []),
         }
+        if loop_config is not None:
+            manifest["loop"] = loop_config
         manifest_path = output_dir / "manifest.json"
         with open(manifest_path, "w", encoding="utf-8") as f:
             json.dump(manifest, f)
@@ -2241,6 +2287,306 @@ class CellExecutor:
 
         with open(result_path) as f:
             return json.load(f)
+
+    # ------------------------------------------------------------------
+    # Loop cell execution (Phase 1 — local worker, sequential iterations,
+    # fresh subprocess per iter, no warm-pool reuse, no per-iter cache).
+    # ------------------------------------------------------------------
+
+    _LOOP_CONTENT_TYPE_EXT = {
+        "arrow/ipc": ".arrow",
+        "json/object": ".json",
+        "pickle/object": ".pickle",
+        "module/import": ".module.json",
+        "module/cell": ".cell_module.json",
+        "module/cell-instance": ".cell_instance.pickle",
+    }
+
+    async def _execute_loop_cell(
+        self,
+        cell_id: str,
+        source: str,
+        loop: LoopAnnotation,
+        timeout_seconds: float,
+        start_time: float,
+        *,
+        materialize_upstreams: bool,
+    ) -> CellExecutionResult:
+        """Execute a loop cell by running the body up to ``loop.max_iter`` times.
+
+        Phase 1 constraints: local worker only, no RW mounts, no cache
+        reuse across iterations on re-run (cache resumption is Phase 2).
+        Every iteration spawns a fresh harness subprocess; the carry
+        variable is passed in as a regular named input and read back as a
+        regular named output. Iter k's new carry is stored as an artifact
+        with an ``@iter=k`` suffix on its id.
+        """
+        annotations = parse_annotations(source)
+        effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
+        if effective_worker != "local":
+            return CellExecutionResult(
+                cell_id=cell_id,
+                success=False,
+                error=(
+                    f"Loop cells currently run only on worker 'local'; got "
+                    f"'{effective_worker}'. Remote-worker loops are not in "
+                    f"the Phase 1 scope."
+                ),
+                execution_method="loop",
+            )
+
+        if materialize_upstreams:
+            await self._materialize_upstreams(cell_id)
+
+        mount_specs = self._resolve_cell_mount_specs(cell_id, source)
+        _, has_rw_mount = await self._fingerprint_mounts(mount_specs)
+        if has_rw_mount:
+            return CellExecutionResult(
+                cell_id=cell_id,
+                success=False,
+                error=(
+                    "Loop cells do not support rw mounts — they would make "
+                    "per-iteration caching incorrect. Use an ro mount or "
+                    "move the side-effect to a non-loop cell."
+                ),
+                execution_method="loop",
+            )
+
+        runtime_env = self._resolve_effective_runtime_env(cell_id, annotations.env)
+
+        try:
+            carry_blob, carry_content_type = self._resolve_loop_seed(cell_id, loop)
+        except ValueError as exc:
+            return CellExecutionResult(
+                cell_id=cell_id,
+                success=False,
+                error=str(exc),
+                execution_method="loop",
+            )
+
+        source_hash = compute_source_hash(source)
+        artifact_mgr = self.session.get_artifact_manager()
+
+        final_artifact_uri: str | None = None
+        final_result: dict[str, Any] | None = None
+        combined_stdout: list[str] = []
+        combined_stderr: list[str] = []
+        all_mutation_warnings: list[dict[str, Any]] = []
+
+        for k in range(loop.max_iter):
+            with tempfile.TemporaryDirectory(prefix=f"strata_loop_iter_{k}_") as tmpdir:
+                output_dir = Path(tmpdir)
+
+                # Load upstream inputs first — this writes files into
+                # output_dir, *including* the upstream seed for the carry
+                # variable. We overwrite that seed with the current
+                # iteration's carry below so iter k sees iter k-1's
+                # output rather than the original upstream value.
+                input_specs = self._load_input_blobs(cell_id, output_dir)
+
+                ext = self._LOOP_CONTENT_TYPE_EXT.get(carry_content_type, ".pickle")
+                carry_file = f"{loop.carry}{ext}"
+                (output_dir / carry_file).write_bytes(carry_blob)
+                input_specs[loop.carry] = {
+                    "content_type": carry_content_type,
+                    "file": carry_file,
+                }
+
+                resolved_mounts = await self._prepare_mounts(mount_specs)
+                loop_config: dict[str, Any] | None = (
+                    {"until_expr": loop.until_expr, "iteration": k}
+                    if loop.until_expr is not None
+                    else {"iteration": k}
+                )
+                manifest_path = self._write_manifest(
+                    source,
+                    input_specs,
+                    output_dir,
+                    runtime_env,
+                    resolved_mounts,
+                    loop_config=loop_config,
+                )
+
+                venv_path = self.session.venv_python or Path("python")
+                try:
+                    result = await self._run_harness(manifest_path, venv_path, timeout_seconds)
+                except TimeoutError:
+                    duration_ms = (time.time() - start_time) * 1000
+                    return CellExecutionResult(
+                        cell_id=cell_id,
+                        success=False,
+                        error=(
+                            f"Loop cell iter {k} timed out after "
+                            f"{timeout_seconds}s (per-iteration timeout)."
+                        ),
+                        stdout="\n".join(combined_stdout),
+                        stderr="\n".join(combined_stderr),
+                        duration_ms=duration_ms,
+                        execution_method="loop",
+                    )
+
+                combined_stdout.append(result.get("stdout", ""))
+                combined_stderr.append(result.get("stderr", ""))
+                all_mutation_warnings.extend(result.get("mutation_warnings", []))
+                final_result = result
+
+                if not result.get("success", False):
+                    error_msg = result.get("error", "Unknown error")
+                    duration_ms = (time.time() - start_time) * 1000
+                    return CellExecutionResult(
+                        cell_id=cell_id,
+                        success=False,
+                        error=f"Loop cell iter {k} failed: {error_msg}",
+                        stdout="\n".join(combined_stdout),
+                        stderr="\n".join(combined_stderr),
+                        duration_ms=duration_ms,
+                        execution_method="loop",
+                        mutation_warnings=all_mutation_warnings,
+                    )
+
+                # Extract the new carry from the harness result.
+                carry_meta = result.get("variables", {}).get(loop.carry)
+                if not isinstance(carry_meta, dict) or carry_meta.get("content_type") == "error":
+                    duration_ms = (time.time() - start_time) * 1000
+                    detail = (
+                        carry_meta.get("error")
+                        if isinstance(carry_meta, dict)
+                        else "carry variable missing from cell outputs"
+                    )
+                    return CellExecutionResult(
+                        cell_id=cell_id,
+                        success=False,
+                        error=(
+                            f"Loop cell iter {k} did not produce carry "
+                            f"variable '{loop.carry}': {detail}. The cell "
+                            f"body must rebind `{loop.carry}` every "
+                            f"iteration."
+                        ),
+                        stdout="\n".join(combined_stdout),
+                        stderr="\n".join(combined_stderr),
+                        duration_ms=duration_ms,
+                        execution_method="loop",
+                        mutation_warnings=all_mutation_warnings,
+                    )
+
+                new_content_type = str(carry_meta.get("content_type", "pickle/object"))
+                new_carry_file = carry_meta.get("file")
+                if not isinstance(new_carry_file, str):
+                    raise RuntimeError(
+                        f"Loop cell iter {k} produced carry metadata without "
+                        f"a 'file' entry: {carry_meta}"
+                    )
+                new_carry_path = output_dir / new_carry_file
+                if not new_carry_path.exists():
+                    raise RuntimeError(
+                        f"Loop cell iter {k} carry file not produced by harness: {new_carry_path}"
+                    )
+                new_carry_blob = new_carry_path.read_bytes()
+
+                # Per-iteration provenance: chains through the previous iter's
+                # carry bytes so re-runs with identical chains are detectable.
+                prev_carry_hash = hashlib.sha256(carry_blob).hexdigest()
+                iter_provenance = hashlib.sha256(
+                    f"{source_hash}:{prev_carry_hash}:iter={k}".encode()
+                ).hexdigest()
+
+                artifact = artifact_mgr.store_cell_output(
+                    cell_id=cell_id,
+                    variable_name=loop.carry,
+                    blob_data=new_carry_blob,
+                    content_type=new_content_type,
+                    provenance_hash=iter_provenance,
+                    source_hash=source_hash,
+                    iteration=k,
+                )
+                final_artifact_uri = f"strata://artifact/{artifact.id}@v={artifact.version}"
+
+                carry_blob = new_carry_blob
+                carry_content_type = new_content_type
+
+                loop_state = result.get("loop") or {}
+                if loop_state.get("until_reached"):
+                    break
+
+        duration_ms = (time.time() - start_time) * 1000
+        raw_displays = final_result.get("displays") if final_result else None
+        display_outputs = (
+            [d for d in raw_displays if isinstance(d, dict)]
+            if isinstance(raw_displays, list)
+            else []
+        )
+
+        return CellExecutionResult(
+            cell_id=cell_id,
+            success=True,
+            stdout="\n".join(combined_stdout),
+            stderr="\n".join(combined_stderr),
+            outputs={},
+            display_outputs=display_outputs,
+            duration_ms=duration_ms,
+            artifact_uri=final_artifact_uri,
+            execution_method="loop",
+            mutation_warnings=all_mutation_warnings,
+        )
+
+    def _resolve_loop_seed(
+        self,
+        cell_id: str,
+        loop: LoopAnnotation,
+    ) -> tuple[bytes, str]:
+        """Resolve the iter-0 carry seed as ``(blob_bytes, content_type)``.
+
+        Either a ``# @loop start_from=<cell>@iter=<k>`` reference is used,
+        or an upstream cell in the DAG defines the carry variable and its
+        latest artifact seeds iter 0. Raises ``ValueError`` when neither
+        path yields a blob.
+        """
+        artifact_mgr = self.session.get_artifact_manager()
+
+        if loop.start_from_cell is not None and loop.start_from_iter is not None:
+            artifact_id = artifact_mgr.cell_artifact_id(
+                loop.start_from_cell, loop.carry, loop.start_from_iter
+            )
+            artifact = artifact_mgr.artifact_store.get_latest_version(artifact_id)
+            if artifact is None or artifact.state != "ready":
+                raise ValueError(
+                    f"Loop seed artifact not found for "
+                    f"start_from={loop.start_from_cell}@iter={loop.start_from_iter}. "
+                    f"Run that cell through iteration {loop.start_from_iter} first."
+                )
+            blob = artifact_mgr.artifact_store.blob_store.read_blob(artifact_id, artifact.version)
+            if blob is None:
+                raise ValueError(f"Loop seed blob missing for {artifact_id}@v={artifact.version}.")
+            return blob, _artifact_content_type(artifact)
+
+        cell = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        if cell is None:
+            raise ValueError(f"Loop cell {cell_id!r} not found in notebook state.")
+
+        notebook_id = self.session.notebook_state.id
+        for upstream_id in cell.upstream_ids:
+            upstream_cell = next(
+                (c for c in self.session.notebook_state.cells if c.id == upstream_id),
+                None,
+            )
+            if upstream_cell is None or loop.carry not in upstream_cell.defines:
+                continue
+            upstream_artifact_id = f"nb_{notebook_id}_cell_{upstream_id}_var_{loop.carry}"
+            artifact = artifact_mgr.artifact_store.get_latest_version(upstream_artifact_id)
+            if artifact is None or artifact.state != "ready":
+                continue
+            blob = artifact_mgr.load_artifact_data(upstream_artifact_id, artifact.version)
+            return blob, _artifact_content_type(artifact)
+
+        raise ValueError(
+            f"Cannot resolve loop carry '{loop.carry}': no upstream cell "
+            f"defines it and no @loop start_from annotation is set. "
+            f"Define `{loop.carry}` in an upstream cell or add "
+            f"`# @loop start_from=<cell>@iter=<k>`."
+        )
 
     def _parse_result(
         self,
