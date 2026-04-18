@@ -3,7 +3,14 @@
 This module manages artifact storage and retrieval for notebook cells,
 using the existing ArtifactStore and BlobStore classes.
 
-Artifact ID scheme: nb_{notebook_id}_cell_{cell_id}_var_{variable_name}
+Artifact ID scheme:
+    Regular cell output: nb_{notebook_id}_cell_{cell_id}_var_{variable_name}
+    Loop iteration:      nb_{notebook_id}_cell_{cell_id}_var_{variable_name}@iter={k}
+
+The ``@iter={k}`` suffix keeps each iteration of a loop cell addressable
+as its own artifact, so downstream cells, the inspector, and forking
+(``@loop start_from=<cell>@iter=<k>``) can all refer to a specific
+iteration by name.
 """
 
 from __future__ import annotations
@@ -60,6 +67,55 @@ class NotebookArtifactManager:
         """
         return self.artifact_store.find_by_provenance(provenance_hash)
 
+    def cell_artifact_id(
+        self,
+        cell_id: str,
+        variable_name: str,
+        iteration: int | None = None,
+    ) -> str:
+        """Canonical artifact id for a notebook cell's variable.
+
+        Args:
+            cell_id: Cell ID.
+            variable_name: Variable name.
+            iteration: Optional iteration index. When supplied, the id is
+                suffixed with ``@iter={k}`` so loop iterations can be
+                stored and retrieved independently.
+        """
+        base = f"nb_{self.notebook_id}_cell_{cell_id}_var_{variable_name}"
+        if iteration is None:
+            return base
+        return f"{base}@iter={iteration}"
+
+    def load_iteration_blob(
+        self,
+        cell_id: str,
+        variable_name: str,
+        iteration: int,
+    ) -> bytes | None:
+        """Load the latest blob bytes for a specific loop iteration.
+
+        Returns ``None`` if no artifact exists for that iteration.
+        """
+        artifact_id = self.cell_artifact_id(cell_id, variable_name, iteration)
+        latest = self.artifact_store.get_latest_version(artifact_id)
+        if latest is None or latest.state != "ready":
+            return None
+        return self.artifact_store.blob_store.read_blob(artifact_id, latest.version)
+
+    def get_iteration_artifact(
+        self,
+        cell_id: str,
+        variable_name: str,
+        iteration: int,
+    ) -> ArtifactVersion | None:
+        """Return the latest ArtifactVersion for a specific loop iteration."""
+        artifact_id = self.cell_artifact_id(cell_id, variable_name, iteration)
+        latest = self.artifact_store.get_latest_version(artifact_id)
+        if latest is None or latest.state != "ready":
+            return None
+        return latest
+
     def store_cell_output(
         self,
         cell_id: str,
@@ -72,6 +128,7 @@ class NotebookArtifactManager:
         input_versions: dict[str, str] | None = None,
         source_hash: str = "",
         env_hash: str = "",
+        iteration: int | None = None,
     ) -> ArtifactVersion:
         """Store a cell output as an artifact.
 
@@ -86,12 +143,14 @@ class NotebookArtifactManager:
             input_versions: Mapping of input URI -> version
             source_hash: SHA-256 of cell source code (for causality tracking)
             env_hash: SHA-256 of lockfile (for causality tracking)
+            iteration: Optional loop iteration index. When set, the artifact
+                id is suffixed with ``@iter={k}`` so each loop iteration is
+                stored as its own artifact.
 
         Returns:
             The created ArtifactVersion
         """
-        # Generate artifact ID
-        artifact_id = f"nb_{self.notebook_id}_cell_{cell_id}_var_{variable_name}"
+        artifact_id = self.cell_artifact_id(cell_id, variable_name, iteration)
 
         # Create transform spec (for notebook cells, executor is "notebook/cell@v1")
         params: dict[str, str] = {
@@ -99,6 +158,8 @@ class NotebookArtifactManager:
             "variable_name": variable_name,
             "content_type": content_type,
         }
+        if iteration is not None:
+            params["iteration"] = str(iteration)
         if source_hash:
             params["source_hash"] = source_hash
         if env_hash:
