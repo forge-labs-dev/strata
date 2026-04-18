@@ -29,6 +29,7 @@ import logging
 import tempfile
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
@@ -109,6 +110,7 @@ def _detect_missing_module(error: str, stderr: str) -> str | None:
     return _MODULE_TO_PACKAGE.get(module, module)
 
 
+@dataclass(kw_only=True)
 class CellExecutionResult:
     """Result from executing a cell.
 
@@ -128,54 +130,33 @@ class CellExecutionResult:
         mutation_warnings: List of mutation warnings (M6)
     """
 
-    def __init__(
-        self,
-        cell_id: str,
-        success: bool,
-        stdout: str = "",
-        stderr: str = "",
-        outputs: dict[str, Any] | None = None,
-        display_outputs: list[dict[str, Any]] | None = None,
-        display_output: dict[str, Any] | None = None,
-        duration_ms: float = 0,
-        error: str | None = None,
-        cache_hit: bool = False,
-        artifact_uri: str | None = None,
-        execution_method: str = "cold",
-        mutation_warnings: list[dict[str, Any]] | None = None,
-        suggest_install: str | None = None,
-        remote_worker: str | None = None,
-        remote_transport: str | None = None,
-        remote_build_id: str | None = None,
-        remote_build_state: str | None = None,
-        remote_error_code: str | None = None,
-    ):
-        self.cell_id = cell_id
-        self.success = success
-        self.stdout = stdout
-        self.stderr = stderr
-        self.outputs = outputs or {}
-        normalized_display_outputs = (
-            list(display_outputs)
-            if display_outputs is not None
-            else ([display_output] if display_output is not None else [])
-        )
-        if display_output is None and normalized_display_outputs:
-            display_output = normalized_display_outputs[-1]
-        self.display_outputs = normalized_display_outputs
-        self.display_output = display_output
-        self.duration_ms = duration_ms
-        self.error = error
-        self.cache_hit = cache_hit
-        self.artifact_uri = artifact_uri
-        self.execution_method = execution_method  # cold, warm, cached
-        self.mutation_warnings = mutation_warnings or []
-        self.suggest_install = suggest_install  # e.g. "requests"
-        self.remote_worker = remote_worker
-        self.remote_transport = remote_transport
-        self.remote_build_id = remote_build_id
-        self.remote_build_state = remote_build_state
-        self.remote_error_code = remote_error_code
+    cell_id: str
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    outputs: dict[str, Any] = field(default_factory=dict)
+    display_outputs: list[dict[str, Any]] = field(default_factory=list)
+    display_output: dict[str, Any] | None = None
+    duration_ms: float = 0
+    error: str | None = None
+    cache_hit: bool = False
+    artifact_uri: str | None = None
+    execution_method: str = "cold"  # cold, warm, cached
+    mutation_warnings: list[dict[str, Any]] = field(default_factory=list)
+    suggest_install: str | None = None  # e.g. "requests"
+    remote_worker: str | None = None
+    remote_transport: str | None = None
+    remote_build_id: str | None = None
+    remote_build_state: str | None = None
+    remote_error_code: str | None = None
+
+    def __post_init__(self) -> None:
+        # Legacy shim: accept either `display_outputs` or `display_output`
+        # from callers and make both views consistent on the instance.
+        if not self.display_outputs and self.display_output is not None:
+            self.display_outputs = [self.display_output]
+        elif self.display_output is None and self.display_outputs:
+            self.display_output = self.display_outputs[-1]
 
     def apply_remote_metadata(
         self,
@@ -201,7 +182,7 @@ class CellExecutionResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to JSON-serializable dict."""
-        d: dict[str, Any] = {
+        payload: dict[str, Any] = {
             "cell_id": self.cell_id,
             "status": "ready" if self.success else "error",
             "stdout": self.stdout,
@@ -217,18 +198,18 @@ class CellExecutionResult:
             "mutation_warnings": self.mutation_warnings,
         }
         if self.suggest_install:
-            d["suggest_install"] = self.suggest_install
+            payload["suggest_install"] = self.suggest_install
         if self.remote_worker:
-            d["remote_worker"] = self.remote_worker
+            payload["remote_worker"] = self.remote_worker
         if self.remote_transport:
-            d["remote_transport"] = self.remote_transport
+            payload["remote_transport"] = self.remote_transport
         if self.remote_build_id:
-            d["remote_build_id"] = self.remote_build_id
+            payload["remote_build_id"] = self.remote_build_id
         if self.remote_build_state:
-            d["remote_build_state"] = self.remote_build_state
+            payload["remote_build_state"] = self.remote_build_state
         if self.remote_error_code:
-            d["remote_error_code"] = self.remote_error_code
-        return d
+            payload["remote_error_code"] = self.remote_error_code
+        return payload
 
 
 class RemoteExecutionError(RuntimeError):
@@ -1732,7 +1713,7 @@ class CellExecutor:
             cell_id=cell_id,
             success=result_dict["success"],
             outputs=result_dict["outputs"],
-            display_outputs=result_dict.get("display_outputs"),
+            display_outputs=result_dict.get("display_outputs") or [],
             display_output=result_dict.get("display_output"),
             stdout=result_dict.get("stdout", ""),
             stderr=result_dict.get("stderr", ""),
