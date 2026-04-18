@@ -105,6 +105,50 @@ class TestPerIterationArtifacts:
         assert artifact is not None
         assert artifact.state == "ready"
 
+    def test_list_iterations_returns_sorted_pairs(self, manager):
+        """``list_iterations`` yields ``(k, ArtifactVersion)`` in ascending
+        order, regardless of the order artifacts were written in."""
+        for k in [2, 0, 5, 1]:
+            manager.store_cell_output(
+                cell_id="c1",
+                variable_name="state",
+                blob_data=f"iter-{k}".encode(),
+                content_type="pickle/object",
+                provenance_hash=f"prov-{k}",
+                iteration=k,
+            )
+
+        pairs = manager.list_iterations("c1", "state")
+        assert [k for k, _ in pairs] == [0, 1, 2, 5]
+        for k, artifact in pairs:
+            assert artifact.state == "ready"
+            assert artifact.id.endswith(f"@iter={k}")
+
+    def test_list_iterations_skips_non_iteration_artifacts(self, manager):
+        """A regular ``store_cell_output`` (no iteration) does not appear
+        in the iteration list — the id lacks the ``@iter=`` suffix."""
+        manager.store_cell_output(
+            cell_id="c1",
+            variable_name="state",
+            blob_data=b"one-shot",
+            content_type="pickle/object",
+            provenance_hash="prov-one-shot",
+        )
+        manager.store_cell_output(
+            cell_id="c1",
+            variable_name="state",
+            blob_data=b"iter-0",
+            content_type="pickle/object",
+            provenance_hash="prov-iter-0",
+            iteration=0,
+        )
+
+        pairs = manager.list_iterations("c1", "state")
+        assert [k for k, _ in pairs] == [0]
+
+    def test_list_iterations_empty_for_unknown_cell(self, manager):
+        assert manager.list_iterations("c1", "state") == []
+
     def test_transform_spec_records_iteration(self, manager):
         """The stored transform_spec should carry the iteration index so
         other subsystems (inspector, diagnostics) can read it back without

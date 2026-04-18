@@ -208,14 +208,32 @@ export interface Cell {
   shadowWarnings?: string[]
   /** Annotation validation diagnostics (set on open/reload, never during typing) */
   annotationDiagnostics?: AnnotationDiagnostic[]
+  /** Live loop-cell progress — hydrated from WS ``cell_iteration_progress`` messages */
+  loopProgress?: LoopProgress
 }
 
 /** A warning or info about a source annotation. */
 export interface AnnotationDiagnostic {
-  severity: 'warn' | 'info'
+  severity: 'error' | 'warn' | 'info'
   code: string
   message: string
   line?: number | null
+}
+
+/** Live progress state for a loop cell, hydrated as iterations complete. */
+export interface LoopProgress {
+  /** 0-based index of the most recently completed iteration */
+  iteration: number
+  /** Safety bound from ``# @loop max_iter=N`` */
+  maxIter: number
+  /** Artifact URI of the most recently stored iteration */
+  artifactUri?: string
+  /** Content type of the stored carry artifact */
+  contentType?: string
+  /** True when ``@loop_until`` fired on this iteration — the loop is done */
+  untilReached: boolean
+  /** Duration of the most recent iteration in ms */
+  iterDurationMs?: number
 }
 
 /** Causality chain — explains why a cell is stale */

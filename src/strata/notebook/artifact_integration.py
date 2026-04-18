@@ -116,6 +116,31 @@ class NotebookArtifactManager:
             return None
         return latest
 
+    def list_iterations(
+        self,
+        cell_id: str,
+        variable_name: str,
+    ) -> list[tuple[int, ArtifactVersion]]:
+        """Return ``(iteration, ArtifactVersion)`` for every stored iteration
+        of ``cell_id``'s ``variable_name``, sorted ascending by iteration.
+
+        Powers the iteration picker in the inspect panel: the caller can
+        build a dropdown of (k, artifact metadata) without needing to
+        probe the store for each possible index.
+        """
+        prefix = self.cell_artifact_id(cell_id, variable_name) + "@iter="
+        artifacts = self.artifact_store.list_latest_by_id_prefix(prefix)
+        results: list[tuple[int, ArtifactVersion]] = []
+        for artifact in artifacts:
+            suffix = artifact.id[len(prefix) :]
+            try:
+                iteration = int(suffix)
+            except ValueError:
+                continue
+            results.append((iteration, artifact))
+        results.sort(key=lambda pair: pair[0])
+        return results
+
     def store_cell_output(
         self,
         cell_id: str,

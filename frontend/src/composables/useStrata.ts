@@ -451,6 +451,56 @@ async function getNotebookRuntimeConfig(): Promise<NotebookRuntimeConfigResponse
   return readJson<NotebookRuntimeConfigResponse>(resp)
 }
 
+export interface CellIterationInfo {
+  iteration: number
+  artifactUri: string
+  artifactId: string
+  version: number
+  contentType: string
+  byteSize: number
+  rowCount: number | null
+  createdAt: number | null
+}
+
+async function listCellIterations(
+  notebookId: string,
+  cellId: string,
+  variable?: string,
+): Promise<{ variable: string | null; iterations: CellIterationInfo[] }> {
+  const url = new URL(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/cells/${cellId}/iterations`,
+    window.location.origin,
+  )
+  if (variable) {
+    url.searchParams.set('variable', variable)
+  }
+  const resp = await fetchWithTimeout(url.toString())
+  if (!resp.ok) {
+    throw new Error(`Failed to list iterations: ${resp.status}`)
+  }
+  const raw = await readJson<{
+    variable: string | null
+    iterations: Array<Record<string, unknown>>
+  }>(resp)
+  return {
+    variable: raw.variable,
+    iterations: raw.iterations.map((entry) => ({
+      iteration: Number(entry.iteration),
+      artifactUri: String(entry.artifact_uri),
+      artifactId: String(entry.artifact_id),
+      version: Number(entry.version),
+      contentType: String(entry.content_type),
+      byteSize: Number(entry.byte_size),
+      rowCount:
+        entry.row_count === null || entry.row_count === undefined ? null : Number(entry.row_count),
+      createdAt:
+        entry.created_at === null || entry.created_at === undefined
+          ? null
+          : Number(entry.created_at),
+    })),
+  }
+}
+
 async function updateCellSource(
   notebookId: string,
   cellId: string,
@@ -1069,6 +1119,7 @@ export function useStrata() {
     addCell,
     removeCell,
     reorderCells,
+    listCellIterations,
     updateNotebookMounts,
     updateNotebookWorker,
     updateNotebookTimeout,

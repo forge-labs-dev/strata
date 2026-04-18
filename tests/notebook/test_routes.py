@@ -1755,3 +1755,116 @@ def test_execute_cell_not_found():
         # Try to execute non-existent cell
         response = client.post(f"/v1/notebooks/{session_id}/cells/nonexistent/execute")
         assert response.status_code == 404
+
+
+class TestCellIterationsEndpoint:
+    """Tests for GET /v1/notebooks/{id}/cells/{cid}/iterations.
+
+    The endpoint backs the inspect panel's iteration picker. It must be a
+    safe poll target — empty list for non-loop cells, empty list while a
+    loop cell has yet to run — and it must pick up the carry variable
+    from the cell's ``@loop`` annotation without requiring the caller to
+    know the variable name.
+    """
+
+    def _open(self, tmpdir_path: Path, cells: dict[str, str]):
+        client = TestClient(create_test_app())
+        notebook_dir = create_notebook(tmpdir_path, "IterationsTest")
+        for cell_id, source in cells.items():
+            add_cell_to_notebook(notebook_dir, cell_id)
+            write_cell(notebook_dir, cell_id, source)
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        session_id = response.json()["session_id"]
+        return client, session_id
+
+    def test_non_loop_cell_returns_empty_list(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client, session_id = self._open(Path(tmpdir), {"c1": "x = 1"})
+            response = client.get(f"/v1/notebooks/{session_id}/cells/c1/iterations")
+
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["cell_id"] == "c1"
+            assert payload["variable"] is None
+            assert payload["iterations"] == []
+
+    def test_missing_cell_returns_404(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            client, session_id = self._open(Path(tmpdir), {"c1": "x = 1"})
+            response = client.get(f"/v1/notebooks/{session_id}/cells/ghost/iterations")
+
+            assert response.status_code == 404
+
+    def test_loop_cell_without_executions_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loop_source = "# @loop max_iter=3 carry=state\nstate = {'n': state['n'] + 1}\n"
+            client, session_id = self._open(Path(tmpdir), {"loop": loop_source})
+            response = client.get(f"/v1/notebooks/{session_id}/cells/loop/iterations")
+
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["variable"] == "state"
+            assert payload["iterations"] == []
+
+    def test_endpoint_surfaces_recorded_iteration_artifacts(self):
+        """After directly storing iteration artifacts, the endpoint returns
+        them in ascending order with their content type and size."""
+        from strata.notebook.routes import _session_manager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loop_source = "# @loop max_iter=3 carry=state\nstate = {'n': state['n'] + 1}\n"
+            client, session_id = self._open(Path(tmpdir), {"loop": loop_source})
+
+            session = _session_manager.get_session(session_id)
+            assert session is not None
+            artifact_mgr = session.get_artifact_manager()
+            for k, n in enumerate([1, 2, 3]):
+                artifact_mgr.store_cell_output(
+                    cell_id="loop",
+                    variable_name="state",
+                    blob_data=json.dumps({"n": n}).encode(),
+                    content_type="json/object",
+                    provenance_hash=f"prov-{k}",
+                    iteration=k,
+                )
+
+            response = client.get(f"/v1/notebooks/{session_id}/cells/loop/iterations")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["variable"] == "state"
+            assert [item["iteration"] for item in payload["iterations"]] == [0, 1, 2]
+            first = payload["iterations"][0]
+            assert first["content_type"] == "json/object"
+            assert first["byte_size"] > 0
+            assert first["artifact_uri"].endswith("@iter=0@v=1")
+
+    def test_variable_query_param_overrides_inferred_carry(self):
+        """Passing ``?variable=`` lets the caller inspect iterations of any
+        variable a cell might persist per iteration (e.g. multi-carry in a
+        future phase)."""
+        from strata.notebook.routes import _session_manager
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            loop_source = "# @loop max_iter=3 carry=state\nstate = {'n': 1}\n"
+            client, session_id = self._open(Path(tmpdir), {"loop": loop_source})
+
+            session = _session_manager.get_session(session_id)
+            assert session is not None
+            artifact_mgr = session.get_artifact_manager()
+            artifact_mgr.store_cell_output(
+                cell_id="loop",
+                variable_name="other",
+                blob_data=b'{"k": 1}',
+                content_type="json/object",
+                provenance_hash="prov-other",
+                iteration=0,
+            )
+
+            response = client.get(
+                f"/v1/notebooks/{session_id}/cells/loop/iterations?variable=other"
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["variable"] == "other"
+            assert len(payload["iterations"]) == 1
+            assert payload["iterations"][0]["iteration"] == 0

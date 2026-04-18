@@ -1536,6 +1536,66 @@ async def get_notebook_dag(notebook_id: str) -> dict:
     return _format_dag(session)
 
 
+@router.get("/{notebook_id}/cells/{cell_id}/iterations")
+async def get_cell_iterations(
+    notebook_id: str,
+    cell_id: str,
+    variable: str | None = None,
+) -> dict:
+    """List stored iteration artifacts for a loop cell.
+
+    The carry variable is read from the cell's ``@loop`` annotation when
+    the ``variable`` query parameter is not supplied. Non-loop cells and
+    loops with no completed iterations return an empty list — the
+    endpoint is a safe poll target for the inspect panel.
+    """
+    from strata.notebook.annotations import parse_annotations
+
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    cell = next((c for c in session.notebook_state.cells if c.id == cell_id), None)
+    if cell is None:
+        raise HTTPException(status_code=404, detail="Cell not found")
+
+    variable_name = variable
+    if variable_name is None:
+        loop_annotation = parse_annotations(cell.source).loop
+        variable_name = loop_annotation.carry if loop_annotation else None
+    if not variable_name:
+        return {"cell_id": cell_id, "variable": None, "iterations": []}
+
+    artifact_mgr = session.get_artifact_manager()
+    iterations_payload: list[dict] = []
+    for iteration, artifact in artifact_mgr.list_iterations(cell_id, variable_name):
+        content_type = "unknown"
+        if artifact.transform_spec:
+            try:
+                spec = json.loads(artifact.transform_spec)
+                content_type = spec.get("params", {}).get("content_type") or "unknown"
+            except (ValueError, KeyError):
+                pass
+        iterations_payload.append(
+            {
+                "iteration": iteration,
+                "artifact_uri": (f"strata://artifact/{artifact.id}@v={artifact.version}"),
+                "artifact_id": artifact.id,
+                "version": artifact.version,
+                "content_type": content_type,
+                "byte_size": artifact.byte_size or 0,
+                "row_count": artifact.row_count,
+                "created_at": artifact.created_at,
+            }
+        )
+
+    return {
+        "cell_id": cell_id,
+        "variable": variable_name,
+        "iterations": iterations_payload,
+    }
+
+
 @router.get("/{notebook_id}/dependencies")
 async def get_dependencies(notebook_id: str) -> dict:
     """List current dependencies for a notebook.

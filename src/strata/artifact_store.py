@@ -900,6 +900,42 @@ class ArtifactStore:
         finally:
             conn.close()
 
+    def list_latest_by_id_prefix(self, prefix: str) -> list[ArtifactVersion]:
+        """Return the latest ready version of each artifact whose id starts with ``prefix``.
+
+        Used by the notebook layer to enumerate loop-cell iteration
+        artifacts (ids of the form ``nb_..._var_<name>@iter=<k>``) and
+        by any future "list all outputs of this cell" surfaces.
+
+        Results are sorted by artifact id so callers can reliably parse
+        a numeric suffix (iteration index) in order.
+        """
+        if not prefix:
+            return []
+
+        like_pattern = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        conn = self._get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT id, MAX(version) AS max_version
+                FROM artifact_versions
+                WHERE id LIKE ? ESCAPE '\\' AND state = 'ready'
+                GROUP BY id
+                ORDER BY id
+                """,
+                (like_pattern,),
+            )
+            rows = cursor.fetchall()
+            results: list[ArtifactVersion] = []
+            for row in rows:
+                version = self.get_artifact(row["id"], row["max_version"])
+                if version is not None:
+                    results.append(version)
+            return results
+        finally:
+            conn.close()
+
     def find_by_provenance(
         self,
         provenance_hash: str,

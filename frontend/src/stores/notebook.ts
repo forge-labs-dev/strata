@@ -7,6 +7,7 @@ import type {
   DagEdge,
   DependencyInfo,
   EnvironmentImportPreview,
+  LoopProgress,
   Notebook,
   WsMessage,
   ImpactPreview,
@@ -1550,6 +1551,23 @@ function initializeWebSocket() {
       setCellOutput(cellId, output, displayOutputs)
     })
 
+    wsInstance.onMessage('cell_iteration_progress', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      const cellId = p.cell_id as CellId
+      const cell = cellMap.value.get(cellId)
+      if (!cell) return
+      const progress: LoopProgress = {
+        iteration: Number(p.iteration),
+        maxIter: Number(p.max_iter),
+        artifactUri: typeof p.artifact_uri === 'string' ? p.artifact_uri : undefined,
+        contentType: typeof p.content_type === 'string' ? p.content_type : undefined,
+        untilReached: Boolean(p.until_reached),
+        iterDurationMs:
+          typeof p.duration_ms === 'number' ? p.duration_ms : Number(p.duration_ms) || undefined,
+      }
+      cell.loopProgress = progress
+    })
+
     wsInstance.onMessage('cell_console', (msg: WsMessage) => {
       const p = msg.payload as Record<string, any>
       const cellId = p.cell_id as CellId
@@ -1930,6 +1948,12 @@ async function executeCellWebSocket(cellId: CellId) {
   // Flush any pending source edits so the backend has the latest
   // source before execution begins.
   flushCellSource(cellId)
+
+  // Clear any stale loop progress so the badge restarts from zero.
+  const cell = cellMap.value.get(cellId)
+  if (cell?.loopProgress) {
+    cell.loopProgress = undefined
+  }
 
   setCellStatus(cellId, 'running')
   wsInstance.executeCell(cellId)
