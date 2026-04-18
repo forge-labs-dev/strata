@@ -7,6 +7,7 @@ execution.
 
 from __future__ import annotations
 
+import ast
 import re
 
 from strata.notebook.annotations import parse_annotations
@@ -130,6 +131,107 @@ def validate_cell_annotations(
                         line=lineno,
                     )
                 )
+
+    diagnostics.extend(_validate_loop_annotation(cell, annotations, notebook_state))
+
+    return diagnostics
+
+
+def _validate_loop_annotation(
+    cell: CellState,
+    annotations,
+    notebook_state: NotebookState,
+) -> list[AnnotationDiagnostic]:
+    """Validate ``@loop`` / ``@loop_until`` directives."""
+    diagnostics: list[AnnotationDiagnostic] = []
+    loop = annotations.loop
+    if loop is None:
+        return diagnostics
+
+    loop_line = _find_annotation_line(cell.source, "loop")
+    until_line = _find_annotation_line(cell.source, "loop_until") or loop_line
+
+    if loop.max_iter <= 0:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="error",
+                code="loop_missing_max_iter",
+                message=(
+                    "`@loop` requires a positive `max_iter=<N>`. "
+                    "The loop cell must declare a safety bound on the iteration count."
+                ),
+                line=loop_line,
+            )
+        )
+
+    if not loop.carry:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="error",
+                code="loop_missing_carry",
+                message=(
+                    "`@loop` requires `carry=<variable>`. "
+                    "The carry variable is threaded between iterations."
+                ),
+                line=loop_line,
+            )
+        )
+    elif cell.defines and loop.carry not in cell.defines:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="warn",
+                code="loop_carry_unknown",
+                message=(
+                    f"`@loop carry={loop.carry}` does not match any top-level "
+                    f"assignment in the cell. The cell must rebind "
+                    f"`{loop.carry}` each iteration for the loop to make progress."
+                ),
+                line=loop_line,
+            )
+        )
+
+    if loop.until_expr:
+        try:
+            ast.parse(loop.until_expr, mode="eval")
+        except SyntaxError as exc:
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="error",
+                    code="loop_until_syntax_error",
+                    message=(
+                        f"`@loop_until` expression is not a valid Python expression: {exc.msg}."
+                    ),
+                    line=until_line,
+                )
+            )
+
+    if loop.start_from_cell is not None:
+        known_cells = {c.id for c in notebook_state.cells}
+        if loop.start_from_cell not in known_cells:
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="error",
+                    code="loop_start_from_unknown",
+                    message=(
+                        f"`@loop start_from={loop.start_from_cell}@iter="
+                        f"{loop.start_from_iter}` references a cell that does "
+                        f"not exist in this notebook."
+                    ),
+                    line=loop_line,
+                )
+            )
+        elif loop.start_from_cell == cell.id:
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="error",
+                    code="loop_start_from_unknown",
+                    message=(
+                        "`@loop start_from` must reference a different cell — "
+                        "a loop cell cannot seed itself from its own iterations."
+                    ),
+                    line=loop_line,
+                )
+            )
 
     return diagnostics
 

@@ -116,7 +116,7 @@ class ContentType(StrEnum):
 class AnnotationDiagnostic(BaseModel):
     """A validation finding for a cell's source annotations."""
 
-    severity: Literal["warn", "info"] = Field(..., description="Diagnostic severity")
+    severity: Literal["error", "warn", "info"] = Field(..., description="Diagnostic severity")
     code: str = Field(..., description="Stable identifier, e.g. 'worker_unknown'")
     message: str = Field(..., description="Human-readable explanation")
     line: int | None = Field(default=None, description="1-based line in cell source")

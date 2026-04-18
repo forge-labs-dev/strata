@@ -96,3 +96,79 @@ class TestNameInRoutes:
 
         cell = next(c for c in data["cells"] if c["id"] == "c1")
         assert cell["annotations"]["name"] is None
+
+
+class TestLoopAnnotation:
+    """Tests for ``@loop`` / ``@loop_until`` parsing."""
+
+    def test_loop_requires_max_iter_and_carry(self):
+        """A well-formed ``@loop`` populates max_iter and carry."""
+        result = parse_annotations("# @loop max_iter=10 carry=state\nstate = refine(state)")
+        assert result.loop is not None
+        assert result.loop.max_iter == 10
+        assert result.loop.carry == "state"
+        assert result.loop.until_expr is None
+        assert result.loop.start_from_cell is None
+        assert result.loop.start_from_iter is None
+
+    def test_loop_until_is_captured(self):
+        """``@loop_until`` attaches its expression to the LoopAnnotation."""
+        source = (
+            "# @loop max_iter=10 carry=state\n"
+            "# @loop_until state['confidence'] > 0.9\n"
+            "state = refine(state)\n"
+        )
+        result = parse_annotations(source)
+        assert result.loop is not None
+        assert result.loop.until_expr == "state['confidence'] > 0.9"
+
+    def test_loop_start_from_parses_cell_and_iter(self):
+        """``start_from=<cell>@iter=<k>`` is split into its two fields."""
+        source = "# @loop max_iter=5 carry=state start_from=evolve@iter=3\nstate = propose(state)"
+        result = parse_annotations(source)
+        assert result.loop is not None
+        assert result.loop.start_from_cell == "evolve"
+        assert result.loop.start_from_iter == 3
+
+    def test_loop_merges_multiple_lines(self):
+        """Two ``@loop`` lines and a trailing ``@loop_until`` all merge."""
+        source = (
+            "# @loop max_iter=20\n"
+            "# @loop carry=state\n"
+            "# @loop_until state.get('done')\n"
+            "state = tick(state)\n"
+        )
+        result = parse_annotations(source)
+        assert result.loop is not None
+        assert result.loop.max_iter == 20
+        assert result.loop.carry == "state"
+        assert result.loop.until_expr == "state.get('done')"
+
+    def test_loop_absent_when_no_annotation(self):
+        result = parse_annotations("x = 1")
+        assert result.loop is None
+
+    def test_loop_ignores_unknown_keys(self):
+        """Unknown ``key=value`` pairs on a ``@loop`` line are silently skipped."""
+        result = parse_annotations(
+            "# @loop max_iter=3 carry=state nonsense=42\nstate = tick(state)"
+        )
+        assert result.loop is not None
+        assert result.loop.max_iter == 3
+        assert result.loop.carry == "state"
+
+    def test_loop_start_from_malformed_is_dropped(self):
+        """A ``start_from`` value that does not match ``<cell>@iter=<int>`` is dropped."""
+        result = parse_annotations("# @loop max_iter=5 carry=state start_from=badvalue\n")
+        assert result.loop is not None
+        assert result.loop.start_from_cell is None
+        assert result.loop.start_from_iter is None
+
+    def test_loop_until_without_loop_still_captures_expr(self):
+        """``@loop_until`` alone should still record the expression so validation can
+        surface the missing ``max_iter``/``carry`` as errors."""
+        result = parse_annotations("# @loop_until x > 0\nx = 1")
+        assert result.loop is not None
+        assert result.loop.until_expr == "x > 0"
+        assert result.loop.max_iter == 0
+        assert result.loop.carry == ""

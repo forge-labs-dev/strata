@@ -223,3 +223,79 @@ class TestAnnotationBlockBoundary:
     def test_blank_lines_inside_comment_block_allowed(self):
         cell = _cell("# @worker local\n\n# @timeout 30\nx = 1")
         assert _codes(cell, _nb()) == []
+
+
+class TestLoopAnnotationDiagnostics:
+    """Validation of ``@loop`` / ``@loop_until`` cross-references."""
+
+    def test_valid_loop_passes(self):
+        source = (
+            "# @loop max_iter=10 carry=state\n# @loop_until state['done']\nstate = refine(state)\n"
+        )
+        cell = _cell(source)
+        cell.defines = ["state"]
+        assert _codes(cell, _nb()) == []
+
+    def test_missing_max_iter_is_error(self):
+        source = "# @loop carry=state\nstate = refine(state)\n"
+        cell = _cell(source)
+        cell.defines = ["state"]
+        codes = _codes(cell, _nb())
+        assert "loop_missing_max_iter" in codes
+
+    def test_loop_until_without_max_iter_triggers_missing_max_iter(self):
+        source = "# @loop_until x > 0\nx = 1\n"
+        cell = _cell(source)
+        cell.defines = ["x"]
+        codes = _codes(cell, _nb())
+        assert "loop_missing_max_iter" in codes
+        assert "loop_missing_carry" in codes
+
+    def test_missing_carry_is_error(self):
+        source = "# @loop max_iter=10\nstate = refine(state)\n"
+        cell = _cell(source)
+        cell.defines = ["state"]
+        codes = _codes(cell, _nb())
+        assert "loop_missing_carry" in codes
+
+    def test_carry_not_defined_warns(self):
+        source = "# @loop max_iter=5 carry=state\nvalue = 1\n"
+        cell = _cell(source)
+        cell.defines = ["value"]
+        codes = _codes(cell, _nb())
+        assert "loop_carry_unknown" in codes
+
+    def test_until_syntax_error(self):
+        source = (
+            "# @loop max_iter=5 carry=state\n"
+            "# @loop_until not a valid = expression\n"
+            "state = tick(state)\n"
+        )
+        cell = _cell(source)
+        cell.defines = ["state"]
+        codes = _codes(cell, _nb())
+        assert "loop_until_syntax_error" in codes
+
+    def test_start_from_unknown_cell(self):
+        source = "# @loop max_iter=5 carry=state start_from=ghost@iter=3\nstate = tick(state)\n"
+        cell = _cell(source)
+        cell.defines = ["state"]
+        codes = _codes(cell, _nb())
+        assert "loop_start_from_unknown" in codes
+
+    def test_start_from_known_cell_passes(self):
+        source = "# @loop max_iter=5 carry=state start_from=donor@iter=2\nstate = tick(state)\n"
+        cell = _cell(source, cell_id="c1")
+        cell.defines = ["state"]
+        donor = _cell("# @loop max_iter=20 carry=state\nstate = tick(state)", cell_id="donor")
+        nb = NotebookState(id="test-nb", name="test", cells=[donor, cell])
+        codes = _codes(cell, nb)
+        assert "loop_start_from_unknown" not in codes
+
+    def test_start_from_self_is_error(self):
+        source = "# @loop max_iter=5 carry=state start_from=c1@iter=0\nstate = tick(state)\n"
+        cell = _cell(source, cell_id="c1")
+        cell.defines = ["state"]
+        nb = NotebookState(id="test-nb", name="test", cells=[cell])
+        codes = _codes(cell, nb)
+        assert "loop_start_from_unknown" in codes
