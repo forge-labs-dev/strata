@@ -3,10 +3,11 @@
 This module provides a protocol for blob storage, enabling artifact data
 to be stored on different backends (local filesystem, S3, GCS, etc.).
 
-The BlobStore protocol defines three core operations:
-- write_blob: Store artifact data
-- read_blob: Retrieve artifact data
-- blob_exists: Check if artifact data exists
+The BlobStore protocol exposes streaming and convenience operations:
+
+- ``open_blob_reader`` / ``open_blob_writer`` — chunked streaming I/O
+- ``write_blob`` / ``read_blob`` — bytes-in, bytes-out convenience wrappers
+- ``blob_exists`` / ``delete_blob`` — metadata ops
 
 Implementations:
 - LocalBlobStore: Local filesystem storage (default)
@@ -18,12 +19,27 @@ Implementations:
 from __future__ import annotations
 
 import os
+import tempfile
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
+    from azure.storage.blob import StorageStreamDownloader
+
     from strata.config import StrataConfig
+
+BLOB_STREAM_CHUNK_BYTES = 64 * 1024
+"""Default read/write chunk size for blob streaming callers.
+
+Matches httpx's multipart ``FileField.CHUNK_SIZE`` and FastAPI's
+``FileResponse`` default, so the HTTP-boundary streams line up with
+the blob-store streams without extra copying.
+"""
 
 
 class BlobStore(ABC):
@@ -40,8 +56,39 @@ class BlobStore(ABC):
     """
 
     @abstractmethod
+    def open_blob_reader(
+        self, artifact_id: str, version: int
+    ) -> AbstractContextManager[BinaryIO] | None:
+        """Open a streaming reader for a blob.
+
+        Returns ``None`` if the blob does not exist. Otherwise returns a
+        context manager that yields a binary file-like object supporting
+        at least ``read(size)``. Implementations may provide additional
+        file-like methods (``seek``, iteration) but callers should only
+        rely on ``read(size)``.
+
+        Args:
+            artifact_id: Unique artifact identifier
+            version: Artifact version number
+        """
+        ...
+
+    @abstractmethod
+    def open_blob_writer(self, artifact_id: str, version: int) -> AbstractContextManager[BinaryIO]:
+        """Open a streaming writer for a blob.
+
+        The caller writes to the yielded handle. On clean context exit
+        the blob is committed atomically; on exception the partial write
+        is discarded.
+
+        Args:
+            artifact_id: Unique artifact identifier
+            version: Artifact version number
+        """
+        ...
+
     def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write artifact data to storage.
+        """Write artifact data to storage (bytes convenience wrapper).
 
         Implementations should ensure atomic writes where possible (write to
         temp location then rename) to prevent partial writes on failure.
@@ -51,11 +98,11 @@ class BlobStore(ABC):
             version: Artifact version number
             data: Arrow IPC stream bytes to store
         """
-        ...
+        with self.open_blob_writer(artifact_id, version) as writer:
+            writer.write(data)
 
-    @abstractmethod
     def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read artifact data from storage.
+        """Read artifact data from storage (bytes convenience wrapper).
 
         Args:
             artifact_id: Unique artifact identifier
@@ -64,7 +111,11 @@ class BlobStore(ABC):
         Returns:
             Arrow IPC stream bytes, or None if blob doesn't exist
         """
-        ...
+        reader = self.open_blob_reader(artifact_id, version)
+        if reader is None:
+            return None
+        with reader as f:
+            return f.read()
 
     @abstractmethod
     def blob_exists(self, artifact_id: str, version: int) -> bool:
@@ -78,6 +129,34 @@ class BlobStore(ABC):
             True if the blob exists, False otherwise
         """
         ...
+
+    @abstractmethod
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return the size of a blob in bytes without materializing it.
+
+        Returns ``None`` if the blob does not exist.
+        """
+        ...
+
+    def publish_blob_from_path(self, artifact_id: str, version: int, source_path: Path) -> None:
+        """Atomically publish a blob from a prepared local file.
+
+        Intended for callers that already have the full payload on disk
+        (e.g. an async request handler that spooled the upload into a
+        tempfile). The default implementation pipes ``source_path``
+        through ``open_blob_writer`` so it inherits the same atomic
+        semantics. Backends may override to upload directly and skip the
+        intermediate staging copy.
+
+        The source file is not consumed — the caller retains ownership
+        and is responsible for removing it.
+        """
+        with open(source_path, "rb") as src, self.open_blob_writer(artifact_id, version) as dst:
+            while True:
+                chunk = src.read(BLOB_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                dst.write(chunk)
 
     @abstractmethod
     def delete_blob(self, artifact_id: str, version: int) -> bool:
@@ -106,6 +185,42 @@ class BlobStore(ABC):
         """
         return f"{artifact_id}@v={version}.arrow"
 
+    @staticmethod
+    @contextmanager
+    def _staged_local_writer(
+        commit: Callable[[Path], None],
+        *,
+        prefix: str = "strata_blob_",
+    ) -> Iterator[BinaryIO]:
+        """Stage writes through a local tempfile and commit atomically.
+
+        Yields a binary handle for the caller to write into. On clean
+        context exit the handle is flushed and **closed**, then the
+        tempfile is passed to ``commit(path)`` which should publish the
+        blob at its final location. On exception the tempfile is removed
+        and commit is never invoked, guaranteeing that a partial write
+        is not observable.
+
+        The handle is closed before ``commit`` runs so that backends may
+        safely reopen the tempfile on Windows, where open write handles
+        block concurrent reads of the same path.
+        """
+        fd, tmp_name = tempfile.mkstemp(prefix=prefix, suffix=".tmp")
+        tmp_path = Path(tmp_name)
+        handle = os.fdopen(fd, "w+b")
+        try:
+            yield handle
+            handle.flush()
+            handle.close()
+            commit(tmp_path)
+        finally:
+            if not handle.closed:
+                handle.close()
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+
 
 class LocalBlobStore(BlobStore):
     """Local filesystem blob storage.
@@ -129,23 +244,56 @@ class LocalBlobStore(BlobStore):
         """Get filesystem path for a blob."""
         return self.blobs_dir / self._blob_key(artifact_id, version)
 
-    def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write blob to local filesystem with atomic rename."""
-        path = self._blob_path(artifact_id, version)
-        temp_path = path.with_suffix(".tmp")
-        temp_path.write_bytes(data)
-        temp_path.rename(path)
-
-    def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read blob from local filesystem."""
+    def open_blob_reader(
+        self, artifact_id: str, version: int
+    ) -> AbstractContextManager[BinaryIO] | None:
+        """Open a streaming reader for a local blob."""
         path = self._blob_path(artifact_id, version)
         if not path.exists():
             return None
-        return path.read_bytes()
+        return open(path, "rb")
+
+    def open_blob_writer(self, artifact_id: str, version: int) -> AbstractContextManager[BinaryIO]:
+        """Open a streaming writer for a local blob with atomic commit."""
+        path = self._blob_path(artifact_id, version)
+
+        @contextmanager
+        def _writer() -> Iterator[BinaryIO]:
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=path.name + ".",
+                suffix=".tmp",
+                dir=path.parent,
+            )
+            tmp_path = Path(tmp_name)
+            handle = os.fdopen(fd, "wb")
+            try:
+                yield handle
+                handle.flush()
+                os.fsync(handle.fileno())
+                handle.close()
+                os.replace(tmp_path, path)
+            except BaseException:
+                if not handle.closed:
+                    handle.close()
+                try:
+                    tmp_path.unlink()
+                except FileNotFoundError:
+                    pass
+                raise
+
+        return _writer()
 
     def blob_exists(self, artifact_id: str, version: int) -> bool:
         """Check if blob exists on local filesystem."""
         return self._blob_path(artifact_id, version).exists()
+
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return blob size from filesystem metadata."""
+        path = self._blob_path(artifact_id, version)
+        try:
+            return path.stat().st_size
+        except FileNotFoundError:
+            return None
 
     def delete_blob(self, artifact_id: str, version: int) -> bool:
         """Delete blob from local filesystem."""
@@ -213,22 +361,51 @@ class S3BlobStore(BlobStore):
             return f"{self.bucket}/{self.prefix}/{blob_key}"
         return f"{self.bucket}/{blob_key}"
 
-    def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write blob to S3."""
-        key = self._s3_key(artifact_id, version)
-        with self._fs.open_output_stream(key) as f:
-            f.write(data)
-
-    def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read blob from S3."""
+    def open_blob_reader(
+        self, artifact_id: str, version: int
+    ) -> AbstractContextManager[BinaryIO] | None:
+        """Open a streaming reader for an S3 blob."""
         import pyarrow as pa
 
         key = self._s3_key(artifact_id, version)
         try:
-            with self._fs.open_input_stream(key) as f:
-                return f.read()
+            return self._fs.open_input_stream(key)
         except (FileNotFoundError, pa.ArrowIOError):
             return None
+
+    def _upload_from_path(self, key: str, source_path: Path) -> None:
+        """Stream a local file to ``key`` via the PyArrow S3 filesystem."""
+        with open(source_path, "rb") as src, self._fs.open_output_stream(key) as dst:
+            while True:
+                chunk = src.read(BLOB_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                dst.write(chunk)
+
+    def open_blob_writer(self, artifact_id: str, version: int) -> AbstractContextManager[BinaryIO]:
+        """Open a streaming writer for an S3 blob.
+
+        Stages writes through a local tempfile so that a failed context
+        exit discards the data before anything is pushed to S3, honoring
+        the ``BlobStore.open_blob_writer`` atomicity contract.
+        """
+        key = self._s3_key(artifact_id, version)
+        return self._staged_local_writer(
+            lambda staged: self._upload_from_path(key, staged),
+            prefix="strata_s3_blob_",
+        )
+
+    def publish_blob_from_path(self, artifact_id: str, version: int, source_path: Path) -> None:
+        """Stream ``source_path`` straight to S3, skipping the local staging copy.
+
+        The default implementation in the base class pipes through
+        ``open_blob_writer`` which would stage the already-staged source
+        file through another local tempfile. Since the caller has already
+        produced a complete local payload, we can upload it directly and
+        save one disk-to-disk copy per upload.
+        """
+        key = self._s3_key(artifact_id, version)
+        self._upload_from_path(key, source_path)
 
     def blob_exists(self, artifact_id: str, version: int) -> bool:
         """Check if blob exists in S3."""
@@ -240,6 +417,19 @@ class S3BlobStore(BlobStore):
             return info.type == pafs.FileType.File
         except Exception:
             return False
+
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return blob size from S3 object metadata."""
+        import pyarrow.fs as pafs
+
+        key = self._s3_key(artifact_id, version)
+        try:
+            info = self._fs.get_file_info(key)
+        except Exception:
+            return None
+        if info.type != pafs.FileType.File:
+            return None
+        return int(info.size) if info.size is not None else None
 
     def delete_blob(self, artifact_id: str, version: int) -> bool:
         """Delete blob from S3."""
@@ -337,22 +527,44 @@ class GCSBlobStore(BlobStore):
             return f"{self.bucket}/{self.prefix}/{blob_key}"
         return f"{self.bucket}/{blob_key}"
 
-    def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write blob to GCS."""
-        key = self._gcs_key(artifact_id, version)
-        with self._fs.open_output_stream(key) as f:
-            f.write(data)
-
-    def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read blob from GCS."""
+    def open_blob_reader(
+        self, artifact_id: str, version: int
+    ) -> AbstractContextManager[BinaryIO] | None:
+        """Open a streaming reader for a GCS blob."""
         import pyarrow as pa
 
         key = self._gcs_key(artifact_id, version)
         try:
-            with self._fs.open_input_stream(key) as f:
-                return f.read()
+            return self._fs.open_input_stream(key)
         except (FileNotFoundError, pa.ArrowIOError):
             return None
+
+    def _upload_from_path(self, key: str, source_path: Path) -> None:
+        """Stream a local file to ``key`` via the PyArrow GCS filesystem."""
+        with open(source_path, "rb") as src, self._fs.open_output_stream(key) as dst:
+            while True:
+                chunk = src.read(BLOB_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                dst.write(chunk)
+
+    def open_blob_writer(self, artifact_id: str, version: int) -> AbstractContextManager[BinaryIO]:
+        """Open a streaming writer for a GCS blob.
+
+        Stages writes through a local tempfile so that a failed context
+        exit discards the data before anything is pushed to GCS, honoring
+        the ``BlobStore.open_blob_writer`` atomicity contract.
+        """
+        key = self._gcs_key(artifact_id, version)
+        return self._staged_local_writer(
+            lambda staged: self._upload_from_path(key, staged),
+            prefix="strata_gcs_blob_",
+        )
+
+    def publish_blob_from_path(self, artifact_id: str, version: int, source_path: Path) -> None:
+        """Stream ``source_path`` straight to GCS, skipping the local staging copy."""
+        key = self._gcs_key(artifact_id, version)
+        self._upload_from_path(key, source_path)
 
     def blob_exists(self, artifact_id: str, version: int) -> bool:
         """Check if blob exists in GCS."""
@@ -364,6 +576,19 @@ class GCSBlobStore(BlobStore):
             return info.type == pafs.FileType.File
         except Exception:
             return False
+
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return blob size from GCS object metadata."""
+        import pyarrow.fs as pafs
+
+        key = self._gcs_key(artifact_id, version)
+        try:
+            info = self._fs.get_file_info(key)
+        except Exception:
+            return None
+        if info.type != pafs.FileType.File:
+            return None
+        return int(info.size) if info.size is not None else None
 
     def delete_blob(self, artifact_id: str, version: int) -> bool:
         """Delete blob from GCS."""
@@ -398,6 +623,36 @@ class GCSBlobStore(BlobStore):
             anonymous=config.gcs_anonymous,
             endpoint_override=config.gcs_endpoint_override,
         )
+
+
+class _AzureDownloadReader:
+    """Minimal file-like wrapper over an Azure ``StorageStreamDownloader``."""
+
+    def __init__(self, downloader: StorageStreamDownloader) -> None:
+        self._downloader = downloader
+        self._chunks: Iterator[bytes] = iter(downloader.chunks())
+        self._buffer = b""
+        self._closed = False
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            raise ValueError("read from closed Azure blob reader")
+        if size < 0:
+            parts = [self._buffer]
+            self._buffer = b""
+            for chunk in self._chunks:
+                parts.append(chunk)
+            return b"".join(parts)
+        while len(self._buffer) < size:
+            try:
+                self._buffer += next(self._chunks)
+            except StopIteration:
+                break
+        out, self._buffer = self._buffer[:size], self._buffer[size:]
+        return out
+
+    def close(self) -> None:
+        self._closed = True
 
 
 class AzureBlobStore(BlobStore):
@@ -495,28 +750,77 @@ class AzureBlobStore(BlobStore):
             return f"{self.prefix}/{blob_key}"
         return blob_key
 
-    def write_blob(self, artifact_id: str, version: int, data: bytes) -> None:
-        """Write blob to Azure Blob Storage."""
-        key = self._azure_key(artifact_id, version)
-        blob_client = self._client.get_blob_client(key)
-        blob_client.upload_blob(data, overwrite=True)
+    def open_blob_reader(
+        self, artifact_id: str, version: int
+    ) -> AbstractContextManager[BinaryIO] | None:
+        """Open a streaming reader for an Azure blob.
 
-    def read_blob(self, artifact_id: str, version: int) -> bytes | None:
-        """Read blob from Azure Blob Storage."""
+        Wraps the SDK's ``StorageStreamDownloader`` chunk iterator in a
+        minimal file-like so callers can use ``f.read(size)`` / iterate.
+        """
         from azure.core.exceptions import ResourceNotFoundError
 
         key = self._azure_key(artifact_id, version)
         blob_client = self._client.get_blob_client(key)
         try:
-            return blob_client.download_blob().readall()
+            downloader = blob_client.download_blob()
         except ResourceNotFoundError:
             return None
+
+        @contextmanager
+        def _reader() -> Iterator[BinaryIO]:
+            stream = _AzureDownloadReader(downloader)
+            try:
+                yield stream
+            finally:
+                stream.close()
+
+        return _reader()
+
+    def _upload_from_path(self, key: str, source_path: Path) -> None:
+        """Stream a local file to ``key`` via the Azure SDK."""
+        blob_client = self._client.get_blob_client(key)
+        with open(source_path, "rb") as src:
+            blob_client.upload_blob(src, overwrite=True)
+
+    def open_blob_writer(self, artifact_id: str, version: int) -> AbstractContextManager[BinaryIO]:
+        """Open a streaming writer for an Azure blob.
+
+        Stages writes through a local tempfile and uploads via the SDK
+        on clean context exit. The Azure SDK supports streaming uploads
+        from a file handle but not from a caller-written stream, so the
+        staging write keeps peak RAM at one chunk while still honoring
+        the discard-on-exception contract.
+        """
+        key = self._azure_key(artifact_id, version)
+        return self._staged_local_writer(
+            lambda staged: self._upload_from_path(key, staged),
+            prefix="strata_azure_blob_",
+        )
+
+    def publish_blob_from_path(self, artifact_id: str, version: int, source_path: Path) -> None:
+        """Stream ``source_path`` straight to Azure, skipping the local staging copy."""
+        key = self._azure_key(artifact_id, version)
+        self._upload_from_path(key, source_path)
 
     def blob_exists(self, artifact_id: str, version: int) -> bool:
         """Check if blob exists in Azure Blob Storage."""
         key = self._azure_key(artifact_id, version)
         blob_client = self._client.get_blob_client(key)
         return blob_client.exists()
+
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return blob size from Azure Blob Storage metadata."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        key = self._azure_key(artifact_id, version)
+        blob_client = self._client.get_blob_client(key)
+        try:
+            props = blob_client.get_blob_properties()
+        except ResourceNotFoundError:
+            return None
+        size = getattr(props, "size", None)
+        return int(size) if size is not None else None
 
     def delete_blob(self, artifact_id: str, version: int) -> bool:
         """Delete blob from Azure Blob Storage."""

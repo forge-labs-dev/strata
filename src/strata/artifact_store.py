@@ -993,6 +993,34 @@ class ArtifactStore:
         """
         return self.blob_store.read_blob(artifact_id, version)
 
+    def open_blob_reader(self, artifact_id: str, version: int):
+        """Open a streaming reader for an artifact blob.
+
+        Returns ``None`` if the blob does not exist. Otherwise returns a
+        context manager yielding a binary file-like object.
+        """
+        return self.blob_store.open_blob_reader(artifact_id, version)
+
+    def open_blob_writer(self, artifact_id: str, version: int):
+        """Open a streaming writer for an artifact blob.
+
+        Returns a context manager yielding a binary file-like object.
+        Commits atomically on clean exit; discards on exception.
+        """
+        return self.blob_store.open_blob_writer(artifact_id, version)
+
+    def blob_size(self, artifact_id: str, version: int) -> int | None:
+        """Return the size of an artifact blob without materializing it."""
+        return self.blob_store.blob_size(artifact_id, version)
+
+    def publish_blob_from_path(self, artifact_id: str, version: int, source_path: Path) -> None:
+        """Atomically publish an artifact blob from a prepared local file.
+
+        Intended to be invoked via ``asyncio.to_thread`` so the potentially
+        blocking remote publish does not tie up the event loop.
+        """
+        self.blob_store.publish_blob_from_path(artifact_id, version, source_path)
+
     def blob_exists(self, artifact_id: str, version: int) -> bool:
         """Check if blob exists in storage.
 

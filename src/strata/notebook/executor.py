@@ -37,6 +37,7 @@ import httpx
 
 from strata.artifact_store import TransformSpec as ArtifactTransformSpec
 from strata.artifact_store import get_artifact_store
+from strata.blob_store import BLOB_STREAM_CHUNK_BYTES
 from strata.notebook.annotations import parse_annotations
 from strata.notebook.env import compute_execution_env_hash
 from strata.notebook.models import MountSpec, WorkerBackendType
@@ -50,7 +51,7 @@ from strata.notebook.mounts import (
 from strata.notebook.provenance import compute_provenance_hash, compute_source_hash
 from strata.notebook.remote_bundle import (
     pack_notebook_output_bundle,
-    read_notebook_output_bundle_manifest,
+    read_notebook_output_bundle_manifest_path,
     unpack_notebook_output_bundle,
 )
 from strata.notebook.remote_executor import (
@@ -1384,8 +1385,8 @@ class CellExecutor:
                     remote_error_code=build_error_code or "BUILD_FAILED",
                 )
 
-            blob = artifact_store.read_blob(build.artifact_id, build.version)
-            if blob is None:
+            reader_cm = artifact_store.open_blob_reader(build.artifact_id, build.version)
+            if reader_cm is None:
                 _mark_failed(
                     f"Notebook build {build_id} completed without a stored bundle artifact",
                     "MISSING_OUTPUT_BLOB",
@@ -1396,8 +1397,16 @@ class CellExecutor:
                     remote_error_code="MISSING_OUTPUT_BLOB",
                 )
 
+            bundle_path = output_dir / "notebook-output-bundle.tar"
+            with reader_cm as blob_reader, open(bundle_path, "wb") as dst:
+                while True:
+                    chunk = blob_reader.read(BLOB_STREAM_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+
             try:
-                read_notebook_output_bundle_manifest(blob)
+                read_notebook_output_bundle_manifest_path(bundle_path)
             except Exception as exc:
                 _mark_failed(
                     f"Notebook build {build_id} produced an invalid output bundle: {exc}",
@@ -1408,10 +1417,6 @@ class CellExecutor:
                     remote_build_state="failed",
                     remote_error_code="INVALID_NOTEBOOK_BUNDLE",
                 ) from exc
-
-            bundle_path = output_dir / "notebook-output-bundle.tar"
-            with open(bundle_path, "wb") as f:
-                f.write(blob)
 
             unpacked_dir = output_dir / "_executor_result"
             unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)

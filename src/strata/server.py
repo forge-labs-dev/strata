@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -31,6 +33,7 @@ from strata.auth import (
     set_principal,
     verify_proxy_token,
 )
+from strata.blob_store import BLOB_STREAM_CHUNK_BYTES
 from strata.cache import CachedFetcher
 from strata.cache_metrics import get_eviction_tracker
 from strata.cache_stats import get_cache_histogram
@@ -3765,15 +3768,26 @@ async def upload_artifact_blob(artifact_id: str, version: int, request: Request)
             detail=f"Artifact is not in building state (state={artifact.state})",
         )
 
-    # Read raw bytes from request body
-    body = await request.body()
-    if not body:
-        raise HTTPException(status_code=400, detail="Empty request body")
+    byte_size = 0
+    fd, tmp_name = tempfile.mkstemp(prefix="strata_upload_", suffix=".tmp")
+    staged = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                byte_size += len(chunk)
+                dst.write(chunk)
+        if byte_size == 0:
+            raise HTTPException(status_code=400, detail="Empty request body")
+        await asyncio.to_thread(store.publish_blob_from_path, artifact_id, version, staged)
+    finally:
+        try:
+            staged.unlink()
+        except FileNotFoundError:
+            pass
 
-    # Write blob to disk
-    store.write_blob(artifact_id, version, body)
-
-    return {"status": "uploaded", "byte_size": len(body)}
+    return {"status": "uploaded", "byte_size": byte_size}
 
 
 @app.post("/v1/artifacts/finalize", response_model=UploadFinalizeResponse)
@@ -3795,9 +3809,8 @@ async def finalize_artifact(request: UploadFinalizeRequest):
             detail="Blob not uploaded. Call upload endpoint first.",
         )
 
-    # Get blob size
-    blob = store.read_blob(request.artifact_id, request.version)
-    byte_size = len(blob) if blob else 0
+    # Get blob size without materializing the payload
+    byte_size = store.blob_size(request.artifact_id, request.version) or 0
 
     # Finalize artifact
     try:
@@ -4810,17 +4823,30 @@ async def download_artifact_signed(
             detail=f"Artifact is not ready (state={artifact.state})",
         )
 
-    blob = await asyncio.to_thread(store.read_blob, artifact_id, version_int)
-    if blob is None:
+    reader_cm = await asyncio.to_thread(store.open_blob_reader, artifact_id, version_int)
+    if reader_cm is None:
         raise HTTPException(status_code=404, detail="Artifact blob not found")
 
-    return Response(
-        content=blob,
+    byte_size = artifact.byte_size or 0
+
+    def _iter_signed_blob():
+        with reader_cm as f:
+            while True:
+                chunk = f.read(BLOB_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{artifact_id}_v{version_int}.arrow"',
+    }
+    if byte_size:
+        headers["Content-Length"] = str(byte_size)
+
+    return StreamingResponse(
+        _iter_signed_blob(),
         media_type="application/vnd.apache.arrow.stream",
-        headers={
-            "Content-Length": str(len(blob)),
-            "Content-Disposition": f'attachment; filename="{artifact_id}_v{version_int}.arrow"',
-        },
+        headers=headers,
     )
 
 
@@ -4882,22 +4908,34 @@ async def upload_artifact_signed(
             detail=f"Build is not in pending or building state (state={build.state})",
         )
 
-    # Read body with size limit
-    body = await request.body()
-    if len(body) > max_bytes_int:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Upload exceeds maximum size: {len(body)} > {max_bytes_int}",
-        )
-
-    if not body:
-        raise HTTPException(status_code=400, detail="Empty request body")
-
-    # Write blob to artifact store
     store = _get_artifact_store(allow_server_mode=True)
-    store.write_blob(build.artifact_id, build.version, body)
+    byte_size = 0
+    fd, tmp_name = tempfile.mkstemp(prefix="strata_upload_", suffix=".tmp")
+    staged = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as dst:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                byte_size += len(chunk)
+                if byte_size > max_bytes_int:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(f"Upload exceeds maximum size: {byte_size} > {max_bytes_int}"),
+                    )
+                dst.write(chunk)
+        if byte_size == 0:
+            raise HTTPException(status_code=400, detail="Empty request body")
+        await asyncio.to_thread(
+            store.publish_blob_from_path, build.artifact_id, build.version, staged
+        )
+    finally:
+        try:
+            staged.unlink()
+        except FileNotFoundError:
+            pass
 
-    return {"status": "uploaded", "build_id": build_id, "byte_size": len(body)}
+    return {"status": "uploaded", "build_id": build_id, "byte_size": byte_size}
 
 
 @app.post("/v1/builds/{build_id}/finalize")
@@ -4989,20 +5027,39 @@ async def finalize_build(
             detail="Blob not uploaded. Upload using the signed URL first.",
         )
 
-    # Read Arrow metadata from blob
-    blob = store.read_blob(build.artifact_id, build.version)
-    if blob is None:
+    byte_size = store.blob_size(build.artifact_id, build.version) or 0
+    if byte_size == 0:
         raise HTTPException(status_code=500, detail="Failed to read uploaded blob")
 
-    byte_size = len(blob)
-
     if output_format == "notebook-output-bundle@v1":
-        try:
-            from strata.notebook.remote_bundle import read_notebook_output_bundle_manifest
 
-            read_notebook_output_bundle_manifest(blob)
-            schema_json = ""
-            row_count = 0
+        def _validate_notebook_bundle() -> tuple[str, int]:
+            from strata.notebook.remote_bundle import (
+                read_notebook_output_bundle_manifest_path,
+            )
+
+            reader_cm = store.open_blob_reader(build.artifact_id, build.version)
+            if reader_cm is None:
+                raise RuntimeError("Uploaded blob disappeared before validation")
+            fd, staged_name = tempfile.mkstemp(prefix="strata_bundle_validate_", suffix=".tar")
+            staged_path = Path(staged_name)
+            try:
+                with os.fdopen(fd, "wb") as dst, reader_cm as src:
+                    while True:
+                        chunk = src.read(BLOB_STREAM_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                read_notebook_output_bundle_manifest_path(staged_path)
+            finally:
+                try:
+                    staged_path.unlink()
+                except FileNotFoundError:
+                    pass
+            return "", 0
+
+        try:
+            schema_json, row_count = await asyncio.to_thread(_validate_notebook_bundle)
         except Exception as e:
             build_store.fail_build(build_id, str(e), "INVALID_NOTEBOOK_BUNDLE")
             store.fail_artifact(build.artifact_id, build.version)
@@ -5011,20 +5068,24 @@ async def finalize_build(
                 detail=f"Invalid notebook output bundle: {e}",
             )
     else:
-        # Parse Arrow IPC to get schema and row count
-        try:
-            import io
 
+        def _parse_arrow_stream() -> tuple[str, int]:
             import pyarrow.ipc as arrow_ipc
 
-            reader = arrow_ipc.open_stream(io.BytesIO(blob))
-            schema = reader.schema
-            row_count = 0
-            for batch in reader:
-                row_count += batch.num_rows
-            schema_json = schema.to_string()
+            reader_cm = store.open_blob_reader(build.artifact_id, build.version)
+            if reader_cm is None:
+                raise RuntimeError("Uploaded blob disappeared before validation")
+            row_count_inner = 0
+            with reader_cm as blob_handle:
+                ipc_reader = arrow_ipc.open_stream(blob_handle)
+                schema = ipc_reader.schema
+                for batch in ipc_reader:
+                    row_count_inner += batch.num_rows
+            return schema.to_string(), row_count_inner
+
+        try:
+            schema_json, row_count = await asyncio.to_thread(_parse_arrow_stream)
         except Exception as e:
-            # Mark build as failed
             build_store.fail_build(build_id, str(e), "INVALID_ARROW_FORMAT")
             store.fail_artifact(build.artifact_id, build.version)
             raise HTTPException(
@@ -5340,15 +5401,22 @@ async def get_artifact_data(artifact_id: str, version: int):
             detail=f"Artifact is not ready (state={artifact.state})",
         )
 
-    # Read blob
-    blob = await asyncio.to_thread(store.read_blob, artifact_id, version)
-    if blob is None:
+    reader_cm = await asyncio.to_thread(store.open_blob_reader, artifact_id, version)
+    if reader_cm is None:
         raise HTTPException(status_code=404, detail="Artifact data not found")
+
+    def _iter_blob():
+        with reader_cm as f:
+            while True:
+                chunk = f.read(BLOB_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
 
     # Note: We don't include schema in headers since it may contain newlines
     # Clients should read the schema from the Arrow IPC stream itself
     return StreamingResponse(
-        iter([blob]),
+        _iter_blob(),
         media_type="application/vnd.apache.arrow.stream",
         headers={
             "X-Arrow-Row-Count": str(artifact.row_count or 0),

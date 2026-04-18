@@ -171,6 +171,15 @@ def read_notebook_output_bundle_manifest(data: bytes) -> dict[str, Any]:
     return manifest_data
 
 
+def read_notebook_output_bundle_manifest_path(path: Path) -> dict[str, Any]:
+    """Read and validate the top-level manifest from a bundle file on disk."""
+    with tarfile.open(path, mode="r") as tar:
+        manifest_data = json.loads(_read_member(tar, "manifest.json").decode("utf-8"))
+        _validate_bundle_manifest(manifest_data, tar)
+
+    return manifest_data
+
+
 def _validate_bundle_manifest(
     manifest_data: dict[str, Any],
     tar: tarfile.TarFile,

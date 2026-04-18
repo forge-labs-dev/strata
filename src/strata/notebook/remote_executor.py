@@ -17,12 +17,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.background import BackgroundTask
 
+from strata.blob_store import BLOB_STREAM_CHUNK_BYTES
 from strata.notebook.models import MountSpec
 from strata.notebook.mounts import MountResolver, parse_mount_uri
 from strata.notebook.remote_bundle import pack_notebook_output_bundle
 from strata.types import EXECUTOR_PROTOCOL_HEADER, EXECUTOR_PROTOCOL_VERSION
-
-_BUNDLE_UPLOAD_CHUNK_BYTES = 64 * 1024
 
 NOTEBOOK_EXECUTOR_PROTOCOL_VERSION = "notebook-cell-v1"
 NOTEBOOK_EXECUTOR_TRANSFORM_REF = "notebook_cell@v1"
@@ -478,7 +477,7 @@ def create_notebook_executor_app() -> FastAPI:
 
             async def _stream_bundle_body() -> AsyncIterator[bytes]:
                 with open(bundle_path, "rb") as f:
-                    while chunk := f.read(_BUNDLE_UPLOAD_CHUNK_BYTES):
+                    while chunk := f.read(BLOB_STREAM_CHUNK_BYTES):
                         yield chunk
 
             try:

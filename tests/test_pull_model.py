@@ -549,6 +549,44 @@ class TestUploadEndpoint:
         assert response.status_code == 413
         assert "exceeds maximum size" in response.json()["detail"]
 
+    def test_upload_oversize_does_not_commit_partial_blob(
+        self, client, build_store, artifact_store
+    ):
+        """A 413 upload must not leave a partial blob in the store."""
+        from strata.transforms.signed_urls import generate_upload_url
+
+        version = create_test_artifact(artifact_store, "up-output3", finalize=False)
+        build_store.create_build(
+            build_id="up-build-003",
+            artifact_id="up-output3",
+            version=version,
+            executor_ref="test@v1",
+        )
+
+        blob = create_test_arrow_blob()
+        signed = generate_upload_url(
+            base_url="http://testserver",
+            build_id="up-build-003",
+            max_bytes=10,
+            expiry_seconds=300.0,
+        )
+        parsed = urlparse(signed.url)
+        params = parse_qs(parsed.query)
+
+        response = client.post(
+            "/v1/artifacts/upload",
+            params={
+                "build_id": params["build_id"][0],
+                "max_bytes": params["max_bytes"][0],
+                "expires_at": params["expires_at"][0],
+                "signature": params["signature"][0],
+            },
+            content=blob,
+        )
+
+        assert response.status_code == 413
+        assert not artifact_store.blob_exists("up-output3", version)
+
     def test_upload_expired_signature_rejected(self, client, build_store, artifact_store):
         """Expired upload signature is rejected."""
         from strata.transforms.signed_urls import generate_upload_url
@@ -622,6 +660,42 @@ class TestFinalizeEndpoint:
         # Verify artifact is ready
         artifact = artifact_store.get_artifact("fin-output", version)
         assert artifact.state == "ready"
+
+    def test_finalize_arrow_validation_runs_off_event_loop(
+        self, client, build_store, artifact_store, monkeypatch
+    ):
+        """Arrow schema/row-count validation must run in a worker thread."""
+        import threading
+
+        version = create_test_artifact(artifact_store, "fin-output-offload", finalize=False)
+        build_store.create_build(
+            build_id="fin-build-offload",
+            artifact_id="fin-output-offload",
+            version=version,
+            executor_ref="test@v1",
+        )
+
+        blob = create_test_arrow_blob()
+        artifact_store.write_blob("fin-output-offload", version, blob)
+
+        main_thread_ident = threading.get_ident()
+        reader_thread_idents: list[int] = []
+
+        real_open_blob_reader = artifact_store.open_blob_reader
+
+        def _recording_open_blob_reader(artifact_id, version_):
+            reader_thread_idents.append(threading.get_ident())
+            return real_open_blob_reader(artifact_id, version_)
+
+        monkeypatch.setattr(artifact_store, "open_blob_reader", _recording_open_blob_reader)
+
+        response = client.post("/v1/builds/fin-build-offload/finalize")
+        assert response.status_code == 200
+
+        assert reader_thread_idents, "Arrow validation did not open the blob reader"
+        assert all(tid != main_thread_ident for tid in reader_thread_idents), (
+            "Arrow validation reader ran on the event loop thread"
+        )
 
     def test_finalize_records_quota_bytes(self, client, build_store, artifact_store):
         """Pull-model finalize should account for produced bytes against build QoS quota."""

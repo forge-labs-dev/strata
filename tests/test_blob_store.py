@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from strata.blob_store import (
+    BlobStore,
     GCSBlobStore,
     LocalBlobStore,
     S3BlobStore,
@@ -103,12 +104,375 @@ class TestLocalBlobStore:
 
         store.write_blob("artifact-1", 1, data)
 
-        # The temp file should not exist
-        temp_path = store._blob_path("artifact-1", 1).with_suffix(".tmp")
-        assert not temp_path.exists()
+        # No residual ``*.tmp`` files should remain after a successful write
+        residual_tmp = list((tmp_path / "blobs").glob("*.tmp"))
+        assert residual_tmp == []
 
         # The final file should exist with correct content
         assert store.read_blob("artifact-1", 1) == data
+
+    def test_streaming_writer_commits_atomically(self, tmp_path: Path):
+        """open_blob_writer should only publish the blob on clean context exit."""
+        store = LocalBlobStore(tmp_path / "blobs")
+
+        with store.open_blob_writer("artifact-1", 1) as writer:
+            writer.write(b"chunk1")
+            writer.write(b"chunk2")
+            assert not store.blob_exists("artifact-1", 1)
+
+        assert store.read_blob("artifact-1", 1) == b"chunk1chunk2"
+
+    def test_streaming_writer_discards_on_exception(self, tmp_path: Path):
+        """A writer context that exits with an exception must not leave a blob or tmp file."""
+        store = LocalBlobStore(tmp_path / "blobs")
+
+        class BoomError(RuntimeError):
+            pass
+
+        with pytest.raises(BoomError):
+            with store.open_blob_writer("artifact-1", 1) as writer:
+                writer.write(b"partial")
+                raise BoomError()
+
+        assert not store.blob_exists("artifact-1", 1)
+        assert list((tmp_path / "blobs").glob("*.tmp")) == []
+
+    def test_streaming_reader_reads_chunks(self, tmp_path: Path):
+        """open_blob_reader should yield a file-like streaming chunks."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        payload = b"abcdefghij" * 10
+        store.write_blob("artifact-1", 1, payload)
+
+        reader_cm = store.open_blob_reader("artifact-1", 1)
+        assert reader_cm is not None
+
+        collected = []
+        with reader_cm as reader:
+            while True:
+                chunk = reader.read(17)
+                if not chunk:
+                    break
+                collected.append(chunk)
+
+        assert b"".join(collected) == payload
+
+    def test_streaming_reader_missing_returns_none(self, tmp_path: Path):
+        """open_blob_reader should return None for missing blobs."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        assert store.open_blob_reader("absent", 1) is None
+
+    def test_streaming_writer_preserves_existing_on_error(self, tmp_path: Path):
+        """A failed writer context must not corrupt a previously committed blob."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        store.write_blob("artifact-1", 1, b"original")
+
+        with pytest.raises(RuntimeError):
+            with store.open_blob_writer("artifact-1", 1) as writer:
+                writer.write(b"garbage")
+                raise RuntimeError("simulated failure")
+
+        assert store.read_blob("artifact-1", 1) == b"original"
+
+    def test_blob_size_reports_size_without_materializing(self, tmp_path: Path):
+        """blob_size must return length via filesystem metadata."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        payload = b"x" * 12345
+        store.write_blob("artifact-1", 1, payload)
+
+        assert store.blob_size("artifact-1", 1) == len(payload)
+
+    def test_blob_size_missing_returns_none(self, tmp_path: Path):
+        """blob_size must return None for missing blobs."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        assert store.blob_size("absent", 1) is None
+
+
+class TestStagedLocalWriter:
+    """Tests for the shared ``BlobStore._staged_local_writer`` helper.
+
+    The helper backs the atomicity guarantees of S3/GCS/Azure writers —
+    staging to a local tempfile, invoking ``commit(path)`` only on clean
+    context exit, and discarding the tempfile otherwise.
+    """
+
+    def test_commit_invoked_on_clean_exit(self, tmp_path: Path):
+        """``commit`` runs exactly once on clean exit, with a readable tempfile."""
+        captured: dict[str, object] = {}
+
+        def _commit(path: Path) -> None:
+            captured["path"] = path
+            captured["bytes"] = path.read_bytes()
+
+        with BlobStore._staged_local_writer(_commit) as writer:
+            writer.write(b"hello ")
+            writer.write(b"world")
+
+        assert captured["bytes"] == b"hello world"
+        # Tempfile must be removed after commit completes.
+        assert not Path(str(captured["path"])).exists()
+
+    def test_commit_not_invoked_on_exception(self, tmp_path: Path):
+        """``commit`` must not run if the writer context exits via exception."""
+        calls: list[Path] = []
+
+        def _commit(path: Path) -> None:
+            calls.append(path)
+
+        class BoomError(RuntimeError):
+            pass
+
+        with pytest.raises(BoomError):
+            with BlobStore._staged_local_writer(_commit) as writer:
+                writer.write(b"partial")
+                raise BoomError()
+
+        assert calls == []
+
+    def test_tempfile_discarded_on_exception(self, tmp_path: Path, monkeypatch):
+        """The staged tempfile must be removed even when commit is never invoked."""
+        captured_path: list[Path] = []
+        import strata.blob_store as blob_store_module
+
+        real_mkstemp = blob_store_module.tempfile.mkstemp
+
+        def _recording_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            captured_path.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(blob_store_module.tempfile, "mkstemp", _recording_mkstemp)
+
+        class BoomError(RuntimeError):
+            pass
+
+        with pytest.raises(BoomError):
+            with BlobStore._staged_local_writer(lambda _p: None) as writer:
+                writer.write(b"partial")
+                raise BoomError()
+
+        assert captured_path, "staged tempfile was never created"
+        assert not captured_path[0].exists()
+
+    def test_commit_exception_propagates_and_cleans_up(self, tmp_path: Path, monkeypatch):
+        """If commit itself raises, the tempfile still gets removed."""
+        captured_path: list[Path] = []
+        import strata.blob_store as blob_store_module
+
+        real_mkstemp = blob_store_module.tempfile.mkstemp
+
+        def _recording_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            captured_path.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(blob_store_module.tempfile, "mkstemp", _recording_mkstemp)
+
+        def _failing_commit(_path: Path) -> None:
+            raise RuntimeError("remote commit rejected")
+
+        with pytest.raises(RuntimeError, match="remote commit rejected"):
+            with BlobStore._staged_local_writer(_failing_commit) as writer:
+                writer.write(b"payload")
+
+        assert captured_path and not captured_path[0].exists()
+
+    def test_handle_is_closed_before_commit(self, tmp_path: Path):
+        """Writer handle must be closed before ``commit`` is invoked.
+
+        On Windows, reopening a file while another handle has write-mode
+        open fails with ERROR_SHARING_VIOLATION. The remote backends
+        reopen the staged tempfile inside ``commit`` to upload it, so
+        the writer must release its handle first.
+        """
+        observed_state: dict[str, object] = {}
+
+        with BlobStore._staged_local_writer(
+            lambda _path: None, prefix="strata_handle_test_"
+        ) as writer:
+            observed_state["handle"] = writer
+
+        def _commit(path: Path) -> None:
+            observed_state["closed_before_commit"] = observed_state["handle"].closed  # type: ignore[union-attr]
+            # Reopen the path: this exercises the same pattern that would
+            # fail on Windows if the writer handle were still open.
+            with open(path, "rb") as reread:
+                observed_state["reread_len"] = len(reread.read())
+
+        with BlobStore._staged_local_writer(_commit) as writer:
+            writer.write(b"payload-bytes")
+            observed_state["handle"] = writer
+
+        assert observed_state["closed_before_commit"] is True
+        assert observed_state["reread_len"] == len(b"payload-bytes")
+
+
+class TestPublishBlobFromPath:
+    """Tests for ``BlobStore.publish_blob_from_path``."""
+
+    def test_round_trip_via_local_backend(self, tmp_path: Path):
+        """The default implementation publishes a staged file atomically."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        staging = tmp_path / "incoming.bin"
+        payload = b"hello " * 1000
+        staging.write_bytes(payload)
+
+        store.publish_blob_from_path("artifact-1", 1, staging)
+
+        assert store.read_blob("artifact-1", 1) == payload
+        # Source is not consumed — the caller owns its lifecycle.
+        assert staging.exists()
+
+    def test_publish_overwrites_existing_blob(self, tmp_path: Path):
+        """Publishing a new file replaces the previously committed blob."""
+        store = LocalBlobStore(tmp_path / "blobs")
+        store.write_blob("artifact-1", 1, b"v1-bytes")
+
+        staging = tmp_path / "incoming.bin"
+        staging.write_bytes(b"v2-bytes")
+
+        store.publish_blob_from_path("artifact-1", 1, staging)
+
+        assert store.read_blob("artifact-1", 1) == b"v2-bytes"
+
+
+class TestS3BackendAtomicity:
+    """Writer atomicity tests for S3BlobStore using a fake PyArrow filesystem."""
+
+    class _FakeOutputStream:
+        def __init__(self, sink: Path, record: list[str], *, fail_on_open: bool = False):
+            self._sink = sink
+            self._record = record
+            if fail_on_open:
+                self._record.append("open_failed")
+                raise OSError("simulated s3 open failure")
+            self._handle = open(sink, "wb")
+            self._record.append(f"open:{sink.name}")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._handle.close()
+            self._record.append("close")
+
+        def write(self, data: bytes) -> None:
+            self._handle.write(data)
+
+    class _FakeS3FileSystem:
+        def __init__(
+            self,
+            root: Path,
+            *,
+            open_fails: bool = False,
+            open_raises_on_call: int | None = None,
+        ):
+            self.root = root
+            self._record: list[str] = []
+            self.open_fails = open_fails
+            self._open_raises_on_call = open_raises_on_call
+            self._open_calls = 0
+
+        def open_output_stream(self, key: str):
+            self._open_calls += 1
+            sink = self.root / key.replace("/", "_")
+            if self.open_fails or self._open_calls == self._open_raises_on_call:
+                return TestS3BackendAtomicity._FakeOutputStream(
+                    sink, self._record, fail_on_open=True
+                )
+            return TestS3BackendAtomicity._FakeOutputStream(sink, self._record)
+
+    def _build_store_with_fake_fs(self, fake_fs, prefix: str = "artifacts") -> S3BlobStore:
+        store = S3BlobStore.__new__(S3BlobStore)
+        store.bucket = "fake-bucket"
+        store.prefix = prefix
+        store._fs = fake_fs
+        return store
+
+    def test_writer_commit_produces_remote_object(self, tmp_path: Path):
+        """A clean writer context publishes the full payload via the fake fs."""
+        fake_fs = self._FakeS3FileSystem(tmp_path)
+        store = self._build_store_with_fake_fs(fake_fs)
+
+        with store.open_blob_writer("artifact-1", 1) as writer:
+            writer.write(b"part1")
+            writer.write(b"part2")
+
+        sink = tmp_path / "fake-bucket_artifacts_artifact-1@v=1.arrow"
+        assert sink.read_bytes() == b"part1part2"
+        assert fake_fs._record[0].startswith("open:")
+        assert fake_fs._record[-1] == "close"
+
+    def test_writer_exception_never_opens_remote_stream(self, tmp_path: Path):
+        """An exception inside the writer context must skip the remote upload entirely."""
+        fake_fs = self._FakeS3FileSystem(tmp_path)
+        store = self._build_store_with_fake_fs(fake_fs)
+
+        class BoomError(RuntimeError):
+            pass
+
+        with pytest.raises(BoomError):
+            with store.open_blob_writer("artifact-1", 1) as writer:
+                writer.write(b"partial")
+                raise BoomError()
+
+        assert fake_fs._record == []
+        # No sink file should exist in the fake bucket.
+        assert list(tmp_path.iterdir()) == []
+
+    def test_writer_open_failure_cleans_up_staged_tempfile(self, tmp_path: Path, monkeypatch):
+        """If the backend upload fails at open, the local tempfile is still removed."""
+        fake_fs = self._FakeS3FileSystem(tmp_path, open_fails=True)
+        store = self._build_store_with_fake_fs(fake_fs)
+
+        import strata.blob_store as blob_store_module
+
+        captured_tmp: list[Path] = []
+        real_mkstemp = blob_store_module.tempfile.mkstemp
+
+        def _recording_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            captured_tmp.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(blob_store_module.tempfile, "mkstemp", _recording_mkstemp)
+
+        with pytest.raises(OSError, match="simulated s3 open failure"):
+            with store.open_blob_writer("artifact-1", 1) as writer:
+                writer.write(b"payload")
+
+        assert captured_tmp and not captured_tmp[0].exists()
+        assert fake_fs._record == ["open_failed"]
+
+    def test_publish_from_path_skips_double_staging(self, tmp_path: Path, monkeypatch):
+        """publish_blob_from_path must upload source directly without mkstemp."""
+        fake_fs = self._FakeS3FileSystem(tmp_path)
+        store = self._build_store_with_fake_fs(fake_fs)
+
+        import strata.blob_store as blob_store_module
+
+        mkstemp_calls: list[str] = []
+        real_mkstemp = blob_store_module.tempfile.mkstemp
+
+        def _counting_mkstemp(*args, **kwargs):
+            mkstemp_calls.append(kwargs.get("prefix", ""))
+            return real_mkstemp(*args, **kwargs)
+
+        monkeypatch.setattr(blob_store_module.tempfile, "mkstemp", _counting_mkstemp)
+
+        source = tmp_path / "incoming.bin"
+        payload = b"abc123" * 500
+        source.write_bytes(payload)
+
+        store.publish_blob_from_path("artifact-1", 1, source)
+
+        blob_prefix_calls = [p for p in mkstemp_calls if p.startswith("strata_s3_blob_")]
+        assert blob_prefix_calls == [], (
+            "publish_blob_from_path should not route through the staged-writer tempfile"
+        )
+        sink = tmp_path / "fake-bucket_artifacts_artifact-1@v=1.arrow"
+        assert sink.read_bytes() == payload
+        # Source file is not consumed — caller owns cleanup.
+        assert source.exists()
 
 
 class TestS3BlobStore:
