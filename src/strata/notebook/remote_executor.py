@@ -4,20 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import sys
 import tempfile
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from starlette.background import BackgroundTask
 
 from strata.notebook.models import MountSpec
 from strata.notebook.mounts import MountResolver, parse_mount_uri
 from strata.notebook.remote_bundle import pack_notebook_output_bundle
 from strata.types import EXECUTOR_PROTOCOL_HEADER, EXECUTOR_PROTOCOL_VERSION
+
+_BUNDLE_UPLOAD_CHUNK_BYTES = 64 * 1024
 
 NOTEBOOK_EXECUTOR_PROTOCOL_VERSION = "notebook-cell-v1"
 NOTEBOOK_EXECUTOR_TRANSFORM_REF = "notebook_cell@v1"
@@ -84,7 +89,7 @@ def create_notebook_executor_app() -> FastAPI:
         text = response.text.strip()
         return text or f"HTTP {response.status_code}"
 
-    async def _execute_bundle(
+    async def _execute_to_bundle(
         *,
         source: str,
         timeout_seconds: float,
@@ -92,7 +97,14 @@ def create_notebook_executor_app() -> FastAPI:
         raw_mounts: list[dict[str, Any]],
         runtime_env: dict[str, str],
         write_input_bytes: Any,
-    ) -> Response:
+    ) -> tuple[Path, Path] | JSONResponse:
+        """Execute a cell and pack outputs into a bundle file.
+
+        On success, returns ``(bundle_path, tmpdir)`` — the caller is
+        responsible for deleting ``tmpdir`` after the bundle bytes have
+        been consumed. On failure, returns a ``JSONResponse`` with the
+        tmpdir already cleaned up.
+        """
         if not isinstance(raw_inputs, dict):
             raise HTTPException(status_code=400, detail="inputs must be an object")
         if not isinstance(raw_mounts, list):
@@ -109,8 +121,9 @@ def create_notebook_executor_app() -> FastAPI:
 
         nonlocal active_executions
 
-        with tempfile.TemporaryDirectory(prefix="strata_notebook_executor_") as tmpdir:
-            output_dir = Path(tmpdir)
+        tmpdir = Path(tempfile.mkdtemp(prefix="strata_notebook_executor_"))
+        try:
+            output_dir = tmpdir
 
             inputs: dict[str, dict[str, str]] = {}
             for var_name, spec in raw_inputs.items():
@@ -165,6 +178,7 @@ def create_notebook_executor_app() -> FastAPI:
                 if result.get("success", False):
                     await mount_resolver.sync_back(resolved_mounts)
             except TimeoutError:
+                shutil.rmtree(tmpdir, ignore_errors=True)
                 return JSONResponse(
                     status_code=408,
                     content={
@@ -173,6 +187,7 @@ def create_notebook_executor_app() -> FastAPI:
                     },
                 )
             except Exception as exc:
+                shutil.rmtree(tmpdir, ignore_errors=True)
                 return JSONResponse(
                     status_code=500,
                     content={"success": False, "error": str(exc)},
@@ -182,14 +197,10 @@ def create_notebook_executor_app() -> FastAPI:
 
             bundle_path = output_dir / "notebook-output-bundle.tar"
             pack_notebook_output_bundle(bundle_path, result, output_dir)
-            return Response(
-                content=bundle_path.read_bytes(),
-                media_type="application/x-tar",
-                headers={
-                    "X-Strata-Notebook-Executor-Protocol": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
-                    EXECUTOR_PROTOCOL_HEADER: EXECUTOR_PROTOCOL_VERSION,
-                },
-            )
+            return bundle_path, tmpdir
+        except BaseException:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
 
     async def _run_notebook_execution(
         *,
@@ -213,13 +224,25 @@ def create_notebook_executor_app() -> FastAPI:
                 )
             return await upload.read()
 
-        return await _execute_bundle(
+        result = await _execute_to_bundle(
             source=source,
             timeout_seconds=timeout_seconds,
             raw_inputs=raw_inputs,
             raw_mounts=raw_mounts,
             runtime_env=runtime_env,
             write_input_bytes=_write_uploaded_input,
+        )
+        if isinstance(result, JSONResponse):
+            return result
+        bundle_path, tmpdir = result
+        return FileResponse(
+            path=bundle_path,
+            media_type="application/x-tar",
+            headers={
+                "X-Strata-Notebook-Executor-Protocol": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
+                EXECUTOR_PROTOCOL_HEADER: EXECUTOR_PROTOCOL_VERSION,
+            },
+            background=BackgroundTask(shutil.rmtree, tmpdir, True),
         )
 
     app = FastAPI(
@@ -438,7 +461,7 @@ def create_notebook_executor_app() -> FastAPI:
                 )
             return response.content
 
-        bundle_response = await _execute_bundle(
+        bundle_result = await _execute_to_bundle(
             source=source,
             timeout_seconds=timeout_seconds,
             raw_inputs=raw_inputs,
@@ -446,62 +469,75 @@ def create_notebook_executor_app() -> FastAPI:
             runtime_env=runtime_env,
             write_input_bytes=_download_input,
         )
-        if bundle_response.status_code != 200:
-            return bundle_response
+        if isinstance(bundle_result, JSONResponse):
+            return bundle_result
 
-        bundle_bytes = bytes(bundle_response.body)
+        bundle_path, tmpdir = bundle_result
         try:
-            async with httpx.AsyncClient(timeout=max(timeout_seconds, 30.0)) as client:
-                upload_response = await client.post(
-                    upload_url,
-                    content=bundle_bytes,
-                    headers={"Content-Type": "application/x-tar"},
-                )
-                if upload_response.status_code != 200:
-                    raise HTTPException(
-                        status_code=502,
-                        detail=(
-                            "Failed to upload notebook bundle output: "
-                            f"{upload_response.status_code} "
-                            f"({_response_error_detail(upload_response)})"
-                        ),
+            byte_size = bundle_path.stat().st_size
+
+            async def _stream_bundle_body() -> AsyncIterator[bytes]:
+                with open(bundle_path, "rb") as f:
+                    while chunk := f.read(_BUNDLE_UPLOAD_CHUNK_BYTES):
+                        yield chunk
+
+            try:
+                async with httpx.AsyncClient(timeout=max(timeout_seconds, 30.0)) as client:
+                    upload_response = await client.post(
+                        upload_url,
+                        content=_stream_bundle_body(),
+                        headers={
+                            "Content-Type": "application/x-tar",
+                            "Content-Length": str(byte_size),
+                        },
                     )
+                    if upload_response.status_code != 200:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "Failed to upload notebook bundle output: "
+                                f"{upload_response.status_code} "
+                                f"({_response_error_detail(upload_response)})"
+                            ),
+                        )
 
-                finalize_response = await client.post(
-                    finalize_url,
-                    json={"output_format": "notebook-output-bundle@v1"},
+                    finalize_response = await client.post(
+                        finalize_url,
+                        json={"output_format": "notebook-output-bundle@v1"},
+                    )
+            except httpx.TimeoutException as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Notebook bundle transfer timed out: {exc}",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Notebook bundle transfer failed: {exc}",
+                ) from exc
+
+            if finalize_response.status_code != 200:
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Failed to finalize notebook bundle build: "
+                        f"{finalize_response.status_code} "
+                        f"({_response_error_detail(finalize_response)})"
+                    ),
                 )
-        except httpx.TimeoutException as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Notebook bundle transfer timed out: {exc}",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Notebook bundle transfer failed: {exc}",
-            ) from exc
 
-        if finalize_response.status_code != 200:
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Failed to finalize notebook bundle build: "
-                    f"{finalize_response.status_code} "
-                    f"({_response_error_detail(finalize_response)})"
-                ),
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "success": True,
+                    "build_id": manifest.get("build_id"),
+                    "byte_size": byte_size,
+                    "protocol_version": NOTEBOOK_EXECUTOR_MANIFEST_VERSION,
+                    "finalize": finalize_response.json(),
+                },
             )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "success": True,
-                "build_id": manifest.get("build_id"),
-                "byte_size": len(bundle_bytes),
-                "protocol_version": NOTEBOOK_EXECUTOR_MANIFEST_VERSION,
-                "finalize": finalize_response.json(),
-            },
-        )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     return app
 

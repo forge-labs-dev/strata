@@ -6,6 +6,7 @@ import io
 import json
 import tarfile
 import uuid
+from pathlib import Path
 
 import httpx
 
@@ -432,3 +433,157 @@ def test_service_finalize_rejects_incomplete_notebook_bundle(notebook_build_serv
     artifact = artifact_store.get_artifact(artifact_id, version)
     assert artifact is not None
     assert artifact.state == "failed"
+
+
+def test_remote_executor_cleans_up_tempdir_after_streamed_response(
+    tmp_path,
+    notebook_executor_server,
+    monkeypatch,
+):
+    """FileResponse + BackgroundTask should remove the executor tempdir after streaming."""
+    import tempfile as stdlib_tempfile
+
+    from strata.notebook import remote_executor as remote_executor_module
+
+    recorded_paths: list[str] = []
+    real_mkdtemp = stdlib_tempfile.mkdtemp
+
+    def _recording_mkdtemp(*args, **kwargs):
+        path = real_mkdtemp(*args, **kwargs)
+        if kwargs.get("prefix", "").startswith("strata_notebook_executor_"):
+            recorded_paths.append(path)
+        return path
+
+    monkeypatch.setattr(remote_executor_module.tempfile, "mkdtemp", _recording_mkdtemp)
+
+    metadata = {
+        "protocol_version": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
+        "source": "x = 42",
+        "timeout_seconds": 10.0,
+        "inputs": {},
+        "mounts": [],
+        "env": {},
+    }
+
+    with httpx.Client(timeout=10.0) as client:
+        with client.stream(
+            "POST",
+            notebook_executor_server["notebook_execute_url"],
+            files={
+                "metadata": (
+                    "metadata.json",
+                    json.dumps(metadata).encode("utf-8"),
+                    "application/json",
+                ),
+            },
+        ) as response:
+            assert response.status_code == 200
+            bundle_path = tmp_path / "cleanup-bundle.tar"
+            with open(bundle_path, "wb") as f:
+                for chunk in response.iter_bytes():
+                    f.write(chunk)
+
+    unpacked = unpack_notebook_output_bundle(bundle_path, tmp_path / "cleanup-unpacked")
+    assert unpacked["success"] is True
+
+    import time as _time
+
+    deadline = _time.time() + 2.0
+    while _time.time() < deadline:
+        if all(not Path(p).exists() for p in recorded_paths):
+            break
+        _time.sleep(0.05)
+
+    assert recorded_paths, "Executor did not create a tempdir"
+    for path in recorded_paths:
+        assert not Path(path).exists(), f"Executor tempdir {path} was not cleaned up"
+
+
+def test_remote_executor_error_detail_survives_streaming_client(
+    notebook_executor_server,
+):
+    """Streaming clients that aread() on non-200 should see the executor's JSON detail."""
+    import asyncio
+
+    async def _run():
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            async with client.stream(
+                "POST",
+                notebook_executor_server["notebook_execute_url"],
+                files={
+                    "metadata": (
+                        "metadata.json",
+                        json.dumps(
+                            {
+                                "protocol_version": "wrong-version",
+                                "source": "x = 1",
+                                "timeout_seconds": 10.0,
+                                "inputs": {},
+                                "mounts": [],
+                                "env": {},
+                            }
+                        ).encode("utf-8"),
+                        "application/json",
+                    ),
+                },
+            ) as response:
+                assert response.status_code == 400
+                await response.aread()
+                payload = response.json()
+                assert "Unsupported protocol version" in payload["detail"]
+
+    asyncio.run(_run())
+
+
+def test_remote_executor_round_trips_large_input_bundle(
+    tmp_path,
+    notebook_executor_server,
+):
+    """Large inputs should flow through the streaming transport without corruption."""
+    import hashlib
+    import pickle
+
+    payload_size = 8 * 1024 * 1024
+    payload_bytes = (b"\xAB\xCD\xEF\x01" * (payload_size // 4))[:payload_size]
+    expected_digest = hashlib.sha256(payload_bytes).hexdigest()
+    pickled_payload = pickle.dumps(payload_bytes)
+
+    metadata = {
+        "protocol_version": NOTEBOOK_EXECUTOR_PROTOCOL_VERSION,
+        "source": (
+            "import hashlib\n"
+            "digest = hashlib.sha256(blob).hexdigest()\n"
+            "size = len(blob)\n"
+        ),
+        "timeout_seconds": 30.0,
+        "inputs": {
+            "blob": {
+                "content_type": "pickle/object",
+                "file": "blob.pickle",
+            }
+        },
+        "mounts": [],
+        "env": {},
+    }
+
+    response = httpx.post(
+        notebook_executor_server["notebook_execute_url"],
+        files={
+            "metadata": (
+                "metadata.json",
+                json.dumps(metadata).encode("utf-8"),
+                "application/json",
+            ),
+            "blob.pickle": ("blob.pickle", pickled_payload, "application/octet-stream"),
+        },
+        timeout=60.0,
+    )
+
+    assert response.status_code == 200
+    bundle_path = tmp_path / "large-bundle.tar"
+    bundle_path.write_bytes(response.content)
+    unpacked = unpack_notebook_output_bundle(bundle_path, tmp_path / "large-unpacked")
+
+    assert unpacked["success"] is True, unpacked.get("error") or unpacked.get("traceback")
+    assert unpacked["variables"]["digest"]["preview"] == expected_digest
+    assert unpacked["variables"]["size"]["preview"] == payload_size

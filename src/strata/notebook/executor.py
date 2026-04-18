@@ -1050,7 +1050,7 @@ class CellExecutor:
             ],
         }
 
-        files: list[tuple[str, tuple[str, bytes, str]]] = [
+        files: list[tuple[str, tuple[str, Any, str]]] = [
             (
                 "metadata",
                 (
@@ -1060,69 +1060,87 @@ class CellExecutor:
                 ),
             )
         ]
+        input_file_handles: list[Any] = []
         for spec in input_specs.values():
             file_name = str(spec["file"])
             input_path = output_dir / file_name
-            with open(input_path, "rb") as f:
-                files.append(
+            handle = open(input_path, "rb")
+            input_file_handles.append(handle)
+            files.append(
+                (
+                    file_name,
                     (
                         file_name,
-                        (
-                            file_name,
-                            f.read(),
-                            "application/octet-stream",
-                        ),
-                    )
+                        handle,
+                        "application/octet-stream",
+                    ),
                 )
+            )
 
         timeout = max(timeout_seconds + 5.0, 30.0)
         headers = {
             EXECUTOR_PROTOCOL_HEADER: EXECUTOR_PROTOCOL_VERSION,
         }
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(executor_url, files=files, headers=headers)
-        except httpx.TimeoutException as exc:
-            raise RemoteExecutionError(
-                f"Cell execution timed out after {timeout_seconds}s",
-                remote_error_code="TIMEOUT",
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise RemoteExecutionError(
-                f"Remote executor request failed for worker '{worker_spec.name}': {exc}",
-                remote_error_code="REQUEST_FAILED",
-            ) from exc
-
-        if response.status_code == 408:
-            raise RemoteExecutionError(
-                f"Cell execution timed out after {timeout_seconds}s",
-                remote_error_code="TIMEOUT",
-            )
-        if response.status_code != 200:
-            detail = self._extract_remote_error(response)
-            raise RemoteExecutionError(
-                f"Remote executor '{worker_spec.name}' returned {response.status_code}: {detail}",
-                remote_error_code="EXECUTOR_HTTP_ERROR",
-            )
-
-        protocol = response.headers.get(EXECUTOR_PROTOCOL_HEADER)
-        if protocol and protocol != EXECUTOR_PROTOCOL_VERSION:
-            raise RemoteExecutionError(
-                f"Remote executor '{worker_spec.name}' returned unsupported "
-                f"protocol version {protocol!r}",
-                remote_error_code="PROTOCOL_ERROR",
-            )
-        notebook_protocol = response.headers.get("X-Strata-Notebook-Executor-Protocol")
-        if notebook_protocol and notebook_protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION:
-            raise RemoteExecutionError(
-                f"Remote executor '{worker_spec.name}' returned unsupported "
-                f"notebook protocol version {notebook_protocol!r}",
-                remote_error_code="PROTOCOL_ERROR",
-            )
-
         bundle_path = output_dir / "notebook-output-bundle.tar"
-        with open(bundle_path, "wb") as f:
-            f.write(response.content)
+        try:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    async with client.stream(
+                        "POST",
+                        executor_url,
+                        files=files,
+                        headers=headers,
+                    ) as response:
+                        if response.status_code == 408:
+                            raise RemoteExecutionError(
+                                f"Cell execution timed out after {timeout_seconds}s",
+                                remote_error_code="TIMEOUT",
+                            )
+                        if response.status_code != 200:
+                            await response.aread()
+                            detail = self._extract_remote_error(response)
+                            raise RemoteExecutionError(
+                                f"Remote executor '{worker_spec.name}' returned "
+                                f"{response.status_code}: {detail}",
+                                remote_error_code="EXECUTOR_HTTP_ERROR",
+                            )
+
+                        protocol = response.headers.get(EXECUTOR_PROTOCOL_HEADER)
+                        if protocol and protocol != EXECUTOR_PROTOCOL_VERSION:
+                            raise RemoteExecutionError(
+                                f"Remote executor '{worker_spec.name}' returned unsupported "
+                                f"protocol version {protocol!r}",
+                                remote_error_code="PROTOCOL_ERROR",
+                            )
+                        notebook_protocol = response.headers.get(
+                            "X-Strata-Notebook-Executor-Protocol"
+                        )
+                        if (
+                            notebook_protocol
+                            and notebook_protocol != NOTEBOOK_EXECUTOR_PROTOCOL_VERSION
+                        ):
+                            raise RemoteExecutionError(
+                                f"Remote executor '{worker_spec.name}' returned unsupported "
+                                f"notebook protocol version {notebook_protocol!r}",
+                                remote_error_code="PROTOCOL_ERROR",
+                            )
+
+                        with open(bundle_path, "wb") as f:
+                            async for chunk in response.aiter_bytes():
+                                f.write(chunk)
+            except httpx.TimeoutException as exc:
+                raise RemoteExecutionError(
+                    f"Cell execution timed out after {timeout_seconds}s",
+                    remote_error_code="TIMEOUT",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise RemoteExecutionError(
+                    f"Remote executor request failed for worker '{worker_spec.name}': {exc}",
+                    remote_error_code="REQUEST_FAILED",
+                ) from exc
+        finally:
+            for handle in input_file_handles:
+                handle.close()
 
         unpacked_dir = output_dir / "_executor_result"
         unpacked_result = unpack_notebook_output_bundle(bundle_path, unpacked_dir)
