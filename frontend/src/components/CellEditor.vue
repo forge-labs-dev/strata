@@ -134,6 +134,50 @@ const executionMethodLabel = computed(() => {
   }
 })
 
+/**
+ * Phase 2: Progress badge for loop cells.
+ *
+ * While the loop is running, ``# @loop_until`` has not yet fired, and the
+ * current iteration is strictly less than ``maxIter``, we display the
+ * completed-iteration count with a spinner so the user sees live progress
+ * of a multi-minute agentic loop. After the loop finishes the badge stays
+ * visible as a compact summary ("iter N/M done" or similar) so users can
+ * see at a glance that a cell ran 7 iterations without opening the
+ * inspect panel.
+ */
+const loopProgressDone = computed(() => {
+  const progress = props.cell.loopProgress
+  if (!progress) return false
+  if (progress.untilReached) return true
+  return progress.iteration >= progress.maxIter - 1
+})
+
+const loopProgressLabel = computed(() => {
+  const progress = props.cell.loopProgress
+  if (!progress) return ''
+  // iteration is 0-based; display the 1-based completed-iteration count.
+  const completed = progress.iteration + 1
+  return `iter ${completed}/${progress.maxIter}`
+})
+
+const loopProgressTitle = computed(() => {
+  const progress = props.cell.loopProgress
+  if (!progress) return ''
+  const completed = progress.iteration + 1
+  const status = progress.untilReached
+    ? 'loop_until fired — loop complete'
+    : completed >= progress.maxIter
+      ? 'reached max_iter — loop complete'
+      : props.cell.status === 'running'
+        ? 'loop running'
+        : 'loop paused'
+  const duration =
+    typeof progress.iterDurationMs === 'number'
+      ? ` · last iter ${Math.round(progress.iterDurationMs)}ms`
+      : ''
+  return `${status} (iter ${completed}/${progress.maxIter})${duration}`
+})
+
 /** v1.1: Causality summary for tooltip */
 const causalityTooltip = computed(() => {
   const c = props.cell.causality
@@ -551,6 +595,22 @@ function outputKey(output: CellOutput, index: number): string {
             :title="annotationDiagnosticsTitle"
           >
             &#x26A0; {{ annotationDiagnosticsLabel }}
+          </span>
+          <span
+            v-if="loopProgressLabel"
+            class="loop-progress-badge"
+            :class="{
+              running: cell.status === 'running',
+              done: loopProgressDone,
+            }"
+            :title="loopProgressTitle"
+          >
+            <span
+              v-if="cell.status === 'running' && !loopProgressDone"
+              class="loop-spinner"
+              aria-hidden="true"
+            ></span>
+            &#x21BB; {{ loopProgressLabel }}
           </span>
           <span
             v-if="cell.output?.cacheHit"
@@ -998,6 +1058,40 @@ function outputKey(output: CellOutput, index: number): string {
   padding: 1px 6px;
   border-radius: 3px;
   font-weight: 600;
+}
+.loop-progress-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #89b4fa22;
+  color: #89b4fa;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.loop-progress-badge.running {
+  background: #f9e2af22;
+  color: #f9e2af;
+  border: 1px solid #f9e2af55;
+}
+.loop-progress-badge.done {
+  background: #a6e3a133;
+  color: #a6e3a1;
+}
+.loop-spinner {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-right-color: transparent;
+  animation: loop-spin 0.9s linear infinite;
+}
+@keyframes loop-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 .mount-badge {
   background: #94e2d522;
