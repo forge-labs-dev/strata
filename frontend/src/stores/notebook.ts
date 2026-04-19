@@ -88,23 +88,19 @@ const cellMap = computed(() => {
 
 const orderedCells = computed(() => [...notebook.cells].sort((a, b) => a.order - b.order))
 
-/** Build DAG edges from the variable define/reference relationships */
-const dagEdges = computed<DagEdge[]>(() => {
-  const edges: DagEdge[] = []
-  const defMap = new Map<string, CellId>()
-  for (const c of notebook.cells) {
-    for (const v of c.defines) defMap.set(v, c.id)
-  }
-  for (const c of notebook.cells) {
-    for (const v of c.references) {
-      const fromId = defMap.get(v)
-      if (fromId && fromId !== c.id) {
-        edges.push({ from_cell_id: fromId, to_cell_id: c.id, variable: v })
-      }
-    }
-  }
-  return edges
-})
+/**
+ * DAG edges authoritatively supplied by the backend.
+ *
+ * Recomputing locally from defines/references used a "last define wins"
+ * map that dropped legitimate upstream edges when a cell both defined
+ * and referenced a variable (e.g. a loop cell whose body rebinds the
+ * carry). The backend DAG builder walks cells in order and resolves
+ * the correct producer for each reference, so we use its output
+ * directly and keep the client side for layout only.
+ */
+const backendDagEdges = ref<DagEdge[]>([])
+
+const dagEdges = computed<DagEdge[]>(() => backendDagEdges.value)
 
 // --- Helper: sessionId accessor -------------------------------------------
 
@@ -1117,6 +1113,7 @@ function applyBackendDag(backendDag: any) {
     cell.downstreamIds = []
     cell.isLeaf = backendDag.leaves?.includes(cell.id) || false
   }
+  const edges: DagEdge[] = []
   if (backendDag.edges && Array.isArray(backendDag.edges)) {
     for (const edge of backendDag.edges) {
       const fromCell = cellMap.value.get(edge.from_cell_id)
@@ -1128,9 +1125,15 @@ function applyBackendDag(backendDag: any) {
         if (!fromCell.downstreamIds.includes(edge.to_cell_id)) {
           fromCell.downstreamIds.push(edge.to_cell_id)
         }
+        edges.push({
+          from_cell_id: edge.from_cell_id,
+          to_cell_id: edge.to_cell_id,
+          variable: typeof edge.variable === 'string' ? edge.variable : '',
+        })
       }
     }
   }
+  backendDagEdges.value = edges
 }
 
 // --- API Integration -------------------------------------------------------
