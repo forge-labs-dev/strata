@@ -1831,8 +1831,15 @@ class TestLoopCellExecution:
 
         assert result.success, result.error
         assert result.execution_method == "loop"
-        # Final iteration is iter=2 (k=0, 1, 2 with max_iter=3).
-        assert "iter=2" in (result.artifact_uri or "")
+        # The result's top-level artifact_uri is the canonical (non-iter)
+        # id so downstream cells can read it via the normal DAG path; the
+        # per-iteration artifacts live under ``@iter={k}`` suffixes.
+        assert result.artifact_uri is not None
+        assert "@iter=" not in result.artifact_uri
+        # Final iteration is k=2 with max_iter=3 — verify the per-iter
+        # artifact exists.
+        artifact_mgr = session.get_artifact_manager()
+        assert artifact_mgr.get_iteration_artifact("loop", "state", 2) is not None
 
     @pytest.mark.asyncio
     async def test_loop_until_terminates_early(self, loop_notebook):
@@ -1853,10 +1860,13 @@ class TestLoopCellExecution:
         result = await executor.execute_cell("loop", loop_source)
 
         assert result.success, result.error
-        # seed=0 → iter 0: n=1, iter 1: n=2, iter 2: n=3 (until truthy).
-        assert "iter=2" in (result.artifact_uri or "")
+        # The top-level artifact_uri is the canonical (non-iter) URI of
+        # the final iteration's carry; per-iter URIs are separate.
+        assert result.artifact_uri is not None
+        assert "@iter=" not in result.artifact_uri
 
-        # All three iteration artifacts should exist.
+        # All three iteration artifacts should exist; the loop terminated
+        # at iter=2 because state['n'] becomes 3 on iter 2.
         artifact_mgr = session.get_artifact_manager()
         for k in range(3):
             iter_artifact = artifact_mgr.get_iteration_artifact("loop", "state", k)

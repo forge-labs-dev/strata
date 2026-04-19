@@ -2533,6 +2533,26 @@ class CellExecutor:
                 if loop_state.get("until_reached"):
                     break
 
+        # Also store the final iteration's carry under the non-iter
+        # canonical id (``nb_..._var_<name>``) so downstream cells can
+        # resolve it via the normal _load_input_blobs path, which looks
+        # up the latest version of the canonical id. Without this, a
+        # downstream cell referencing the carry variable would miss the
+        # loop cell's output entirely even though the iter artifacts
+        # are all there.
+        canonical_provenance = hashlib.sha256(
+            f"{source_hash}:loop_final:{loop.max_iter}:{hashlib.sha256(carry_blob).hexdigest()}".encode()
+        ).hexdigest()
+        canonical_artifact = artifact_mgr.store_cell_output(
+            cell_id=cell_id,
+            variable_name=loop.carry,
+            blob_data=carry_blob,
+            content_type=carry_content_type,
+            provenance_hash=canonical_provenance,
+            source_hash=source_hash,
+        )
+        canonical_uri = f"strata://artifact/{canonical_artifact.id}@v={canonical_artifact.version}"
+
         duration_ms = (time.time() - start_time) * 1000
         raw_displays = final_result.get("displays") if final_result else None
         display_outputs = (
@@ -2546,10 +2566,18 @@ class CellExecutor:
             success=True,
             stdout="\n".join(combined_stdout),
             stderr="\n".join(combined_stderr),
-            outputs={},
+            outputs={
+                loop.carry: {
+                    "content_type": carry_content_type,
+                    "file": (
+                        f"{loop.carry}"
+                        f"{self._LOOP_CONTENT_TYPE_EXT.get(carry_content_type, '.pickle')}"
+                    ),
+                }
+            },
             display_outputs=display_outputs,
             duration_ms=duration_ms,
-            artifact_uri=final_artifact_uri,
+            artifact_uri=canonical_uri,
             execution_method="loop",
             mutation_warnings=all_mutation_warnings,
         )

@@ -1,0 +1,77 @@
+notebook_id = "loop-hill-climb-001"
+name = "Hill Climb Loop"
+created_at = 2026-04-18 00:00:00+00:00
+updated_at = 2026-04-18 00:00:00+00:00
+cells = [
+    { id = "seed", file = "seed.py", language = "python", order = 0 },
+    { id = "evolve", file = "evolve.py", language = "python", order = 1 },
+    { id = "summary", file = "summary.py", language = "python", order = 2 },
+]
+
+[[artifacts.seed.display_outputs]]
+content_type = "json/object"
+bytes = 287
+artifact_uri = "strata://artifact/nb_loop-hill-climb-001_cell_seed_var___display__0@v=1"
+
+[artifacts.seed.display_outputs.preview]
+x = 1.3942679845788373
+y = -4.74989244777333
+best_score = 478.10046069787757
+step = 1.0
+iter = 0
+
+[[artifacts.seed.display_outputs.preview.history]]
+iter = 0
+x = 1.3942679845788373
+y = -4.74989244777333
+score = 478.10046069787757
+accepted = true
+
+[artifacts.seed.display]
+content_type = "json/object"
+bytes = 287
+artifact_uri = "strata://artifact/nb_loop-hill-climb-001_cell_seed_var___display__0@v=1"
+
+[artifacts.seed.display.preview]
+x = 1.3942679845788373
+y = -4.74989244777333
+best_score = 478.10046069787757
+step = 1.0
+iter = 0
+
+[[artifacts.seed.display.preview.history]]
+iter = 0
+x = 1.3942679845788373
+y = -4.74989244777333
+score = 478.10046069787757
+accepted = true
+
+[[artifacts.summary.display_outputs]]
+content_type = "json/object"
+bytes = 161
+artifact_uri = "strata://artifact/nb_loop-hill-climb-001_cell_summary_var___display__0@v=1"
+
+[artifacts.summary.display_outputs.preview]
+final_x = 3.6094555292987467
+final_y = -1.7797668397786437
+final_score = 0.1114213543102833
+iterations = 40
+accepted = 9
+rejected = 32
+
+[artifacts.summary.display]
+content_type = "json/object"
+bytes = 161
+artifact_uri = "strata://artifact/nb_loop-hill-climb-001_cell_summary_var___display__0@v=1"
+
+[artifacts.summary.display.preview]
+final_x = 3.6094555292987467
+final_y = -1.7797668397786437
+final_score = 0.1114213543102833
+iterations = 40
+accepted = 9
+rejected = 32
+
+[environment]
+
+[cache]
