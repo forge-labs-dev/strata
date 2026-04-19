@@ -35,6 +35,11 @@ def build_materialize_request(table_uri: str, columns: list[str] | None = None) 
 @pytest.fixture
 def prefetch_warehouse(tmp_path):
     """Create a warehouse with data for prefetch testing."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
+
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 

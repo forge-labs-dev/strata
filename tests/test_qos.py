@@ -34,6 +34,11 @@ def build_materialize_request(table_uri: str, columns: list[str] | None = None) 
 @pytest.fixture
 def qos_warehouse(tmp_path):
     """Create a warehouse with tables of different sizes for QoS testing."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
+
     warehouse_path = tmp_path / "warehouse"
     warehouse_path.mkdir()
 

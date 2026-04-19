@@ -892,6 +892,11 @@ class TestStalenessDetection:
 @pytest.fixture
 def iceberg_warehouse(tmp_path):
     """Create a temporary warehouse with a sample Iceberg table."""
+    import sys
+
+    if sys.platform == "win32":
+        pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
+
     from pyiceberg.catalog.sql import SqlCatalog
     from pyiceberg.schema import Schema
     from pyiceberg.types import DoubleType, LongType, NestedField, StringType

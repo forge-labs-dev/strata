@@ -45,7 +45,7 @@ async function refreshIterations() {
     selectedIteration.value = null
     return
   }
-  const notebookId = notebook.value?.id
+  const notebookId = notebook.id
   if (!notebookId) return
   iterationsLoading.value = true
   iterationsError.value = null

@@ -515,6 +515,7 @@ export type WsServerMessageType =
   | 'cell_console' // Incremental console output (stdout/stderr)
   | 'cell_error' // Cell execution failed
   | 'cell_assertions' // Assertion results from cell execution
+  | 'cell_iteration_progress' // Loop cell completed one iteration
   | 'dag_update' // Authoritative DAG from backend AST analysis
   | 'cascade_prompt' // "This cell needs N upstream cells to run first"
   | 'cascade_progress' // During cascade, reports which cell is running

@@ -476,6 +476,11 @@ class TestPlannerWithMetadataCache:
     @pytest.fixture
     def warehouse_with_table(self, tmp_path):
         """Create a warehouse with an Iceberg table."""
+        import sys
+
+        if sys.platform == "win32":
+            pytest.skip("pyiceberg + pyarrow LocalFileSystem path handling broken on Windows")
+
         from pyiceberg.catalog.sql import SqlCatalog
         from pyiceberg.schema import Schema
         from pyiceberg.types import LongType, NestedField, StringType
