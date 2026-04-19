@@ -11,9 +11,14 @@ converge to different basins.
 
 ## What to look at
 
+- **`helpers`** is a module cell — imports (``random``) and a
+  reusable function (``himmelblau``). It declares no top-level
+  runtime state, so Strata treats it as a shareable module whose
+  names are directly referenceable from every downstream cell.
 - **`seed`** bootstraps the search at a random `(x, y)` with an initial
-  score. Nothing loopy yet — it's a normal cell whose output variable
-  `state` is the upstream carry for the loop cell below.
+  score, using ``random`` and ``himmelblau`` from ``helpers``. Its
+  output variable `state` is the upstream carry for the loop cell
+  below.
 - **`evolve`** is the loop cell.
   - `# @loop max_iter=40 carry=state` caps the search at 40 iterations
     and tells Strata that the variable `state` is threaded between
@@ -23,6 +28,8 @@ converge to different basins.
   - Each iteration proposes a small random perturbation of `(x, y)` and
     keeps the move if it improves the score. The step size shrinks on
     every accepted move so the search sharpens.
+  - ``random`` and ``himmelblau`` come from the ``helpers`` cell via
+    the DAG — no duplicate imports or redefinitions here.
   - Every iteration stores the full `state` as its own artifact
     (`nb_loop-hill-climb-001_cell_evolve_var_state@iter={k}`).
 - **`summary`** is a regular downstream cell. It reads the final
