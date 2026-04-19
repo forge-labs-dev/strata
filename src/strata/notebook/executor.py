@@ -2540,18 +2540,53 @@ class CellExecutor:
         # downstream cell referencing the carry variable would miss the
         # loop cell's output entirely even though the iter artifacts
         # are all there.
-        canonical_provenance = hashlib.sha256(
-            f"{source_hash}:loop_final:{loop.max_iter}:{hashlib.sha256(carry_blob).hexdigest()}".encode()
+        #
+        # Crucially, the canonical artifact's provenance must match what
+        # ``compute_staleness`` recomputes on re-open — same per-variable
+        # scheme used by the non-loop path ``sha256(prov:var_name)``
+        # where ``prov`` comes from ``compute_provenance_hash`` over
+        # narrow env + input hashes + mount fingerprints + source. If
+        # we stored a custom hash here the loop cell would always look
+        # stale on subsequent staleness computations.
+        effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
+        runtime_identity = worker_runtime_identity(self.session.notebook_state, effective_worker)
+        cell_state = next(
+            (c for c in self.session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        declared_env_keys = set(annotations.env) | set(
+            getattr(cell_state, "env_overrides", {}) or {}
+        )
+        provenance_env = narrow_env_for_provenance(source, runtime_env, declared_env_keys)
+        env_hash = compute_execution_env_hash(
+            self.session.path, provenance_env, runtime_identity=runtime_identity
+        )
+        input_hashes = self._collect_input_hashes(cell_id)
+        mount_fps, _ = await self._fingerprint_mounts(mount_specs)
+        cell_provenance = compute_provenance_hash(input_hashes + mount_fps, source_hash, env_hash)
+        carry_var_provenance = hashlib.sha256(
+            f"{cell_provenance}:{loop.carry}".encode()
         ).hexdigest()
+
         canonical_artifact = artifact_mgr.store_cell_output(
             cell_id=cell_id,
             variable_name=loop.carry,
             blob_data=carry_blob,
             content_type=carry_content_type,
-            provenance_hash=canonical_provenance,
+            provenance_hash=carry_var_provenance,
             source_hash=source_hash,
         )
         canonical_uri = f"strata://artifact/{canonical_artifact.id}@v={canonical_artifact.version}"
+
+        # Record the cell-level provenance on the session so
+        # ``compute_staleness`` can hit the "uncached ready" path for
+        # leaf loop cells that don't produce an upstream carry.
+        self.session.record_successful_execution_provenance(
+            cell_id,
+            cell_provenance,
+            source_hash,
+            env_hash,
+        )
 
         duration_ms = (time.time() - start_time) * 1000
         raw_displays = final_result.get("displays") if final_result else None
