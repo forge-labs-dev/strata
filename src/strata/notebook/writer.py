@@ -155,6 +155,14 @@ def write_cell(notebook_dir: Path, cell_id: str, source: str) -> None:
 def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
     """Write notebook.toml to disk.
 
+    ``notebook.toml`` holds stable notebook configuration only — cell
+    list, workers, env, mounts, timeout, ai. Anything that changes on
+    every execution or background sync (display outputs, console, per-
+    cell provenance hashes, the last ``uv sync`` timestamp) lives in
+    ``.strata/runtime.json`` via ``runtime_state.py``. Callers that
+    only need to persist runtime state must not touch this file — that
+    keeps ``updated_at`` meaningful as a structural-change signal.
+
     Args:
         notebook_dir: Path to notebook directory
         toml: NotebookToml model to write

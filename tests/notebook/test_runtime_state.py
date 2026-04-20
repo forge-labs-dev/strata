@@ -292,3 +292,57 @@ def test_update_cell_display_outputs_clears_entry(tmp_path: Path):
 
     runtime = load_runtime_state(notebook_dir)
     assert "c1" not in runtime["cells"]
+
+
+def test_runtime_state_writes_do_not_bump_notebook_toml_updated_at(tmp_path: Path):
+    """Runtime-state writes must not touch ``notebook.toml``.
+
+    ``updated_at`` is the signal we want to reserve for structural
+    changes (add/remove/reorder cells, change worker/timeout/env/mounts)
+    so version-controlled notebooks don't churn under Git every time
+    someone runs a cell. Display-output, console, provenance-hash, and
+    environment-metadata updates all live in ``.strata/`` — so executing
+    a cell must leave ``notebook.toml`` byte-identical.
+    """
+    import tomllib
+
+    from strata.notebook.runtime_state import persist_cell_provenance
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        create_notebook,
+        update_cell_console_output,
+        update_cell_display_outputs,
+        update_environment_metadata,
+        write_cell,
+    )
+
+    notebook_dir = create_notebook(tmp_path, "UpdatedAtTest", initialize_environment=False)
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(notebook_dir, "c1", "x = 1")
+
+    notebook_toml_path = notebook_dir / "notebook.toml"
+    before = notebook_toml_path.read_bytes()
+    with open(notebook_toml_path, "rb") as f:
+        before_updated_at = tomllib.load(f).get("updated_at")
+
+    update_cell_display_outputs(
+        notebook_dir,
+        "c1",
+        [{"content_type": "json/object", "bytes": 5}],
+    )
+    update_cell_console_output(notebook_dir, "c1", "hi\n", "")
+    persist_cell_provenance(
+        notebook_dir,
+        "c1",
+        last_provenance_hash="prov",
+        last_source_hash="src",
+        last_env_hash="env",
+    )
+    update_environment_metadata(notebook_dir)
+
+    after = notebook_toml_path.read_bytes()
+    with open(notebook_toml_path, "rb") as f:
+        after_updated_at = tomllib.load(f).get("updated_at")
+
+    assert before == after
+    assert before_updated_at == after_updated_at
