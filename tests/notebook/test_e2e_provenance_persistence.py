@@ -15,7 +15,6 @@ without a re-execution. This test covers all three.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -67,8 +66,7 @@ async def test_cold_and_cached_paths_persist_provenance(tmp_path: Path):
     )
     cached_prov = _provenance(nb_dir, "c1")
     assert cached_prov == cold_prov, (
-        "cache-hit branch must re-persist provenance; "
-        f"cold={cold_prov} cached={cached_prov}"
+        f"cache-hit branch must re-persist provenance; cold={cold_prov} cached={cached_prov}"
     )
 
 
