@@ -200,11 +200,47 @@ def infer_provider_name(base_url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def response_format_for(
+    base_url: str,
+    *,
+    output_type: str | None,
+    output_schema: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Pick the provider-appropriate ``response_format`` payload.
+
+    * OpenAI endpoints accept ``json_schema`` for strict schema
+      enforcement — the response is guaranteed to validate.
+    * Everything else (Anthropic's OpenAI-compat, Mistral, Ollama,
+      local vLLM) reliably supports ``json_object`` for "valid JSON,
+      any shape" — schema enforcement happens client-side if at all.
+    * Plain ``output_type=="json"`` without a schema falls back to
+      ``json_object`` which still guarantees parseable JSON.
+
+    Returns ``None`` when no structured output is requested, so the
+    caller can leave ``response_format`` off the request body.
+    """
+    if output_schema is not None:
+        if "openai" in base_url.lower():
+            return {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "PromptResponse",
+                    "schema": output_schema,
+                    "strict": True,
+                },
+            }
+        return {"type": "json_object"}
+    if output_type == "json":
+        return {"type": "json_object"}
+    return None
+
+
 async def chat_completion(
     config: LlmConfig,
     messages: list[dict[str, str]],
     *,
     temperature: float | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> LlmCompletionResult:
     """Send a chat completion request via the OpenAI-compatible API."""
     body: dict[str, Any] = {
@@ -214,6 +250,8 @@ async def chat_completion(
     }
     if temperature is not None:
         body["temperature"] = temperature
+    if response_format is not None:
+        body["response_format"] = response_format
 
     async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
         resp = await client.post(

@@ -17,6 +17,7 @@ from strata.notebook.llm import (
     infer_provider_name,
     render_prompt_template,
     resolve_llm_config,
+    response_format_for,
 )
 
 
@@ -152,6 +153,53 @@ class TestInferProviderName:
 
     def test_custom(self):
         assert infer_provider_name("https://my-company.com/llm/v1") == "custom"
+
+
+class TestResponseFormatFor:
+    """Pick the right provider-native structured-output payload."""
+
+    _SCHEMA = {"type": "object", "properties": {"n": {"type": "integer"}}}
+
+    def test_openai_with_schema_uses_json_schema(self):
+        rf = response_format_for(
+            "https://api.openai.com/v1",
+            output_type="json",
+            output_schema=self._SCHEMA,
+        )
+        assert rf == {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "PromptResponse",
+                "schema": self._SCHEMA,
+                "strict": True,
+            },
+        }
+
+    def test_anthropic_with_schema_falls_back_to_json_object(self):
+        rf = response_format_for(
+            "https://api.anthropic.com/v1",
+            output_type="json",
+            output_schema=self._SCHEMA,
+        )
+        assert rf == {"type": "json_object"}
+
+    def test_plain_json_without_schema_uses_json_object(self):
+        rf = response_format_for(
+            "https://api.openai.com/v1",
+            output_type="json",
+            output_schema=None,
+        )
+        assert rf == {"type": "json_object"}
+
+    def test_text_output_returns_none(self):
+        assert (
+            response_format_for(
+                "https://api.openai.com/v1",
+                output_type="text",
+                output_schema=None,
+            )
+            is None
+        )
 
 
 class TestEstimateTokens:

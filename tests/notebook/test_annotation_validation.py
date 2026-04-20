@@ -299,3 +299,33 @@ class TestLoopAnnotationDiagnostics:
         nb = NotebookState(id="test-nb", name="test", cells=[cell])
         codes = _codes(cell, nb)
         assert "loop_start_from_unknown" in codes
+
+
+class TestPromptOutputSchemaDiagnostics:
+    """Prompt cells surface malformed ``@output_schema`` as a warning."""
+
+    def _prompt_cell(self, source: str) -> CellState:
+        return CellState(id="c1", source=source, language="prompt")
+
+    def test_valid_schema_no_diagnostic(self):
+        cell = self._prompt_cell('# @output_schema {"type": "object"}\nSummarize {{ df }}')
+        diags = validate_cell_annotations(cell, _nb())
+        assert [d.code for d in diags] == []
+
+    def test_invalid_json_surfaces_warning(self):
+        cell = self._prompt_cell("# @output_schema {nope}\nHi")
+        diags = validate_cell_annotations(cell, _nb())
+        codes = [d.code for d in diags]
+        assert codes == ["prompt_output_schema_invalid"]
+        assert diags[0].severity == "warn"
+
+    def test_non_object_schema_surfaces_warning(self):
+        cell = self._prompt_cell("# @output_schema [1,2]\nHi")
+        diags = validate_cell_annotations(cell, _nb())
+        assert [d.code for d in diags] == ["prompt_output_schema_invalid"]
+
+    def test_python_cell_does_not_run_prompt_validator(self):
+        """A Python cell with text that looks like @output_schema stays silent."""
+        cell = _cell("# @output_schema {bad\nx = 1")
+        codes = _codes(cell, _nb())
+        assert "prompt_output_schema_invalid" not in codes

@@ -17,6 +17,7 @@ from strata.notebook.llm import (
     chat_completion,
     estimate_tokens,
     render_prompt_template,
+    response_format_for,
 )
 from strata.notebook.prompt_analyzer import analyze_prompt_cell
 
@@ -24,6 +25,38 @@ if TYPE_CHECKING:
     from strata.notebook.session import NotebookSession
 
 logger = logging.getLogger(__name__)
+
+
+def compute_prompt_provenance_hash(
+    *,
+    rendered: str,
+    model: str,
+    temperature: float,
+    system_prompt: str | None,
+    output_type: str,
+    output_schema: dict[str, Any] | None,
+) -> str:
+    """Stable cache key for a prompt-cell invocation.
+
+    Includes the schema fingerprint so editing ``@output_schema``
+    invalidates cached responses even when the template body and model
+    params are unchanged — a schema change means the user wants a
+    differently-shaped answer.
+    """
+    schema_fp = (
+        json.dumps(output_schema, sort_keys=True, separators=(",", ":"))
+        if output_schema is not None
+        else ""
+    )
+    parts = [
+        rendered,
+        model,
+        str(temperature),
+        system_prompt or "",
+        output_type,
+        schema_fp,
+    ]
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 async def execute_prompt_cell(
@@ -48,7 +81,10 @@ async def execute_prompt_cell(
     model = analysis.model or llm_config.model
     temperature = analysis.temperature if analysis.temperature is not None else 0.0
     max_tokens = analysis.max_tokens or llm_config.max_output_tokens
-    output_type = analysis.output_type or "text"
+    output_schema = analysis.output_schema
+    # A schema implies JSON — let users omit ``@output json`` when they
+    # supply ``@output_schema``.
+    output_type = analysis.output_type or ("json" if output_schema is not None else "text")
     system_prompt = analysis.system_prompt
 
     # Load upstream variables from artifacts
@@ -64,15 +100,14 @@ async def execute_prompt_cell(
     if not rendered.strip():
         return _error_result("Prompt template is empty after rendering", start_time)
 
-    # Compute provenance hash
-    provenance_parts = [
-        rendered,
-        model,
-        str(temperature),
-        system_prompt or "",
-        output_type,
-    ]
-    provenance_hash = hashlib.sha256("\n".join(provenance_parts).encode()).hexdigest()
+    provenance_hash = compute_prompt_provenance_hash(
+        rendered=rendered,
+        model=model,
+        temperature=temperature,
+        system_prompt=system_prompt,
+        output_type=output_type,
+        output_schema=output_schema,
+    )
 
     # Cache check
     artifact_mgr = session.get_artifact_manager()
@@ -157,7 +192,17 @@ async def execute_prompt_cell(
             max_output_tokens=max_tokens,
             timeout_seconds=llm_config.timeout_seconds,
         )
-        result = await chat_completion(call_config, messages, temperature=temperature)
+        response_format = response_format_for(
+            llm_config.base_url,
+            output_type=output_type,
+            output_schema=output_schema,
+        )
+        result = await chat_completion(
+            call_config,
+            messages,
+            temperature=temperature,
+            response_format=response_format,
+        )
     except Exception as e:
         return _error_result(f"LLM call failed: {e}", start_time)
 
@@ -196,6 +241,7 @@ async def execute_prompt_cell(
                     "output_type": output_type,
                     "input_tokens": result.input_tokens,
                     "output_tokens": result.output_tokens,
+                    **({"output_schema": output_schema} if output_schema is not None else {}),
                 },
                 inputs=[],
             ),

@@ -38,6 +38,30 @@ class TestPromptAnalyzer:
         result = analyze_prompt_cell("# @temperature 0.7\nHello")
         assert result.temperature == 0.7
 
+    def test_output_schema_valid(self):
+        source = (
+            '# @output_schema {"type": "object", "properties": {"n": {"type": "integer"}}}\n'
+            "Count items in {{ df }}"
+        )
+        result = analyze_prompt_cell(source)
+        assert result.output_schema == {
+            "type": "object",
+            "properties": {"n": {"type": "integer"}},
+        }
+        assert result.output_schema_error is None
+
+    def test_output_schema_invalid_json_reports_error(self):
+        source = "# @output_schema {type: object}\nHi"
+        result = analyze_prompt_cell(source)
+        assert result.output_schema is None
+        assert result.output_schema_error is not None
+        assert "Invalid JSON" in result.output_schema_error
+
+    def test_output_schema_must_be_object(self):
+        result = analyze_prompt_cell("# @output_schema [1, 2, 3]\nHi")
+        assert result.output_schema is None
+        assert result.output_schema_error == "@output_schema must be a JSON object"
+
     def test_output_annotation(self):
         result = analyze_prompt_cell("# @output json\nExtract {{ text }}")
         assert result.output_type == "json"

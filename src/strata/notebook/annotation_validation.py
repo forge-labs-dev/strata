@@ -23,6 +23,8 @@ def validate_cell_annotations(
     notebook_state: NotebookState,
 ) -> list[AnnotationDiagnostic]:
     """Validate a cell's annotations against notebook-wide context."""
+    if cell.language == "prompt":
+        return _validate_prompt_cell_annotations(cell)
     diagnostics: list[AnnotationDiagnostic] = []
     annotations = parse_annotations(cell.source)
 
@@ -134,6 +136,28 @@ def validate_cell_annotations(
 
     diagnostics.extend(_validate_loop_annotation(cell, annotations, notebook_state))
 
+    return diagnostics
+
+
+def _validate_prompt_cell_annotations(cell: CellState) -> list[AnnotationDiagnostic]:
+    """Surface prompt-cell annotation errors (e.g. malformed ``@output_schema``).
+
+    Called only for ``language == "prompt"`` cells. Python-cell validators
+    (worker/mount/timeout/env/loop) don't apply here.
+    """
+    from strata.notebook.prompt_analyzer import analyze_prompt_cell
+
+    analysis = analyze_prompt_cell(cell.source)
+    diagnostics: list[AnnotationDiagnostic] = []
+    if analysis.output_schema_error:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="warn",
+                code="prompt_output_schema_invalid",
+                message=analysis.output_schema_error,
+                line=_find_annotation_line(cell.source, "output_schema"),
+            )
+        )
     return diagnostics
 
 
