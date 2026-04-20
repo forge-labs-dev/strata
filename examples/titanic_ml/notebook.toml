@@ -1,46 +1,12 @@
 notebook_id = "titanic-ml-001"
 name = "Titanic Survival Prediction"
-created_at = 2026-04-04T00:00:00Z
-updated_at = 2026-04-04T00:00:00Z
-
-[[cells]]
-id = "load-data"
-file = "load_data.py"
-language = "python"
-order = 0
-
-[[cells]]
-id = "explore"
-file = "explore.py"
-language = "python"
-order = 1
-
-[[cells]]
-id = "features"
-file = "features.py"
-language = "python"
-order = 2
-
-[[cells]]
-id = "train-model"
-file = "train_model.py"
-language = "python"
-order = 3
-
-[[cells]]
-id = "evaluate"
-file = "evaluate.py"
-language = "python"
-order = 4
-
-[[cells]]
-id = "compare"
-file = "compare.py"
-language = "python"
-order = 5
-
-[artifacts]
-
-[environment]
-
-[cache]
+created_at = 2026-04-04 00:00:00+00:00
+updated_at = 2026-04-04 00:00:00+00:00
+cells = [
+    { id = "load-data", file = "load_data.py", language = "python", order = 0 },
+    { id = "explore", file = "explore.py", language = "python", order = 1 },
+    { id = "features", file = "features.py", language = "python", order = 2 },
+    { id = "train-model", file = "train_model.py", language = "python", order = 3 },
+    { id = "evaluate", file = "evaluate.py", language = "python", order = 4 },
+    { id = "compare", file = "compare.py", language = "python", order = 5 },
+]

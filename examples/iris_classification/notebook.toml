@@ -1,52 +1,13 @@
 notebook_id = "iris-classification-001"
 name = "Iris Classification"
-created_at = 2026-04-04T00:00:00Z
-updated_at = 2026-04-04T00:00:00Z
-
-[[cells]]
-id = "load-data"
-file = "load_data.py"
-language = "python"
-order = 0
-
-[[cells]]
-id = "explore-stats"
-file = "explore_stats.py"
-language = "python"
-order = 1
-
-[[cells]]
-id = "scatter-plot"
-file = "scatter_plot.py"
-language = "python"
-order = 2
-
-[[cells]]
-id = "train-test"
-file = "train_test.py"
-language = "python"
-order = 3
-
-[[cells]]
-id = "train-model"
-file = "train_model.py"
-language = "python"
-order = 4
-
-[[cells]]
-id = "evaluate"
-file = "evaluate.py"
-language = "python"
-order = 5
-
-[[cells]]
-id = "confusion"
-file = "confusion.py"
-language = "python"
-order = 6
-
-[artifacts]
-
-[environment]
-
-[cache]
+created_at = 2026-04-04 00:00:00+00:00
+updated_at = 2026-04-04 00:00:00+00:00
+cells = [
+    { id = "load-data", file = "load_data.py", language = "python", order = 0 },
+    { id = "explore-stats", file = "explore_stats.py", language = "python", order = 1 },
+    { id = "scatter-plot", file = "scatter_plot.py", language = "python", order = 2 },
+    { id = "train-test", file = "train_test.py", language = "python", order = 3 },
+    { id = "train-model", file = "train_model.py", language = "python", order = 4 },
+    { id = "evaluate", file = "evaluate.py", language = "python", order = 5 },
+    { id = "confusion", file = "confusion.py", language = "python", order = 6 },
+]

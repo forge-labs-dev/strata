@@ -1,52 +1,13 @@
 notebook_id = "pandas-basics-001"
 name = "Pandas Basics"
-created_at = 2026-04-04T00:00:00Z
-updated_at = 2026-04-04T00:00:00Z
-
-[[cells]]
-id = "create-data"
-file = "create_data.py"
-language = "python"
-order = 0
-
-[[cells]]
-id = "select-filter"
-file = "select_filter.py"
-language = "python"
-order = 1
-
-[[cells]]
-id = "add-columns"
-file = "add_columns.py"
-language = "python"
-order = 2
-
-[[cells]]
-id = "groupby"
-file = "groupby.py"
-language = "python"
-order = 3
-
-[[cells]]
-id = "pivot"
-file = "pivot.py"
-language = "python"
-order = 4
-
-[[cells]]
-id = "merge"
-file = "merge.py"
-language = "python"
-order = 5
-
-[[cells]]
-id = "summary"
-file = "summary.py"
-language = "python"
-order = 6
-
-[artifacts]
-
-[environment]
-
-[cache]
+created_at = 2026-04-04 00:00:00+00:00
+updated_at = 2026-04-04 00:00:00+00:00
+cells = [
+    { id = "create-data", file = "create_data.py", language = "python", order = 0 },
+    { id = "select-filter", file = "select_filter.py", language = "python", order = 1 },
+    { id = "add-columns", file = "add_columns.py", language = "python", order = 2 },
+    { id = "groupby", file = "groupby.py", language = "python", order = 3 },
+    { id = "pivot", file = "pivot.py", language = "python", order = 4 },
+    { id = "merge", file = "merge.py", language = "python", order = 5 },
+    { id = "summary", file = "summary.py", language = "python", order = 6 },
+]

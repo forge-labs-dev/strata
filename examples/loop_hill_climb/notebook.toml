@@ -8,9 +8,3 @@ cells = [
     { id = "evolve", file = "evolve.py", language = "python", order = 2 },
     { id = "summary", file = "summary.py", language = "python", order = 3 },
 ]
-
-[artifacts]
-
-[environment]
-
-[cache]
