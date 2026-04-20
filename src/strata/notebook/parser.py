@@ -6,6 +6,8 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
+import tomli_w
+
 from strata.notebook.models import (
     CellMeta,
     CellOutput,
@@ -38,6 +40,32 @@ def parse_notebook(directory: Path) -> NotebookState:
     # Read notebook.toml
     with open(notebook_toml_path, "rb") as f:
         toml_data = tomllib.load(f)
+
+    # Move runtime fields (display outputs, cache block) out of
+    # notebook.toml on first open of a legacy notebook. The helper is
+    # additive and a no-op once the migration has happened.
+    from strata.notebook.runtime_state import (
+        load_runtime_state,
+        migrate_from_legacy_notebook_toml,
+    )
+
+    legacy_artifacts = toml_data.get("artifacts")
+    has_legacy_cache = "cache" in toml_data
+    if migrate_from_legacy_notebook_toml(directory, toml_data) or has_legacy_cache:
+        toml_data.pop("artifacts", None)
+        toml_data.pop("cache", None)
+        _rewrite_notebook_toml(notebook_toml_path, toml_data)
+    # Even when nothing was migrated (runtime.json already exists), drop
+    # the legacy sections from the in-memory parse result so downstream
+    # code does not see them. ``legacy_artifacts`` is still used below
+    # only as an unused-var marker — the actual values live in
+    # runtime.json from here on.
+    del legacy_artifacts
+    toml_data.pop("artifacts", None)
+    toml_data.pop("cache", None)
+
+    runtime_state = load_runtime_state(directory)
+    runtime_cells = runtime_state.get("cells", {})
 
     # Parse into NotebookToml
     # Get created_at and updated_at, defaulting to now if not present
@@ -72,7 +100,6 @@ def parse_notebook(directory: Path) -> NotebookState:
 
     # Build notebook-level mount defaults (keyed by name for cell overrides)
     notebook_mounts = {m.name: m for m in notebook_toml.mounts}
-    artifact_entries = notebook_toml.artifacts if isinstance(notebook_toml.artifacts, dict) else {}
 
     for cell_meta in notebook_toml.cells:
         cell_file = cells_dir / cell_meta.file
@@ -93,9 +120,9 @@ def parse_notebook(directory: Path) -> NotebookState:
         resolved_env = dict(notebook_toml.env)
         resolved_env.update(cell_meta.env)
         display_outputs: list[CellOutput] = []
-        raw_artifacts = artifact_entries.get(cell_meta.id, {})
-        if isinstance(raw_artifacts, dict):
-            raw_displays = raw_artifacts.get("display_outputs")
+        runtime_cell = runtime_cells.get(cell_meta.id, {})
+        if isinstance(runtime_cell, dict):
+            raw_displays = runtime_cell.get("display_outputs")
             if isinstance(raw_displays, list):
                 for raw_display in raw_displays:
                     if not isinstance(raw_display, dict):
@@ -104,7 +131,7 @@ def parse_notebook(directory: Path) -> NotebookState:
                         display_outputs.append(CellOutput(**raw_display))
                     except Exception:
                         continue
-            raw_display = raw_artifacts.get("display")
+            raw_display = runtime_cell.get("display")
             if not display_outputs and isinstance(raw_display, dict):
                 try:
                     display_outputs = [CellOutput(**raw_display)]
@@ -153,3 +180,15 @@ def parse_notebook(directory: Path) -> NotebookState:
         created_at=notebook_toml.created_at,
         updated_at=notebook_toml.updated_at,
     )
+
+
+def _rewrite_notebook_toml(path: Path, toml_data: dict) -> None:
+    """Write a pre-parsed TOML dict back to disk (used by migration).
+
+    Unlike ``write_notebook_toml`` this preserves whatever shape the
+    caller has constructed, including fields not modelled by
+    ``NotebookToml``. Used when the migration helper has already
+    stripped legacy runtime sections from ``toml_data``.
+    """
+    with open(path, "wb") as f:
+        tomli_w.dump(toml_data, f)

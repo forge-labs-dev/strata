@@ -195,9 +195,13 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
         **({"ai": toml.ai} if toml.ai else {}),
-        "artifacts": toml.artifacts,
+        # ``artifacts`` (display outputs) and ``cache`` used to live
+        # here but changed on every execution, churning git diffs for
+        # example notebooks. They now live in ``.strata/runtime.json``
+        # (see ``runtime_state.py``). ``environment`` is still here but
+        # only for static config; runtime sync timestamps will migrate
+        # out in a follow-up commit.
         "environment": toml.environment,
-        "cache": toml.cache,
     }
 
     with open(notebook_toml_path, "wb") as f:
@@ -708,37 +712,32 @@ def update_cell_display_outputs(
     cell_id: str,
     display_outputs: list[dict[str, object]] | None,
 ) -> None:
-    """Persist or clear ordered display output metadata for a cell."""
+    """Persist or clear ordered display output metadata for a cell.
+
+    Stored in ``.strata/runtime.json`` — display outputs change every
+    execution, so they'd churn ``notebook.toml`` under Git if kept
+    there. The same file also holds per-cell provenance hashes and
+    the last ``uv sync`` timestamp; see ``runtime_state.py``.
+    """
+    from strata.notebook.runtime_state import (
+        get_cell_entry,
+        load_runtime_state,
+        save_runtime_state,
+    )
+
     notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
+    state = load_runtime_state(notebook_dir)
+    entry = get_cell_entry(state, cell_id)
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
-
-    artifacts_data = toml_data.get("artifacts", {})
-    if not isinstance(artifacts_data, dict):
-        artifacts_data = {}
-
-    raw_cell_artifacts = artifacts_data.get(cell_id, {})
-    cell_artifacts = dict(raw_cell_artifacts) if isinstance(raw_cell_artifacts, dict) else {}
     persisted_displays = _sanitize_display_outputs_for_toml(display_outputs)
-
     if persisted_displays:
-        cell_artifacts["display_outputs"] = persisted_displays
-        cell_artifacts["display"] = persisted_displays[-1]
+        entry["display_outputs"] = persisted_displays
+        entry["display"] = persisted_displays[-1]
     else:
-        cell_artifacts.pop("display_outputs", None)
-        cell_artifacts.pop("display", None)
+        entry.pop("display_outputs", None)
+        entry.pop("display", None)
 
-    if cell_artifacts:
-        artifacts_data[cell_id] = cell_artifacts
-    else:
-        artifacts_data.pop(cell_id, None)
-
-    toml_data["artifacts"] = artifacts_data
-
-    with open(notebook_toml_path, "wb") as out:
-        tomli_w.dump(toml_data, out)
+    save_runtime_state(notebook_dir, state)
 
 
 def update_notebook_ai_model(notebook_dir: Path, model: str) -> None:
