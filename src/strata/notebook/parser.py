@@ -146,6 +146,14 @@ def parse_notebook(directory: Path) -> NotebookState:
 
         console_stdout, console_stderr = load_cell_console_output(directory, cell_meta.id)
 
+        # Persisted execution provenance from ``.strata/runtime.json``.
+        # compute_staleness() compares these against freshly-computed
+        # hashes, so hydrating them at open lets a reopened notebook
+        # correctly classify cells as READY / STALE without a
+        # re-execution.
+        def _str_or_none(value: object) -> str | None:
+            return value if isinstance(value, str) and value else None
+
         cell_states.append(
             CellState(
                 id=cell_meta.id,
@@ -164,6 +172,9 @@ def parse_notebook(directory: Path) -> NotebookState:
                 display_output=display_outputs[-1] if display_outputs else None,
                 console_stdout=console_stdout,
                 console_stderr=console_stderr,
+                last_provenance_hash=_str_or_none(runtime_cell.get("last_provenance_hash")),
+                last_source_hash=_str_or_none(runtime_cell.get("last_source_hash")),
+                last_env_hash=_str_or_none(runtime_cell.get("last_env_hash")),
             )
         )
 

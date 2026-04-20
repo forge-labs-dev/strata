@@ -671,13 +671,28 @@ class NotebookSession:
         source_hash: str,
         env_hash: str,
     ) -> None:
-        """Persist the last successful execution provenance for uncached cells."""
+        """Persist the last successful execution provenance for uncached cells.
+
+        Updates the in-memory cell state and also writes to
+        ``.strata/runtime.json`` so ``compute_staleness`` can classify
+        the cell correctly after a notebook reopen without requiring a
+        re-execution.
+        """
+        from strata.notebook.runtime_state import persist_cell_provenance
+
         cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
         if cell is None:
             return
         cell.last_provenance_hash = provenance_hash
         cell.last_source_hash = source_hash
         cell.last_env_hash = env_hash
+        persist_cell_provenance(
+            self.path,
+            cell_id,
+            last_provenance_hash=provenance_hash,
+            last_source_hash=source_hash,
+            last_env_hash=env_hash,
+        )
 
     def serialize_cell(self, cell: Any) -> dict[str, Any]:
         """Serialize a cell with causality and flattened staleness reasons."""

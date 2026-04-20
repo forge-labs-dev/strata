@@ -215,6 +215,62 @@ def test_update_cell_display_outputs_writes_to_runtime_json(tmp_path: Path):
     assert "artifacts" not in toml_data
 
 
+def test_persist_cell_provenance_sets_and_clears_fields(tmp_path: Path):
+    from strata.notebook.runtime_state import persist_cell_provenance
+
+    persist_cell_provenance(
+        tmp_path,
+        "c1",
+        last_provenance_hash="prov",
+        last_source_hash="src",
+        last_env_hash="env",
+    )
+    state = load_runtime_state(tmp_path)
+    entry = state["cells"]["c1"]
+    assert entry["last_provenance_hash"] == "prov"
+    assert entry["last_source_hash"] == "src"
+    assert entry["last_env_hash"] == "env"
+
+    # Clearing one field pops it and leaves the rest intact.
+    persist_cell_provenance(
+        tmp_path,
+        "c1",
+        last_provenance_hash=None,
+        last_source_hash="src2",
+        last_env_hash="env2",
+    )
+    entry = load_runtime_state(tmp_path)["cells"]["c1"]
+    assert "last_provenance_hash" not in entry
+    assert entry["last_source_hash"] == "src2"
+    assert entry["last_env_hash"] == "env2"
+
+
+def test_parse_notebook_hydrates_provenance_hashes(tmp_path: Path):
+    """Opening a notebook restores persisted provenance hashes onto the
+    cell state so ``compute_staleness`` has the history it needs."""
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.runtime_state import persist_cell_provenance
+    from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+    notebook_dir = create_notebook(tmp_path, "ProvPersist", initialize_environment=False)
+    add_cell_to_notebook(notebook_dir, "c1")
+    write_cell(notebook_dir, "c1", "x = 1")
+
+    persist_cell_provenance(
+        notebook_dir,
+        "c1",
+        last_provenance_hash="prov-abc",
+        last_source_hash="src-abc",
+        last_env_hash="env-abc",
+    )
+
+    state = parse_notebook(notebook_dir)
+    cell = next(c for c in state.cells if c.id == "c1")
+    assert cell.last_provenance_hash == "prov-abc"
+    assert cell.last_source_hash == "src-abc"
+    assert cell.last_env_hash == "env-abc"
+
+
 def test_update_cell_display_outputs_clears_entry(tmp_path: Path):
     from strata.notebook.writer import (
         add_cell_to_notebook,

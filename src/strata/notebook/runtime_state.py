@@ -92,6 +92,39 @@ def prune_cell_entry(state: dict[str, Any], cell_id: str) -> None:
         cells.pop(cell_id, None)
 
 
+_PROVENANCE_FIELDS = ("last_provenance_hash", "last_source_hash", "last_env_hash")
+
+
+def persist_cell_provenance(
+    notebook_dir: Path,
+    cell_id: str,
+    *,
+    last_provenance_hash: str | None,
+    last_source_hash: str | None,
+    last_env_hash: str | None,
+) -> None:
+    """Persist the last successful execution provenance for a cell.
+
+    These hashes let ``compute_staleness`` tell ``STALE`` from
+    ``IDLE`` for cells whose canonical artifact has been evicted — a
+    must-have for loop cells and long-lived notebooks re-opened after
+    a GC pass. They live in ``.strata/runtime.json`` so they survive
+    reopens without polluting the committed ``notebook.toml``.
+    """
+    state = load_runtime_state(notebook_dir)
+    entry = get_cell_entry(state, cell_id)
+    for key, value in zip(
+        _PROVENANCE_FIELDS,
+        (last_provenance_hash, last_source_hash, last_env_hash),
+        strict=True,
+    ):
+        if value:
+            entry[key] = value
+        else:
+            entry.pop(key, None)
+    save_runtime_state(notebook_dir, state)
+
+
 def migrate_from_legacy_notebook_toml(
     notebook_dir: Path,
     toml_data: dict[str, Any],
