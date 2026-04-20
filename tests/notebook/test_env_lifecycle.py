@@ -515,14 +515,15 @@ class TestEnvironmentMetadata:
     """Environment metadata persisted to notebook.toml."""
 
     def test_update_environment_metadata_records_runtime_fields(self, tmp_path: Path):
-        """Environment metadata should include richer sidebar status fields."""
+        """Environment metadata is persisted to ``.strata/runtime.json`` —
+        the values change on every sync and are not user-authored, so
+        they do not belong in the committed ``notebook.toml``."""
+        from strata.notebook.runtime_state import load_runtime_state
+
         nb_dir = create_notebook(tmp_path, "env_metadata")
         update_environment_metadata(nb_dir)
 
-        with open(nb_dir / "notebook.toml", "rb") as f:
-            data = tomllib.load(f)
-
-        environment = data["environment"]
+        environment = load_runtime_state(nb_dir).get("environment", {})
         assert "lockfile_hash" in environment
         assert "python_version" in environment
         assert "requested_python_version" in environment
@@ -531,6 +532,10 @@ class TestEnvironmentMetadata:
         assert "resolved_package_count" in environment
         assert "has_lockfile" in environment
         assert "last_synced_at" in environment
+
+        with open(nb_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert "environment" not in data
 
     def test_serialize_environment_state_includes_runtime_details(self, tmp_path: Path):
         """Live environment state should expose runtime source and sync metadata."""

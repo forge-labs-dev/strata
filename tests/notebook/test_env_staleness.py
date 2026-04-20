@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -231,26 +230,27 @@ class TestCausalityInspectorWithHashes:
 
 
 class TestEnvironmentMetadata:
-    """Environment section in notebook.toml."""
+    """Environment metadata lives in ``.strata/runtime.json`` — it changes on
+    every ``uv sync`` and does not belong in the committed
+    ``notebook.toml``."""
 
     def test_environment_populated_on_create(self, tmp_path):
-        """create_notebook populates [environment] in notebook.toml."""
-        nb_dir = create_notebook(tmp_path, "env_meta")
-        with open(nb_dir / "notebook.toml", "rb") as f:
-            data = tomllib.load(f)
+        """create_notebook populates environment in runtime.json."""
+        from strata.notebook.runtime_state import load_runtime_state
 
-        env = data.get("environment", {})
+        nb_dir = create_notebook(tmp_path, "env_meta")
+        env = load_runtime_state(nb_dir).get("environment", {})
+
         assert "lockfile_hash" in env
         assert "python_version" in env
         assert env["python_version"].startswith(f"{sys.version_info.major}.")
 
     def test_environment_updated_after_dep_change(self, tmp_path):
-        """update_environment_metadata refreshes lockfile_hash."""
-        nb_dir = create_notebook(tmp_path, "env_update")
+        """update_environment_metadata refreshes lockfile_hash in runtime.json."""
+        from strata.notebook.runtime_state import load_runtime_state
 
-        with open(nb_dir / "notebook.toml", "rb") as f:
-            old_data = tomllib.load(f)
-        old_hash = old_data["environment"]["lockfile_hash"]
+        nb_dir = create_notebook(tmp_path, "env_update")
+        old_hash = load_runtime_state(nb_dir)["environment"]["lockfile_hash"]
 
         # Add a dependency
         result = add_dependency(nb_dir, "six")
@@ -259,10 +259,7 @@ class TestEnvironmentMetadata:
         # Update metadata
         update_environment_metadata(nb_dir)
 
-        with open(nb_dir / "notebook.toml", "rb") as f:
-            new_data = tomllib.load(f)
-        new_hash = new_data["environment"]["lockfile_hash"]
-
+        new_hash = load_runtime_state(nb_dir)["environment"]["lockfile_hash"]
         assert old_hash != new_hash
 
     def test_environment_missing_no_crash(self, tmp_path):

@@ -131,6 +131,13 @@ def migrate_from_legacy_notebook_toml(
                 entry["display"] = dict(raw_display)
                 migrated = True
 
+    legacy_environment = toml_data.get("environment")
+    if isinstance(legacy_environment, dict) and legacy_environment:
+        existing_env = state.get("environment")
+        if not isinstance(existing_env, dict) or not existing_env:
+            state["environment"] = dict(legacy_environment)
+            migrated = True
+
     if migrated:
         save_runtime_state(notebook_dir, state)
 

@@ -195,13 +195,12 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
         **({"ai": toml.ai} if toml.ai else {}),
-        # ``artifacts`` (display outputs) and ``cache`` used to live
-        # here but changed on every execution, churning git diffs for
-        # example notebooks. They now live in ``.strata/runtime.json``
-        # (see ``runtime_state.py``). ``environment`` is still here but
-        # only for static config; runtime sync timestamps will migrate
-        # out in a follow-up commit.
-        "environment": toml.environment,
+        # Runtime state that used to live in this file — ``artifacts``
+        # (display outputs), ``environment`` (sync timestamps, package
+        # counts), ``cache`` — now lives in ``.strata/runtime.json``.
+        # Keeping it out of ``notebook.toml`` means example notebooks
+        # stop producing multi-KB git diffs every time someone runs
+        # them.
     }
 
     with open(notebook_toml_path, "wb") as f:
@@ -354,23 +353,20 @@ def _uv_sync(notebook_dir: Path, *, timeout: int = 60, python_version: str | Non
 
 
 def _update_environment_metadata(notebook_dir: Path) -> None:
-    """Update the ``[environment]`` section in ``notebook.toml``.
+    """Persist the environment-metadata snapshot for a notebook.
 
-    Records lockfile_hash and python_version so that clients can detect
-    environment changes without recomputing hashes themselves.
+    Records lockfile_hash, python_version, package counts, and the
+    last ``uv sync`` timestamp so clients can detect environment
+    changes without recomputing hashes themselves. Lives in
+    ``.strata/runtime.json`` under ``environment`` — these values
+    change on every sync and don't belong in the committed
+    ``notebook.toml``.
     """
     from strata.notebook.dependencies import list_dependencies
     from strata.notebook.env import compute_lockfile_hash
+    from strata.notebook.runtime_state import load_runtime_state, save_runtime_state
 
-    toml_path = notebook_dir / "notebook.toml"
-    if not toml_path.exists():
-        return
-
-    try:
-        with open(toml_path, "rb") as f:
-            data = tomllib.load(f)
-    except Exception:
-        _logger.debug("Cannot parse notebook.toml for env metadata update")
+    if not (notebook_dir / "notebook.toml").exists():
         return
 
     requested_python_version = read_requested_python_minor(notebook_dir) or ""
@@ -415,7 +411,8 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
             _logger.debug("Failed to parse uv.lock for env metadata", exc_info=True)
 
     declared_package_count = len(list_dependencies(notebook_dir))
-    data["environment"] = {
+    state = load_runtime_state(notebook_dir)
+    state["environment"] = {
         "requested_python_version": requested_python_version,
         "runtime_python_version": runtime_python_version,
         "lockfile_hash": compute_lockfile_hash(notebook_dir),
@@ -426,9 +423,7 @@ def _update_environment_metadata(notebook_dir: Path) -> None:
         "has_lockfile": lock_path.exists(),
         "last_synced_at": int(time.time() * 1000),
     }
-
-    with open(toml_path, "wb") as f:
-        tomli_w.dump(data, f)
+    save_runtime_state(notebook_dir, state)
 
 
 def update_environment_metadata(notebook_dir: Path) -> None:

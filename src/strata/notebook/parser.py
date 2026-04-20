@@ -49,20 +49,23 @@ def parse_notebook(directory: Path) -> NotebookState:
         migrate_from_legacy_notebook_toml,
     )
 
-    legacy_artifacts = toml_data.get("artifacts")
     has_legacy_cache = "cache" in toml_data
-    if migrate_from_legacy_notebook_toml(directory, toml_data) or has_legacy_cache:
+    has_legacy_environment = isinstance(toml_data.get("environment"), dict) and bool(
+        toml_data.get("environment")
+    )
+    needs_rewrite = migrate_from_legacy_notebook_toml(directory, toml_data) or has_legacy_cache
+    if needs_rewrite or has_legacy_environment:
         toml_data.pop("artifacts", None)
         toml_data.pop("cache", None)
+        toml_data.pop("environment", None)
         _rewrite_notebook_toml(notebook_toml_path, toml_data)
     # Even when nothing was migrated (runtime.json already exists), drop
     # the legacy sections from the in-memory parse result so downstream
-    # code does not see them. ``legacy_artifacts`` is still used below
-    # only as an unused-var marker — the actual values live in
+    # code does not see them — the authoritative values live in
     # runtime.json from here on.
-    del legacy_artifacts
     toml_data.pop("artifacts", None)
     toml_data.pop("cache", None)
+    toml_data.pop("environment", None)
 
     runtime_state = load_runtime_state(directory)
     runtime_cells = runtime_state.get("cells", {})

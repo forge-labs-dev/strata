@@ -68,10 +68,9 @@ def test_update_environment_metadata_reads_pyvenv_cfg_without_subprocess(
 
         update_environment_metadata(notebook_dir)
 
-        with open(notebook_dir / "notebook.toml", "rb") as f:
-            data = tomllib.load(f)
+        from strata.notebook.runtime_state import load_runtime_state
 
-        environment = data.get("environment", {})
+        environment = load_runtime_state(notebook_dir).get("environment", {})
         assert environment.get("runtime_python_version") == "3.13.3"
 
 

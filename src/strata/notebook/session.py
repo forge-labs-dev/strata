@@ -857,23 +857,16 @@ class NotebookSession:
         return result.stdout.strip()
 
     def _read_persisted_environment_metadata(self) -> dict[str, Any]:
-        """Best-effort read of the persisted ``[environment]`` notebook metadata."""
-        notebook_toml = self.path / "notebook.toml"
-        if not notebook_toml.exists():
-            return {}
+        """Best-effort read of the persisted environment metadata.
 
-        try:
-            with open(notebook_toml, "rb") as f:
-                data = tomllib.load(f)
-        except Exception:
-            logger.debug(
-                "Failed to parse notebook.toml environment metadata for %s",
-                self.path,
-                exc_info=True,
-            )
-            return {}
+        Lives in ``.strata/runtime.json`` under ``environment`` — the
+        values change on every ``uv sync`` and are not user-authored,
+        so they do not belong in the committed ``notebook.toml``.
+        """
+        from strata.notebook.runtime_state import load_runtime_state
 
-        environment = data.get("environment", {})
+        state = load_runtime_state(self.path)
+        environment = state.get("environment", {})
         return environment if isinstance(environment, dict) else {}
 
     def _resolved_package_count(self) -> int:
