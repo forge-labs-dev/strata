@@ -48,16 +48,28 @@ def parse_notebook(directory: Path) -> NotebookState:
         load_runtime_state,
         migrate_from_legacy_notebook_toml,
     )
+    from strata.notebook.writer import _env_has_meaningful_content
 
     has_legacy_cache = "cache" in toml_data
     has_legacy_environment = isinstance(toml_data.get("environment"), dict) and bool(
         toml_data.get("environment")
     )
+    # Drop an ``[env]`` block that has no meaningful content (empty, or
+    # only blanked sensitive-key placeholders). This cleans up pollution
+    # from earlier runs where a user typed an API key in the Runtime
+    # panel and the sensitive-key blanking left an empty slot in the
+    # committed notebook.toml.
+    legacy_env = toml_data.get("env")
+    has_empty_env_block = isinstance(legacy_env, dict) and not _env_has_meaningful_content(
+        legacy_env
+    )
     needs_rewrite = migrate_from_legacy_notebook_toml(directory, toml_data) or has_legacy_cache
-    if needs_rewrite or has_legacy_environment:
+    if needs_rewrite or has_legacy_environment or has_empty_env_block:
         toml_data.pop("artifacts", None)
         toml_data.pop("cache", None)
         toml_data.pop("environment", None)
+        if has_empty_env_block:
+            toml_data.pop("env", None)
         _rewrite_notebook_toml(notebook_toml_path, toml_data)
     # Even when nothing was migrated (runtime.json already exists), drop
     # the legacy sections from the in-memory parse result so downstream

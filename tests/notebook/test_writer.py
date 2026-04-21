@@ -390,6 +390,63 @@ def test_update_notebook_env_preserves_ai_config():
         }
 
 
+def test_sensitive_only_env_block_is_not_persisted():
+    """When every env entry is a blanked sensitive key, skip the block.
+
+    Earlier behavior left ``[env]\nOPENAI_API_KEY = ""`` in the
+    committed notebook.toml — noise for shared/example notebooks with
+    no real config value persisted.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Sensitive Only Test")
+
+        update_notebook_env(notebook_dir, {"OPENAI_API_KEY": "sk-proj-secret"})
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        assert "env" not in data
+
+
+def test_env_block_persists_when_mixed_with_non_sensitive():
+    """A sensitive key alongside any non-sensitive value keeps the slot."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Mixed Env Test")
+
+        update_notebook_env(
+            notebook_dir,
+            {"OPENAI_API_KEY": "sk-proj-secret", "DATABASE_URL": "postgres://x"},
+        )
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+
+        # Sensitive slot preserved as a blanked reminder; non-sensitive
+        # value kept verbatim.
+        assert data["env"]["OPENAI_API_KEY"] == ""
+        assert data["env"]["DATABASE_URL"] == "postgres://x"
+
+
+def test_parse_notebook_cleans_up_stale_empty_env_block(tmp_path: Path):
+    """Opening a notebook with a legacy sensitive-only env block rewrites it.
+
+    Covers the migration path for notebooks checked in with noise from
+    an earlier Runtime-panel interaction.
+    """
+    notebook_dir = create_notebook(tmp_path, "Stale Env Cleanup")
+    # Simulate the pre-fix state: an empty [env] block with a blanked
+    # sensitive-key placeholder.
+    notebook_toml = notebook_dir / "notebook.toml"
+    with open(notebook_toml, "a", encoding="utf-8") as f:
+        f.write('\n[env]\nOPENAI_API_KEY = ""\n')
+
+    parse_notebook(notebook_dir)
+
+    with open(notebook_toml, "rb") as f:
+        data = tomllib.load(f)
+    assert "env" not in data
+
+
 def test_sensitive_env_values_stripped_on_write():
     """API keys, tokens, and passwords should not be persisted to disk."""
     with tempfile.TemporaryDirectory() as tmpdir:

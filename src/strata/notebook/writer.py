@@ -63,6 +63,23 @@ def _serialize_env(env: dict[str, str]) -> dict[str, str]:
     }
 
 
+def _env_has_meaningful_content(env: dict[str, str]) -> bool:
+    """Return True if the env dict has any non-empty, non-sensitive value.
+
+    An ``[env]`` block where every entry is either empty or a blanked
+    sensitive-key placeholder carries no real configuration — just
+    noise that pollutes committed notebooks. This predicate lets the
+    writer skip persisting such blocks entirely.
+    """
+    for key, value in env.items():
+        if not value:
+            continue
+        if _is_sensitive_env_key(key):
+            continue
+        return True
+    return False
+
+
 def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:
     """Convert worker specs into TOML-friendly dicts."""
     return [
@@ -192,14 +209,22 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
                 "order": cell.order,
                 **({"worker": cell.worker} if cell.worker is not None else {}),
                 **({"timeout": cell.timeout} if cell.timeout is not None else {}),
-                **({"env": _serialize_env(cell.env)} if cell.env else {}),
+                **(
+                    {"env": _serialize_env(cell.env)}
+                    if cell.env and _env_has_meaningful_content(cell.env)
+                    else {}
+                ),
                 "mounts": _serialize_mounts(cell.mounts),
             }
             for cell in toml.cells
         ],
         **({"worker": toml.worker} if toml.worker is not None else {}),
         **({"timeout": toml.timeout} if toml.timeout is not None else {}),
-        **({"env": _serialize_env(toml.env)} if toml.env else {}),
+        **(
+            {"env": _serialize_env(toml.env)}
+            if toml.env and _env_has_meaningful_content(toml.env)
+            else {}
+        ),
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
         **({"ai": toml.ai} if toml.ai else {}),
@@ -700,7 +725,12 @@ def update_notebook_env(notebook_dir: Path, env: dict[str, str]) -> None:
     with open(notebook_toml_path, "rb") as f:
         toml_data = tomllib.load(f)
 
-    if env:
+    # Drop the block when every value is empty or a blanked sensitive
+    # placeholder — otherwise a user who types an API key in the
+    # Runtime panel leaves an ``OPENAI_API_KEY = ""`` slot in the
+    # committed notebook.toml, which is noise for shared/example
+    # notebooks and meaningless as persisted config.
+    if env and _env_has_meaningful_content(env):
         toml_data["env"] = _serialize_env(env)
     else:
         toml_data.pop("env", None)

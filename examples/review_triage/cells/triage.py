@@ -1,5 +1,4 @@
 # @name triage
-# @model claude-sonnet-4-6
 # @temperature 0.0
 # @output_schema {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"review_index": {"type": "integer"}, "sentiment": {"type": "string", "enum": ["positive", "negative", "neutral"]}, "priority": {"type": "string", "enum": ["low", "medium", "high"]}, "tags": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 3}}, "required": ["review_index", "sentiment", "priority", "tags"]}}}, "required": ["items"]}
 # @system You are a customer-support triage assistant. Keep tags short (1-2 words).
