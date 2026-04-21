@@ -1368,8 +1368,10 @@ class Person:
         """Mixed runtime statements should fail with an explicit exportability error."""
         cell1 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell1")
         cell2 = next(c for c in sample_notebook.notebook_state.cells if c.id == "cell2")
+        # ``x = len([])`` is a non-literal runtime assignment — plain
+        # literal constants (``x = 1``) export fine alongside the def.
         cell1.source = """
-x = 1
+x = len([])
 
 def add(y):
     return x + y

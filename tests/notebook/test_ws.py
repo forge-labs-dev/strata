@@ -468,10 +468,12 @@ def test_cell_execute_surfaces_module_export_error(client, temp_notebook, app):
 
     from strata.notebook.routes import get_session_manager
 
+    # ``x = len([])`` is a non-literal runtime assignment; plain literal
+    # constants (``x = 1``) would now export fine alongside the def.
     write_cell(
         notebook_dir,
         "root",
-        "x = 1\n\ndef add(y):\n    return x + y\n",
+        "x = len([])\n\ndef add(y):\n    return x + y\n",
     )
     write_cell(notebook_dir, "middle", "result = add(2)")
 
