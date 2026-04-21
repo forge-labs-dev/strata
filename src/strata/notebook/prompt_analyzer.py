@@ -75,6 +75,11 @@ class PromptAnalysis:
     output_schema: dict[str, Any] | None = None
     output_schema_raw: str | None = None
     output_schema_error: str | None = None
+    # ``@validate_retries N`` — total attempts for the validate-and-retry
+    # loop (1 initial call + N-1 retries). ``None`` means "use the
+    # executor default". Only has effect when ``output_schema`` is set;
+    # without a schema there's nothing to validate against.
+    validate_retries: int | None = None
 
 
 def analyze_prompt_cell(source: str) -> PromptAnalysis:
@@ -124,6 +129,14 @@ def analyze_prompt_cell(source: str) -> PromptAnalysis:
                         pass
                 elif key == "system":
                     result.system_prompt = value.strip() or None
+                elif key == "validate_retries":
+                    try:
+                        parsed_retries = int(value.strip())
+                    except ValueError:
+                        pass
+                    else:
+                        if parsed_retries >= 1:
+                            result.validate_retries = parsed_retries
                 elif key == "output_schema":
                     raw = value.strip()
                     if raw:

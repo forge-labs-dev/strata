@@ -62,6 +62,19 @@ class TestPromptAnalyzer:
         assert result.output_schema is None
         assert result.output_schema_error == "@output_schema must be a JSON object"
 
+    def test_validate_retries_annotation(self):
+        result = analyze_prompt_cell("# @validate_retries 5\nHi")
+        assert result.validate_retries == 5
+
+    def test_validate_retries_non_numeric_ignored(self):
+        result = analyze_prompt_cell("# @validate_retries nope\nHi")
+        assert result.validate_retries is None
+
+    def test_validate_retries_zero_ignored(self):
+        """A value of 0 would disable the first call entirely — ignore it."""
+        result = analyze_prompt_cell("# @validate_retries 0\nHi")
+        assert result.validate_retries is None
+
     def test_output_annotation(self):
         result = analyze_prompt_cell("# @output json\nExtract {{ text }}")
         assert result.output_type == "json"

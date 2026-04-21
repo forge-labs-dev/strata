@@ -157,6 +157,11 @@ class CellExecutionResult:
     artifact_uri: str | None = None
     execution_method: str = "cold"  # cold, warm, cached
     mutation_warnings: list[dict[str, Any]] = field(default_factory=list)
+    # Number of retries the prompt-cell validate-and-retry loop
+    # consumed. 0 on first-try pass or for non-prompt / non-schema
+    # cells. Surfaced so the UI can show "validated after N retries"
+    # when non-zero.
+    validation_retries: int = 0
     suggest_install: str | None = None  # e.g. "requests"
     remote_worker: str | None = None
     remote_transport: str | None = None
@@ -211,6 +216,8 @@ class CellExecutionResult:
             "execution_method": self.execution_method,
             "mutation_warnings": self.mutation_warnings,
         }
+        if self.validation_retries:
+            payload["validation_retries"] = self.validation_retries
         if self.suggest_install:
             payload["suggest_install"] = self.suggest_install
         if self.remote_worker:
@@ -1790,6 +1797,7 @@ class CellExecutor:
             execution_method=result_dict.get("execution_method", "llm"),
             artifact_uri=result_dict.get("artifact_uri"),
             mutation_warnings=result_dict.get("mutation_warnings", []),
+            validation_retries=int(result_dict.get("validation_retries", 0) or 0),
         )
 
     # ------------------------------------------------------------------

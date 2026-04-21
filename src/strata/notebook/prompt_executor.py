@@ -25,6 +25,63 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Default attempt count: one call + two retries. Every attempt can
+# consume tokens, so keep the ceiling low; users who need more can set
+# ``# @validate_retries N``.
+DEFAULT_VALIDATE_ATTEMPTS = 3
+
+
+def _validation_errors(content: str, schema: dict[str, Any]) -> list[str]:
+    """Return a list of human-readable, path-addressed validation errors.
+
+    Empty list ⇔ the response is valid JSON *and* matches the schema.
+    A single "not valid JSON" error collapses the JSON-parse failure
+    into the same return type as schema failures so the caller has one
+    thing to handle.
+    """
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        return [f"response is not valid JSON: {exc.msg} (line {exc.lineno}, col {exc.colno})"]
+
+    try:
+        import jsonschema
+    except ImportError:
+        # No validator available — fall back to "is it JSON".
+        return []
+
+    validator = jsonschema.Draft202012Validator(schema)
+    errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.absolute_path))
+    if not errors:
+        return []
+    return [_format_one_error(err) for err in errors]
+
+
+def _format_one_error(err: Any) -> str:
+    """Render a jsonschema ValidationError as 'path: message'.
+
+    Uses JSON Pointer style for the path (leading ``/``, empty pointer
+    for the root). Matches what language models respond to best — they
+    trained on JSON Schema docs that use this convention.
+    """
+    pointer = "/" + "/".join(str(part) for part in err.absolute_path) if err.absolute_path else ""
+    return f"{pointer or '(root)'}: {err.message}"
+
+
+def _format_retry_prompt(errors: list[str]) -> str:
+    """Build the user-turn feedback message for a validation retry.
+
+    Kept spare on purpose — the errors themselves are descriptive; any
+    extra framing we add just burns tokens and risks the model
+    over-interpreting our instructions over the schema.
+    """
+    bullets = "\n".join(f"- {err}" for err in errors)
+    return (
+        "Your previous response did not validate against the required schema.\n"
+        f"Errors:\n{bullets}\n"
+        "Return a corrected JSON object that satisfies the schema."
+    )
+
 
 def compute_prompt_provenance_hash(
     *,
@@ -180,26 +237,84 @@ async def execute_prompt_cell(
         output_type,
     )
 
-    # Call LLM
-    try:
-        from strata.notebook.llm import LlmConfig as _LlmConfig
+    # Call LLM — when a schema is set, run a validate-and-retry loop so
+    # non-OpenAI providers (which only guarantee syntactic JSON) still
+    # produce schema-conforming output. The retry feeds the previous
+    # response and the validator errors back to the model.
+    from strata.notebook.llm import LlmConfig as _LlmConfig
 
-        call_config = _LlmConfig(
-            base_url=llm_config.base_url,
-            api_key=llm_config.api_key,
-            model=model,
-            max_output_tokens=max_tokens,
-            timeout_seconds=llm_config.timeout_seconds,
+    call_config = _LlmConfig(
+        base_url=llm_config.base_url,
+        api_key=llm_config.api_key,
+        model=model,
+        max_output_tokens=max_tokens,
+        timeout_seconds=llm_config.timeout_seconds,
+    )
+    max_attempts = (
+        analysis.validate_retries
+        if analysis.validate_retries is not None
+        else DEFAULT_VALIDATE_ATTEMPTS
+    )
+    if output_schema is None:
+        max_attempts = 1  # Nothing to validate against.
+
+    result = None
+    validation_errors: list[str] = []
+    validation_retries = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = await chat_completion(
+                call_config,
+                messages,
+                temperature=temperature,
+                output_type=output_type,
+                output_schema=output_schema,
+            )
+        except Exception as e:
+            return _error_result(f"LLM call failed: {e}", start_time)
+
+        total_input_tokens += result.input_tokens
+        total_output_tokens += result.output_tokens
+
+        if output_schema is None:
+            validation_errors = []
+            break
+
+        validation_errors = _validation_errors(result.content, output_schema)
+        if not validation_errors:
+            break
+
+        logger.info(
+            "prompt_cell_validate %s: attempt=%d errors=%d first=%r",
+            cell_id,
+            attempt,
+            len(validation_errors),
+            validation_errors[0],
         )
-        result = await chat_completion(
-            call_config,
-            messages,
-            temperature=temperature,
-            output_type=output_type,
-            output_schema=output_schema,
+
+        if attempt < max_attempts:
+            validation_retries += 1
+            # Seed the retry with the model's bad answer + the validator
+            # diagnostics. Sending the previous response as an assistant
+            # turn (instead of pasting it into the user turn) lets the
+            # model treat it as history to correct, not as the user's
+            # instructions.
+            messages = messages + [
+                {"role": "assistant", "content": result.content},
+                {"role": "user", "content": _format_retry_prompt(validation_errors)},
+            ]
+
+    if output_schema is not None and validation_errors:
+        joined = "; ".join(validation_errors[:3])
+        return _error_result(
+            f"Response failed schema validation after {max_attempts} attempt(s): {joined}",
+            start_time,
         )
-    except Exception as e:
-        return _error_result(f"LLM call failed: {e}", start_time)
+
+    assert result is not None  # loop runs at least once
 
     # Parse output
     content = result.content
@@ -234,8 +349,11 @@ async def execute_prompt_cell(
                     "model": model,
                     "temperature": temperature,
                     "output_type": output_type,
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
+                    # Totals across the validate-and-retry loop, so cost
+                    # accounting reflects what was actually spent.
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                    "validation_retries": validation_retries,
                     **({"output_schema": output_schema} if output_schema is not None else {}),
                 },
                 inputs=[],
@@ -278,19 +396,24 @@ async def execute_prompt_cell(
         "markdown_text": display_text if "\n" in display_text else None,
     }
 
+    retries_suffix = f" | Validation retries: {validation_retries}" if validation_retries else ""
     return {
         "success": True,
         "outputs": outputs,
         "display_outputs": [display_output],
         "display_output": display_output,
         "stdout": "",
-        "stderr": f"Model: {result.model} | Tokens: {result.input_tokens}→{result.output_tokens}",
+        "stderr": (
+            f"Model: {result.model} | "
+            f"Tokens: {total_input_tokens}→{total_output_tokens}{retries_suffix}"
+        ),
         "error": None,
         "cache_hit": False,
         "duration_ms": int(duration_ms),
         "execution_method": "llm",
         "artifact_uri": artifact_uri,
         "mutation_warnings": [],
+        "validation_retries": validation_retries,
     }
 
 
