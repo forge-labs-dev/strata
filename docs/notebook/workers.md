@@ -22,7 +22,9 @@ Strata Notebook can dispatch individual cells to remote machines via the **execu
 
 ## Registering Workers
 
-Workers are defined in `notebook.toml`:
+Add workers from the **Workers panel** in the sidebar. Give each one a name (used in `@worker` annotations), the executor endpoint URL, and — optionally — a `runtime_id` that pins provenance so cache hits are stable across worker upgrades.
+
+The result lands in `notebook.toml` as `[[workers]]` entries:
 
 ```toml
 [[workers]]
@@ -43,7 +45,7 @@ transport = "http"
 | `config.url` | The HTTP endpoint for the executor protocol |
 | `config.transport` | `"http"` for direct push, `"signed"` for pull-model with signed URLs |
 
-You can register multiple workers — each cell picks its target independently:
+Register as many workers as you need — each cell picks its target independently. An example notebook with two workers ends up looking like:
 
 ```toml
 [[workers]]
@@ -106,7 +108,7 @@ EXPOSE 8080
 CMD ["strata-worker", "--host", "0.0.0.0", "--port", "8080"]
 ```
 
-Deploy with `fly deploy`. Register the Fly URL as a worker in `notebook.toml`.
+Deploy with `fly deploy`. Register the Fly URL as a worker via the Workers panel.
 
 ### Deploying to Modal (GPU worker)
 
@@ -159,8 +161,8 @@ The worker annotation is the **only** change needed — the cell code itself is 
 If multiple levels define a worker, the most specific wins:
 
 1. `# @worker X` annotation in the cell source (highest)
-2. Cell-level `worker` field in `notebook.toml`
-3. Notebook-level `worker` default
+2. Cell-level worker override (from the cell's config)
+3. Notebook-level worker default (from the Workers panel)
 
 ### Caching
 
@@ -181,7 +183,7 @@ uv run --with datafusion strata-worker --port 9000
 uv run --with torch --with sentence-transformers strata-worker --port 9001
 ```
 
-Point `notebook.toml` at `http://127.0.0.1:9000/v1/execute` and `http://127.0.0.1:9001/v1/execute` during development. Switch to cloud URLs when deploying.
+Register both in the Workers panel pointing at `http://127.0.0.1:9000/v1/execute` and `http://127.0.0.1:9001/v1/execute` during development. Swap to cloud URLs when deploying — cells using `@worker gpu` move over without any code change.
 
 ## Health Checks
 

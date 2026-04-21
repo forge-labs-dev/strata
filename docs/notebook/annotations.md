@@ -49,7 +49,7 @@ Route the cell's execution to a named worker instead of the local machine.
 category_stats = ctx.sql("SELECT topic, COUNT(*) FROM papers GROUP BY topic").to_pandas()
 ```
 
-Workers are HTTP endpoints that implement the Strata executor protocol. You define them in `notebook.toml`:
+Workers are HTTP endpoints that implement the Strata executor protocol. Register them via the **Workers panel** in the sidebar — the persisted result lands in `notebook.toml` as:
 
 ```toml
 [[workers]]

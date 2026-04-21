@@ -20,16 +20,18 @@ Set an API key in the **Runtime panel** under Environment Variables. The key det
 
 **Resolution order** (highest priority wins):
 
-1. `notebook.toml` `[ai]` section — per-notebook override
+1. `notebook.toml` `[ai]` section — per-notebook advanced overrides (see below)
 2. Runtime panel env vars — set in the UI
 3. Server config (`STRATA_AI_*` env vars) — admin default
+
+For standard providers you only need step 2: drop your API key into the Runtime panel and Strata auto-picks the matching default base URL and model. The AI panel's model picker lets you switch models without leaving the UI (it persists the choice to `[ai].model`).
 
 !!! note "Process environment is not consulted"
 A shell-exported `OPENAI_API_KEY` does **not** leak into notebooks. This is intentional — each notebook must explicitly opt in to an LLM provider. See the [Annotations](annotations.md) page for how env vars flow.
 
 ### Custom Provider Configuration
 
-For self-hosted models (Ollama, vLLM) or custom endpoints, add an `[ai]` section to `notebook.toml`:
+For self-hosted models (Ollama, vLLM) or custom endpoints there's no UI for the `base_url` / timeout / token-ceiling fields, so you add an `[ai]` section to `notebook.toml` directly:
 
 ```toml
 [ai]
@@ -37,17 +39,14 @@ base_url = "http://localhost:11434/v1"
 model = "llama3"
 ```
 
-The recommended place for secrets is still the Runtime panel env vars, but the
-`[ai]` section can also override advanced fields such as:
+This is the intended escape hatch for advanced config. Fields the `[ai]` section accepts:
 
-- `api_key`
+- `api_key` — *use sparingly*, persists in `notebook.toml` even for blanked sensitive keys. Prefer the Runtime panel.
 - `base_url`
 - `model`
 - `max_context_tokens`
 - `max_output_tokens`
 - `timeout_seconds`
-
-Use `[ai].api_key` sparingly, because it persists in `notebook.toml`.
 
 ### Supported Providers
 
