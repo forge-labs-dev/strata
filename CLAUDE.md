@@ -417,18 +417,33 @@ The notebook is an **orchestration layer** over Strata. It decides what to run n
 
 ```
 notebook_dir/
-├── notebook.toml          # Metadata: notebook_id, name, cells list
+├── notebook.toml          # Stable config: notebook_id, name, cells, workers, mounts, env, ai
 ├── pyproject.toml         # uv config (requires-python, [tool.uv])
 ├── uv.lock                # Locked dependencies
 ├── cells/
 │   ├── {cell_id}.py       # Cell source code (8-char UUID prefix)
 │   └── ...
-└── .strata/
+└── .strata/               # Gitignored — runtime state, not committed
+    ├── runtime.json       # Per-cell display outputs, provenance hashes, env metadata
+    ├── console/           # Per-cell stdout/stderr snapshots ({cell_id}.json)
     └── artifacts/
-        ├── artifacts.sqlite                           # Artifact metadata
+        ├── artifacts.sqlite
         └── blobs/
             └── nb_{notebook_id}_cell_{cell_id}_var_{var}@v=N.arrow
 ```
+
+**Split between `notebook.toml` and `.strata/runtime.json`** — the former holds only
+stable config that should be version-controlled; anything that changes on every
+execution or background sync (display outputs, last `uv sync` timestamp, per-cell
+provenance hashes) lives in `.strata/runtime.json`. `updated_at` on `notebook.toml`
+is reserved for structural edits (add/remove/reorder cell; change env/worker/
+timeout/mounts). Runtime writers (`update_cell_display_outputs`,
+`update_cell_console_output`, `persist_cell_provenance`) never touch `notebook.toml`.
+
+On first open of a legacy notebook (pre-split) `parse_notebook()` runs a one-time
+migration via `runtime_state.migrate_from_legacy_notebook_toml()` that moves the
+`[artifacts]` / `[environment]` / `[cache]` sections out of `notebook.toml` and
+into `runtime.json`.
 
 `notebook.toml` example:
 ```toml
@@ -440,7 +455,17 @@ cells = [
 ]
 ```
 
+**Sensitive env blanking**: `_serialize_env` strips values from keys matching
+`KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL` patterns before persisting.
+`update_notebook_env` additionally skips the `[env]` block entirely when every
+entry is empty or a blanked sensitive placeholder — so typing an API key in the
+Runtime panel doesn't churn committed notebooks. When sensitive keys coexist
+with real config, the blanked slot stays as a "which vars are configured"
+reminder.
+
 ### Cell Execution Flow
+
+Python cells (the default path):
 
 1. **Provenance hash**: `sha256(sorted_input_hashes + source_hash + env_hash)`
 2. **Cache check**: `artifact_store.find_by_provenance(hash)` → return immediately on hit
@@ -449,6 +474,20 @@ cells = [
 5. **Harness**: Deserializes inputs → `exec(source, namespace)` → serializes new variables
 6. **Store outputs**: Each consumed variable becomes an artifact: `nb_{notebook_id}_cell_{cell_id}_var_{var_name}`
 7. **Broadcast**: WebSocket sends `cell_status`, `cell_output`, `cell_console` to connected clients
+
+Prompt cells (`prompt_executor.execute_prompt_cell`): skip the subprocess harness;
+render the `{{ var }}` template with upstream values, dispatch via
+`llm.chat_completion` (Anthropic native `/v1/messages` tool-use when a schema
+is set, OpenAI-compat `/v1/chat/completions` otherwise), validate the response
+against `@output_schema` with retry-on-failure, then store the (possibly parsed
+JSON) response as the output artifact. Provenance hash includes a schema
+fingerprint so schema edits invalidate cached responses.
+
+Loop cells (`@loop max_iter=N carry=var`) extend the Python path: one harness
+subprocess per iteration, the `carry` variable is threaded between iterations,
+each iteration's state is stored as `…@iter=k` artifacts, and the final state
+becomes the cell's canonical artifact. WebSocket emits `cell_iteration_progress`
+after each iteration.
 
 Serialization formats (determined by value type, see `serializer.py::ContentType`):
 - `arrow/ipc` — Anything Arrow-representable: pyarrow Tables/RecordBatch,
@@ -490,11 +529,34 @@ Cells can carry metadata in leading `#` comments, parsed by
 `annotations.py`. Annotations always win over persisted notebook
 defaults — they are the canonical cell-level config surface.
 
+Python cells:
 - `# @name Human Readable Name` — display name shown in DAG
 - `# @worker <name>` — route execution to a named worker
 - `# @timeout 30` — override execution timeout (seconds)
 - `# @env KEY=value` — per-cell environment variable
 - `# @mount data s3://bucket/prefix ro` — declare a filesystem mount
+- `# @loop max_iter=N carry=var [start_from=<cell>@iter=k]` — loop cell
+- `# @loop_until <expr>` — loop termination predicate
+
+Prompt cells (parsed by `prompt_analyzer.py`):
+- `# @name <identifier>` — output variable name (default: `result`)
+- `# @model <model_id>` — override the notebook-level LLM model
+- `# @temperature <float>` — sampling temperature (default 0.0)
+- `# @max_tokens <int>` — output-token ceiling
+- `# @system <text>` — system prompt
+- `# @output json` — force JSON response; auto-applied when `@output_schema` is set
+- `# @output_schema {...}` — inline JSON Schema pinning the response shape.
+  OpenAI gets `response_format: json_schema` with strict mode (auto-injects
+  `additionalProperties: false`, relaxes strict when the user's `required` list
+  leaves properties optional). Anthropic dispatches to native `/v1/messages`
+  tool-use with the schema as `input_schema`. Other providers fall back to
+  `response_format: json_object` (valid JSON, shape not enforced).
+- `# @validate_retries N` — total attempts for the validate-and-retry loop
+  (1 initial + N-1 retries; default 3). After every LLM call the response is
+  validated against `@output_schema` with `jsonschema`; on failure, the prior
+  response and path-addressed errors are fed back as a retry turn. Cumulative
+  input/output tokens flow into the artifact's `transform_spec`; retry count
+  surfaces via `CellExecutionResult.validation_retries` for the UI.
 
 Mounts inject `pathlib.Path` variables into the cell namespace. URI
 schemes: `file://`, `s3://`, `gs://`, `az://`. Notebook-level mounts
@@ -512,6 +574,10 @@ notebook-wide context and emits `AnnotationDiagnostic` warnings:
 - `mount_shadows_notebook` — overrides a notebook-level mount (info)
 - `timeout_not_numeric` — non-numeric or non-positive `@timeout`
 - `env_malformed` — `@env` missing `KEY=value` format
+- `loop_missing_max_iter` / `loop_missing_carry` / `loop_carry_unknown` /
+  `loop_until_syntax_error` / `loop_start_from_unknown` — loop-cell issues
+- `prompt_output_schema_invalid` — `@output_schema` wasn't valid JSON or
+  wasn't a JSON object (prompt cells)
 
 Validation runs on notebook open, reload (worker catalog change), and
 after each WS source flush — never on every keystroke. Diagnostics
@@ -549,17 +615,21 @@ Note: `{id}` in routes is the **session ID** (from `session_id` field in create/
 - `cell_execute_force` — Run cell ignoring staleness
 - `cell_source_update` — Source changed
 - `notebook_sync` — Request full state
+- `notebook_run_all` — Run every non-empty cell in order
 - `impact_preview_request` — Get upstream/downstream effects
 - `inspect_open/eval/close` — REPL operations
 
 **Server → Client**:
 - `cell_status` — Status changed (with causality chain)
 - `cell_output` — Execution result (outputs, stdout, stderr, cache_hit)
+- `cell_error` — Execution failed (surfaces stacktrace / provider error body)
 - `cell_console` — Incremental stdout/stderr during execution
+- `cell_iteration_progress` — Per-iteration progress from `@loop` cells
 - `cascade_prompt` — Upstream cells need execution (plan_id, steps)
 - `cascade_progress` — Progress during cascade
 - `dag_update` — DAG changed after cell edit
 - `impact_preview` — Upstream + downstream effects of running a cell
+- `notebook_state` — Full state snapshot (response to `notebook_sync`)
 
 ### Notebook Backend Modules
 
@@ -570,6 +640,7 @@ Note: `{id}` in routes is the **session ID** (from `session_id` field in create/
 - **analyzer.py** — `VariableAnalyzer` AST visitor extracts defines/references
 - **annotations.py** — Parse `# @worker|@mount|@timeout|@env|@name` directives
 - **annotation_validation.py** — Cross-reference validation → `AnnotationDiagnostic` warnings
+- **runtime_state.py** — `.strata/runtime.json` reader/writer, legacy-section migration, per-cell provenance persistence
 - **mounts.py** — `MountResolver` materializes file/s3/gs/az mounts via fsspec
 - **dag.py** — `NotebookDag`, `build_dag()` with topological sort and cycle detection
 - **cascade.py** — `CascadePlanner` determines upstream cells that need re-execution
@@ -639,3 +710,7 @@ cd frontend && npm run dev
 4. **Cell status is tracked on the session object**. After execution, `session.notebook_state.cells[i].status` is updated to "ready" or "error". This is critical — the cascade planner checks these statuses to decide if upstream cells need re-execution.
 
 5. **Annotations beat persisted config**. `# @worker`, `# @mount`, `# @timeout`, `# @env` in cell source always override notebook-level defaults at resolution time. There is no UI editor for per-cell persisted overrides — annotations are the single per-cell configuration surface.
+
+6. **`notebook.toml` is committed config, `.strata/` is runtime state**. Anything that changes on every execution or background sync (display outputs, console snapshots, per-cell provenance hashes, `uv sync` timestamps) lives in `.strata/runtime.json` or `.strata/console/` and is gitignored. `notebook.toml` writers bump `updated_at` only on structural edits (add/remove/reorder cell; change worker/timeout/env/mounts/ai). Runtime writers never touch `notebook.toml`.
+
+7. **Prompt-cell console is a Cell field, not part of the output**. `CellState.console_stdout` / `console_stderr` ride alongside the display output instead of being folded into it. Frontend renders them in a separate panel so `@output_schema` cells keep a clean structured display value.
