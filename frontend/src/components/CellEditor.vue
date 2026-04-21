@@ -328,6 +328,19 @@ const annotationDiagnosticsTitle = computed(() =>
   annotationDiagnostics.value.map((d) => `${d.code}: ${d.message}`).join('\n'),
 )
 
+// Module-cell marker. Only shown when the cell classifies as a module
+// cell (pure source + at least one exported def/class). The tooltip
+// lists the symbols the cell makes available to downstream cells —
+// the same names they'd reference by bare identifier.
+const moduleExportsTitle = computed(() => {
+  const exports = props.cell.moduleExports
+  if (!exports?.length) {
+    return 'Module cell — definitions here can be referenced from downstream cells.'
+  }
+  const lines = exports.map((e) => `  ${e.kind} ${e.name}`).join('\n')
+  return `Module cell — downstream cells can reference:\n${lines}`
+})
+
 function normalizePackageName(pkg: string | null | undefined): string {
   return (pkg || '').trim().toLowerCase()
 }
@@ -588,6 +601,9 @@ function outputKey(output: CellOutput, index: number): string {
             :title="annotationDiagnosticsTitle"
           >
             &#x26A0; {{ annotationDiagnosticsLabel }}
+          </span>
+          <span v-if="cell.isModuleCell" class="module-cell-badge" :title="moduleExportsTitle">
+            module
           </span>
           <span
             v-if="loopProgressLabel"
@@ -1235,6 +1251,19 @@ function outputKey(output: CellOutput, index: number): string {
   font-size: 10px;
   font-weight: 600;
   cursor: help;
+}
+
+/* Module-cell marker — shown when the cell's source is pure enough to
+ * be shared as a synthetic module across downstream cells. */
+.module-cell-badge {
+  background: #89b4fa22;
+  color: #89b4fa;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: help;
+  letter-spacing: 0.02em;
 }
 
 /* v1.1: Causality inspector */

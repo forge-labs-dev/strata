@@ -758,6 +758,12 @@ function applyBackendCellState(localCell: Cell, serverCell: any) {
   localCell.mountOverrides = Array.isArray(serverCell.mount_overrides)
     ? serverCell.mount_overrides.map(parseMountSpec)
     : []
+  localCell.isModuleCell = Boolean(serverCell.is_module_cell)
+  localCell.moduleExports = Array.isArray(serverCell.module_exports)
+    ? serverCell.module_exports
+        .filter((e: any) => e && typeof e.name === 'string')
+        .map((e: any) => ({ name: String(e.name), kind: String(e.kind ?? '') }))
+    : undefined
   localCell.annotations = parseBackendAnnotations(serverCell.annotations)
   localCell.annotationDiagnostics = Array.isArray(serverCell.annotation_diagnostics)
     ? serverCell.annotation_diagnostics
@@ -1656,6 +1662,14 @@ function initializeWebSocket() {
                 message: String(d.message ?? ''),
                 line: typeof d.line === 'number' ? d.line : null,
               }))
+          }
+          if (typeof sc.is_module_cell === 'boolean') {
+            cell.isModuleCell = sc.is_module_cell
+            cell.moduleExports = Array.isArray(sc.module_exports)
+              ? sc.module_exports
+                  .filter((e: any) => e && typeof e.name === 'string')
+                  .map((e: any) => ({ name: String(e.name), kind: String(e.kind ?? '') }))
+              : undefined
           }
         }
       }

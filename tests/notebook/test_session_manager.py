@@ -514,3 +514,44 @@ display(Markdown("# First"))
     assert serialized["display_outputs"][1]["preview"] == 42
     assert serialized["display_output"]["content_type"] == "json/object"
     assert serialized["display_output"]["preview"] == 42
+
+
+def test_serialize_cell_surfaces_module_cell_status(tmp_path: Path):
+    """serialize_cell reports is_module_cell + module_exports so the UI
+    can show the "module" pill and list exported symbols in a tooltip."""
+    nb_dir = create_notebook(tmp_path, "module_flag", initialize_environment=False)
+    add_cell_to_notebook(nb_dir, "mod")
+    write_cell(
+        nb_dir,
+        "mod",
+        "import math\n\nSTEP = 0.5\n\ndef scaled(x):\n    return x * STEP\n",
+    )
+    add_cell_to_notebook(nb_dir, "runtime", after_cell_id="mod")
+    write_cell(nb_dir, "runtime", "y = scaled(2)\n")
+
+    session = SessionManager().open_notebook(nb_dir)
+    mod_cell = next(c for c in session.notebook_state.cells if c.id == "mod")
+    runtime_cell = next(c for c in session.notebook_state.cells if c.id == "runtime")
+
+    mod_payload = session.serialize_cell(mod_cell)
+    assert mod_payload["is_module_cell"] is True
+    exports = {entry["name"]: entry["kind"] for entry in mod_payload["module_exports"]}
+    assert exports == {"STEP": "constant", "scaled": "function"}
+
+    runtime_payload = session.serialize_cell(runtime_cell)
+    assert runtime_payload["is_module_cell"] is False
+    assert "module_exports" not in runtime_payload
+
+
+def test_serialize_cell_does_not_flag_pure_data_cell_as_module(tmp_path: Path):
+    """A cell that only defines a literal constant is still "pure" source
+    but isn't a module cell — downstream consumers get the int through
+    the data path, no synthetic module involved."""
+    nb_dir = create_notebook(tmp_path, "pure_data", initialize_environment=False)
+    add_cell_to_notebook(nb_dir, "c1")
+    write_cell(nb_dir, "c1", "THRESHOLD = 42\n")
+
+    session = SessionManager().open_notebook(nb_dir)
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    payload = session.serialize_cell(cell)
+    assert payload["is_module_cell"] is False

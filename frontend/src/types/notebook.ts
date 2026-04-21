@@ -224,6 +224,12 @@ export interface Cell {
   consoleStdout?: string
   /** Captured stderr from the last execution (persisted so it survives reopens) */
   consoleStderr?: string
+  /** True when the cell's source classifies as a module cell (pure defs/classes
+   * + optional literal constants). Drives the "module" pill in the UI. */
+  isModuleCell?: boolean
+  /** Symbols exported by this cell when it's a module cell — shown in the
+   * module pill's tooltip so users see what crosses the cell boundary. */
+  moduleExports?: Array<{ name: string; kind: string }>
 }
 
 /** A warning or info about a source annotation. */

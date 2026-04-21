@@ -734,6 +734,28 @@ class NotebookSession:
         if self.dag and cell.id in self.dag.shadow_warnings:
             data["shadow_warnings"] = self.dag.shadow_warnings[cell.id]
 
+        # Module-cell classification — drives the "module" pill in the
+        # UI and the richer tooltip on the module_export_blocked
+        # diagnostic. Only meaningful for Python cells; prompt cells
+        # always serialize their output via the LLM path.
+        if cell.language != "prompt":
+            from strata.notebook.module_export import build_module_export_plan
+
+            export_plan = build_module_export_plan(cell.source)
+            has_code_export = any(
+                symbol.kind in ("function", "async function", "class")
+                for symbol in export_plan.exported_symbols.values()
+            )
+            # "Module cell" = pure source *and* actually exports code.
+            # A lone ``x = 1`` is pure but it's not a module cell in
+            # any useful sense — routing still takes the data path.
+            data["is_module_cell"] = export_plan.is_exportable and has_code_export
+            if data["is_module_cell"]:
+                data["module_exports"] = [
+                    {"name": name, "kind": symbol.kind}
+                    for name, symbol in sorted(export_plan.exported_symbols.items())
+                ]
+
         return data
 
     def _persist_console_output(self, cell_id: str, stdout: str | None, stderr: str | None) -> None:

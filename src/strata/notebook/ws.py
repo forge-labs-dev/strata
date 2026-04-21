@@ -1013,8 +1013,11 @@ async def _handle_cell_source_update(
 
         # Include per-cell analysis so the frontend can merge
         # authoritative defines/references without a REST round-trip.
-        cells_analysis = [
-            {
+        from strata.notebook.module_export import build_module_export_plan
+
+        cells_analysis = []
+        for cell in session.notebook_state.cells:
+            entry: dict[str, Any] = {
                 "id": cell.id,
                 "defines": cell.defines,
                 "references": cell.references,
@@ -1023,8 +1026,19 @@ async def _handle_cell_source_update(
                 "is_leaf": cell.is_leaf,
                 "annotation_diagnostics": [d.model_dump() for d in cell.annotation_diagnostics],
             }
-            for cell in session.notebook_state.cells
-        ]
+            if cell.language != "prompt":
+                plan = build_module_export_plan(cell.source)
+                has_code_export = any(
+                    s.kind in ("function", "async function", "class")
+                    for s in plan.exported_symbols.values()
+                )
+                entry["is_module_cell"] = plan.is_exportable and has_code_export
+                if entry["is_module_cell"]:
+                    entry["module_exports"] = [
+                        {"name": name, "kind": sym.kind}
+                        for name, sym in sorted(plan.exported_symbols.items())
+                    ]
+            cells_analysis.append(entry)
 
         # Send DAG update
         await _broadcast_message(
