@@ -408,6 +408,66 @@ def test_sensitive_only_env_block_is_not_persisted():
         assert "env" not in data
 
 
+def test_update_notebook_writers_are_no_op_when_value_unchanged():
+    """The write-if-changed invariant across update_notebook_* writers.
+
+    Each of these touches notebook.toml and bumps updated_at — but
+    only when the persisted value actually changed. A redundant call
+    with the current value should leave the file byte-identical.
+    """
+    from strata.notebook.writer import (
+        rename_notebook,
+        update_notebook_ai_model,
+        update_notebook_mounts,
+        update_notebook_timeout,
+        update_notebook_worker,
+        update_notebook_workers,
+    )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Write Once Test")
+        notebook_toml = notebook_dir / "notebook.toml"
+
+        # Seed with non-default values so subsequent identical writes
+        # actually exercise the equality path.
+        update_notebook_worker(notebook_dir, "gpu-a100")
+        update_notebook_timeout(notebook_dir, 30.0)
+        update_notebook_ai_model(notebook_dir, "gpt-4o")
+        rename_notebook(notebook_dir, "Write Once Renamed")
+        update_notebook_mounts(
+            notebook_dir,
+            [MountSpec(name="data", uri="s3://bucket/prefix", mode=MountMode.READ_ONLY)],
+        )
+        update_notebook_workers(
+            notebook_dir,
+            [WorkerSpec(name="local", backend=WorkerBackendType.LOCAL)],
+        )
+
+        snapshot = notebook_toml.read_bytes()
+
+        # Second call with the exact same value is a no-op.
+        update_notebook_worker(notebook_dir, "gpu-a100")
+        update_notebook_timeout(notebook_dir, 30.0)
+        update_notebook_ai_model(notebook_dir, "gpt-4o")
+        rename_notebook(notebook_dir, "Write Once Renamed")
+        update_notebook_mounts(
+            notebook_dir,
+            [MountSpec(name="data", uri="s3://bucket/prefix", mode=MountMode.READ_ONLY)],
+        )
+        update_notebook_workers(
+            notebook_dir,
+            [WorkerSpec(name="local", backend=WorkerBackendType.LOCAL)],
+        )
+
+        assert notebook_toml.read_bytes() == snapshot, (
+            "repeated writes with identical values should not change notebook.toml"
+        )
+
+        # Sanity: an actual change still bumps updated_at / rewrites.
+        update_notebook_timeout(notebook_dir, 60.0)
+        assert notebook_toml.read_bytes() != snapshot
+
+
 def test_sensitive_only_env_is_no_op_no_updated_at_bump():
     """Typing an API key in the Runtime panel shouldn't churn
     notebook.toml: no persistable change → no rewrite → no updated_at

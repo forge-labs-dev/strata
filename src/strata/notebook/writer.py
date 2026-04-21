@@ -8,6 +8,7 @@ import subprocess
 import time
 import tomllib
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -610,8 +611,6 @@ def rename_notebook(notebook_dir: Path, new_name: str) -> None:
         notebook_dir: Path to notebook directory
         new_name: New notebook name
     """
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
     normalized_name = new_name.strip()
 
     if not normalized_name:
@@ -624,14 +623,13 @@ def rename_notebook(notebook_dir: Path, new_name: str) -> None:
     ):
         raise ValueError("Notebook name contains invalid characters")
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        if toml_data.get("name") == normalized_name:
+            return False
+        toml_data["name"] = normalized_name
+        return True
 
-    toml_data["name"] = normalized_name
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
-
-    with open(notebook_toml_path, "wb") as f:
-        tomli_w.dump(toml_data, f)
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def delete_notebook_directory(notebook_dir: Path) -> None:
@@ -651,70 +649,86 @@ def delete_notebook_directory(notebook_dir: Path) -> None:
     shutil.rmtree(notebook_dir)
 
 
-def update_notebook_mounts(notebook_dir: Path, mounts: list[MountSpec]) -> None:
-    """Persist notebook-level mount defaults."""
+def _apply_notebook_toml_update(
+    notebook_dir: Path,
+    mutate: Callable[[dict[str, Any]], bool],
+) -> None:
+    """Load ``notebook.toml``, apply ``mutate``, rewrite only when the
+    mutator reports a real change.
+
+    ``mutate`` receives the loaded dict and returns ``True`` iff it
+    modified something worth persisting. When it returns ``False`` the
+    file is left untouched — no rewrite, no ``updated_at`` bump — so
+    ``updated_at`` keeps tracking actual structural edits.
+    """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
 
     with open(notebook_toml_path, "rb") as f:
         toml_data = tomllib.load(f)
 
-    toml_data["mounts"] = _serialize_mounts(mounts)
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
+    if not mutate(toml_data):
+        return
 
+    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
     with open(notebook_toml_path, "wb") as f:
         tomli_w.dump(toml_data, f)
+
+
+def update_notebook_mounts(notebook_dir: Path, mounts: list[MountSpec]) -> None:
+    """Persist notebook-level mount defaults."""
+    new_mounts = _serialize_mounts(mounts)
+
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        if toml_data.get("mounts", []) == new_mounts:
+            return False
+        toml_data["mounts"] = new_mounts
+        return True
+
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def update_notebook_worker(notebook_dir: Path, worker: str | None) -> None:
     """Persist the notebook-level default worker."""
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        if toml_data.get("worker") == worker:
+            return False
+        if worker is None:
+            toml_data.pop("worker", None)
+        else:
+            toml_data["worker"] = worker
+        return True
 
-    if worker is None:
-        toml_data.pop("worker", None)
-    else:
-        toml_data["worker"] = worker
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
-
-    with open(notebook_toml_path, "wb") as f:
-        tomli_w.dump(toml_data, f)
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def update_notebook_workers(notebook_dir: Path, workers: list[WorkerSpec]) -> None:
     """Persist notebook-scoped worker definitions."""
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
+    new_workers = _serialize_workers(workers)
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        if toml_data.get("workers", []) == new_workers:
+            return False
+        toml_data["workers"] = new_workers
+        return True
 
-    toml_data["workers"] = _serialize_workers(workers)
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
-
-    with open(notebook_toml_path, "wb") as f:
-        tomli_w.dump(toml_data, f)
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def update_notebook_timeout(notebook_dir: Path, timeout: float | None) -> None:
     """Persist the notebook-level default timeout."""
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        if toml_data.get("timeout") == timeout:
+            return False
+        if timeout is None:
+            toml_data.pop("timeout", None)
+        else:
+            toml_data["timeout"] = timeout
+        return True
 
-    if timeout is None:
-        toml_data.pop("timeout", None)
-    else:
-        toml_data["timeout"] = timeout
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
-
-    with open(notebook_toml_path, "wb") as f:
-        tomli_w.dump(toml_data, f)
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def update_notebook_env(notebook_dir: Path, env: dict[str, str]) -> None:
@@ -788,21 +802,18 @@ def update_cell_display_outputs(
 
 def update_notebook_ai_model(notebook_dir: Path, model: str) -> None:
     """Update the notebook's default LLM model in [ai] section."""
-    notebook_dir = Path(notebook_dir)
-    notebook_toml_path = notebook_dir / "notebook.toml"
 
-    with open(notebook_toml_path, "rb") as f:
-        toml_data = tomllib.load(f)
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        ai = toml_data.get("ai", {})
+        if not isinstance(ai, dict):
+            ai = {}
+        if ai.get("model") == model:
+            return False
+        ai["model"] = model
+        toml_data["ai"] = ai
+        return True
 
-    ai = toml_data.get("ai", {})
-    if not isinstance(ai, dict):
-        ai = {}
-    ai["model"] = model
-    toml_data["ai"] = ai
-    toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
-
-    with open(notebook_toml_path, "wb") as f:
-        tomli_w.dump(toml_data, f)
+    _apply_notebook_toml_update(notebook_dir, mutate)
 
 
 def update_cell_console_output(
