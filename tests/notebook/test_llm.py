@@ -10,11 +10,14 @@ from unittest.mock import patch
 import pytest
 
 from strata.notebook.llm import (
+    build_anthropic_tool_use_body,
     build_messages,
     build_notebook_context,
+    chat_completion,
     estimate_tokens,
     execute_tool,
     infer_provider_name,
+    parse_anthropic_tool_use_response,
     render_prompt_template,
     resolve_llm_config,
     response_format_for,
@@ -158,7 +161,11 @@ class TestInferProviderName:
 class TestResponseFormatFor:
     """Pick the right provider-native structured-output payload."""
 
-    _SCHEMA = {"type": "object", "properties": {"n": {"type": "integer"}}}
+    _SCHEMA = {
+        "type": "object",
+        "properties": {"n": {"type": "integer"}},
+        "required": ["n"],
+    }
 
     def test_openai_with_schema_uses_json_schema(self):
         rf = response_format_for(
@@ -166,14 +173,64 @@ class TestResponseFormatFor:
             output_type="json",
             output_schema=self._SCHEMA,
         )
+        # OpenAI strict mode demands ``additionalProperties: false`` on
+        # every object — we inject it automatically.
+        expected_schema = {
+            **self._SCHEMA,
+            "additionalProperties": False,
+        }
         assert rf == {
             "type": "json_schema",
             "json_schema": {
                 "name": "PromptResponse",
-                "schema": self._SCHEMA,
+                "schema": expected_schema,
                 "strict": True,
             },
         }
+
+    def test_openai_nested_objects_get_additional_properties_injected(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"label": {"type": "string"}},
+                        "required": ["label"],
+                    },
+                },
+            },
+            "required": ["items"],
+        }
+        rf = response_format_for(
+            "https://api.openai.com/v1",
+            output_type="json",
+            output_schema=schema,
+        )
+        normalized = rf["json_schema"]["schema"]
+        assert normalized["additionalProperties"] is False
+        assert normalized["properties"]["items"]["items"]["additionalProperties"] is False
+        assert rf["json_schema"]["strict"] is True
+
+    def test_openai_incomplete_required_falls_back_to_non_strict(self):
+        """User-declared optional field — strict mode would reject it,
+        so we turn strict off rather than silently promoting the field."""
+        schema = {
+            "type": "object",
+            "properties": {
+                "score": {"type": "number"},
+                "comment": {"type": "string"},
+            },
+            "required": ["score"],  # "comment" intentionally omitted
+        }
+        rf = response_format_for(
+            "https://api.openai.com/v1",
+            output_type="json",
+            output_schema=schema,
+        )
+        assert rf["json_schema"]["strict"] is False
+        assert rf["json_schema"]["schema"]["additionalProperties"] is False
 
     def test_anthropic_with_schema_falls_back_to_json_object(self):
         rf = response_format_for(
@@ -367,3 +424,202 @@ class TestBuildNotebookContext:
 
         assert len(context) < 500
         assert "truncated" in context
+
+
+_SIMPLE_SCHEMA = {
+    "type": "object",
+    "properties": {"answer": {"type": "string"}},
+    "required": ["answer"],
+}
+
+
+class TestAnthropicToolUseBody:
+    """Pure-function tests for the native Anthropic request body."""
+
+    def test_body_has_forced_tool_choice(self):
+        body = build_anthropic_tool_use_body(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            max_tokens=1024,
+            temperature=0.0,
+            output_schema=_SIMPLE_SCHEMA,
+        )
+        assert body["tool_choice"] == {"type": "tool", "name": "respond"}
+        assert body["tools"][0]["input_schema"] == _SIMPLE_SCHEMA
+        assert body["tools"][0]["name"] == "respond"
+        assert body["max_tokens"] == 1024
+        assert body["temperature"] == 0.0
+
+    def test_system_message_lifted_to_top_level(self):
+        body = build_anthropic_tool_use_body(
+            model="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "You are an extractor."},
+                {"role": "user", "content": "Extract from: foo"},
+            ],
+            max_tokens=256,
+            temperature=None,
+            output_schema=_SIMPLE_SCHEMA,
+        )
+        assert body["system"] == "You are an extractor."
+        # System must be pulled out of messages — native API rejects
+        # role=system inside the messages array.
+        assert all(m["role"] != "system" for m in body["messages"])
+        assert len(body["messages"]) == 1
+        # Temperature omitted when not specified
+        assert "temperature" not in body
+
+    def test_multiple_system_messages_are_joined(self):
+        body = build_anthropic_tool_use_body(
+            model="claude-sonnet-4-6",
+            messages=[
+                {"role": "system", "content": "Rule one."},
+                {"role": "system", "content": "Rule two."},
+                {"role": "user", "content": "Go"},
+            ],
+            max_tokens=128,
+            temperature=None,
+            output_schema=_SIMPLE_SCHEMA,
+        )
+        assert body["system"] == "Rule one.\n\nRule two."
+
+
+class TestAnthropicToolUseParse:
+    """Tests for extracting the forced tool call from the response."""
+
+    def test_extracts_tool_use_input_as_json(self):
+        data = {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "toolu_abc",
+                    "name": "respond",
+                    "input": {"answer": "42"},
+                }
+            ],
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        result = parse_anthropic_tool_use_response(data, fallback_model="claude")
+        import json as _json
+
+        assert _json.loads(result.content) == {"answer": "42"}
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+        assert result.model == "claude-sonnet-4-6"
+
+    def test_raises_when_no_tool_use_block(self):
+        data = {
+            "content": [{"type": "text", "text": "sorry, no tool"}],
+            "stop_reason": "end_turn",
+        }
+        with pytest.raises(RuntimeError, match="tool_use block"):
+            parse_anthropic_tool_use_response(data, fallback_model="claude")
+
+    def test_skips_non_tool_use_blocks_before_tool_use(self):
+        """Real responses often begin with a text block before the
+        tool call — the parser must keep scanning."""
+        data = {
+            "content": [
+                {"type": "text", "text": "Thinking..."},
+                {"type": "tool_use", "name": "respond", "input": {"answer": "ok"}},
+            ],
+            "usage": {"input_tokens": 3, "output_tokens": 2},
+        }
+        result = parse_anthropic_tool_use_response(data, fallback_model="claude")
+        import json as _json
+
+        assert _json.loads(result.content) == {"answer": "ok"}
+
+
+class TestChatCompletionDispatch:
+    """End-to-end dispatch: Anthropic + schema hits /v1/messages; others
+    hit /v1/chat/completions."""
+
+    @pytest.mark.asyncio
+    async def test_anthropic_with_schema_routes_to_messages_endpoint(self, monkeypatch):
+        import httpx
+
+        from strata.notebook.llm import LlmConfig
+
+        captured_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "respond",
+                            "input": {"answer": "42"},
+                        }
+                    ],
+                    "usage": {"input_tokens": 5, "output_tokens": 3},
+                    "model": "claude-sonnet-4-6",
+                },
+            )
+
+        transport = httpx.MockTransport(handler)
+        original_client = httpx.AsyncClient
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return original_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+        config = LlmConfig(
+            base_url="https://api.anthropic.com/v1",
+            api_key="dummy",
+            model="claude-sonnet-4-6",
+        )
+        result = await chat_completion(
+            config,
+            [{"role": "user", "content": "hi"}],
+            output_type="json",
+            output_schema=_SIMPLE_SCHEMA,
+        )
+
+        assert captured_urls == ["https://api.anthropic.com/v1/messages"]
+        import json as _json
+
+        assert _json.loads(result.content) == {"answer": "42"}
+
+    @pytest.mark.asyncio
+    async def test_anthropic_without_schema_uses_openai_compat(self, monkeypatch):
+        import httpx
+
+        from strata.notebook.llm import LlmConfig
+
+        captured_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured_urls.append(str(request.url))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "hello"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    "model": "claude-sonnet-4-6",
+                },
+            )
+
+        transport = httpx.MockTransport(handler)
+        original_client = httpx.AsyncClient
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = transport
+            return original_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", patched_client)
+
+        config = LlmConfig(
+            base_url="https://api.anthropic.com/v1",
+            api_key="dummy",
+            model="claude-sonnet-4-6",
+        )
+        await chat_completion(config, [{"role": "user", "content": "hi"}])
+
+        assert captured_urls == ["https://api.anthropic.com/v1/chat/completions"]

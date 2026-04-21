@@ -17,7 +17,6 @@ from strata.notebook.llm import (
     chat_completion,
     estimate_tokens,
     render_prompt_template,
-    response_format_for,
 )
 from strata.notebook.prompt_analyzer import analyze_prompt_cell
 
@@ -192,16 +191,12 @@ async def execute_prompt_cell(
             max_output_tokens=max_tokens,
             timeout_seconds=llm_config.timeout_seconds,
         )
-        response_format = response_format_for(
-            llm_config.base_url,
-            output_type=output_type,
-            output_schema=output_schema,
-        )
         result = await chat_completion(
             call_config,
             messages,
             temperature=temperature,
-            response_format=response_format,
+            output_type=output_type,
+            output_schema=output_schema,
         )
     except Exception as e:
         return _error_result(f"LLM call failed: {e}", start_time)
