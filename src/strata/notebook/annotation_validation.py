@@ -26,6 +26,7 @@ def validate_cell_annotations(
     if cell.language == "prompt":
         return _validate_prompt_cell_annotations(cell)
     diagnostics: list[AnnotationDiagnostic] = []
+    diagnostics.extend(_validate_module_export(cell))
     annotations = parse_annotations(cell.source)
 
     # --- worker_unknown ---
@@ -137,6 +138,47 @@ def validate_cell_annotations(
     diagnostics.extend(_validate_loop_annotation(cell, annotations, notebook_state))
 
     return diagnostics
+
+
+def _validate_module_export(cell: CellState) -> list[AnnotationDiagnostic]:
+    """Warn when a Python cell defines reusable code (def / class) but
+    can't be source-reconstituted for cross-cell use.
+
+    The common failure is mixing top-level runtime logic (assignments
+    whose RHS isn't a literal, expression statements, control flow)
+    with ``def`` / ``class`` definitions. Downstream cells that import
+    a function from this cell would error at execution time; surfacing
+    the issue at validation time tells the user to split the cell
+    before they hit the failure.
+    """
+    from strata.notebook.module_export import build_module_export_plan
+
+    plan = build_module_export_plan(cell.source)
+    if plan.is_exportable:
+        return []
+
+    exported_code = [
+        name
+        for name, symbol in plan.exported_symbols.items()
+        if symbol.kind in ("function", "async function", "class")
+    ]
+    blocked = sorted(set(exported_code) | plan.blocking_symbols)
+    if not blocked:
+        return []
+
+    names = ", ".join(f"`{n}`" for n in blocked)
+    return [
+        AnnotationDiagnostic(
+            severity="warn",
+            code="module_export_blocked",
+            message=(
+                f"This cell defines reusable code ({names}) but the cell also "
+                f"has top-level runtime logic that blocks sharing across cells: "
+                f"{plan.format_error()}. Split the defs into their own cell."
+            ),
+            line=None,
+        )
+    ]
 
 
 def _validate_prompt_cell_annotations(cell: CellState) -> list[AnnotationDiagnostic]:

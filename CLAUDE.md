@@ -578,6 +578,9 @@ notebook-wide context and emits `AnnotationDiagnostic` warnings:
   `loop_until_syntax_error` / `loop_start_from_unknown` — loop-cell issues
 - `prompt_output_schema_invalid` — `@output_schema` wasn't valid JSON or
   wasn't a JSON object (prompt cells)
+- `module_export_blocked` — cell defines a def/class but non-literal
+  top-level runtime logic blocks cross-cell sharing; emitted pre-flight
+  so users see it before execution fails
 
 Validation runs on notebook open, reload (worker catalog change), and
 after each WS source flush — never on every keystroke. Diagnostics

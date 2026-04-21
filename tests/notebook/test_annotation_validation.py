@@ -301,6 +301,42 @@ class TestLoopAnnotationDiagnostics:
         assert "loop_start_from_unknown" in codes
 
 
+class TestModuleExportBlockedDiagnostic:
+    """Warn when a Python cell mixes defs/classes with non-literal
+    runtime logic, since the def/class can't cross the module-export
+    boundary downstream."""
+
+    def test_pure_module_cell_is_silent(self):
+        cell = _cell("import math\n\ndef add(x, y):\n    return x + y\n")
+        assert _codes(cell, _nb()) == []
+
+    def test_literal_constants_with_defs_is_silent(self):
+        """The main UX fix — ``STEP = 0.5`` alongside a def should no
+        longer warn, because literal constants are now exportable."""
+        cell = _cell("STEP = 0.5\n\ndef scale(x):\n    return x * STEP\n")
+        assert _codes(cell, _nb()) == []
+
+    def test_non_literal_assignment_with_def_warns(self):
+        cell = _cell("STEP = compute_step()\n\ndef scale(x):\n    return x * STEP\n")
+        diags = [
+            d for d in validate_cell_annotations(cell, _nb()) if d.code == "module_export_blocked"
+        ]
+        assert len(diags) == 1
+        assert "`scale`" in diags[0].message
+        assert "Split the defs" in diags[0].message
+
+    def test_top_level_expression_with_class_warns(self):
+        cell = _cell("print('hi')\n\nclass Config:\n    debug = True\n")
+        codes = [d.code for d in validate_cell_annotations(cell, _nb())]
+        assert "module_export_blocked" in codes
+
+    def test_pure_runtime_cell_is_silent(self):
+        """No defs/classes → nothing to warn about even if runtime."""
+        cell = _cell("x = compute()\ny = x + 1\n")
+        codes = [d.code for d in validate_cell_annotations(cell, _nb())]
+        assert "module_export_blocked" not in codes
+
+
 class TestPromptOutputSchemaDiagnostics:
     """Prompt cells surface malformed ``@output_schema`` as a warning."""
 

@@ -42,10 +42,20 @@ class ModuleExportPlan:
 def build_module_export_plan(source: str) -> ModuleExportPlan:
     """Validate source for synthetic module export.
 
-    V1 supports only:
+    Supports:
     - optional module docstring
     - top-level imports
     - top-level defs / async defs / classes
+    - top-level assignments whose RHS is a literal (``int``, ``float``,
+      ``str``, ``bool``, ``None``, ``bytes``, negated/positive literals,
+      and nested tuples/lists/sets/dicts of literals)
+
+    Plain-data constants like ``STEP_SIZE = 0.5`` are the most common
+    sibling of defs in module cells, so blocking them forces users to
+    split cells for no payoff. The module source is reconstructed
+    verbatim and re-executed at deserialize time, so any expression we
+    accept here must be side-effect-free and context-independent — that
+    means no function calls, no attribute access, no names.
     """
     try:
         tree = ast.parse(source)
@@ -66,6 +76,11 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
 
         if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
             unsupported_reasons.append("star imports are not supported for cross-cell code export")
+            continue
+
+        if _is_literal_constant_assignment(node):
+            for name in _target_names_for_assignment(node):
+                exported_symbols[name] = ExportedSymbol(name, "constant")
             continue
 
         unsupported_reason = _unsupported_reason_for_node(node)
@@ -105,6 +120,63 @@ def build_module_export_plan(source: str) -> ModuleExportPlan:
         blocking_symbols=blocking_symbols,
         unsupported_reasons=unsupported_reasons,
     )
+
+
+def _is_literal_constant_assignment(node: ast.AST) -> bool:
+    """True when the node is a top-level assignment of a literal value.
+
+    Handles ``x = 5`` / ``X: int = 5`` / ``X, Y = 1, 2``. Annotated
+    assignments without a value (``x: int``) don't bind a name, so we
+    ignore them. Augmented assignments (``x += 1``) read an existing
+    name and are explicitly not a module-cell concern.
+    """
+    if isinstance(node, ast.Assign):
+        if not all(isinstance(t, (ast.Name, ast.Tuple, ast.List)) for t in node.targets):
+            return False
+        return _is_literal_value(node.value)
+    if isinstance(node, ast.AnnAssign):
+        if node.value is None or not isinstance(node.target, ast.Name):
+            return False
+        return _is_literal_value(node.value)
+    return False
+
+
+def _is_literal_value(node: ast.expr) -> bool:
+    """Return True for compile-time-constant expressions.
+
+    Allows: constants (numbers, strings, bools, None, bytes), unary
+    ``+/-/~/not`` of a literal, and nested tuples/lists/sets/dicts of
+    literals. Deliberately excludes names, attribute access, function
+    calls, binary ops, and comprehensions — anything that could reach
+    into module state or have side effects on import.
+    """
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, ast.UnaryOp) and isinstance(
+        node.op, (ast.USub, ast.UAdd, ast.Invert, ast.Not)
+    ):
+        return _is_literal_value(node.operand)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(_is_literal_value(elt) for elt in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(
+            key is not None and _is_literal_value(key) and _is_literal_value(value)
+            for key, value in zip(node.keys, node.values, strict=True)
+        )
+    return False
+
+
+def _target_names_for_assignment(node: ast.AST) -> list[str]:
+    """Collect names bound by a literal-constant assignment."""
+    if isinstance(node, ast.Assign):
+        names: list[str] = []
+        for target in node.targets:
+            for name in sorted(_target_names(target)):
+                names.append(name)
+        return names
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return [node.target.id]
+    return []
 
 
 def _is_module_docstring(node: ast.stmt, index: int) -> bool:

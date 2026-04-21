@@ -48,19 +48,70 @@ Only variables that a downstream cell actually references get stored as artifact
 
 ### Module cells
 
-A cell that contains only `import`, `def`, and `class` statements is classified as a **module cell**. Its definitions — classes, functions, constants — get serialized as a module object that downstream cells import transparently:
+A cell that contains only "pure" top-level statements is classified as a **module cell**. Its definitions get serialized as a synthetic Python module that downstream cells import transparently — so you can write a helper once and call it from anywhere in the notebook.
 
 ```python
 # module cell
 import numpy as np
 
+STEP_SIZE = 0.5
+CLASS_NAMES = ["cat", "dog", "fish"]
+
 def himmelblau(x, y):
     return (x * x + y - 11) ** 2 + (x + y * y - 7) ** 2
 
-STEP_SIZE = 0.5
+class Config:
+    lr = 1e-3
+    batch = 32
 ```
 
-Downstream cells can then do `himmelblau(x, y)` or `STEP_SIZE` directly, just like a regular Python import. This is the right pattern for sharing helpers across multiple cells.
+Downstream cells can then reference `himmelblau(x, y)`, `STEP_SIZE`, `CLASS_NAMES`, or `Config.lr` directly.
+
+#### What counts as "pure"
+
+The classification is based on the cell's AST. Allowed at the top level:
+
+- Module docstring
+- `import X` / `from X import Y` (but not `from X import *`)
+- `def` / `async def`
+- `class`
+- Assignments whose right-hand side is a **literal constant** — numbers, strings, bools, `None`, and nested tuples/lists/sets/dicts of literals. Negations of literals (`-1`, `~0`) count.
+
+Anything else taints the whole cell:
+
+- Assignments with a non-literal right-hand side (function calls, attribute access, arithmetic, name references): `x = compute()`, `PI = math.pi`, `X = y + 1`
+- Augmented assignments: `x += 1`
+- Expression statements: `print("hi")`, a bare trailing expression
+- Control flow: `for`, `while`, `if`, `with`, `try`, `match`
+- Bare annotations without a value: `x: int`
+- `from … import *`
+
+#### The failure mode (and how to avoid it)
+
+Why does "pure" matter? Defs and classes can't be pickled reliably across the subprocess boundary, so they round-trip via **source reconstitution** — Strata saves the cell source, re-executes it on the other side, and hands the downstream cell the resulting module attribute. That only works if the source has no side effects, which is what the "pure" rule enforces.
+
+If a cell mixes defs with non-literal runtime logic and a downstream cell tries to use one of those defs, execution fails with a clear error:
+
+> This cell defines reusable code used downstream (`scaled`), but it cannot be shared across cells yet: top-level runtime state (assignments like `x = ...`) is not shareable across cells.
+
+You'll also see a `module_export_blocked` annotation diagnostic on the cell before you even run it — pre-flight warning, not just a runtime surprise.
+
+The fix is always the same: **split the cell**. Put the pure definitions in one cell (the module cell), and the runtime logic in a separate Python cell that references them:
+
+```python
+# cell A — module cell (pure)
+STEP_SIZE = 0.5
+
+def scale(x):
+    return x * STEP_SIZE
+```
+
+```python
+# cell B — runtime (can call scale and read STEP_SIZE)
+result = scale(10) + STEP_SIZE
+```
+
+Plain-data cells (no defs or classes, just values) don't need module export at all — `THRESHOLD = 42` in its own cell serializes as a regular int and flows through the normal artifact path.
 
 ### Mutation warnings
 

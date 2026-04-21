@@ -30,13 +30,16 @@ class TestUnsupportedModuleExports:
     """Unsupported reusable-code cells should fail clearly over WS."""
 
     def test_top_level_runtime_state_error_surfaces_over_websocket(self, setup):
+        # ``x = len([])`` is a non-literal runtime assignment — plain
+        # literal constants (``x = 1``) would export fine alongside
+        # the ``def`` under the current plan rules.
         client, tmp = setup
         nb = (
             NotebookBuilder(tmp)
             .add_cell(
                 "c1",
                 """
-x = 1
+x = len([])
 
 def add(y):
     return x + y

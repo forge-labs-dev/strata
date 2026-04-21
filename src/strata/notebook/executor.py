@@ -2214,6 +2214,20 @@ class CellExecutor:
                 f"{export_plan.format_error()}"
             )
 
+        # Constants alone shouldn't trigger module-export — a cell
+        # whose only consumed output is ``x = 1`` should serialize ``x``
+        # as a regular int. We only route constants through module-
+        # export when the cell *also* exports a def/class; that's when
+        # the synthetic module is being built anyway and putting the
+        # constant on it keeps the name available alongside the defs.
+        code_exports = [
+            name
+            for name in exportable_vars
+            if export_plan.exported_symbols[name].kind in ("function", "async function", "class")
+        ]
+        if not code_exports:
+            return None
+
         source_hash = compute_source_hash(source)
         notebook_id = self.session.notebook_state.id
 

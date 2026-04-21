@@ -89,6 +89,57 @@ class TestLocalModuleExports:
                 assert result2["type"] == "cell_output"
                 assert result2["payload"]["outputs"]["result"]["preview"] == 7
 
+    def test_literal_constant_coexists_with_def_in_module_cell(self, setup):
+        """A literal constant alongside a def should export as part of
+        the same module — no cell split required. Both names become
+        available downstream."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell(
+                "c1",
+                "STEP_SIZE = 0.5\n\ndef scaled(x):\n    return x * STEP_SIZE\n",
+            )
+            .add_cell("c2", "result = scaled(10) + STEP_SIZE", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                # Both the def and the literal-constant ride the same
+                # synthetic module.
+                assert result1["payload"]["outputs"]["scaled"]["content_type"] == "module/cell"
+                assert result1["payload"]["outputs"]["STEP_SIZE"]["content_type"] == "module/cell"
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                # Downstream resolves STEP_SIZE to 0.5 and scaled(10) to 5.0, sum = 5.5
+                assert result2["payload"]["outputs"]["result"]["preview"] == 5.5
+
+    def test_pure_constant_cell_uses_normal_artifact_path(self, setup):
+        """A cell that defines only a literal constant (no defs/classes)
+        should serialize through the normal artifact path — it's plain
+        data, not code, and shouldn't be wrapped in a synthetic module."""
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell("c1", "THRESHOLD = 42\n")
+            .add_cell("c2", "result = THRESHOLD * 2\n", after="c1")
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                # json/object, not module/cell — constant flows as data.
+                assert result1["payload"]["outputs"]["THRESHOLD"]["content_type"] != "module/cell"
+                assert result1["payload"]["outputs"]["THRESHOLD"]["preview"] == 42
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                assert result2["payload"]["outputs"]["result"]["preview"] == 84
+
     def test_cross_cell_exported_class_instance(self, setup):
         client, tmp = setup
         nb = (
