@@ -399,28 +399,21 @@ function isJsonLike(text: string): boolean {
   return trimmed.startsWith('{') || trimmed.startsWith('[')
 }
 
-/** Check if scalar is only console output (no display value) */
-function isConsoleOnly(scalar: unknown): boolean {
-  if (scalar && typeof scalar === 'object' && 'console' in (scalar as Record<string, unknown>)) {
-    return Object.keys(scalar as Record<string, unknown>).length === 1
-  }
-  return false
-}
-
-function consoleOutput(scalar: unknown): string | null {
-  if (!scalar || typeof scalar !== 'object') return null
-  const obj = scalar as Record<string, unknown>
-  if (!('console' in obj) || typeof obj.console !== 'string') return null
-  return obj.console
+/** Combined console text for a cell — stdout first, stderr after. Empty
+ * string when the cell has no captured output. Console is a Cell-level
+ * field (not part of the display output) so @output_schema cells keep
+ * a clean structured display value. */
+function cellConsoleText(cell: Cell): string {
+  const stdout = cell.consoleStdout ?? ''
+  const stderr = cell.consoleStderr ?? ''
+  if (stdout && stderr) return `${stdout}\n${stderr}`
+  return stdout || stderr
 }
 
 /** Format scalar output for display */
 function formatScalar(scalar: unknown): string {
   if (scalar === null || scalar === undefined) return 'None'
   if (typeof scalar === 'object') {
-    // Skip console-only objects
-    const obj = scalar as Record<string, unknown>
-    if ('console' in obj && Object.keys(obj).length === 1) return ''
     return JSON.stringify(scalar, null, 2)
   }
   return String(scalar)
@@ -703,21 +696,19 @@ function outputKey(output: CellOutput, index: number): string {
       />
 
       <!-- Console output (stdout/stderr) -->
-      <div v-if="!folded && cell.output && consoleOutput(cell.output.scalar)" class="cell-console">
+      <div v-if="!folded && cellConsoleText(cell)" class="cell-console">
         <pre>{{
-          outputExpanded || !isLongText(consoleOutput(cell.output.scalar))
-            ? consoleOutput(cell.output.scalar)
-            : compactText(consoleOutput(cell.output.scalar)!)
+          outputExpanded || !isLongText(cellConsoleText(cell))
+            ? cellConsoleText(cell)
+            : compactText(cellConsoleText(cell))
         }}</pre>
         <button
-          v-if="isLongText(consoleOutput(cell.output.scalar))"
+          v-if="isLongText(cellConsoleText(cell))"
           class="output-toggle"
           @click="outputExpanded = !outputExpanded"
         >
           {{
-            outputExpanded
-              ? 'Show less'
-              : `Show more (${overflowSummary(consoleOutput(cell.output.scalar)!)})`
+            outputExpanded ? 'Show less' : `Show more (${overflowSummary(cellConsoleText(cell))})`
           }}
         </button>
       </div>
@@ -816,10 +807,7 @@ function outputKey(output: CellOutput, index: number): string {
             >
               {{ outputExpanded ? 'Show less' : 'Show more' }}
             </button>
-            <div
-              v-else-if="output.scalar !== undefined && !isConsoleOnly(output.scalar)"
-              class="output-scalar"
-            >
+            <div v-else-if="output.scalar !== undefined" class="output-scalar">
               <pre
                 v-if="isJsonLike(formatScalar(output.scalar))"
                 v-html="

@@ -1029,19 +1029,13 @@ function parseBackendCellPayload(raw: any): Cell {
 
   applySerializedExecutionMetadata(cell, raw)
 
-  // Restore persisted console output so it survives notebook reopens
-  const consoleStdout = typeof raw.console_stdout === 'string' ? raw.console_stdout : ''
-  const consoleStderr = typeof raw.console_stderr === 'string' ? raw.console_stderr : ''
-  const consoleText = [consoleStdout, consoleStderr].filter(Boolean).join('\n')
-  if (consoleText && cell.output) {
-    if (cell.output.scalar && typeof cell.output.scalar === 'object') {
-      ;(cell.output.scalar as Record<string, any>).console = consoleText
-    } else if (!cell.output.scalar) {
-      cell.output.scalar = { console: consoleText }
-    }
-  } else if (consoleText && !cell.output) {
-    cell.output = { contentType: 'json/object', scalar: { console: consoleText } }
-  }
+  // Restore persisted console output so it survives notebook reopens.
+  // Stored on the Cell directly — the renderer shows it in its own
+  // panel below the cell's structured output so it doesn't pollute
+  // the display value (important for @output_schema cells where the
+  // output is a user-controlled JSON object).
+  cell.consoleStdout = typeof raw.console_stdout === 'string' ? raw.console_stdout : ''
+  cell.consoleStderr = typeof raw.console_stderr === 'string' ? raw.console_stderr : ''
 
   return cell
 }
@@ -1541,35 +1535,22 @@ function initializeWebSocket() {
       output.cacheHit = p.cache_hit || false
       output.cacheLoadMs = p.duration_ms
 
-      // Carry stdout/stderr forward (cell_output overwrites cell.output)
-      const stdout = p.stdout as string | undefined
-      const stderr = p.stderr as string | undefined
-      const consoleText = [stdout, stderr].filter(Boolean).join('')
-      if (consoleText) {
-        if (output.scalar && typeof output.scalar === 'object') {
-          ;(output.scalar as Record<string, any>).console = consoleText
-        } else if (!output.scalar) {
-          output.scalar = { console: consoleText }
-        }
-      }
-
-      // Preserve console text from earlier cell_console messages
-      const existingCell = cellMap.value.get(cellId)
-      if (existingCell?.output?.scalar && typeof existingCell.output.scalar === 'object') {
-        const prev = (existingCell.output.scalar as Record<string, any>).console
-        if (prev && !consoleText) {
-          if (output.scalar && typeof output.scalar === 'object') {
-            ;(output.scalar as Record<string, any>).console = prev
-          } else if (!output.scalar) {
-            output.scalar = { console: prev }
-          }
-        }
-      }
+      // Console output is stored on the Cell, not on output.scalar —
+      // keeps the structured display value clean for @output_schema
+      // prompts and pandas cells that return typed objects.
+      const stdout = typeof p.stdout === 'string' ? p.stdout : undefined
+      const stderr = typeof p.stderr === 'string' ? p.stderr : undefined
 
       const cell = cellMap.value.get(cellId)
       if (cell) {
         cell.durationMs = p.duration_ms
         cell.displayOutputs = displayOutputs
+        // If cell_output carries fresh stdout/stderr, overwrite.
+        // Otherwise keep whatever earlier cell_console messages
+        // streamed in (so the console doesn't disappear on cache
+        // hits that don't re-stream).
+        if (stdout !== undefined) cell.consoleStdout = stdout
+        if (stderr !== undefined) cell.consoleStderr = stderr
         if (p.execution_method) {
           cell.executorName = p.execution_method
         }
@@ -1604,24 +1585,18 @@ function initializeWebSocket() {
     wsInstance.onMessage('cell_console', (msg: WsMessage) => {
       const p = msg.payload as Record<string, any>
       const cellId = p.cell_id as CellId
-      const text = p.text as string
+      const text = typeof p.text === 'string' ? p.text : ''
+      const stream = p.stream === 'stderr' ? 'stderr' : 'stdout'
       const cell = cellMap.value.get(cellId)
-      if (cell) {
-        if (!cell.output) {
-          cell.output = {
-            contentType: 'json/object',
-            scalar: { console: '' },
-          }
-          cell.displayOutputs = []
-        }
-        if (
-          cell.output.scalar &&
-          typeof cell.output.scalar === 'object' &&
-          'console' in cell.output.scalar
-        ) {
-          ;(cell.output.scalar as Record<string, any>).console += text
+      if (cell && text) {
+        // Append to the stream-specific field on the cell. Storing
+        // console on the Cell (not inside output.scalar) keeps the
+        // display value clean — important for cells whose output is
+        // a user-controlled JSON object under @output_schema.
+        if (stream === 'stderr') {
+          cell.consoleStderr = (cell.consoleStderr ?? '') + text
         } else {
-          cell.output.scalar = { console: text }
+          cell.consoleStdout = (cell.consoleStdout ?? '') + text
         }
       }
     })

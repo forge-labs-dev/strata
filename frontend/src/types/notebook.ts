@@ -220,6 +220,10 @@ export interface Cell {
   annotationDiagnostics?: AnnotationDiagnostic[]
   /** Live loop-cell progress — hydrated from WS ``cell_iteration_progress`` messages */
   loopProgress?: LoopProgress
+  /** Captured stdout from the last execution (persisted so it survives reopens) */
+  consoleStdout?: string
+  /** Captured stderr from the last execution (persisted so it survives reopens) */
+  consoleStderr?: string
 }
 
 /** A warning or info about a source annotation. */
