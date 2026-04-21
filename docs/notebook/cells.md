@@ -2,11 +2,11 @@
 
 Strata Notebook has three cell kinds:
 
-| Kind       | What it runs                              | Created by                                      |
-| ---------- | ----------------------------------------- | ----------------------------------------------- |
-| **Python** | Python source in the notebook's venv      | The default — any new cell                      |
-| **Prompt** | A text template sent to an LLM            | `language="prompt"` in `notebook.toml`          |
-| **Loop**   | A Python cell executed N times in a row   | A Python cell with the `# @loop` annotation     |
+| Kind       | What it runs                              | Created by                                                        |
+| ---------- | ----------------------------------------- | ----------------------------------------------------------------- |
+| **Python** | Python source in the notebook's venv      | The default — any new cell                                        |
+| **Prompt** | A text template sent to an LLM            | The "Add Prompt Cell" button in the UI                            |
+| **Loop**   | A Python cell executed N times in a row   | Add a Python cell, then put a `# @loop` annotation at the top     |
 
 All three participate in the DAG, cache by provenance hash, and can be routed to remote workers. Pick the kind that matches the shape of the computation — this page walks through each.
 
@@ -96,7 +96,7 @@ See [Cell Annotations][a] for the full reference.
 
 A prompt cell is a text template that gets rendered with upstream variable values, sent to an LLM, and the response stored as an artifact. Prompt cells participate in the DAG and cache by provenance exactly like Python cells — same inputs + same template + same model config = cache hit, no LLM call.
 
-Create a prompt cell by setting `language="prompt"` when adding it (the UI's "Add Prompt Cell" button does this).
+Create a prompt cell with the **"Add Prompt Cell"** button in the UI — the same toolbar that adds a Python cell. You never need to touch `notebook.toml` directly; editing the cell's source, wiring it into the DAG, and persisting the result all happen through the UI.
 
 ### Basic syntax
 
