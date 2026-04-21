@@ -718,22 +718,35 @@ def update_notebook_timeout(notebook_dir: Path, timeout: float | None) -> None:
 
 
 def update_notebook_env(notebook_dir: Path, env: dict[str, str]) -> None:
-    """Persist notebook-level default environment variables."""
+    """Persist notebook-level default environment variables.
+
+    The persistable env block drops any entry that has no meaningful
+    content (empty values and blanked sensitive keys). If that block
+    is byte-identical to what's already on disk, the call is a no-op —
+    we skip the rewrite so ``updated_at`` keeps tracking genuine
+    structural edits. Typing an API key in the Runtime panel therefore
+    doesn't churn the committed notebook.toml.
+    """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
 
     with open(notebook_toml_path, "rb") as f:
         toml_data = tomllib.load(f)
 
-    # Drop the block when every value is empty or a blanked sensitive
-    # placeholder — otherwise a user who types an API key in the
-    # Runtime panel leaves an ``OPENAI_API_KEY = ""`` slot in the
-    # committed notebook.toml, which is noise for shared/example
-    # notebooks and meaningless as persisted config.
-    if env and _env_has_meaningful_content(env):
-        toml_data["env"] = _serialize_env(env)
-    else:
+    new_env: dict[str, str] | None = (
+        _serialize_env(env) if env and _env_has_meaningful_content(env) else None
+    )
+    existing_env = toml_data.get("env")
+
+    # Compare the effective persistable state. ``None`` means "block
+    # should not appear"; equality on dicts handles the value changes.
+    if new_env == existing_env or (new_env is None and not existing_env):
+        return
+
+    if new_env is None:
         toml_data.pop("env", None)
+    else:
+        toml_data["env"] = new_env
     toml_data["updated_at"] = datetime.now(tz=UTC).isoformat()
 
     with open(notebook_toml_path, "wb") as f:

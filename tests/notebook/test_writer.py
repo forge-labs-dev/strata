@@ -408,6 +408,25 @@ def test_sensitive_only_env_block_is_not_persisted():
         assert "env" not in data
 
 
+def test_sensitive_only_env_is_no_op_no_updated_at_bump():
+    """Typing an API key in the Runtime panel shouldn't churn
+    notebook.toml: no persistable change → no rewrite → no updated_at
+    bump. Otherwise examples get git diffs for invisible edits.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "No Churn Test")
+        notebook_toml = notebook_dir / "notebook.toml"
+
+        before = notebook_toml.read_bytes()
+        update_notebook_env(notebook_dir, {"OPENAI_API_KEY": "sk-proj-secret"})
+        assert notebook_toml.read_bytes() == before
+
+        # Second call with a different sensitive-only value is also a no-op —
+        # the persisted shape is identical.
+        update_notebook_env(notebook_dir, {"ANTHROPIC_API_KEY": "sk-ant-other"})
+        assert notebook_toml.read_bytes() == before
+
+
 def test_env_block_persists_when_mixed_with_non_sensitive():
     """A sensitive key alongside any non-sensitive value keeps the slot."""
     with tempfile.TemporaryDirectory() as tmpdir:
