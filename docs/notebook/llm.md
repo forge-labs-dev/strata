@@ -2,6 +2,8 @@
 
 Strata Notebook has two ways to use LLMs: **prompt cells** (declarative, part of the DAG) and the **AI assistant** (conversational, in a sidebar panel). Both use the same provider configuration and support any OpenAI-compatible API.
 
+This page covers provider configuration and the AI assistant. For the prompt-cell template syntax, annotations, schema-constrained output, and validate-and-retry loop, see [Cell Types](cells.md#prompt-cells).
+
 ---
 
 ## Configuration
@@ -57,89 +59,6 @@ Any service that implements the OpenAI `/v1/chat/completions` endpoint works, in
 - Mistral (Mistral Large, Codestral)
 - Ollama (local models)
 - vLLM, TGI, LiteLLM (self-hosted)
-
----
-
-## Prompt Cells
-
-Prompt cells are notebook cells with `language="prompt"`. They render a text template, call the LLM, and store the response as an artifact — just like Python cells, they participate in the DAG and cache by provenance.
-
-### Basic Syntax
-
-A prompt cell is plain text with `{{ variable }}` template injection:
-
-```
-# @name summary
-Summarize this dataset:
-
-{{ df }}
-
-Return 3 key findings as a numbered list.
-```
-
-The `{{ df }}` placeholder is replaced with a text representation of the upstream variable `df` before sending to the LLM. The response is stored as an artifact named `summary` (from the `@name` annotation).
-
-### Template Variables
-
-Variables are injected using `{{ expression }}` syntax. The expression is resolved against upstream cell outputs:
-
-| Upstream Type     | Text Representation                     |
-| ----------------- | --------------------------------------- |
-| pandas DataFrame  | Markdown table (first 20 rows)          |
-| pandas Series     | String representation (first 20 values) |
-| numpy ndarray     | Shape + dtype + first 10 elements       |
-| dict / list       | JSON (indented, truncated)              |
-| str / int / float | Direct string conversion                |
-
-Each variable has a token budget (default: 2,000 tokens). If the text representation exceeds the budget, it's truncated with a `... (truncated)` marker.
-
-**Attribute access** is supported for safe, read-only operations:
-
-```
-{{ df.describe() }}     # OK — pandas describe() is allowed
-{{ df.head() }}         # OK — pandas head() is allowed
-{{ obj.value }}         # OK — attribute access (non-callable)
-{{ obj.mutate() }}      # BLOCKED — unknown method, left as-is
-```
-
-Only a small set of known-safe methods are allowed (`describe`, `head`, `tail` on pandas DataFrames/Series). Arbitrary method calls are blocked to prevent side effects in template rendering.
-
-### Prompt Cell Annotations
-
-| Annotation     | Description                                        | Default              |
-| -------------- | -------------------------------------------------- | -------------------- |
-| `@name`        | Output variable name (must be a Python identifier) | `result`             |
-| `@model`       | Override the LLM model                             | From provider config |
-| `@temperature` | Sampling temperature (0.0 = deterministic)         | `0.0`                |
-| `@max_tokens`  | Maximum response tokens                            | `4096`               |
-| `@system`      | System prompt prepended to the request             | None                 |
-
-Example with all annotations:
-
-```
-# @name classification
-# @model gpt-4o
-# @temperature 0.0
-# @max_tokens 1000
-# @system You are a data scientist. Return only valid JSON.
-Classify each paper by topic:
-
-{{ sampled_papers }}
-
-Return a JSON object mapping paper ID to topic.
-```
-
-### Caching
-
-Prompt cells cache like any other cell. The cache key includes:
-
-- The rendered template text (after variable injection)
-- The model name
-- The temperature
-- The system prompt
-- The output type
-
-If you re-run a prompt cell with the same inputs and the same model config, the cached response is returned instantly — no LLM call is made.
 
 ---
 

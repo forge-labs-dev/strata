@@ -55,6 +55,7 @@ nav:
   - Notebook:
     - Quickstart: getting-started/notebook.md
     - Concepts: notebook/concepts.md
+    - Cell Types: notebook/cells.md
     - Cell Annotations: notebook/annotations.md
     - Distributed Workers: notebook/workers.md
     - LLM Integration: notebook/llm.md

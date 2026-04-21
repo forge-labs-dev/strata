@@ -32,17 +32,21 @@ Each notebook is a directory on disk:
 
 ```
 my_notebook/
-├── notebook.toml          # Metadata: ID, name, cell list
+├── notebook.toml          # Stable config: ID, name, cell list, workers, mounts, env, ai
 ├── pyproject.toml         # Python dependencies (uv-managed)
 ├── uv.lock                # Locked dependencies
 ├── cells/
 │   ├── a1b2c3d4.py        # Cell source files
 │   └── e5f6g7h8.py
-└── .strata/
+└── .strata/               # Gitignored — runtime state, not committed
+    ├── runtime.json           # Display outputs, provenance hashes, env metadata
+    ├── console/               # Per-cell stdout/stderr ({cell_id}.json)
     └── artifacts/
-        ├── artifacts.sqlite       # Artifact metadata
-        └── blobs/                 # Serialized cell outputs
+        ├── artifacts.sqlite   # Artifact metadata
+        └── blobs/             # Serialized cell outputs
 ```
+
+`notebook.toml` holds stable config you'd commit to git; `.strata/` holds runtime state that changes on every execution (display outputs, console snapshots, the last `uv sync` timestamp, per-cell provenance hashes). `notebook.toml`'s `updated_at` tracks only structural edits — adding/removing cells, changing workers or mounts — so example notebooks don't churn under version control.
 
 `notebook.toml` defines the notebook identity and cell ordering:
 

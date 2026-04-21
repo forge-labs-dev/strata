@@ -143,12 +143,12 @@ Common use cases:
 - **Feature flags**: `DEBUG=true`, `LOG_LEVEL=info`
 
 !!! note "Sensitive values are not persisted to disk"
-    Environment variables with names containing KEY, SECRET, TOKEN, PASSWORD, or CREDENTIAL are stripped from `notebook.toml` when saving. The key names are preserved so you know which vars are configured, but you'll need to re-enter values after reopening the notebook.
+    Environment variables with names containing KEY, SECRET, TOKEN, PASSWORD, or CREDENTIAL have their values blanked from `notebook.toml` when saving. The key names are preserved as a "which vars are configured" reminder *only* when something real is configured alongside them. A notebook whose `[env]` would contain nothing but blanked sensitive slots is persisted without an `[env]` block at all — so typing an API key in the Runtime panel doesn't churn the committed notebook.
 
 Notebook env vars are stored in the `[env]` section of `notebook.toml`:
 
 ```toml
 [env]
 DATABASE_URL = "postgres://localhost/mydb"
-OPENAI_API_KEY = ""  # value stripped for security
+OPENAI_API_KEY = ""  # value blanked; name kept because DATABASE_URL above is real config
 ```
