@@ -35,19 +35,30 @@ def _copy_example(dst: Path) -> Path:
     return notebook_dir
 
 
+def _inject_legacy_sections(notebook_toml: Path) -> None:
+    """Append the legacy sections we used to carry in notebook.toml.
+
+    The checked-in examples no longer ship with these sections, so we
+    recreate the pre-migration state in the copied fixture. Testing
+    against a mutated copy keeps the assertion self-contained — it
+    doesn't rely on the repo's examples retaining stale noise.
+    """
+    with open(notebook_toml, "a", encoding="utf-8") as f:
+        f.write("\n[artifacts]\n\n[environment]\n\n[cache]\n")
+
+
 def test_copied_example_migrates_once_then_stays_stable(tmp_path: Path):
-    """Opening a legacy example rewrites notebook.toml exactly once
+    """Opening a notebook with legacy sections rewrites it exactly once
     (to strip the empty ``[artifacts]`` / ``[environment]`` / ``[cache]``
     sections). A second open is a no-op."""
     notebook_dir = _copy_example(tmp_path)
     notebook_toml = notebook_dir / "notebook.toml"
+    _inject_legacy_sections(notebook_toml)
 
     before = notebook_toml.read_bytes()
     with open(notebook_toml, "rb") as f:
         raw = tomllib.load(f)
-    assert "artifacts" in raw or "cache" in raw or "environment" in raw, (
-        "fixture precondition: pandas_basics carries at least one legacy section"
-    )
+    assert "artifacts" in raw and "cache" in raw and "environment" in raw
 
     parse_notebook(notebook_dir)
     first_open = notebook_toml.read_bytes()

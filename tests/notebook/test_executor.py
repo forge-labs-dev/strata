@@ -1748,10 +1748,19 @@ class TestPromptCellExecution:
         executor = CellExecutor(session)
         captured: dict[str, object] = {}
 
-        async def _fake_chat_completion(config, messages, *, temperature=None):
+        async def _fake_chat_completion(
+            config,
+            messages,
+            *,
+            temperature=None,
+            output_type=None,
+            output_schema=None,
+        ):
             captured["config"] = config
             captured["messages"] = messages
             captured["temperature"] = temperature
+            captured["output_type"] = output_type
+            captured["output_schema"] = output_schema
             return LlmCompletionResult(
                 content="hello",
                 model="test-model",
