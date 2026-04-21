@@ -165,7 +165,10 @@ def _fake_llm_returning(*responses: str):
     return fake, calls
 
 
-_TINY_SCHEMA = '{"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"], "additionalProperties": false}'
+_TINY_SCHEMA = (
+    '{"type": "object", "properties": {"n": {"type": "integer"}},'
+    ' "required": ["n"], "additionalProperties": false}'
+)
 
 
 @pytest.mark.asyncio
