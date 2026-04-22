@@ -1,0 +1,16 @@
+[project]
+name = "news-alpha-trader"
+version = "0.1.0"
+description = "News-driven sentiment trading with persistent DB and cost accounting"
+requires-python = ">=3.12"
+dependencies = [
+    "pyarrow>=18.0.0",
+    "orjson>=3.10.0",
+    "cloudpickle>=3.0.0",
+    "pandas>=2.0.0",
+    "duckdb>=1.1.0",
+    "alpaca-py>=0.33.0",
+    "httpx>=0.28.0",
+]
+
+[tool.uv]
