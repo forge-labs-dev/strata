@@ -245,6 +245,35 @@ class NotebookSession:
         # Analyze all cells and build DAG
         self._analyze_and_build_dag()
         self._run_annotation_validation()
+        # Pull secrets from the configured manager (if any) and merge
+        # them into the env map before cells start seeing env.
+        self._apply_configured_secrets()
+
+    def _apply_configured_secrets(self) -> None:
+        """Fetch + merge secrets from the configured provider, if any.
+
+        Updates notebook_state.env, env_sources, env_fetch_error,
+        env_fetched_at in place. Non-destructive on no-op notebooks —
+        when there's no ``[secrets]`` block, env_sources is still
+        stamped with ``manual`` for every existing key so the UI has
+        a consistent source map to render.
+
+        Also mirrors the fresh env into each cell's resolved env so
+        the executor (which reads cell.env) sees the fetched values.
+        """
+        from strata.notebook.secrets import apply_secrets_to_notebook_state
+
+        apply_secrets_to_notebook_state(self.notebook_state)
+        # Rebuild per-cell resolved env, preserving cell-level
+        # overrides — same pattern as update_notebook_env_endpoint.
+        for cell in self.notebook_state.cells:
+            resolved = dict(self.notebook_state.env)
+            resolved.update(cell.env_overrides or {})
+            cell.env = resolved
+
+    def refresh_secrets(self):
+        """Re-fetch secrets and re-merge into env. Used by the Refresh button."""
+        self._apply_configured_secrets()
 
     def _run_annotation_validation(self) -> None:
         """Validate annotations across all cells. Called on open/reload only."""
@@ -289,6 +318,7 @@ class NotebookSession:
         # Re-analyze all cells and rebuild DAG
         self._analyze_and_build_dag()
         self._run_annotation_validation()
+        self._apply_configured_secrets()
         # Restore prior display outputs and provenance history *before*
         # computing staleness. compute_staleness() compares the cell's
         # ``last_provenance_hash`` against the newly-resolved env / source

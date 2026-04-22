@@ -54,6 +54,9 @@ const notebook = reactive<Notebook>({
   worker: null,
   timeout: null,
   env: {},
+  envSources: {},
+  envFetchError: null,
+  envFetchedAt: null,
   workers: [],
   mounts: [],
   cells: [],
@@ -873,6 +876,24 @@ function syncNotebookEnvFromBackend(serverEnv: any) {
   notebook.env = parseEnvMap(serverEnv)
 }
 
+/** Merge the env-response fields (sources + fetch status) into the
+ * store. Shared by the env PUT, /secrets/refresh, and initial open
+ * since all three share a response shape. */
+function applyEnvSources(payload: any) {
+  notebook.envSources =
+    payload && typeof payload.env_sources === 'object'
+      ? Object.fromEntries(
+          Object.entries(payload.env_sources as Record<string, unknown>)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([k, v]) => [k, String(v)]),
+        )
+      : {}
+  notebook.envFetchError =
+    typeof payload?.env_fetch_error === 'string' ? payload.env_fetch_error : null
+  notebook.envFetchedAt =
+    typeof payload?.env_fetched_at === 'string' ? payload.env_fetched_at : null
+}
+
 function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
   notebook.environment = parseBackendEnvironment(serverEnvironment)
 }
@@ -1052,6 +1073,7 @@ function loadNotebookStateFromBackend(data: any) {
   notebook.worker = data.worker ?? null
   notebook.timeout = data.timeout ?? null
   notebook.env = parseEnvMap(data.env)
+  applyEnvSources(data)
   notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
   notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
   syncEnvironmentPayloadFromBackend(data)
@@ -2585,12 +2607,29 @@ async function updateNotebookEnvAction(env: Record<string, string>) {
   if ('env' in data) {
     syncNotebookEnvFromBackend(data.env)
   }
+  applyEnvSources(data)
   if (data.cells && Array.isArray(data.cells)) {
     syncCellsFromBackend(data.cells)
   }
   // Re-check LLM availability — the user may have just added or
   // removed an API key, which changes whether the AI panel is active.
   void checkLlmStatus()
+}
+
+async function refreshSecretsAction() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.refreshNotebookSecrets(sid)
+  if ('env' in data) {
+    syncNotebookEnvFromBackend(data.env)
+  }
+  applyEnvSources(data)
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+  void checkLlmStatus()
+  return data
 }
 
 function updateSourceWebSocket(cellId: CellId, source: string) {
@@ -2952,6 +2991,7 @@ export function useNotebook() {
     updateNotebookWorkerAction,
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,
+    refreshSecretsAction,
     updateNotebookMountsAction,
     // LLM assistant
     llmAvailable,

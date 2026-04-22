@@ -413,6 +413,14 @@ export interface Notebook {
   worker: string | null
   timeout: number | null
   env: Record<string, string>
+  /** Per-key provenance for env. 'manual' = set via Runtime panel,
+   * provider name (e.g. 'infisical') = fetched from a secret manager. */
+  envSources: Record<string, string>
+  /** Last secret-manager fetch error, if any. null when fetch succeeded
+   * or no manager is configured. */
+  envFetchError: string | null
+  /** ISO-8601 timestamp of the last secret-manager fetch. */
+  envFetchedAt: string | null
   workers: WorkerSpec[]
   mounts: MountSpec[]
   cells: Cell[]

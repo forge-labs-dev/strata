@@ -1408,14 +1408,53 @@ async def update_notebook_env_endpoint(
         # otherwise the executor (which reads cell.env) still sees the
         # blanked values and API-key-dependent cells fail with "key not
         # set" even though the Runtime panel was updated.
+        # Anything the user just typed in the Runtime panel is a
+        # manual override — mark it as such in env_sources so the UI
+        # shows the correct badge.
+        for key in req.env:
+            session.notebook_state.env_sources[key] = "manual"
         for cell in session.notebook_state.cells:
             resolved = dict(session.notebook_state.env)
             resolved.update(cell.env_overrides or {})
             cell.env = resolved
-        return {
-            "env": session.notebook_state.env,
-            "cells": session.serialize_cells(),
-        }
+        return _serialize_env_response(session)
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _serialize_env_response(session) -> dict:
+    """Env-endpoint response shape shared with the secrets refresh path."""
+    return {
+        "env": session.notebook_state.env,
+        "env_sources": session.notebook_state.env_sources,
+        "env_fetch_error": session.notebook_state.env_fetch_error,
+        "env_fetched_at": session.notebook_state.env_fetched_at,
+        "cells": session.serialize_cells(),
+    }
+
+
+@router.post("/{notebook_id}/secrets/refresh")
+async def refresh_notebook_secrets(notebook_id: str) -> dict:
+    """Re-fetch secrets from the configured manager and merge into env.
+
+    Returns the same shape as the env endpoint so the frontend can
+    swap the panel state in place. Never 500s on fetch error — the
+    error message comes back in ``env_fetch_error`` so the UI can
+    display it next to the Refresh button.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    try:
+        session.refresh_secrets()
+        # Propagate the refreshed env back to each cell's resolved view
+        # so the executor picks up rotated values immediately.
+        for cell in session.notebook_state.cells:
+            resolved = dict(session.notebook_state.env)
+            resolved.update(cell.env_overrides or {})
+            cell.env = resolved
+        return _serialize_env_response(session)
     except Exception:
         logger.exception("Internal server error")
         raise HTTPException(status_code=500, detail="Internal server error")

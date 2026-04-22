@@ -202,6 +202,14 @@ class NotebookToml(BaseModel):
         default_factory=dict,
         description="Notebook-level LLM configuration persisted under [ai]",
     )
+    secrets: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "External secret-manager config under [secrets]. Non-sensitive "
+            "routing only (provider, project_id, environment, path); the "
+            "token that authenticates lives in the process environment."
+        ),
+    )
     # Preserved in TOML round-trip but not used at runtime
     artifacts: dict = Field(default_factory=dict)
     environment: dict = Field(default_factory=dict)
@@ -399,6 +407,22 @@ class NotebookState(BaseModel):
         default_factory=dict,
         description="Notebook-level default environment variables",
     )
+    env_sources: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-key provenance for env: 'manual' for values typed in the "
+            "Runtime panel, or a provider name (e.g. 'infisical') for "
+            "values fetched from a secret manager."
+        ),
+    )
+    env_fetch_error: str | None = Field(
+        default=None,
+        description="Last secret-manager fetch error, if any. None on success or when no manager is configured.",
+    )
+    env_fetched_at: str | None = Field(
+        default=None,
+        description="ISO-8601 timestamp of the last secret-manager fetch.",
+    )
     workers: list[WorkerSpec] = Field(
         default_factory=list,
         description="Registered workers available to this notebook",
@@ -406,6 +430,16 @@ class NotebookState(BaseModel):
     mounts: list[MountSpec] = Field(
         default_factory=list,
         description="Notebook-level filesystem mount defaults",
+    )
+    secrets_config: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+        description=(
+            "Parsed [secrets] block from notebook.toml — provider / "
+            "project / env / path routing. Excluded from API responses "
+            "so the config never travels to the frontend alongside the "
+            "values it selects for."
+        ),
     )
     cells: list[CellState] = Field(default_factory=list, description="Cells with source")
     path: Path | None = Field(

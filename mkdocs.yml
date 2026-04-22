@@ -60,6 +60,7 @@ nav:
     - Distributed Workers: notebook/workers.md
     - LLM Integration: notebook/llm.md
     - Environment: notebook/environment.md
+    - Secret Manager: notebook/secrets.md
     - Keyboard Shortcuts: notebook/keyboard.md
   - Core:
     - Quickstart: getting-started/core.md

@@ -17,16 +17,24 @@ interface EnvRow {
 const props = withDefaults(
   defineProps<{
     env: Record<string, string>
+    envSources?: Record<string, string>
     title?: string
     compact?: boolean
     readOnly?: boolean
   }>(),
   {
     title: 'Environment Variables',
+    envSources: () => ({}),
     compact: false,
     readOnly: false,
   },
 )
+
+function sourceLabel(key: string): string | null {
+  const source = props.envSources?.[key]
+  if (!source || source === 'manual') return null
+  return source
+}
 
 const emit = defineEmits<{
   save: [env: Record<string, string>]
@@ -80,13 +88,22 @@ function save() {
     </div>
 
     <div v-for="(row, index) in draft" :key="row.localId" class="env-row">
-      <input
-        v-model="row.key"
-        class="env-input env-key"
-        type="text"
-        placeholder="KEY"
-        :disabled="readOnly"
-      />
+      <div class="env-key-cell">
+        <input
+          v-model="row.key"
+          class="env-input env-key"
+          type="text"
+          placeholder="KEY"
+          :disabled="readOnly"
+        />
+        <span
+          v-if="sourceLabel(row.key)"
+          class="env-source-badge"
+          :title="`Value fetched from ${sourceLabel(row.key)}. Edit here to override for this session.`"
+        >
+          {{ sourceLabel(row.key) }}
+        </span>
+      </div>
       <input
         v-model="row.value"
         class="env-input env-value"
@@ -158,9 +175,32 @@ function save() {
   gap: 6px;
 }
 
+.env-key-cell {
+  flex: 1 1 100px;
+  min-width: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.env-key-cell .env-key {
+  flex: none;
+}
 .env-key {
   flex: 1 1 100px;
   min-width: 80px;
+}
+.env-source-badge {
+  align-self: flex-start;
+  background: #1e2d24;
+  color: #a6e3a1;
+  border: 1px solid #a6e3a133;
+  padding: 0 6px;
+  font-size: 9px;
+  font-weight: 600;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  cursor: help;
 }
 
 .env-value {
