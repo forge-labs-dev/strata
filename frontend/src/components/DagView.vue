@@ -82,20 +82,39 @@ const layout = computed(() => {
     nodeMap.set(c.id, node)
   }
 
-  // Build edge layouts with dagre's routed points
-  const edges: EdgeLayout[] = []
+  // Build edge layouts with dagre's routed points. Multiple variables
+  // flowing between the same (from, to) pair share a single routed
+  // path — rendering one arrow per variable just stacks identical
+  // labels at the same midpoint, which looks like the text has been
+  // jammed into one illegible blob. Group by pair and join the
+  // variable names so each edge gets one clean label like "x, y, z".
+  const edgeGroups = new Map<string, { from: NodeLayout; to: NodeLayout; vars: string[] }>()
   for (const e of dagEdges.value) {
     const from = nodeMap.get(e.from_cell_id)
     const to = nodeMap.get(e.to_cell_id)
     if (!from || !to) continue
+    const key = `${e.from_cell_id}->${e.to_cell_id}`
+    const existing = edgeGroups.get(key)
+    if (existing) {
+      if (!existing.vars.includes(e.variable)) existing.vars.push(e.variable)
+    } else {
+      edgeGroups.set(key, { from, to, vars: [e.variable] })
+    }
+  }
 
-    const dagreEdge = g.edge(e.from_cell_id, e.to_cell_id)
+  const edges: EdgeLayout[] = []
+  for (const [, group] of edgeGroups) {
+    const dagreEdge = g.edge(group.from.id, group.to.id)
     const points = dagreEdge?.points ?? [
-      { x: from.x, y: from.y + nodeSize.h / 2 },
-      { x: to.x, y: to.y - nodeSize.h / 2 },
+      { x: group.from.x, y: group.from.y + nodeSize.h / 2 },
+      { x: group.to.x, y: group.to.y - nodeSize.h / 2 },
     ]
-
-    edges.push({ from, to, variable: e.variable, points })
+    edges.push({
+      from: group.from,
+      to: group.to,
+      variable: group.vars.join(', '),
+      points,
+    })
   }
 
   return { nodes, edges }
