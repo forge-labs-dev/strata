@@ -11,6 +11,9 @@ dependencies = [
     "duckdb>=1.1.0",
     "alpaca-py>=0.33.0",
     "httpx>=0.28.0",
+    # alpaca-py imports pytz internally but it's not always declared in
+    # its wheel metadata — pin explicitly so uv sync pulls it.
+    "pytz>=2024.1",
 ]
 
 [tool.uv]
