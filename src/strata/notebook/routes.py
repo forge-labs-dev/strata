@@ -1430,8 +1430,57 @@ def _serialize_env_response(session) -> dict:
         "env_sources": session.notebook_state.env_sources,
         "env_fetch_error": session.notebook_state.env_fetch_error,
         "env_fetched_at": session.notebook_state.env_fetched_at,
+        "secrets_config": dict(session.notebook_state.secrets_config),
         "cells": session.serialize_cells(),
     }
+
+
+class SecretsConfigRequest(BaseModel):
+    """Payload for the secrets-config PUT endpoint.
+
+    Field set matches exactly what update_notebook_secrets accepts —
+    anything else gets dropped on the writer side so arbitrary runtime
+    state can't sneak into the committed TOML via this path.
+    """
+
+    provider: str | None = None
+    project_id: str | None = None
+    environment: str | None = None
+    path: str | None = None
+    base_url: str | None = None
+
+
+@router.put("/{notebook_id}/secrets/config")
+async def update_notebook_secrets_config(
+    notebook_id: str,
+    req: SecretsConfigRequest,
+) -> dict:
+    """Persist the [secrets] block to notebook.toml and refetch.
+
+    Empty payload (all fields None / empty) removes the block —
+    "disconnect from secret manager". A refresh is triggered after the
+    write so the Runtime panel immediately reflects the new values.
+    """
+    from strata.notebook.writer import update_notebook_secrets
+
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    try:
+        config = req.model_dump(exclude_none=True)
+        update_notebook_secrets(session.path, config)
+        session.reload()
+        # After reload, env keys set via the Runtime panel are blanked
+        # on disk — restore whatever the in-memory state had for keys
+        # we're not replacing from the fresh fetch.
+        for cell in session.notebook_state.cells:
+            resolved = dict(session.notebook_state.env)
+            resolved.update(cell.env_overrides or {})
+            cell.env = resolved
+        return _serialize_env_response(session)
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/{notebook_id}/secrets/refresh")

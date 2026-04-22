@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useNotebook } from '../stores/notebook'
 import EnvVarsEditor from './EnvVarsEditor.vue'
 import TimeoutConfigEditor from './TimeoutConfigEditor.vue'
@@ -10,28 +10,69 @@ const {
   updateNotebookTimeoutAction,
   updateNotebookEnvAction,
   refreshSecretsAction,
+  updateNotebookSecretsConfigAction,
 } = useNotebook()
 
 const showPanel = ref(false)
 const refreshing = ref(false)
+const savingSecretsConfig = ref(false)
+const secretsConfigError = ref<string | null>(null)
 
 const envCount = computed(() => Object.keys(notebook.env).length)
 const timeoutLabel = computed(() => (notebook.timeout == null ? 'default' : `${notebook.timeout}s`))
 
-// A secret manager is "active" if any env key has a non-manual source
-// OR the backend reported a fetch error for a configured manager.
-const secretManagerActive = computed(
-  () =>
-    Object.values(notebook.envSources).some((src) => src !== 'manual') ||
-    notebook.envFetchError != null,
+// Form state mirrors notebook.secretsConfig but stays local so the
+// user can edit without committing until Save. When the backend
+// pushes a new config (initial open, refresh, etc.) the watcher below
+// resets the form to match.
+const form = ref<{
+  provider: string
+  project_id: string
+  environment: string
+  path: string
+  base_url: string
+}>({
+  provider: '',
+  project_id: '',
+  environment: '',
+  path: '',
+  base_url: '',
+})
+
+function resetForm() {
+  form.value.provider = notebook.secretsConfig.provider ?? ''
+  form.value.project_id = notebook.secretsConfig.project_id ?? ''
+  form.value.environment = notebook.secretsConfig.environment ?? ''
+  form.value.path = notebook.secretsConfig.path ?? ''
+  form.value.base_url = notebook.secretsConfig.base_url ?? ''
+}
+
+watch(
+  () => notebook.secretsConfig,
+  () => {
+    resetForm()
+  },
+  { immediate: true, deep: true },
 )
 
+const secretsConfigured = computed(() => Object.keys(notebook.secretsConfig).length > 0)
+
 const secretManagerName = computed(() => {
+  if (notebook.secretsConfig.provider) return notebook.secretsConfig.provider
   for (const src of Object.values(notebook.envSources)) {
     if (src && src !== 'manual') return src
   }
   return null
 })
+
+const formDirty = computed(
+  () =>
+    form.value.provider !== (notebook.secretsConfig.provider ?? '') ||
+    form.value.project_id !== (notebook.secretsConfig.project_id ?? '') ||
+    form.value.environment !== (notebook.secretsConfig.environment ?? '') ||
+    form.value.path !== (notebook.secretsConfig.path ?? '') ||
+    form.value.base_url !== (notebook.secretsConfig.base_url ?? ''),
+)
 
 async function handleRefresh() {
   if (refreshing.value || !connected) return
@@ -43,6 +84,38 @@ async function handleRefresh() {
     // a thrown exception here means the POST itself failed (404 etc.).
   } finally {
     refreshing.value = false
+  }
+}
+
+async function saveSecretsConfig() {
+  if (savingSecretsConfig.value || !connected) return
+  secretsConfigError.value = null
+  savingSecretsConfig.value = true
+  try {
+    await updateNotebookSecretsConfigAction({
+      provider: form.value.provider || null,
+      project_id: form.value.project_id || null,
+      environment: form.value.environment || null,
+      path: form.value.path || null,
+      base_url: form.value.base_url || null,
+    })
+  } catch (e: any) {
+    secretsConfigError.value = e?.message || 'Failed to save secrets config'
+  } finally {
+    savingSecretsConfig.value = false
+  }
+}
+
+async function disconnectSecretManager() {
+  if (savingSecretsConfig.value || !connected) return
+  secretsConfigError.value = null
+  savingSecretsConfig.value = true
+  try {
+    await updateNotebookSecretsConfigAction({})
+  } catch (e: any) {
+    secretsConfigError.value = e?.message || 'Failed to disconnect'
+  } finally {
+    savingSecretsConfig.value = false
   }
 }
 </script>
@@ -73,13 +146,14 @@ async function handleRefresh() {
         :read-only="!connected"
         @save="updateNotebookEnvAction"
       />
-      <div v-if="secretManagerActive" class="secrets-panel">
+      <div class="secrets-panel">
         <div class="secrets-header">
           <span class="secrets-title">
             Secret manager
             <span v-if="secretManagerName" class="secrets-provider">{{ secretManagerName }}</span>
           </span>
           <button
+            v-if="secretsConfigured"
             class="secrets-refresh"
             :disabled="refreshing || !connected"
             @click="handleRefresh"
@@ -90,9 +164,84 @@ async function handleRefresh() {
         <p v-if="notebook.envFetchError" class="secrets-error">
           {{ notebook.envFetchError }}
         </p>
-        <p v-else-if="notebook.envFetchedAt" class="secrets-meta">
+        <p v-else-if="notebook.envFetchedAt && secretsConfigured" class="secrets-meta">
           Last refreshed {{ notebook.envFetchedAt }}
         </p>
+        <div class="secrets-form">
+          <label class="secrets-field">
+            <span class="secrets-field-label">Provider</span>
+            <select
+              v-model="form.provider"
+              class="secrets-select"
+              :disabled="!connected || savingSecretsConfig"
+            >
+              <option value="">— none —</option>
+              <option value="infisical">Infisical</option>
+            </select>
+          </label>
+          <template v-if="form.provider">
+            <label class="secrets-field">
+              <span class="secrets-field-label">Project ID</span>
+              <input
+                v-model="form.project_id"
+                class="secrets-input"
+                placeholder="your-project-id"
+                :disabled="!connected || savingSecretsConfig"
+              />
+            </label>
+            <div class="secrets-row">
+              <label class="secrets-field">
+                <span class="secrets-field-label">Environment</span>
+                <input
+                  v-model="form.environment"
+                  class="secrets-input"
+                  placeholder="dev"
+                  :disabled="!connected || savingSecretsConfig"
+                />
+              </label>
+              <label class="secrets-field">
+                <span class="secrets-field-label">Path</span>
+                <input
+                  v-model="form.path"
+                  class="secrets-input"
+                  placeholder="/"
+                  :disabled="!connected || savingSecretsConfig"
+                />
+              </label>
+            </div>
+            <label class="secrets-field">
+              <span class="secrets-field-label">Base URL (self-hosted only)</span>
+              <input
+                v-model="form.base_url"
+                class="secrets-input"
+                placeholder="https://app.infisical.com"
+                :disabled="!connected || savingSecretsConfig"
+              />
+            </label>
+            <p class="secrets-hint">
+              Set <code>INFISICAL_TOKEN</code> in the environment that launched Strata. The token is
+              never written to disk.
+            </p>
+          </template>
+          <p v-if="secretsConfigError" class="secrets-error">{{ secretsConfigError }}</p>
+          <div class="secrets-actions">
+            <button
+              v-if="secretsConfigured"
+              class="secrets-disconnect"
+              :disabled="savingSecretsConfig || !connected"
+              @click="disconnectSecretManager"
+            >
+              Disconnect
+            </button>
+            <button
+              class="secrets-save"
+              :disabled="!formDirty || savingSecretsConfig || !connected"
+              @click="saveSecretsConfig"
+            >
+              {{ savingSecretsConfig ? 'Saving…' : 'Save' }}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -211,5 +360,84 @@ async function handleRefresh() {
   color: #6c7086;
   margin: 0;
   line-height: 1.4;
+}
+.secrets-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+.secrets-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.secrets-field-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: #6c7086;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.secrets-row {
+  display: flex;
+  gap: 6px;
+}
+.secrets-input,
+.secrets-select {
+  background: #11111b;
+  border: 1px solid #313244;
+  border-radius: 6px;
+  color: #cdd6f4;
+  font-size: 12px;
+  padding: 6px 8px;
+  width: 100%;
+  min-width: 0;
+}
+.secrets-input:disabled,
+.secrets-select:disabled {
+  opacity: 0.5;
+}
+.secrets-hint {
+  margin: 0;
+  font-size: 11px;
+  color: #6c7086;
+  line-height: 1.4;
+}
+.secrets-hint code {
+  background: #11111b;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+.secrets-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.secrets-save,
+.secrets-disconnect {
+  background: none;
+  border: 1px solid #313244;
+  border-radius: 4px;
+  color: #a6adc8;
+  font-size: 11px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.secrets-save:hover:not(:disabled) {
+  color: #a6e3a1;
+  border-color: #a6e3a1;
+}
+.secrets-disconnect:hover:not(:disabled) {
+  color: #f38ba8;
+  border-color: #f38ba8;
+}
+.secrets-save:disabled,
+.secrets-disconnect:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 </style>

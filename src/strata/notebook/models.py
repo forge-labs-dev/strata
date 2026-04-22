@@ -433,12 +433,11 @@ class NotebookState(BaseModel):
     )
     secrets_config: dict[str, Any] = Field(
         default_factory=dict,
-        exclude=True,
         description=(
             "Parsed [secrets] block from notebook.toml — provider / "
-            "project / env / path routing. Excluded from API responses "
-            "so the config never travels to the frontend alongside the "
-            "values it selects for."
+            "project_id / environment / path routing. Non-sensitive; the "
+            "token that authenticates to the manager lives in the process "
+            "environment, never here."
         ),
     )
     cells: list[CellState] = Field(default_factory=list, description="Cells with source")

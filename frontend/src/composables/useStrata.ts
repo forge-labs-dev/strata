@@ -626,6 +626,27 @@ async function refreshNotebookSecrets(notebookId: string): Promise<NotebookMutat
   return readJson<NotebookMutationResponse>(resp)
 }
 
+async function updateNotebookSecretsConfig(
+  notebookId: string,
+  config: {
+    provider?: string | null
+    project_id?: string | null
+    environment?: string | null
+    path?: string | null
+    base_url?: string | null
+  },
+): Promise<NotebookMutationResponse> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/secrets/config`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!resp.ok) {
+    throw new Error(`Failed to update secrets config: ${resp.status}`)
+  }
+  return readJson<NotebookMutationResponse>(resp)
+}
+
 async function listWorkers(notebookId: string, refresh = false): Promise<WorkerCatalogResponse> {
   const params = refresh ? '?refresh=true' : ''
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/workers${params}`)
@@ -1135,6 +1156,7 @@ export function useStrata() {
     updateNotebookTimeout,
     updateNotebookEnv,
     refreshNotebookSecrets,
+    updateNotebookSecretsConfig,
     listWorkers,
     updateWorkers,
     listAdminNotebookWorkers,

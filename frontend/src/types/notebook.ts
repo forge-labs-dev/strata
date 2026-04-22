@@ -421,6 +421,9 @@ export interface Notebook {
   envFetchError: string | null
   /** ISO-8601 timestamp of the last secret-manager fetch. */
   envFetchedAt: string | null
+  /** Non-sensitive routing for the configured secret manager. Empty
+   * object means no manager is configured. */
+  secretsConfig: Record<string, string>
   workers: WorkerSpec[]
   mounts: MountSpec[]
   cells: Cell[]

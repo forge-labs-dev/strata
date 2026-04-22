@@ -57,6 +57,7 @@ const notebook = reactive<Notebook>({
   envSources: {},
   envFetchError: null,
   envFetchedAt: null,
+  secretsConfig: {},
   workers: [],
   mounts: [],
   cells: [],
@@ -876,9 +877,9 @@ function syncNotebookEnvFromBackend(serverEnv: any) {
   notebook.env = parseEnvMap(serverEnv)
 }
 
-/** Merge the env-response fields (sources + fetch status) into the
- * store. Shared by the env PUT, /secrets/refresh, and initial open
- * since all three share a response shape. */
+/** Merge the env-response fields (sources + fetch status + secrets
+ * config) into the store. Shared by the env PUT, /secrets/refresh,
+ * /secrets/config PUT, and initial open since all four share shape. */
 function applyEnvSources(payload: any) {
   notebook.envSources =
     payload && typeof payload.env_sources === 'object'
@@ -892,6 +893,14 @@ function applyEnvSources(payload: any) {
     typeof payload?.env_fetch_error === 'string' ? payload.env_fetch_error : null
   notebook.envFetchedAt =
     typeof payload?.env_fetched_at === 'string' ? payload.env_fetched_at : null
+  notebook.secretsConfig =
+    payload && typeof payload.secrets_config === 'object' && payload.secrets_config
+      ? Object.fromEntries(
+          Object.entries(payload.secrets_config as Record<string, unknown>)
+            .filter(([, v]) => typeof v === 'string')
+            .map(([k, v]) => [k, String(v)]),
+        )
+      : {}
 }
 
 function syncNotebookEnvironmentFromBackend(serverEnvironment: any) {
@@ -2632,6 +2641,24 @@ async function refreshSecretsAction() {
   return data
 }
 
+async function updateNotebookSecretsConfigAction(
+  config: Record<string, string | null | undefined>,
+) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookSecretsConfig(sid, config)
+  if ('env' in data) {
+    syncNotebookEnvFromBackend(data.env)
+  }
+  applyEnvSources(data)
+  if (data.cells && Array.isArray(data.cells)) {
+    syncCellsFromBackend(data.cells)
+  }
+  void checkLlmStatus()
+  return data
+}
+
 function updateSourceWebSocket(cellId: CellId, source: string) {
   if (wsInstance && wsInstance.connected()) {
     wsInstance.updateCellSource(cellId, source)
@@ -2992,6 +3019,7 @@ export function useNotebook() {
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,
     refreshSecretsAction,
+    updateNotebookSecretsConfigAction,
     updateNotebookMountsAction,
     // LLM assistant
     llmAvailable,
