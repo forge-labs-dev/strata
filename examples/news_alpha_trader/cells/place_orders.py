@@ -34,8 +34,12 @@ already_submitted = set(
         "SELECT signal_id FROM orders WHERE signal_id IS NOT NULL"
     ).fetchall()
 )
-to_submit = trade_plan[~trade_plan["signal_id"].isin(already_submitted)]
-skipped_dupe = len(trade_plan) - len(to_submit)
+if len(trade_plan) == 0 or "signal_id" not in trade_plan.columns:
+    to_submit = trade_plan.iloc[0:0]  # empty but with compatible shape
+    skipped_dupe = 0
+else:
+    to_submit = trade_plan[~trade_plan["signal_id"].isin(already_submitted)]
+    skipped_dupe = len(trade_plan) - len(to_submit)
 
 submitted_rows = []
 if len(to_submit):
@@ -124,7 +128,10 @@ if len(to_submit):
 conn.close()
 import pandas as pd
 
-submitted = pd.DataFrame(submitted_rows)
+# Pin columns so daily_note and reconcile see a consistent schema
+# even on a no-op run.
+_SUBMITTED_COLUMNS = ["order_id", "ticker", "side", "qty", "status", "expected_cost_usd"]
+submitted = pd.DataFrame(submitted_rows, columns=_SUBMITTED_COLUMNS)
 print(
     f"place_orders ({mode}): {len(submitted)} submitted, "
     f"{skipped_dupe} skipped (already in orders)."

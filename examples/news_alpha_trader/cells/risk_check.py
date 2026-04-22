@@ -80,7 +80,19 @@ for signal in fresh_signals.itertuples(index=False):
     if headroom_usd <= 0:
         break
 
-trade_plan = pd.DataFrame(trade_plan_rows)
+# Empty lists produce a DataFrame with zero columns, which trips up
+# the downstream filters in place_orders. Pin the schema.
+_TRADE_PLAN_COLUMNS = [
+    "signal_id",
+    "ticker",
+    "side",
+    "qty",
+    "price_hint",
+    "strength",
+    "theme",
+    "expected_cost_usd",
+]
+trade_plan = pd.DataFrame(trade_plan_rows, columns=_TRADE_PLAN_COLUMNS)
 
 conn.close()
 
