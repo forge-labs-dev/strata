@@ -332,6 +332,12 @@ function edgePath(points: { x: number; y: number }[]): string {
   cursor: grab;
   flex: 1;
   min-height: 0;
+  /* Panning would otherwise highlight the node / edge labels as a
+   * text selection — ugly and distracting. The viewport never has
+   * meaningful selectable text; double-click jumps to a cell via a
+   * handler, not via native selection. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .dag-viewport:active {
   cursor: grabbing;
