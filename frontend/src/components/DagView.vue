@@ -213,9 +213,8 @@ function edgePath(points: { x: number; y: number }[]): string {
 
 <template>
   <div class="dag-panel">
-    <div class="dag-header">
-      <span>Cell DAG</span>
-      <button class="dag-reset" title="Reset zoom" @click="resetView">Reset</button>
+    <div class="dag-controls">
+      <button class="dag-reset" title="Reset zoom" @click.stop="resetView">Reset</button>
     </div>
     <div
       class="dag-viewport"
@@ -225,7 +224,13 @@ function edgePath(points: { x: number; y: number }[]): string {
       @mouseup="onMouseUp"
       @mouseleave="onMouseUp"
     >
-      <svg :width="svgWidth" :height="svgHeight" :viewBox="viewBox" class="dag-svg">
+      <svg
+        width="100%"
+        height="100%"
+        :viewBox="viewBox"
+        preserveAspectRatio="xMidYMid meet"
+        class="dag-svg"
+      >
         <defs>
           <marker
             id="arrow"
@@ -302,17 +307,10 @@ function edgePath(points: { x: number; y: number }[]): string {
   display: flex;
   flex-direction: column;
 }
-.dag-header {
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #6c7086;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: 1px solid #2a2a3c;
+.dag-controls {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
+  padding: 0 0 6px 0;
 }
 .dag-reset {
   font-size: 10px;
@@ -340,6 +338,8 @@ function edgePath(points: { x: number; y: number }[]): string {
 }
 .dag-svg {
   display: block;
+  width: 100%;
+  height: 100%;
 }
 .dag-node {
   cursor: pointer;

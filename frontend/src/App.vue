@@ -197,9 +197,24 @@ body {
 }
 .dag-drawer-body {
   flex: 1;
-  overflow: auto;
-  padding: 12px 16px;
+  display: flex;
   min-height: 0;
+  overflow: hidden;
+}
+.dag-drawer-graph {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 8px 12px 16px;
+  display: flex;
+  flex-direction: column;
+}
+.dag-drawer-profiling {
+  width: 360px;
+  flex-shrink: 0;
+  border-left: 1px solid #2a2a3c;
+  overflow-y: auto;
+  padding: 12px 16px;
 }
 .sidebar-resizer {
   width: 12px;

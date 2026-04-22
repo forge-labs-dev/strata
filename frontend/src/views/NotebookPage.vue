@@ -598,13 +598,14 @@ function goHome() {
           @pointerdown="startSidebarResize"
         ></div>
 
-        <!-- Runtime / config panels -->
+        <!-- Runtime / config panels. ProfilingPanel lives in the
+             DAG drawer alongside the graph — it reads per-cell
+             execution stats that pair naturally with the DAG view. -->
         <aside class="sidebar">
           <MountsPanel />
           <WorkersPanel />
           <RuntimePanel />
           <EnvironmentPanel />
-          <ProfilingPanel />
           <LlmPanel />
         </aside>
       </div>
@@ -627,7 +628,12 @@ function goHome() {
           </span>
         </header>
         <div v-if="!dagDrawerCollapsed" class="dag-drawer-body">
-          <DagView />
+          <div class="dag-drawer-graph">
+            <DagView />
+          </div>
+          <div class="dag-drawer-profiling">
+            <ProfilingPanel />
+          </div>
         </div>
       </section>
     </div>
