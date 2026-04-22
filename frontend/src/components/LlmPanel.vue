@@ -322,27 +322,34 @@ const totalTokens = computed(() => {
 </template>
 
 <style scoped>
+/* Matches the section-header pattern used by RuntimePanel / MountsPanel
+ * / WorkersPanel / EnvironmentPanel so the right sidebar reads as one
+ * consistent stack of collapsible sections instead of a mix of card
+ * buttons. */
 .llm-panel {
-  margin-top: 8px;
+  margin-top: 12px;
+  border-top: 1px solid #2a2a3c;
+  padding-top: 8px;
 }
 
 .panel-toggle {
-  width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 8px 12px;
-  background: #181825;
-  border: 1px solid #313244;
-  border-radius: 8px;
-  color: #cdd6f4;
-  font-size: 13px;
+  gap: 6px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: #a6adc8;
+  font-size: 12px;
   font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
   cursor: pointer;
+  padding: 4px 0;
 }
 
 .panel-toggle:hover {
-  border-color: #89b4fa;
+  color: #cdd6f4;
 }
 
 .toggle-label {
