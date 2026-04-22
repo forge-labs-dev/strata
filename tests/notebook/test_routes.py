@@ -1518,6 +1518,46 @@ def test_update_notebook_timeout_and_env():
         assert data["cells"][0]["env"] == {"APP_MODE": "secret"}
 
 
+def test_update_notebook_env_restores_sensitive_values_on_cells():
+    """Sensitive keys (API keys, tokens) get blanked on disk by the writer,
+    but the in-memory session must hold the real values — otherwise cells
+    launched immediately after the update can't see them. Regression for
+    the bug where ALPACA_API_KEY appeared set in the Runtime panel but
+    the executor saw an empty string."""
+    from strata.notebook.routes import get_session_manager
+    from strata.notebook.writer import add_cell_to_notebook, create_notebook
+
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Sensitive Env Test")
+        add_cell_to_notebook(notebook_dir, "cell-1")
+
+        response = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        session_id = response.json()["session_id"]
+
+        env_response = client.put(
+            f"/v1/notebooks/{session_id}/env",
+            json={"env": {"ALPACA_API_KEY": "AKXYZ123", "DEBUG": "true"}},
+        )
+        assert env_response.status_code == 200
+        data = env_response.json()
+
+        # Both the notebook-level view AND each cell's resolved env must
+        # carry the real sensitive value, not the blanked placeholder.
+        assert data["env"]["ALPACA_API_KEY"] == "AKXYZ123"
+        assert data["env"]["DEBUG"] == "true"
+        assert data["cells"][0]["env"]["ALPACA_API_KEY"] == "AKXYZ123"
+        assert data["cells"][0]["env"]["DEBUG"] == "true"
+
+        # Server-side state the executor actually reads — cell.env —
+        # must match too, otherwise the executor sees a blanked value.
+        session = get_session_manager().get_session(session_id)
+        assert session is not None
+        cell = session.notebook_state.cells[0]
+        assert cell.env["ALPACA_API_KEY"] == "AKXYZ123"
+
+
 def test_update_cell_source():
     """Test PUT /v1/notebooks/{id}/cells/{cell_id} endpoint."""
     client = TestClient(create_test_app())

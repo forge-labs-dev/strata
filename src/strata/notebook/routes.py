@@ -1403,6 +1403,15 @@ async def update_notebook_env_endpoint(
         # in-memory session so the LLM config and Runtime panel work
         # for the duration of this session.
         session.notebook_state.env.update(req.env)
+        # Also rebuild each cell's resolved env from the fresh
+        # notebook-level env plus the preserved per-cell overrides —
+        # otherwise the executor (which reads cell.env) still sees the
+        # blanked values and API-key-dependent cells fail with "key not
+        # set" even though the Runtime panel was updated.
+        for cell in session.notebook_state.cells:
+            resolved = dict(session.notebook_state.env)
+            resolved.update(cell.env_overrides or {})
+            cell.env = resolved
         return {
             "env": session.notebook_state.env,
             "cells": session.serialize_cells(),
