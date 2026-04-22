@@ -622,7 +622,7 @@ function goHome() {
       ></div>
       <section class="dag-drawer" :class="{ collapsed: dagDrawerCollapsed }">
         <header class="dag-drawer-header" @click="toggleDagDrawer">
-          <span class="dag-drawer-title">Cell DAG</span>
+          <span class="dag-drawer-title">Execution</span>
           <span class="dag-drawer-hint">
             {{ dagDrawerCollapsed ? '▲ click to expand' : '▼ click to collapse' }}
           </span>

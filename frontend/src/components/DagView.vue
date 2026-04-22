@@ -213,7 +213,8 @@ function edgePath(points: { x: number; y: number }[]): string {
 
 <template>
   <div class="dag-panel">
-    <div class="dag-controls">
+    <div class="dag-header">
+      <span>Cell DAG</span>
       <button class="dag-reset" title="Reset zoom" @click.stop="resetView">Reset</button>
     </div>
     <div
@@ -307,10 +308,19 @@ function edgePath(points: { x: number; y: number }[]): string {
   display: flex;
   flex-direction: column;
 }
-.dag-controls {
+/* Matches ProfilingPanel's .profiling-header so the two panes in the
+ * Execution drawer read as siblings, not strangers. */
+.dag-header {
   display: flex;
-  justify-content: flex-end;
-  padding: 0 0 6px 0;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #6c7086;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid #2a2a3c;
 }
 .dag-reset {
   font-size: 10px;
