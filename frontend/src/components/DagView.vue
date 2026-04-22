@@ -295,11 +295,12 @@ function edgePath(points: { x: number; y: number }[]): string {
 
 <style scoped>
 .dag-panel {
-  background: #1e1e2e;
-  border: 1px solid #2a2a3c;
-  border-radius: 8px;
+  background: transparent;
   min-width: 180px;
   overflow: hidden;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 .dag-header {
   padding: 8px 12px;
@@ -331,7 +332,8 @@ function edgePath(points: { x: number; y: number }[]): string {
 .dag-viewport {
   overflow: hidden;
   cursor: grab;
-  max-height: 500px;
+  flex: 1;
+  min-height: 0;
 }
 .dag-viewport:active {
   cursor: grabbing;

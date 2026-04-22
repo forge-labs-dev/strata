@@ -58,6 +58,86 @@ const reconnectError = ref<string | null>(null)
 const recoveryPath = ref<string | null>(null)
 const sidebarWidth = ref(340)
 const showShortcuts = ref(false)
+
+// --- DAG bottom drawer ---------------------------------------------------
+// Large notebooks (10+ cells with many edges) don't fit well in a
+// narrow right sidebar, so the DAG lives in a collapsible bottom
+// drawer instead. Height + collapsed state are persisted to
+// localStorage so they stick across page reloads.
+const DAG_DRAWER_HEIGHT_KEY = 'strata:dagDrawerHeight'
+const DAG_DRAWER_COLLAPSED_KEY = 'strata:dagDrawerCollapsed'
+const DAG_DRAWER_DEFAULT_HEIGHT = 320
+const DAG_DRAWER_MIN_HEIGHT = 120
+const DAG_DRAWER_MAX_HEIGHT_FRACTION = 0.8
+
+function readNumber(key: string, fallback: number): number {
+  try {
+    const raw = localStorage.getItem(key)
+    const n = raw == null ? NaN : Number(raw)
+    return Number.isFinite(n) ? n : fallback
+  } catch {
+    return fallback
+  }
+}
+
+const dagDrawerHeight = ref(readNumber(DAG_DRAWER_HEIGHT_KEY, DAG_DRAWER_DEFAULT_HEIGHT))
+const dagDrawerCollapsed = ref(
+  (() => {
+    try {
+      return localStorage.getItem(DAG_DRAWER_COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })(),
+)
+
+function clampDagDrawerHeight(h: number): number {
+  const maxH = Math.round(window.innerHeight * DAG_DRAWER_MAX_HEIGHT_FRACTION)
+  return Math.max(DAG_DRAWER_MIN_HEIGHT, Math.min(maxH, h))
+}
+
+let dagResizePointerId: number | null = null
+let dagResizeStartY = 0
+let dagResizeStartHeight = 0
+
+function startDagDrawerResize(event: PointerEvent) {
+  if (dagDrawerCollapsed.value) return
+  dagResizePointerId = event.pointerId
+  dagResizeStartY = event.clientY
+  dagResizeStartHeight = dagDrawerHeight.value
+  document.body.classList.add('resizing-sidebar')
+  window.addEventListener('pointermove', handleDagDrawerResize)
+  window.addEventListener('pointerup', stopDagDrawerResize)
+}
+
+function handleDagDrawerResize(event: PointerEvent) {
+  if (dagResizePointerId == null) return
+  // Dragging up grows the drawer (mouse Y decreases → height increases).
+  dagDrawerHeight.value = clampDagDrawerHeight(
+    dagResizeStartHeight - (event.clientY - dagResizeStartY),
+  )
+}
+
+function stopDagDrawerResize() {
+  dagResizePointerId = null
+  document.body.classList.remove('resizing-sidebar')
+  window.removeEventListener('pointermove', handleDagDrawerResize)
+  window.removeEventListener('pointerup', stopDagDrawerResize)
+  try {
+    localStorage.setItem(DAG_DRAWER_HEIGHT_KEY, String(dagDrawerHeight.value))
+  } catch {
+    /* localStorage unavailable */
+  }
+}
+
+function toggleDagDrawer() {
+  dagDrawerCollapsed.value = !dagDrawerCollapsed.value
+  try {
+    localStorage.setItem(DAG_DRAWER_COLLAPSED_KEY, dagDrawerCollapsed.value ? '1' : '0')
+  } catch {
+    /* localStorage unavailable */
+  }
+}
 let skipNextSessionReconnect: string | null = null
 
 function isServiceModeSessionRestriction(message: string | null | undefined): boolean {
@@ -292,6 +372,7 @@ function startSidebarResize(event: PointerEvent) {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   stopSidebarResize()
+  stopDagDrawerResize()
   cleanupWebSocket()
 })
 
@@ -473,50 +554,82 @@ function goHome() {
     </div>
 
     <!-- Main layout -->
-    <div v-else-if="!loading" class="main" :style="{ '--sidebar-width': `${sidebarWidth}px` }">
-      <!-- Cells -->
-      <div class="cells-panel" data-testid="notebook-cells-panel">
-        <CellEditor
-          v-for="cell in orderedCells"
-          :key="cell.id"
-          :cell="cell"
-          @run="runCell"
-          @delete="removeCell"
-          @add-below="addCell"
-          @duplicate="duplicateCell"
-          @move-up="(id) => moveCell(id, 'up')"
-          @move-down="(id) => moveCell(id, 'down')"
-        />
-        <div class="add-cell-row">
-          <button class="add-cell-btn" :disabled="!connected" @click="addCell()">+ Add cell</button>
-          <button
-            class="add-cell-btn add-prompt-btn"
-            :disabled="!connected"
-            @click="addCell(undefined, 'prompt')"
-          >
-            + Add prompt cell
-          </button>
+    <div
+      v-else-if="!loading"
+      class="workspace"
+      :style="{
+        '--sidebar-width': `${sidebarWidth}px`,
+        '--dag-drawer-height': dagDrawerCollapsed ? '32px' : `${dagDrawerHeight}px`,
+      }"
+    >
+      <div class="main">
+        <!-- Cells -->
+        <div class="cells-panel" data-testid="notebook-cells-panel">
+          <CellEditor
+            v-for="cell in orderedCells"
+            :key="cell.id"
+            :cell="cell"
+            @run="runCell"
+            @delete="removeCell"
+            @add-below="addCell"
+            @duplicate="duplicateCell"
+            @move-up="(id) => moveCell(id, 'up')"
+            @move-down="(id) => moveCell(id, 'down')"
+          />
+          <div class="add-cell-row">
+            <button class="add-cell-btn" :disabled="!connected" @click="addCell()">
+              + Add cell
+            </button>
+            <button
+              class="add-cell-btn add-prompt-btn"
+              :disabled="!connected"
+              @click="addCell(undefined, 'prompt')"
+            >
+              + Add prompt cell
+            </button>
+          </div>
         </div>
+
+        <div
+          class="sidebar-resizer"
+          role="separator"
+          aria-label="Resize sidebar"
+          aria-orientation="vertical"
+          @pointerdown="startSidebarResize"
+        ></div>
+
+        <!-- Runtime / config panels -->
+        <aside class="sidebar">
+          <MountsPanel />
+          <WorkersPanel />
+          <RuntimePanel />
+          <EnvironmentPanel />
+          <ProfilingPanel />
+          <LlmPanel />
+        </aside>
       </div>
 
+      <!-- DAG bottom drawer. Drag its top edge to resize, click the
+           header to collapse. Persisted to localStorage. -->
       <div
-        class="sidebar-resizer"
+        v-if="!dagDrawerCollapsed"
+        class="dag-drawer-resizer"
         role="separator"
-        aria-label="Resize sidebar"
-        aria-orientation="vertical"
-        @pointerdown="startSidebarResize"
+        aria-label="Resize DAG drawer"
+        aria-orientation="horizontal"
+        @pointerdown="startDagDrawerResize"
       ></div>
-
-      <!-- DAG sidebar + profiling -->
-      <aside class="sidebar">
-        <DagView />
-        <MountsPanel />
-        <WorkersPanel />
-        <RuntimePanel />
-        <EnvironmentPanel />
-        <ProfilingPanel />
-        <LlmPanel />
-      </aside>
+      <section class="dag-drawer" :class="{ collapsed: dagDrawerCollapsed }">
+        <header class="dag-drawer-header" @click="toggleDagDrawer">
+          <span class="dag-drawer-title">Cell DAG</span>
+          <span class="dag-drawer-hint">
+            {{ dagDrawerCollapsed ? '▲ click to expand' : '▼ click to collapse' }}
+          </span>
+        </header>
+        <div v-if="!dagDrawerCollapsed" class="dag-drawer-body">
+          <DagView />
+        </div>
+      </section>
     </div>
 
     <!-- v1.1: Impact preview dialog -->

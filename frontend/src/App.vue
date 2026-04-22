@@ -117,6 +117,13 @@ body {
   background: #45475a;
 }
 
+.workspace {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
 .main {
   display: flex;
   flex: 1;
@@ -128,6 +135,71 @@ body {
   overflow-y: auto;
   padding: 16px;
   min-width: 0;
+}
+.dag-drawer-resizer {
+  height: 8px;
+  flex-shrink: 0;
+  cursor: row-resize;
+  touch-action: none;
+  position: relative;
+}
+.dag-drawer-resizer::before {
+  content: '';
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+  background: #2a2a3c;
+}
+.dag-drawer-resizer:hover::before {
+  background: #89b4fa;
+}
+.dag-drawer {
+  flex-shrink: 0;
+  height: var(--dag-drawer-height, 320px);
+  background: #181825;
+  border-top: 1px solid #313244;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.dag-drawer.collapsed {
+  height: 32px;
+}
+.dag-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #6c7086;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid #2a2a3c;
+}
+.dag-drawer.collapsed .dag-drawer-header {
+  border-bottom: none;
+}
+.dag-drawer-header:hover {
+  color: #cdd6f4;
+}
+.dag-drawer-hint {
+  font-weight: 500;
+  font-size: 10px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #6c7086;
+}
+.dag-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px 16px;
+  min-height: 0;
 }
 .sidebar-resizer {
   width: 12px;
