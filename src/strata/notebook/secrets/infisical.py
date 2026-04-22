@@ -48,7 +48,8 @@ class InfisicalProvider:
         if not project_id:
             return SecretFetchResult.failure(
                 self.name,
-                "project_id missing — set it in notebook.toml [secrets] or via INFISICAL_PROJECT_ID.",
+                "project_id missing — set it in notebook.toml [secrets] or "
+                "via INFISICAL_PROJECT_ID.",
             )
 
         environment = (

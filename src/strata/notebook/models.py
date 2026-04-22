@@ -417,7 +417,10 @@ class NotebookState(BaseModel):
     )
     env_fetch_error: str | None = Field(
         default=None,
-        description="Last secret-manager fetch error, if any. None on success or when no manager is configured.",
+        description=(
+            "Last secret-manager fetch error, if any. None on success or "
+            "when no manager is configured."
+        ),
     )
     env_fetched_at: str | None = Field(
         default=None,

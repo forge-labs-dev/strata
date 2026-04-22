@@ -248,7 +248,7 @@ def client(tmp_path, monkeypatch):
     from strata.notebook.writer import add_cell_to_notebook, create_notebook
 
     # Fresh session manager per test.
-    mgr = get_session_manager()
+    get_session_manager()
     try:
         nb_dir = create_notebook(tmp_path, "Secrets Route Test")
         add_cell_to_notebook(nb_dir, "c1")
