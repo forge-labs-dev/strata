@@ -261,7 +261,7 @@ class NotebookSession:
         Also mirrors the fresh env into each cell's resolved env so
         the executor (which reads cell.env) sees the fetched values.
         """
-        from strata.notebook.secrets import apply_secrets_to_notebook_state
+        from strata.notebook.secret_manager import apply_secrets_to_notebook_state
 
         apply_secrets_to_notebook_state(self.notebook_state)
         # Rebuild per-cell resolved env, preserving cell-level

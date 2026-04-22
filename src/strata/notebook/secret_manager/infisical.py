@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from strata.notebook.secrets.provider import SecretFetchResult, _now_iso
+from strata.notebook.secret_manager.provider import SecretFetchResult, _now_iso
 
 logger = logging.getLogger(__name__)
 

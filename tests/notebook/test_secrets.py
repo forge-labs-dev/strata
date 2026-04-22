@@ -6,10 +6,10 @@ import httpx
 import pytest
 
 from strata.notebook.models import NotebookState
-from strata.notebook.secrets.infisical import InfisicalProvider
-from strata.notebook.secrets.provider import SecretFetchResult, SecretProviderError
-from strata.notebook.secrets.registry import _reset_for_tests, get_provider
-from strata.notebook.secrets.session_integration import (
+from strata.notebook.secret_manager.infisical import InfisicalProvider
+from strata.notebook.secret_manager.provider import SecretFetchResult, SecretProviderError
+from strata.notebook.secret_manager.registry import _reset_for_tests, get_provider
+from strata.notebook.secret_manager.session_integration import (
     MANUAL_SOURCE,
     apply_secrets_to_notebook_state,
     fetch_configured_secrets,
@@ -216,7 +216,7 @@ def _install_fake_provider(
     error: str | None = None,
 ) -> None:
     """Swap the Infisical provider with a canned result."""
-    from strata.notebook.secrets import registry
+    from strata.notebook.secret_manager import registry
 
     class _Fake:
         name = "infisical"

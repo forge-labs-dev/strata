@@ -7,7 +7,7 @@ Adding a new provider is a one-line change in ``_build``.
 
 from __future__ import annotations
 
-from strata.notebook.secrets.provider import SecretProvider, SecretProviderError
+from strata.notebook.secret_manager.provider import SecretProvider, SecretProviderError
 
 _cache: dict[str, SecretProvider] = {}
 
@@ -27,7 +27,7 @@ def get_provider(name: str) -> SecretProvider:
 
 def _build(name: str) -> SecretProvider:
     if name == "infisical":
-        from strata.notebook.secrets.infisical import InfisicalProvider
+        from strata.notebook.secret_manager.infisical import InfisicalProvider
 
         return InfisicalProvider()
     raise SecretProviderError(f"Unknown secret provider: {name!r}")

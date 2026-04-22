@@ -21,8 +21,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from strata.notebook.secrets.provider import SecretFetchResult
-from strata.notebook.secrets.registry import get_provider
+from strata.notebook.secret_manager.provider import SecretFetchResult
+from strata.notebook.secret_manager.registry import get_provider
 
 if TYPE_CHECKING:
     from strata.notebook.models import NotebookState

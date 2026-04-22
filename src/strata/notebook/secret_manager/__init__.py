@@ -18,13 +18,13 @@ Doppler later is a one-file drop-in.
 
 from __future__ import annotations
 
-from strata.notebook.secrets.provider import (
+from strata.notebook.secret_manager.provider import (
     SecretFetchResult,
     SecretProvider,
     SecretProviderError,
 )
-from strata.notebook.secrets.registry import get_provider
-from strata.notebook.secrets.session_integration import (
+from strata.notebook.secret_manager.registry import get_provider
+from strata.notebook.secret_manager.session_integration import (
     apply_secrets_to_notebook_state,
     fetch_configured_secrets,
 )
