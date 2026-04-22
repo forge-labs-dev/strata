@@ -221,10 +221,12 @@ site/
 docs/internal/
 
 # Per-notebook runtime state — artifacts, blobs, console output,
-# environment lockfiles. Generated whenever a notebook runs; never
-# meant to be shared.
+# environment lockfiles, example DuckDB files. Generated whenever a
+# notebook runs; never meant to be shared.
 examples/*/.strata/
 examples/*/uv.lock
+examples/*/*.db
+examples/*/*.duckdb
 
 # Claude Code session state
 .claude/
