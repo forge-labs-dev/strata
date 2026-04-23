@@ -193,3 +193,89 @@ class TestWritesEnabled:
             artifact_dir=tmp_path / "artifacts",
         )
         assert config.writes_enabled is True
+
+
+class TestModeCoherence:
+    """Tests for personal/service mode coherence validation."""
+
+    def test_personal_with_trusted_proxy_rejected(self, tmp_path):
+        """Personal mode + auth_mode='trusted_proxy' is incoherent."""
+        with pytest.raises(ValueError) as exc_info:
+            StrataConfig(
+                cache_dir=tmp_path / "cache",
+                deployment_mode="personal",
+                artifact_dir=tmp_path / "artifacts",
+                auth_mode="trusted_proxy",
+            )
+        assert "trusted_proxy" in str(exc_info.value)
+
+    def test_personal_with_multi_tenant_rejected(self, tmp_path):
+        """Personal mode + multi_tenant_enabled=True is incoherent."""
+        with pytest.raises(ValueError) as exc_info:
+            StrataConfig(
+                cache_dir=tmp_path / "cache",
+                deployment_mode="personal",
+                artifact_dir=tmp_path / "artifacts",
+                multi_tenant_enabled=True,
+            )
+        assert "multi_tenant_enabled" in str(exc_info.value)
+
+    def test_personal_with_require_tenant_header_rejected(self, tmp_path):
+        """Personal mode + require_tenant_header=True is incoherent."""
+        with pytest.raises(ValueError) as exc_info:
+            StrataConfig(
+                cache_dir=tmp_path / "cache",
+                deployment_mode="personal",
+                artifact_dir=tmp_path / "artifacts",
+                require_tenant_header=True,
+            )
+        assert "require_tenant_header" in str(exc_info.value)
+
+    def test_personal_with_multiple_conflicts_lists_all(self, tmp_path):
+        """When several service-mode flags leak into personal, all are listed."""
+        with pytest.raises(ValueError) as exc_info:
+            StrataConfig(
+                cache_dir=tmp_path / "cache",
+                deployment_mode="personal",
+                artifact_dir=tmp_path / "artifacts",
+                auth_mode="trusted_proxy",
+                multi_tenant_enabled=True,
+                require_tenant_header=True,
+            )
+        msg = str(exc_info.value)
+        assert "trusted_proxy" in msg
+        assert "multi_tenant_enabled" in msg
+        assert "require_tenant_header" in msg
+
+    def test_service_with_trusted_proxy_allowed(self, tmp_path):
+        """Service mode + trusted_proxy is the normal hosted configuration."""
+        config = StrataConfig(
+            cache_dir=tmp_path / "cache",
+            deployment_mode="service",
+            auth_mode="trusted_proxy",
+            proxy_token="dummy",
+        )
+        assert config.auth_mode == "trusted_proxy"
+
+    def test_service_with_multi_tenant_allowed(self, tmp_path):
+        """Service mode + multi_tenant_enabled is the normal hosted configuration."""
+        config = StrataConfig(
+            cache_dir=tmp_path / "cache",
+            deployment_mode="service",
+            multi_tenant_enabled=True,
+            require_tenant_header=True,
+        )
+        assert config.multi_tenant_enabled is True
+        assert config.require_tenant_header is True
+
+    def test_personal_with_defaults_allowed(self, tmp_path):
+        """Personal mode with default auth/tenant settings passes."""
+        config = StrataConfig(
+            cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+        )
+        assert config.deployment_mode == "personal"
+        assert config.auth_mode == "none"
+        assert config.multi_tenant_enabled is False
+        assert config.require_tenant_header is False

@@ -69,6 +69,7 @@ nav:
     - WebSocket Protocol: reference/websocket.md
   - Deployment:
     - Installation: getting-started/installation.md
+    - Deployment Modes: deployment/modes.md
     - Docker: deployment/docker.md
     - Fly.io: deployment/fly.md
     - GitHub Codespaces: deployment/codespaces.md

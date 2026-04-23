@@ -111,6 +111,42 @@ hash(tenant_id | table_identity | snapshot_id | file_path | row_group_id | proje
 
 `TableIdentity` is canonical (`catalog.namespace.table`) to avoid cache duplication from URI variations.
 
+### Deployment Modes
+
+Strata runs in one of two deployment modes, selected via `deployment_mode`
+(env: `STRATA_DEPLOYMENT_MODE`, default `service`):
+
+- **`personal`** — single-user local deployment. Writes are enabled
+  (`writes_enabled=True`), artifacts persist to `~/.strata/artifacts` by
+  default, and the server refuses to bind to non-loopback addresses unless
+  `allow_remote_clients_in_personal=True` is set. Intended for a developer
+  running `strata-server` on their own laptop alongside the notebook UI.
+- **`service`** — multi-user hosted deployment. Writes are disabled at the
+  server surface (`writes_enabled=False`); client-initiated artifact
+  creation must flow through server-side transforms. Expected to sit
+  behind a trusted proxy that authenticates requests and injects
+  `X-Strata-Principal` / `X-Strata-Tenant` headers.
+
+**Mode-dependent flags** (coherence enforced by `validate_mode_coherence` in
+`config.py`; invalid combinations raise at startup):
+
+| Flag                       | Personal        | Service             |
+| -------------------------- | --------------- | ------------------- |
+| `writes_enabled`           | always `True`   | always `False`      |
+| `auth_mode`                | must be `none`  | typically `trusted_proxy` |
+| `multi_tenant_enabled`     | must be `False` | `True` or `False`   |
+| `require_tenant_header`    | must be `False` | `True` or `False`   |
+| `artifact_dir` default     | `~/.strata/artifacts` | none (must be explicit if blob backend is local) |
+| Non-loopback bind          | only with `allow_remote_clients_in_personal=True` | unrestricted |
+
+**Mode-independent flags**: `rate_limit_enabled`, ACL rules, S3/GCS/Azure
+blob backend configuration, tracing, logging. These apply in either mode.
+
+**Notebook-specific personal-only endpoints** (see
+`src/strata/notebook/routes.py`): session discovery/reconnect and notebook
+deletion are gated to personal mode via `_require_personal_mode_*`
+helpers — the service-mode frontend doesn't expose these either.
+
 ### Multi-Tenancy
 
 Strata supports multi-tenant deployments with complete isolation between tenants:

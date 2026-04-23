@@ -460,6 +460,42 @@ class StrataConfig(BaseSettings):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_mode_coherence(self) -> StrataConfig:
+        """Reject deployment-mode combinations that indicate misconfiguration.
+
+        Personal mode is a single-user local deployment: one identity, no tenant
+        dimension, no upstream proxy. Turning on trusted-proxy auth or
+        multi-tenancy in personal mode doesn't do anything useful and almost
+        always means the operator pulled flags from a service-mode config by
+        mistake. Failing fast at startup beats a confusing runtime.
+        """
+        if self.deployment_mode != "personal":
+            return self
+
+        conflicts: list[str] = []
+        if self.auth_mode == "trusted_proxy":
+            conflicts.append(
+                "auth_mode='trusted_proxy' (personal mode has no upstream "
+                "proxy; set auth_mode='none' or switch to service mode)"
+            )
+        if self.multi_tenant_enabled:
+            conflicts.append(
+                "multi_tenant_enabled=True (personal mode is single-user; "
+                "tenants only apply in service mode)"
+            )
+        if self.require_tenant_header:
+            conflicts.append(
+                "require_tenant_header=True (personal mode has no tenants to require a header for)"
+            )
+
+        if conflicts:
+            raise ValueError(
+                "Deployment mode coherence error: deployment_mode='personal' "
+                "is incompatible with:\n  - " + "\n  - ".join(conflicts)
+            )
+        return self
+
     def validate_personal_mode_binding(self) -> None:
         """Validate that personal mode binding is safe.
 
