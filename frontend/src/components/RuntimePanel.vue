@@ -219,8 +219,10 @@ async function disconnectSecretManager() {
               />
             </label>
             <p class="secrets-hint">
-              Set <code>INFISICAL_TOKEN</code> in the environment that launched Strata. The token is
-              never written to disk.
+              Authenticate in the shell that launched Strata. Either set
+              <code>INFISICAL_CLIENT_ID</code> + <code>INFISICAL_CLIENT_SECRET</code> (Machine
+              Identity, recommended) or <code>INFISICAL_TOKEN</code>
+              (service token, legacy). Credentials are never written to disk.
             </p>
           </template>
           <p v-if="secretsConfigError" class="secrets-error">{{ secretsConfigError }}</p>

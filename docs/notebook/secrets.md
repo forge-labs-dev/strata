@@ -4,39 +4,69 @@ Strata can pull environment variables from an external secret manager so API key
 
 ## Supported providers
 
-| Provider    | Status    | Auth                                       |
-| ----------- | --------- | ------------------------------------------ |
-| Infisical   | Supported | Service token via `INFISICAL_TOKEN` env var |
+| Provider    | Status    | Auth                                             |
+| ----------- | --------- | ------------------------------------------------ |
+| Infisical   | Supported | Machine Identity (recommended) or service token  |
 
-Adding a new provider is a one-file drop-in behind the `SecretProvider` protocol in `strata.notebook.secrets`. Vault / AWS Secrets Manager / Doppler can plug in without changing the session or routing code.
+Adding a new provider is a one-file drop-in behind the `SecretProvider` protocol in `strata.notebook.secret_manager`. Vault / AWS Secrets Manager / Doppler can plug in without changing the session or routing code.
 
 ## Setting up Infisical
 
-1. **Mint a service token** in your Infisical project with read access to the secrets you want Strata to see. Restrict it to a specific environment (`dev` / `staging` / `prod`) and path if possible.
+### 1. Authenticate the server
 
-2. **Export the token** in the shell that launches Strata:
+Strata reaches Infisical with credentials it reads from the **process environment** of the running server — not from the notebook UI, never from disk. Two auth paths:
 
-    ```bash
-    export INFISICAL_TOKEN="st.xxxx..."
-    uv run uvicorn strata.server:app --host 0.0.0.0 --port 8765
-    ```
+**Machine Identity / Universal Auth (recommended).** Create a Machine Identity in your Infisical project, grant it read access to the secrets you want Strata to see, and export the resulting client id + secret:
 
-    The token only ever lives in the process environment — never in `notebook.toml`, never in `.strata/`, never in any commit.
+```bash
+export INFISICAL_CLIENT_ID="your-client-id"
+export INFISICAL_CLIENT_SECRET="your-client-secret"
+```
 
-3. **Configure the notebook** by adding a `[secrets]` block to `notebook.toml`. The Runtime-panel UI will edit this for you; manual form is:
+**Service token (legacy).** If you already have a service token configured, it still works:
 
-    ```toml
-    [secrets]
-    provider = "infisical"
-    project_id = "your-project-id"
-    environment = "dev"       # optional, defaults to "dev"
-    path = "/"                # optional, defaults to "/"
-    # base_url = "https://your-self-hosted.infisical.com"  # self-hosted only
-    ```
+```bash
+export INFISICAL_TOKEN="st.xxxx..."
+```
 
-    All four fields are non-sensitive routing info and safe to commit.
+Service tokens are being deprecated upstream; new setups should use Machine Identity. If both are set, Machine Identity wins.
 
-4. **Open the notebook.** On session open Strata calls Infisical, pulls the secrets at `project_id / environment / path`, and merges them into the notebook's env. A **"Secret manager"** block appears in the Runtime panel with a **Refresh** button and the provider name.
+Self-hosted Infisical? Also export:
+
+```bash
+export INFISICAL_HOST="https://your-self-hosted.infisical.com"
+```
+
+### 2. Launch the server with those vars in scope
+
+```bash
+export INFISICAL_CLIENT_ID="..."
+export INFISICAL_CLIENT_SECRET="..."
+uv run uvicorn strata.server:app --host 0.0.0.0 --port 8765
+```
+
+The credentials only live in the server process — never in `notebook.toml`, `.strata/`, logs, or any commit.
+
+### 3. Wire up the notebook
+
+Open the notebook and use the **Secret manager** section in the Runtime panel:
+
+1. Pick the provider (`infisical`).
+2. Fill in `project_id`, `environment` (`dev` / `staging` / `prod`), and `path` (defaults to `/`). Base URL is only needed for self-hosted deployments.
+3. Save.
+
+The result lands in `notebook.toml` as:
+
+```toml
+[secrets]
+provider = "infisical"
+project_id = "your-project-id"
+environment = "dev"
+path = "/"
+# base_url = "https://your-self-hosted.infisical.com"
+```
+
+All four fields are non-sensitive routing info and safe to commit. Save triggers a reload + immediate fetch, so the Runtime panel's env rows light up with `INFISICAL` badges the moment the save completes.
 
 ## How values flow
 
@@ -59,18 +89,22 @@ Rotate the secret in Infisical, then hit the **Refresh** button. Cells that run 
 
 ## Fetch errors
 
-When a fetch fails — bad token, network error, wrong project — the notebook still opens. The error surfaces in the Runtime panel's Secret manager block:
+When a fetch fails — bad credentials, network error, wrong project — the notebook still opens. The error surfaces in the Runtime panel's Secret manager block. Common messages:
 
-> Infisical rejected the token (401). Check INFISICAL_TOKEN scope / expiry.
+> No Infisical credentials in the process environment. Set either `INFISICAL_CLIENT_ID` + `INFISICAL_CLIENT_SECRET` (Machine Identity / Universal Auth — recommended) or `INFISICAL_TOKEN` (service token, legacy) in the shell that launched Strata.
 
-Fix the cause (rotate the token, check `project_id`, etc.), then hit Refresh.
+> Infisical authentication failed: …
+
+> Infisical list_secrets failed: …
+
+Fix the cause (rotate the credential, check `project_id` / `environment` / `path`, confirm the Machine Identity has read access), then hit Refresh. You don't have to reopen the notebook.
 
 ## Security notes
 
 - Secret **values** never ship to the frontend in cleartext from the env endpoints — values are only visible in the notebook venv's `os.environ`. The UI shows the key names + source, not the values.
 - Secret values are **not written to disk**. `[env]` blocks on disk blank sensitive keys (`KEY`, `SECRET`, `TOKEN`, `PASSWORD`, `CREDENTIAL` name patterns) before persisting; secrets fetched at open time are in-memory only.
 - If a cell **prints** an env var, its value is captured in the cell's console output and persisted in `.strata/console/` alongside stdout/stderr. Don't `print(os.environ)` in production notebooks.
-- `INFISICAL_TOKEN` itself lives in the process environment, set by whoever launches the server. Distribute it the same way you'd distribute any deploy secret (systemd unit, k8s secret, `.envrc` with direnv-allow, etc.) — **not** in a committed file.
+- Authenticating credentials (`INFISICAL_CLIENT_ID` / `INFISICAL_CLIENT_SECRET` or `INFISICAL_TOKEN`) live in the process environment, set by whoever launches the server. Distribute them the same way you'd distribute any deploy secret (systemd unit, k8s secret, `.envrc` with direnv-allow, etc.) — **not** in a committed file.
 
 ## Limits
 

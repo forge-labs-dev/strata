@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import httpx
+from types import SimpleNamespace
+
 import pytest
 
 from strata.notebook.models import NotebookState
@@ -14,6 +15,78 @@ from strata.notebook.secret_manager.session_integration import (
     apply_secrets_to_notebook_state,
     fetch_configured_secrets,
 )
+
+
+class _FakeClient:
+    """Stand-in for infisicalsdk.InfisicalSDKClient in tests."""
+
+    def __init__(
+        self,
+        *,
+        list_secrets_return=None,
+        list_secrets_exc: Exception | None = None,
+        login_exc: Exception | None = None,
+    ):
+        self.host: str | None = None
+        self.list_secrets_calls: list[dict] = []
+        self.login_calls: list[tuple[str, dict]] = []
+        self._list_return = list_secrets_return or SimpleNamespace(secrets=[])
+        self._list_exc = list_secrets_exc
+        self._login_exc = login_exc
+        self.auth = SimpleNamespace(
+            universal_auth=SimpleNamespace(login=self._universal_login),
+            token_auth=SimpleNamespace(login=self._token_login),
+        )
+        self.secrets = SimpleNamespace(list_secrets=self._list_secrets)
+
+    def _universal_login(self, client_id: str, client_secret: str):
+        if self._login_exc:
+            raise self._login_exc
+        self.login_calls.append(
+            ("universal", {"client_id": client_id, "client_secret": client_secret})
+        )
+
+    def _token_login(self, token: str):
+        if self._login_exc:
+            raise self._login_exc
+        self.login_calls.append(("token", {"token": token}))
+
+    def _list_secrets(self, *, project_id, environment_slug, secret_path):
+        if self._list_exc:
+            raise self._list_exc
+        self.list_secrets_calls.append(
+            {
+                "project_id": project_id,
+                "environment_slug": environment_slug,
+                "secret_path": secret_path,
+            }
+        )
+        return self._list_return
+
+
+def _fake_secret(key: str, value: str):
+    """Minimal stand-in for infisical_sdk.api_types.BaseSecret."""
+    return SimpleNamespace(secretKey=key, secretValue=value)
+
+
+def _install_fake_sdk_client(monkeypatch, client: _FakeClient) -> list[str]:
+    """Patch the SDK client so fetch() builds our fake instead of hitting the network.
+
+    Returns a list that captures the ``host`` passed to each constructor
+    call — tests can assert on it without poking the fake client.
+    """
+    hosts_seen: list[str] = []
+
+    def _factory(host: str):
+        hosts_seen.append(host)
+        client.host = host
+        return client
+
+    import infisical_sdk
+
+    monkeypatch.setattr(infisical_sdk, "InfisicalSDKClient", _factory)
+    return hosts_seen
+
 
 # ---------------------------------------------------------------------------
 # Registry
@@ -44,84 +117,98 @@ class TestRegistry:
 
 
 class TestInfisicalProvider:
-    def test_missing_token_returns_error(self, monkeypatch) -> None:
-        monkeypatch.delenv("INFISICAL_TOKEN", raising=False)
+    def setup_method(self) -> None:
+        # Clear any ambient env so one test's setenv doesn't leak.
+        for name in (
+            "INFISICAL_TOKEN",
+            "INFISICAL_CLIENT_ID",
+            "INFISICAL_CLIENT_SECRET",
+            "INFISICAL_PROJECT_ID",
+            "INFISICAL_ENVIRONMENT",
+            "INFISICAL_PATH",
+            "INFISICAL_HOST",
+        ):
+            import os
+
+            os.environ.pop(name, None)
+
+    def test_no_credentials_returns_error(self) -> None:
+        """With neither universal-auth nor token env vars set, surface a
+        clear message that names both auth options."""
         result = InfisicalProvider().fetch({"project_id": "p"})
         assert result.secrets == {}
         assert result.error is not None
+        assert "INFISICAL_CLIENT_ID" in result.error
         assert "INFISICAL_TOKEN" in result.error
 
     def test_missing_project_id_returns_error(self, monkeypatch) -> None:
         monkeypatch.setenv("INFISICAL_TOKEN", "tok")
-        monkeypatch.delenv("INFISICAL_PROJECT_ID", raising=False)
         result = InfisicalProvider().fetch({})
         assert result.secrets == {}
         assert "project_id" in (result.error or "")
 
-    def test_parses_secrets_from_api_response(self, monkeypatch) -> None:
-        monkeypatch.setenv("INFISICAL_TOKEN", "tok")
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/v3/secrets/raw"
-            assert dict(request.url.params) == {
-                "workspaceId": "proj",
-                "environment": "prod",
-                "secretPath": "/trading",
-            }
-            assert request.headers["Authorization"] == "Bearer tok"
-            return httpx.Response(
-                200,
-                json={
-                    "secrets": [
-                        {"secretKey": "ALPACA_API_KEY", "secretValue": "AKSECRET"},
-                        {"secretKey": "DEBUG", "secretValue": "true"},
-                        {"secretKey": "MISSING_VALUE"},  # skipped — no secretValue
-                    ]
-                },
-            )
-
-        transport = httpx.MockTransport(handler)
-        original_client = httpx.Client
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *a, **kw: httpx.Client(transport=transport).get(*a, **kw),
+    def test_universal_auth_preferred_over_token(self, monkeypatch) -> None:
+        """When both credentials are present, client-id/secret wins —
+        that's the path Infisical recommends."""
+        monkeypatch.setenv("INFISICAL_CLIENT_ID", "cid")
+        monkeypatch.setenv("INFISICAL_CLIENT_SECRET", "cs")
+        monkeypatch.setenv("INFISICAL_TOKEN", "leftover-token")
+        client = _FakeClient(
+            list_secrets_return=SimpleNamespace(secrets=[_fake_secret("ALPACA_API_KEY", "AK")])
         )
+        _install_fake_sdk_client(monkeypatch, client)
 
         result = InfisicalProvider().fetch(
             {"project_id": "proj", "environment": "prod", "path": "/trading"}
         )
+
         assert result.error is None
-        assert result.secrets == {"ALPACA_API_KEY": "AKSECRET", "DEBUG": "true"}
-        assert result.source == "infisical"
-        assert result.fetched_at  # stamped
-        # Reset the httpx patch via teardown (fixture scope)
-        _ = original_client
+        assert result.secrets == {"ALPACA_API_KEY": "AK"}
+        assert client.login_calls == [("universal", {"client_id": "cid", "client_secret": "cs"})]
+        assert client.list_secrets_calls == [
+            {"project_id": "proj", "environment_slug": "prod", "secret_path": "/trading"}
+        ]
 
-    def test_401_surfaces_auth_error(self, monkeypatch) -> None:
+    def test_token_auth_used_when_only_token_present(self, monkeypatch) -> None:
         monkeypatch.setenv("INFISICAL_TOKEN", "tok")
-        transport = httpx.MockTransport(
-            lambda r: httpx.Response(401, json={"error": "unauthorized"}),
+        client = _FakeClient(
+            list_secrets_return=SimpleNamespace(secrets=[_fake_secret("DEBUG", "true")])
         )
-        monkeypatch.setattr(
-            httpx,
-            "get",
-            lambda *a, **kw: httpx.Client(transport=transport).get(*a, **kw),
-        )
+        _install_fake_sdk_client(monkeypatch, client)
+
+        result = InfisicalProvider().fetch({"project_id": "proj"})
+
+        assert result.error is None
+        assert result.secrets == {"DEBUG": "true"}
+        assert client.login_calls == [("token", {"token": "tok"})]
+
+    def test_auth_failure_surfaces_error(self, monkeypatch) -> None:
+        monkeypatch.setenv("INFISICAL_TOKEN", "bad")
+        client = _FakeClient(login_exc=RuntimeError("invalid token"))
+        _install_fake_sdk_client(monkeypatch, client)
         result = InfisicalProvider().fetch({"project_id": "proj"})
         assert result.secrets == {}
-        assert "401" in (result.error or "") or "token" in (result.error or "").lower()
+        assert "authentication failed" in (result.error or "").lower()
 
-    def test_network_error_returns_error(self, monkeypatch) -> None:
+    def test_list_secrets_failure_surfaces_error(self, monkeypatch) -> None:
         monkeypatch.setenv("INFISICAL_TOKEN", "tok")
-
-        def boom(*args, **kwargs):
-            raise httpx.ConnectError("cannot connect")
-
-        monkeypatch.setattr(httpx, "get", boom)
+        client = _FakeClient(list_secrets_exc=RuntimeError("network down"))
+        _install_fake_sdk_client(monkeypatch, client)
         result = InfisicalProvider().fetch({"project_id": "proj"})
         assert result.secrets == {}
-        assert "network" in (result.error or "").lower()
+        assert "list_secrets failed" in (result.error or "")
+
+    def test_host_routing_uses_config_then_env_then_default(self, monkeypatch) -> None:
+        """config.base_url beats INFISICAL_HOST env beats the public default."""
+        monkeypatch.setenv("INFISICAL_TOKEN", "tok")
+        monkeypatch.setenv("INFISICAL_HOST", "https://env.example.com/")
+        client = _FakeClient(list_secrets_return=SimpleNamespace(secrets=[]))
+        hosts = _install_fake_sdk_client(monkeypatch, client)
+        InfisicalProvider().fetch(
+            {"project_id": "p", "base_url": "https://self-hosted.example.com"}
+        )
+        # Config value wins; trailing slash stripped.
+        assert hosts == ["https://self-hosted.example.com"]
 
 
 # ---------------------------------------------------------------------------

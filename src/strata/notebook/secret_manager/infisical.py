@@ -1,15 +1,23 @@
-"""Infisical secret-manager integration via service-token auth.
+"""Infisical secret-manager integration via the official Python SDK.
 
-Uses the Infisical REST API (``/api/v3/secrets/raw``) directly — no
-SDK dependency. The service token must be set in the process
-environment as ``INFISICAL_TOKEN``; everything else (``project_id``,
-``environment``, ``path``) comes from the notebook's ``[secrets]``
-block so the non-sensitive routing info is version-controlled.
+Authentication precedence (highest wins):
 
-Service tokens are the simplest auth model Infisical offers for
-machine access. Users with machine-identity + client-id/secret auth
-can still use this integration by minting a service token — we keep
-the token handling trivial so the flow is obvious.
+1. **Universal Auth / Machine Identity** —
+   ``INFISICAL_CLIENT_ID`` + ``INFISICAL_CLIENT_SECRET`` in the process
+   environment. This is the path Infisical recommends; service tokens
+   are being deprecated upstream.
+
+2. **Service / access token** — ``INFISICAL_TOKEN`` in the process
+   environment. Kept for backward compatibility so users with an
+   existing service-token setup don't have to migrate immediately.
+
+If neither is set the provider returns a failure with a clear message
+pointing the user at both options.
+
+Project routing (``project_id``, ``environment``, ``path``) comes
+from the notebook's ``[secrets]`` block so the non-sensitive info
+can be committed. Override via env vars (``INFISICAL_PROJECT_ID``
+etc.) is supported for quick-start use.
 """
 
 from __future__ import annotations
@@ -18,38 +26,27 @@ import logging
 import os
 from typing import Any
 
-import httpx
-
 from strata.notebook.secret_manager.provider import SecretFetchResult, _now_iso
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE_URL = "https://app.infisical.com"
+_DEFAULT_HOST = "https://app.infisical.com"
 _DEFAULT_ENVIRONMENT = "dev"
 _DEFAULT_PATH = "/"
-_DEFAULT_TIMEOUT = 10.0
 
 
 class InfisicalProvider:
-    """Pulls secrets from an Infisical project via service-token auth."""
+    """Pulls secrets from an Infisical project using the official SDK."""
 
     name = "infisical"
 
     def fetch(self, config: dict[str, Any]) -> SecretFetchResult:
-        token = os.environ.get("INFISICAL_TOKEN")
-        if not token:
-            return SecretFetchResult.failure(
-                self.name,
-                "INFISICAL_TOKEN not set in the process environment. "
-                "Export it in the shell that launched Strata.",
-            )
-
         project_id = config.get("project_id") or os.environ.get("INFISICAL_PROJECT_ID")
         if not project_id:
             return SecretFetchResult.failure(
                 self.name,
-                "project_id missing — set it in notebook.toml [secrets] or "
-                "via INFISICAL_PROJECT_ID.",
+                "project_id missing — set it in notebook.toml [secrets] "
+                "or via INFISICAL_PROJECT_ID.",
             )
 
         environment = (
@@ -58,54 +55,61 @@ class InfisicalProvider:
             or _DEFAULT_ENVIRONMENT
         )
         secret_path = config.get("path") or os.environ.get("INFISICAL_PATH") or _DEFAULT_PATH
-        base_url = (config.get("base_url") or _DEFAULT_BASE_URL).rstrip("/")
+        host = (config.get("base_url") or os.environ.get("INFISICAL_HOST") or _DEFAULT_HOST).rstrip(
+            "/"
+        )
 
-        try:
-            resp = httpx.get(
-                f"{base_url}/api/v3/secrets/raw",
-                params={
-                    "workspaceId": project_id,
-                    "environment": environment,
-                    "secretPath": secret_path,
-                },
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=_DEFAULT_TIMEOUT,
-            )
-        except httpx.RequestError as exc:
+        client_id = os.environ.get("INFISICAL_CLIENT_ID")
+        client_secret = os.environ.get("INFISICAL_CLIENT_SECRET")
+        token = os.environ.get("INFISICAL_TOKEN")
+        if not ((client_id and client_secret) or token):
             return SecretFetchResult.failure(
                 self.name,
-                f"network error contacting Infisical: {exc}",
-            )
-
-        if resp.status_code == 401:
-            return SecretFetchResult.failure(
-                self.name,
-                "Infisical rejected the token (401). Check INFISICAL_TOKEN scope / expiry.",
-            )
-        if resp.status_code == 404:
-            return SecretFetchResult.failure(
-                self.name,
-                "Infisical returned 404 — project_id / environment / path combination "
-                "does not resolve to a secrets scope.",
-            )
-        if resp.status_code >= 400:
-            return SecretFetchResult.failure(
-                self.name,
-                f"Infisical API returned HTTP {resp.status_code}: {resp.text[:200]}",
+                "No Infisical credentials in the process environment. Set either "
+                "INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET (Machine Identity / "
+                "Universal Auth — recommended) or INFISICAL_TOKEN (service token, "
+                "legacy) in the shell that launched Strata.",
             )
 
         try:
-            payload = resp.json()
-        except ValueError:
+            from infisical_sdk import InfisicalSDKClient
+        except ImportError as exc:
             return SecretFetchResult.failure(
                 self.name,
-                "Infisical response was not JSON — upstream API may have changed.",
+                f"infisicalsdk not installed ({exc}). Run `uv sync` and restart the server.",
+            )
+
+        client = InfisicalSDKClient(host=host)
+        try:
+            if client_id and client_secret:
+                client.auth.universal_auth.login(
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
+            else:
+                client.auth.token_auth.login(token=token or "")
+        except Exception as exc:
+            return SecretFetchResult.failure(
+                self.name,
+                f"Infisical authentication failed: {exc}",
+            )
+
+        try:
+            response = client.secrets.list_secrets(
+                project_id=project_id,
+                environment_slug=environment,
+                secret_path=secret_path,
+            )
+        except Exception as exc:
+            return SecretFetchResult.failure(
+                self.name,
+                f"Infisical list_secrets failed: {exc}",
             )
 
         secrets: dict[str, str] = {}
-        for entry in payload.get("secrets") or []:
-            key = entry.get("secretKey")
-            value = entry.get("secretValue")
+        for entry in getattr(response, "secrets", []) or []:
+            key = getattr(entry, "secretKey", None)
+            value = getattr(entry, "secretValue", None)
             if isinstance(key, str) and isinstance(value, str):
                 secrets[key] = value
 
