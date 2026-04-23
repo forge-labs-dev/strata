@@ -84,16 +84,25 @@ def service_config_show_forbidden():
 
 @pytest.fixture
 def direct_artifact_client(artifact_dir):
-    """Create a test client for direct artifact endpoints with trusted-proxy auth."""
+    """Create a test client for direct artifact endpoints with trusted-proxy auth.
+
+    The combination personal + trusted_proxy is rejected at config construction
+    (validate_mode_coherence) because it's nonsensical in production. These
+    tests still need it because delete/gc are personal-mode-only endpoints yet
+    we want coverage that they respect tenant scope *when* auth happens to be
+    on. We build a valid service-mode config and then mutate into personal via
+    model_copy, which skips validators — fine for test-only invariant probing.
+    """
     from strata.server import app
 
-    config = StrataConfig.load(
-        deployment_mode="personal",
+    base = StrataConfig.load(
+        deployment_mode="service",
         auth_mode="trusted_proxy",
         proxy_token="test-token",
         artifact_dir=artifact_dir,
         hide_forbidden_as_not_found=True,
     )
+    config = base.model_copy(update={"deployment_mode": "personal"})
 
     get_artifact_store(artifact_dir)
 
