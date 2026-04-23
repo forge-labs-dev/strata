@@ -423,7 +423,7 @@ export interface Notebook {
   envFetchedAt: string | null
   /** Non-sensitive routing for the configured secret manager. Empty
    * object means no manager is configured. */
-  secretsConfig: Record<string, string>
+  secretManagerConfig: Record<string, string>
   workers: WorkerSpec[]
   mounts: MountSpec[]
   cells: Cell[]

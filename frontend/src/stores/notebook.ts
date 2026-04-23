@@ -57,7 +57,7 @@ const notebook = reactive<Notebook>({
   envSources: {},
   envFetchError: null,
   envFetchedAt: null,
-  secretsConfig: {},
+  secretManagerConfig: {},
   workers: [],
   mounts: [],
   cells: [],
@@ -877,9 +877,9 @@ function syncNotebookEnvFromBackend(serverEnv: any) {
   notebook.env = parseEnvMap(serverEnv)
 }
 
-/** Merge the env-response fields (sources + fetch status + secrets
- * config) into the store. Shared by the env PUT, /secrets/refresh,
- * /secrets/config PUT, and initial open since all four share shape. */
+/** Merge the env-response fields (sources + fetch status + secret-manager
+ * config) into the store. Shared by the env PUT, /secret-manager/refresh,
+ * /secret-manager/config PUT, and initial open since all four share shape. */
 function applyEnvSources(payload: any) {
   notebook.envSources =
     payload && typeof payload.env_sources === 'object'
@@ -893,10 +893,10 @@ function applyEnvSources(payload: any) {
     typeof payload?.env_fetch_error === 'string' ? payload.env_fetch_error : null
   notebook.envFetchedAt =
     typeof payload?.env_fetched_at === 'string' ? payload.env_fetched_at : null
-  notebook.secretsConfig =
-    payload && typeof payload.secrets_config === 'object' && payload.secrets_config
+  notebook.secretManagerConfig =
+    payload && typeof payload.secret_manager_config === 'object' && payload.secret_manager_config
       ? Object.fromEntries(
-          Object.entries(payload.secrets_config as Record<string, unknown>)
+          Object.entries(payload.secret_manager_config as Record<string, unknown>)
             .filter(([, v]) => typeof v === 'string')
             .map(([k, v]) => [k, String(v)]),
         )
@@ -2625,11 +2625,11 @@ async function updateNotebookEnvAction(env: Record<string, string>) {
   void checkLlmStatus()
 }
 
-async function refreshSecretsAction() {
+async function refreshSecretManagerAction() {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
-  const data = await strata.refreshNotebookSecrets(sid)
+  const data = await strata.refreshNotebookSecretManager(sid)
   if ('env' in data) {
     syncNotebookEnvFromBackend(data.env)
   }
@@ -2641,13 +2641,13 @@ async function refreshSecretsAction() {
   return data
 }
 
-async function updateNotebookSecretsConfigAction(
+async function updateNotebookSecretManagerConfigAction(
   config: Record<string, string | null | undefined>,
 ) {
   const sid = sessionId()
   if (!sid) return
   const strata = useStrata()
-  const data = await strata.updateNotebookSecretsConfig(sid, config)
+  const data = await strata.updateNotebookSecretManagerConfig(sid, config)
   if ('env' in data) {
     syncNotebookEnvFromBackend(data.env)
   }
@@ -3018,8 +3018,8 @@ export function useNotebook() {
     updateNotebookWorkerAction,
     updateNotebookTimeoutAction,
     updateNotebookEnvAction,
-    refreshSecretsAction,
-    updateNotebookSecretsConfigAction,
+    refreshSecretManagerAction,
+    updateNotebookSecretManagerConfigAction,
     updateNotebookMountsAction,
     // LLM assistant
     llmAvailable,

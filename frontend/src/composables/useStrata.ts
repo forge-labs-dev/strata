@@ -616,17 +616,20 @@ async function updateNotebookEnv(
   return readJson<NotebookMutationResponse>(resp)
 }
 
-async function refreshNotebookSecrets(notebookId: string): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/secrets/refresh`, {
-    method: 'POST',
-  })
+async function refreshNotebookSecretManager(
+  notebookId: string,
+): Promise<NotebookMutationResponse> {
+  const resp = await fetchWithTimeout(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/secret-manager/refresh`,
+    { method: 'POST' },
+  )
   if (!resp.ok) {
-    throw new Error(`Failed to refresh secrets: ${resp.status}`)
+    throw new Error(`Failed to refresh secret manager: ${resp.status}`)
   }
   return readJson<NotebookMutationResponse>(resp)
 }
 
-async function updateNotebookSecretsConfig(
+async function updateNotebookSecretManagerConfig(
   notebookId: string,
   config: {
     provider?: string | null
@@ -636,13 +639,16 @@ async function updateNotebookSecretsConfig(
     base_url?: string | null
   },
 ): Promise<NotebookMutationResponse> {
-  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/secrets/config`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  })
+  const resp = await fetchWithTimeout(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/secret-manager/config`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    },
+  )
   if (!resp.ok) {
-    throw new Error(`Failed to update secrets config: ${resp.status}`)
+    throw new Error(`Failed to update secret manager config: ${resp.status}`)
   }
   return readJson<NotebookMutationResponse>(resp)
 }
@@ -1155,8 +1161,8 @@ export function useStrata() {
     updateNotebookWorker,
     updateNotebookTimeout,
     updateNotebookEnv,
-    refreshNotebookSecrets,
-    updateNotebookSecretsConfig,
+    refreshNotebookSecretManager,
+    updateNotebookSecretManagerConfig,
     listWorkers,
     updateWorkers,
     listAdminNotebookWorkers,

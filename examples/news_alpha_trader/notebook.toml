@@ -1,7 +1,7 @@
 notebook_id = "news-alpha-trader-001"
 name = "News Alpha Trader"
 created_at = 2026-04-22 00:00:00+00:00
-updated_at = 2026-04-22 00:00:00+00:00
+updated_at = "2026-04-23T03:55:02.378749+00:00"
 cells = [
     { id = "disclaimer", file = "disclaimer.py", language = "python", order = 0 },
     { id = "helpers", file = "helpers.py", language = "python", order = 1 },
@@ -16,3 +16,7 @@ cells = [
     { id = "pnl_report", file = "pnl_report.py", language = "python", order = 10 },
     { id = "daily_note", file = "daily_note.py", language = "prompt", order = 11 },
 ]
+
+[secret_manager]
+provider = "infisical"
+project_id = "7301e122-565d-491d-9082-056504381782"

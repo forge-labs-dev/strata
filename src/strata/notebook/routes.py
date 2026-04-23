@@ -1424,21 +1424,21 @@ async def update_notebook_env_endpoint(
 
 
 def _serialize_env_response(session) -> dict:
-    """Env-endpoint response shape shared with the secrets refresh path."""
+    """Env-endpoint response shape shared with the secret-manager refresh path."""
     return {
         "env": session.notebook_state.env,
         "env_sources": session.notebook_state.env_sources,
         "env_fetch_error": session.notebook_state.env_fetch_error,
         "env_fetched_at": session.notebook_state.env_fetched_at,
-        "secrets_config": dict(session.notebook_state.secrets_config),
+        "secret_manager_config": dict(session.notebook_state.secret_manager_config),
         "cells": session.serialize_cells(),
     }
 
 
-class SecretsConfigRequest(BaseModel):
-    """Payload for the secrets-config PUT endpoint.
+class SecretManagerConfigRequest(BaseModel):
+    """Payload for the secret-manager config PUT endpoint.
 
-    Field set matches exactly what update_notebook_secrets accepts —
+    Field set matches exactly what update_notebook_secret_manager accepts —
     anything else gets dropped on the writer side so arbitrary runtime
     state can't sneak into the committed TOML via this path.
     """
@@ -1450,25 +1450,25 @@ class SecretsConfigRequest(BaseModel):
     base_url: str | None = None
 
 
-@router.put("/{notebook_id}/secrets/config")
-async def update_notebook_secrets_config(
+@router.put("/{notebook_id}/secret-manager/config")
+async def update_notebook_secret_manager_config(
     notebook_id: str,
-    req: SecretsConfigRequest,
+    req: SecretManagerConfigRequest,
 ) -> dict:
-    """Persist the [secrets] block to notebook.toml and refetch.
+    """Persist the [secret_manager] block to notebook.toml and refetch.
 
     Empty payload (all fields None / empty) removes the block —
     "disconnect from secret manager". A refresh is triggered after the
     write so the Runtime panel immediately reflects the new values.
     """
-    from strata.notebook.writer import update_notebook_secrets
+    from strata.notebook.writer import update_notebook_secret_manager
 
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
     try:
         config = req.model_dump(exclude_none=True)
-        update_notebook_secrets(session.path, config)
+        update_notebook_secret_manager(session.path, config)
         session.reload()
         # After reload, env keys set via the Runtime panel are blanked
         # on disk — restore whatever the in-memory state had for keys
@@ -1483,8 +1483,8 @@ async def update_notebook_secrets_config(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/{notebook_id}/secrets/refresh")
-async def refresh_notebook_secrets(notebook_id: str) -> dict:
+@router.post("/{notebook_id}/secret-manager/refresh")
+async def refresh_notebook_secret_manager(notebook_id: str) -> dict:
     """Re-fetch secrets from the configured manager and merge into env.
 
     Returns the same shape as the env endpoint so the frontend can

@@ -2,8 +2,8 @@
 
 Two public helpers:
 
-* :func:`fetch_configured_secrets` — read the ``[secrets]`` config off
-  a ``NotebookState``, pick a provider, and return a
+* :func:`fetch_configured_secrets` — read the ``[secret_manager]`` config
+  off a ``NotebookState``, pick a provider, and return a
   :class:`SecretFetchResult`. Never raises — errors land in
   ``result.error``.
 
@@ -34,20 +34,21 @@ MANUAL_SOURCE = "manual"
 def fetch_configured_secrets(state: NotebookState) -> SecretFetchResult | None:
     """Return the fetch result for ``state``'s configured provider.
 
-    Returns ``None`` when the notebook has no ``[secrets]`` block at all
-    — callers can distinguish "no provider" from "provider errored"
-    that way. When a provider is configured but the name is unknown or
-    the provider constructor raises, returns a ``SecretFetchResult``
-    with an error message so the UI can display it.
+    Returns ``None`` when the notebook has no ``[secret_manager]`` block
+    at all — callers can distinguish "no provider" from "provider
+    errored" that way. When a provider is configured but the name is
+    unknown or the provider constructor raises, returns a
+    ``SecretFetchResult`` with an error message so the UI can display it.
     """
-    config = state.secrets_config
+    config = state.secret_manager_config
     if not config:
         return None
     provider_name = str(config.get("provider") or "").strip().lower()
     if not provider_name:
         return SecretFetchResult.failure(
             "",
-            "[secrets] block is present but 'provider' is not set — add provider = \"infisical\".",
+            "[secret_manager] block is present but 'provider' is not set — "
+            'add provider = "infisical".',
         )
     try:
         provider = get_provider(provider_name)

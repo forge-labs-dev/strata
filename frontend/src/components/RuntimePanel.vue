@@ -9,19 +9,19 @@ const {
   connected,
   updateNotebookTimeoutAction,
   updateNotebookEnvAction,
-  refreshSecretsAction,
-  updateNotebookSecretsConfigAction,
+  refreshSecretManagerAction,
+  updateNotebookSecretManagerConfigAction,
 } = useNotebook()
 
 const showPanel = ref(false)
 const refreshing = ref(false)
 const savingSecretsConfig = ref(false)
-const secretsConfigError = ref<string | null>(null)
+const secretManagerConfigError = ref<string | null>(null)
 
 const envCount = computed(() => Object.keys(notebook.env).length)
 const timeoutLabel = computed(() => (notebook.timeout == null ? 'default' : `${notebook.timeout}s`))
 
-// Form state mirrors notebook.secretsConfig but stays local so the
+// Form state mirrors notebook.secretManagerConfig but stays local so the
 // user can edit without committing until Save. When the backend
 // pushes a new config (initial open, refresh, etc.) the watcher below
 // resets the form to match.
@@ -40,25 +40,25 @@ const form = ref<{
 })
 
 function resetForm() {
-  form.value.provider = notebook.secretsConfig.provider ?? ''
-  form.value.project_id = notebook.secretsConfig.project_id ?? ''
-  form.value.environment = notebook.secretsConfig.environment ?? ''
-  form.value.path = notebook.secretsConfig.path ?? ''
-  form.value.base_url = notebook.secretsConfig.base_url ?? ''
+  form.value.provider = notebook.secretManagerConfig.provider ?? ''
+  form.value.project_id = notebook.secretManagerConfig.project_id ?? ''
+  form.value.environment = notebook.secretManagerConfig.environment ?? ''
+  form.value.path = notebook.secretManagerConfig.path ?? ''
+  form.value.base_url = notebook.secretManagerConfig.base_url ?? ''
 }
 
 watch(
-  () => notebook.secretsConfig,
+  () => notebook.secretManagerConfig,
   () => {
     resetForm()
   },
   { immediate: true, deep: true },
 )
 
-const secretsConfigured = computed(() => Object.keys(notebook.secretsConfig).length > 0)
+const secretManagerConfigured = computed(() => Object.keys(notebook.secretManagerConfig).length > 0)
 
 const secretManagerName = computed(() => {
-  if (notebook.secretsConfig.provider) return notebook.secretsConfig.provider
+  if (notebook.secretManagerConfig.provider) return notebook.secretManagerConfig.provider
   for (const src of Object.values(notebook.envSources)) {
     if (src && src !== 'manual') return src
   }
@@ -67,18 +67,18 @@ const secretManagerName = computed(() => {
 
 const formDirty = computed(
   () =>
-    form.value.provider !== (notebook.secretsConfig.provider ?? '') ||
-    form.value.project_id !== (notebook.secretsConfig.project_id ?? '') ||
-    form.value.environment !== (notebook.secretsConfig.environment ?? '') ||
-    form.value.path !== (notebook.secretsConfig.path ?? '') ||
-    form.value.base_url !== (notebook.secretsConfig.base_url ?? ''),
+    form.value.provider !== (notebook.secretManagerConfig.provider ?? '') ||
+    form.value.project_id !== (notebook.secretManagerConfig.project_id ?? '') ||
+    form.value.environment !== (notebook.secretManagerConfig.environment ?? '') ||
+    form.value.path !== (notebook.secretManagerConfig.path ?? '') ||
+    form.value.base_url !== (notebook.secretManagerConfig.base_url ?? ''),
 )
 
 async function handleRefresh() {
   if (refreshing.value || !connected) return
   refreshing.value = true
   try {
-    await refreshSecretsAction()
+    await refreshSecretManagerAction()
   } catch {
     // Fetch errors land on notebook.envFetchError via the response;
     // a thrown exception here means the POST itself failed (404 etc.).
@@ -89,10 +89,10 @@ async function handleRefresh() {
 
 async function saveSecretsConfig() {
   if (savingSecretsConfig.value || !connected) return
-  secretsConfigError.value = null
+  secretManagerConfigError.value = null
   savingSecretsConfig.value = true
   try {
-    await updateNotebookSecretsConfigAction({
+    await updateNotebookSecretManagerConfigAction({
       provider: form.value.provider || null,
       project_id: form.value.project_id || null,
       environment: form.value.environment || null,
@@ -100,7 +100,7 @@ async function saveSecretsConfig() {
       base_url: form.value.base_url || null,
     })
   } catch (e: any) {
-    secretsConfigError.value = e?.message || 'Failed to save secrets config'
+    secretManagerConfigError.value = e?.message || 'Failed to save secret-manager config'
   } finally {
     savingSecretsConfig.value = false
   }
@@ -108,12 +108,12 @@ async function saveSecretsConfig() {
 
 async function disconnectSecretManager() {
   if (savingSecretsConfig.value || !connected) return
-  secretsConfigError.value = null
+  secretManagerConfigError.value = null
   savingSecretsConfig.value = true
   try {
-    await updateNotebookSecretsConfigAction({})
+    await updateNotebookSecretManagerConfigAction({})
   } catch (e: any) {
-    secretsConfigError.value = e?.message || 'Failed to disconnect'
+    secretManagerConfigError.value = e?.message || 'Failed to disconnect'
   } finally {
     savingSecretsConfig.value = false
   }
@@ -153,7 +153,7 @@ async function disconnectSecretManager() {
             <span v-if="secretManagerName" class="secrets-provider">{{ secretManagerName }}</span>
           </span>
           <button
-            v-if="secretsConfigured"
+            v-if="secretManagerConfigured"
             class="secrets-refresh"
             :disabled="refreshing || !connected"
             @click="handleRefresh"
@@ -164,7 +164,7 @@ async function disconnectSecretManager() {
         <p v-if="notebook.envFetchError" class="secrets-error">
           {{ notebook.envFetchError }}
         </p>
-        <p v-else-if="notebook.envFetchedAt && secretsConfigured" class="secrets-meta">
+        <p v-else-if="notebook.envFetchedAt && secretManagerConfigured" class="secrets-meta">
           Last refreshed {{ notebook.envFetchedAt }}
         </p>
         <div class="secrets-form">
@@ -225,10 +225,10 @@ async function disconnectSecretManager() {
               (service token, legacy). Credentials are never written to disk.
             </p>
           </template>
-          <p v-if="secretsConfigError" class="secrets-error">{{ secretsConfigError }}</p>
+          <p v-if="secretManagerConfigError" class="secrets-error">{{ secretManagerConfigError }}</p>
           <div class="secrets-actions">
             <button
-              v-if="secretsConfigured"
+              v-if="secretManagerConfigured"
               class="secrets-disconnect"
               :disabled="savingSecretsConfig || !connected"
               @click="disconnectSecretManager"

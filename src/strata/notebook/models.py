@@ -202,12 +202,13 @@ class NotebookToml(BaseModel):
         default_factory=dict,
         description="Notebook-level LLM configuration persisted under [ai]",
     )
-    secrets: dict[str, Any] = Field(
+    secret_manager: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "External secret-manager config under [secrets]. Non-sensitive "
-            "routing only (provider, project_id, environment, path); the "
-            "token that authenticates lives in the process environment."
+            "External secret-manager config under [secret_manager]. "
+            "Non-sensitive routing only (provider, project_id, environment, "
+            "path); the token that authenticates lives in the process "
+            "environment."
         ),
     )
     # Preserved in TOML round-trip but not used at runtime
@@ -434,10 +435,10 @@ class NotebookState(BaseModel):
         default_factory=list,
         description="Notebook-level filesystem mount defaults",
     )
-    secrets_config: dict[str, Any] = Field(
+    secret_manager_config: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Parsed [secrets] block from notebook.toml — provider / "
+            "Parsed [secret_manager] block from notebook.toml — provider / "
             "project_id / environment / path routing. Non-sensitive; the "
             "token that authenticates to the manager lives in the process "
             "environment, never here."

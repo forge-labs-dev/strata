@@ -58,7 +58,7 @@ Open the notebook and use the **Secret manager** section in the Runtime panel:
 The result lands in `notebook.toml` as:
 
 ```toml
-[secrets]
+[secret_manager]
 provider = "infisical"
 project_id = "your-project-id"
 environment = "dev"

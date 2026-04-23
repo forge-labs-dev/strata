@@ -1,6 +1,6 @@
 """External secret-manager integration for notebook env vars.
 
-A notebook can declare a ``[secrets]`` section in ``notebook.toml``
+A notebook can declare a ``[secret_manager]`` section in ``notebook.toml``
 pointing at a provider like Infisical. On session open, the configured
 provider is consulted and the returned secrets are merged into the
 notebook's env map before cell execution — so an ``OPENAI_API_KEY``

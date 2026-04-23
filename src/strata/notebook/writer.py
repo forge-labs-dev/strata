@@ -229,7 +229,7 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
         **({"ai": toml.ai} if toml.ai else {}),
-        **({"secrets": toml.secrets} if toml.secrets else {}),
+        **({"secret_manager": toml.secret_manager} if toml.secret_manager else {}),
         # Runtime state that used to live in this file — ``artifacts``
         # (display outputs), ``environment`` (sync timestamps, package
         # counts), ``cache`` — now lives in ``.strata/runtime.json``.
@@ -801,18 +801,18 @@ def update_cell_display_outputs(
     save_runtime_state(notebook_dir, state)
 
 
-_SECRETS_CONFIG_KEYS = ("provider", "project_id", "environment", "path", "base_url")
+_SECRET_MANAGER_CONFIG_KEYS = ("provider", "project_id", "environment", "path", "base_url")
 
 
-def update_notebook_secrets(notebook_dir: Path, config: dict[str, Any]) -> None:
-    """Persist the [secrets] block in notebook.toml.
+def update_notebook_secret_manager(notebook_dir: Path, config: dict[str, Any]) -> None:
+    """Persist the [secret_manager] block in notebook.toml.
 
     Accepts only a fixed whitelist of keys so arbitrary runtime state
     can't leak into the committed TOML via this path. Passing an empty
     dict removes the block entirely — the UI "disconnect" action.
     """
     cleaned: dict[str, Any] = {}
-    for key in _SECRETS_CONFIG_KEYS:
+    for key in _SECRET_MANAGER_CONFIG_KEYS:
         value = config.get(key)
         if value is None:
             continue
@@ -823,16 +823,16 @@ def update_notebook_secrets(notebook_dir: Path, config: dict[str, Any]) -> None:
         cleaned[key] = value
 
     def mutate(toml_data: dict[str, Any]) -> bool:
-        existing = toml_data.get("secrets")
+        existing = toml_data.get("secret_manager")
         existing_dict = existing if isinstance(existing, dict) else None
         if not cleaned:
             if not existing_dict:
                 return False
-            toml_data.pop("secrets", None)
+            toml_data.pop("secret_manager", None)
             return True
         if existing_dict == cleaned:
             return False
-        toml_data["secrets"] = cleaned
+        toml_data["secret_manager"] = cleaned
         return True
 
     _apply_notebook_toml_update(notebook_dir, mutate)

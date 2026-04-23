@@ -15,7 +15,7 @@ If neither is set the provider returns a failure with a clear message
 pointing the user at both options.
 
 Project routing (``project_id``, ``environment``, ``path``) comes
-from the notebook's ``[secrets]`` block so the non-sensitive info
+from the notebook's ``[secret_manager]`` block so the non-sensitive info
 can be committed. Override via env vars (``INFISICAL_PROJECT_ID``
 etc.) is supported for quick-start use.
 """
@@ -45,7 +45,7 @@ class InfisicalProvider:
         if not project_id:
             return SecretFetchResult.failure(
                 self.name,
-                "project_id missing — set it in notebook.toml [secrets] "
+                "project_id missing — set it in notebook.toml [secret_manager] "
                 "or via INFISICAL_PROJECT_ID.",
             )
 

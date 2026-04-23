@@ -219,12 +219,12 @@ class TestInfisicalProvider:
 def _state(
     *,
     env: dict[str, str] | None = None,
-    secrets_config: dict | None = None,
+    secret_manager_config: dict | None = None,
 ) -> NotebookState:
     return NotebookState(
         id="test",
         env=env or {},
-        secrets_config=secrets_config or {},
+        secret_manager_config=secret_manager_config or {},
     )
 
 
@@ -242,7 +242,7 @@ class TestApplySecretsToNotebookState:
         # typical state after reload from disk.
         state = _state(
             env={"OPENAI_API_KEY": "", "DEBUG": "true"},
-            secrets_config={"provider": "infisical", "project_id": "p"},
+            secret_manager_config={"provider": "infisical", "project_id": "p"},
         )
         _install_fake_provider(
             monkeypatch,
@@ -260,7 +260,7 @@ class TestApplySecretsToNotebookState:
     def test_manual_override_wins_over_fetched(self, monkeypatch) -> None:
         state = _state(
             env={"OPENAI_API_KEY": "session-override"},
-            secrets_config={"provider": "infisical", "project_id": "p"},
+            secret_manager_config={"provider": "infisical", "project_id": "p"},
         )
         _install_fake_provider(monkeypatch, secrets={"OPENAI_API_KEY": "from-infisical"})
         apply_secrets_to_notebook_state(state)
@@ -270,7 +270,7 @@ class TestApplySecretsToNotebookState:
     def test_fetch_error_surfaces_on_state(self, monkeypatch) -> None:
         state = _state(
             env={"DEBUG": "true"},
-            secrets_config={"provider": "infisical", "project_id": "p"},
+            secret_manager_config={"provider": "infisical", "project_id": "p"},
         )
         _install_fake_provider(monkeypatch, error="Infisical rejected the token")
         result = apply_secrets_to_notebook_state(state)
@@ -282,7 +282,7 @@ class TestApplySecretsToNotebookState:
     def test_unknown_provider_name_surfaces_as_error(self) -> None:
         state = _state(
             env={},
-            secrets_config={"provider": "vault"},
+            secret_manager_config={"provider": "vault"},
         )
         result = apply_secrets_to_notebook_state(state)
         assert result is not None
@@ -290,7 +290,7 @@ class TestApplySecretsToNotebookState:
         assert state.env_fetch_error == result.error
 
     def test_missing_provider_field_is_flagged(self) -> None:
-        state = _state(secrets_config={"project_id": "p"})
+        state = _state(secret_manager_config={"project_id": "p"})
         result = fetch_configured_secrets(state)
         assert result is not None
         assert "provider" in (result.error or "").lower()
@@ -328,7 +328,7 @@ def _install_fake_provider(
 
 @pytest.fixture
 def client(tmp_path, monkeypatch):
-    """Open a notebook via the test client so we can hit /secrets/refresh."""
+    """Open a notebook via the test client so we can hit /secret-manager/refresh."""
     from fastapi.testclient import TestClient
 
     from strata.notebook.routes import get_session_manager
@@ -340,10 +340,10 @@ def client(tmp_path, monkeypatch):
         nb_dir = create_notebook(tmp_path, "Secrets Route Test")
         add_cell_to_notebook(nb_dir, "c1")
 
-        # Inject a [secrets] block so the refresh path has something to do.
+        # Inject a [secret_manager] block so the refresh path has something to do.
         notebook_toml = nb_dir / "notebook.toml"
         with open(notebook_toml, "a", encoding="utf-8") as f:
-            f.write('\n[secrets]\nprovider = "infisical"\nproject_id = "p"\n')
+            f.write('\n[secret_manager]\nprovider = "infisical"\nproject_id = "p"\n')
 
         from tests.notebook.e2e_fixtures import create_test_app
 
@@ -361,7 +361,7 @@ class TestRefreshEndpoint:
     def test_refresh_returns_env_sources(self, client) -> None:
         tc, session_id, monkeypatch = client
         _install_fake_provider(monkeypatch, secrets={"ALPACA_API_KEY": "AKROT8"})
-        resp = tc.post(f"/v1/notebooks/{session_id}/secrets/refresh")
+        resp = tc.post(f"/v1/notebooks/{session_id}/secret-manager/refresh")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["env"]["ALPACA_API_KEY"] == "AKROT8"
@@ -371,30 +371,30 @@ class TestRefreshEndpoint:
     def test_refresh_surfaces_fetch_error(self, client) -> None:
         tc, session_id, monkeypatch = client
         _install_fake_provider(monkeypatch, error="Infisical down")
-        resp = tc.post(f"/v1/notebooks/{session_id}/secrets/refresh")
+        resp = tc.post(f"/v1/notebooks/{session_id}/secret-manager/refresh")
         assert resp.status_code == 200
         body = resp.json()
         assert body["env_fetch_error"] == "Infisical down"
 
     def test_refresh_unknown_notebook_returns_404(self, client) -> None:
         tc, _session_id, _ = client
-        resp = tc.post("/v1/notebooks/does-not-exist/secrets/refresh")
+        resp = tc.post("/v1/notebooks/does-not-exist/secret-manager/refresh")
         assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# Writer: update_notebook_secrets
+# Writer: update_notebook_secret_manager
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateNotebookSecrets:
+class TestUpdateNotebookSecretManager:
     def test_writes_cleaned_config_to_toml(self, tmp_path) -> None:
         import tomllib
 
-        from strata.notebook.writer import create_notebook, update_notebook_secrets
+        from strata.notebook.writer import create_notebook, update_notebook_secret_manager
 
         nb_dir = create_notebook(tmp_path, "Secrets Writer Test")
-        update_notebook_secrets(
+        update_notebook_secret_manager(
             nb_dir,
             {
                 "provider": "infisical",
@@ -405,7 +405,7 @@ class TestUpdateNotebookSecrets:
         )
         with open(nb_dir / "notebook.toml", "rb") as f:
             data = tomllib.load(f)
-        assert data["secrets"] == {
+        assert data["secret_manager"] == {
             "provider": "infisical",
             "project_id": "proj",
             "environment": "prod",
@@ -417,55 +417,55 @@ class TestUpdateNotebookSecrets:
         stops a malicious PUT payload from smuggling arbitrary state."""
         import tomllib
 
-        from strata.notebook.writer import create_notebook, update_notebook_secrets
+        from strata.notebook.writer import create_notebook, update_notebook_secret_manager
 
         nb_dir = create_notebook(tmp_path, "Secrets Filter Test")
-        update_notebook_secrets(
+        update_notebook_secret_manager(
             nb_dir,
             {"provider": "infisical", "project_id": "p", "secret_value": "LEAK"},
         )
         with open(nb_dir / "notebook.toml", "rb") as f:
             data = tomllib.load(f)
-        assert "secret_value" not in data["secrets"]
+        assert "secret_value" not in data["secret_manager"]
 
     def test_empty_payload_removes_block(self, tmp_path) -> None:
         import tomllib
 
-        from strata.notebook.writer import create_notebook, update_notebook_secrets
+        from strata.notebook.writer import create_notebook, update_notebook_secret_manager
 
         nb_dir = create_notebook(tmp_path, "Secrets Disconnect Test")
-        update_notebook_secrets(nb_dir, {"provider": "infisical", "project_id": "p"})
-        update_notebook_secrets(nb_dir, {})
+        update_notebook_secret_manager(nb_dir, {"provider": "infisical", "project_id": "p"})
+        update_notebook_secret_manager(nb_dir, {})
         with open(nb_dir / "notebook.toml", "rb") as f:
             data = tomllib.load(f)
-        assert "secrets" not in data
+        assert "secret_manager" not in data
 
     def test_same_config_is_no_op_no_updated_at_bump(self, tmp_path) -> None:
         """Re-saving identical values shouldn't churn updated_at — matches
         the write-if-changed pattern used by update_notebook_env etc."""
-        from strata.notebook.writer import create_notebook, update_notebook_secrets
+        from strata.notebook.writer import create_notebook, update_notebook_secret_manager
 
         nb_dir = create_notebook(tmp_path, "Secrets Idempotent Test")
-        update_notebook_secrets(nb_dir, {"provider": "infisical", "project_id": "p"})
+        update_notebook_secret_manager(nb_dir, {"provider": "infisical", "project_id": "p"})
         before = (nb_dir / "notebook.toml").read_bytes()
-        update_notebook_secrets(nb_dir, {"provider": "infisical", "project_id": "p"})
+        update_notebook_secret_manager(nb_dir, {"provider": "infisical", "project_id": "p"})
         after = (nb_dir / "notebook.toml").read_bytes()
         assert before == after
 
 
 # ---------------------------------------------------------------------------
-# Route: PUT /secrets/config
+# Route: PUT /secret-manager/config
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateSecretsConfigEndpoint:
+class TestUpdateSecretManagerConfigEndpoint:
     def test_saves_and_returns_config(self, client) -> None:
         tc, session_id, monkeypatch = client
         # Replace the fake provider's fetch so the subsequent reload's
         # apply_secrets_to_notebook_state doesn't hit real infisical.
         _install_fake_provider(monkeypatch, secrets={})
         resp = tc.put(
-            f"/v1/notebooks/{session_id}/secrets/config",
+            f"/v1/notebooks/{session_id}/secret-manager/config",
             json={
                 "provider": "infisical",
                 "project_id": "new-proj",
@@ -475,20 +475,20 @@ class TestUpdateSecretsConfigEndpoint:
         )
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["secrets_config"]["project_id"] == "new-proj"
-        assert body["secrets_config"]["environment"] == "prod"
+        assert body["secret_manager_config"]["project_id"] == "new-proj"
+        assert body["secret_manager_config"]["environment"] == "prod"
 
     def test_empty_payload_disconnects(self, client) -> None:
         tc, session_id, monkeypatch = client
         _install_fake_provider(monkeypatch, secrets={})
-        resp = tc.put(f"/v1/notebooks/{session_id}/secrets/config", json={})
+        resp = tc.put(f"/v1/notebooks/{session_id}/secret-manager/config", json={})
         assert resp.status_code == 200
-        assert resp.json()["secrets_config"] == {}
+        assert resp.json()["secret_manager_config"] == {}
 
     def test_unknown_notebook_returns_404(self, client) -> None:
         tc, _session_id, _ = client
         resp = tc.put(
-            "/v1/notebooks/does-not-exist/secrets/config",
+            "/v1/notebooks/does-not-exist/secret-manager/config",
             json={"provider": "infisical"},
         )
         assert resp.status_code == 404

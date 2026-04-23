@@ -254,7 +254,7 @@ class NotebookSession:
 
         Updates notebook_state.env, env_sources, env_fetch_error,
         env_fetched_at in place. Non-destructive on no-op notebooks —
-        when there's no ``[secrets]`` block, env_sources is still
+        when there's no ``[secret_manager]`` block, env_sources is still
         stamped with ``manual`` for every existing key so the UI has
         a consistent source map to render.
 
