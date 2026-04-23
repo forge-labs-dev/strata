@@ -192,7 +192,7 @@ function scrollToCell(cellId: CellId) {
   }
 }
 
-function statusColor(status: Cell['status']): string {
+function statusStroke(status: Cell['status']): string {
   switch (status) {
     case 'ready':
       return 'var(--accent-success)'
@@ -204,6 +204,25 @@ function statusColor(status: Cell['status']): string {
       return 'var(--accent-danger)'
     default:
       return 'var(--text-muted)'
+  }
+}
+
+// Translucent fill companion to statusStroke. The SVG rect can't do
+// string-concatenated alpha (e.g. "var(--accent-success)" + "22") because
+// the result isn't valid CSS and browsers fall back to black — which is
+// why these nodes rendered dark in both themes before.
+function statusFill(status: Cell['status']): string {
+  switch (status) {
+    case 'ready':
+      return 'var(--tint-success)'
+    case 'running':
+      return 'var(--tint-primary)'
+    case 'stale':
+      return 'var(--tint-warning)'
+    case 'error':
+      return 'var(--tint-danger)'
+    default:
+      return 'var(--tint-muted)'
   }
 }
 
@@ -297,8 +316,8 @@ function edgePath(points: { x: number; y: number }[]): string {
             :width="nodeSize.w"
             :height="nodeSize.h"
             rx="6"
-            :fill="statusColor(n.status) + '22'"
-            :stroke="statusColor(n.status)"
+            :fill="statusFill(n.status)"
+            :stroke="statusStroke(n.status)"
             stroke-width="1.5"
           />
           <text
