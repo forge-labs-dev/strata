@@ -82,8 +82,8 @@ function runAnyway() {
   z-index: 1000;
 }
 .impact-dialog {
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-input);
   border-radius: 8px;
   padding: 20px;
   min-width: 400px;
@@ -93,7 +93,7 @@ function runAnyway() {
 .impact-title {
   font-size: 16px;
   font-weight: 600;
-  color: #cdd6f4;
+  color: var(--text-primary);
   margin-bottom: 16px;
 }
 
@@ -103,7 +103,7 @@ function runAnyway() {
 .section-label {
   font-size: 12px;
   font-weight: 600;
-  color: #a6adc8;
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 
@@ -114,13 +114,13 @@ function runAnyway() {
   padding: 4px 8px;
   font-size: 12px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  background: #1e1e2e;
+  background: var(--bg-elevated);
   border-radius: 4px;
   margin-bottom: 3px;
 }
 .impact-cell-name {
   flex: 1;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 .impact-reason {
   padding: 1px 6px;
@@ -129,32 +129,32 @@ function runAnyway() {
   font-weight: 600;
 }
 .reason-stale {
-  background: #f9e2af22;
-  color: #f9e2af;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
 }
 .reason-missing {
-  background: #6c708622;
-  color: #6c7086;
+  background: var(--tint-muted);
+  color: var(--text-muted);
 }
 .reason-target {
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
 }
 .impact-est {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 11px;
 }
 .impact-status-change {
-  color: #f9e2af;
+  color: var(--accent-warning);
   font-size: 11px;
 }
 
 .impact-estimate {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   margin-bottom: 16px;
   padding-top: 8px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .impact-actions {
@@ -171,17 +171,17 @@ function runAnyway() {
   border: none;
 }
 .btn-primary {
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: var(--accent-primary);
+  color: var(--bg-elevated);
 }
 .btn-primary:hover {
-  background: #74c7ec;
+  background: var(--accent-primary-hover);
 }
 .btn-secondary {
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  color: var(--text-primary);
 }
 .btn-secondary:hover {
-  background: #45475a;
+  background: var(--border-strong);
 }
 </style>

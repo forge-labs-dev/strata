@@ -43,8 +43,8 @@ const newLabel = computed(() => labelFor(pendingInspectRequest.value?.newCellId)
   z-index: 1000;
 }
 .swap-card {
-  background: #1e1e2e;
-  border: 1px solid #89b4fa44;
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-primary);
   border-radius: 8px;
   padding: 18px 20px;
   min-width: 340px;
@@ -52,19 +52,19 @@ const newLabel = computed(() => labelFor(pendingInspectRequest.value?.newCellId)
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
 }
 .swap-title {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-weight: 600;
   font-size: 14px;
   margin-bottom: 8px;
 }
 .swap-body {
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.45;
   margin-bottom: 14px;
 }
 .swap-body code {
-  color: #89b4fa;
+  color: var(--accent-primary);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .swap-actions {
@@ -83,17 +83,17 @@ const newLabel = computed(() => labelFor(pendingInspectRequest.value?.newCellId)
 }
 .swap-cancel {
   background: transparent;
-  border-color: #45475a;
-  color: #cdd6f4;
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 .swap-cancel:hover {
-  background: #313244;
+  background: var(--bg-input);
 }
 .swap-confirm {
-  background: #89b4fa;
-  color: #11111b;
+  background: var(--accent-primary);
+  color: var(--bg-base);
 }
 .swap-confirm:hover {
-  background: #b4befe;
+  background: var(--accent-lavender);
 }
 </style>

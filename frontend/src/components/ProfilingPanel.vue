@@ -73,8 +73,8 @@ function refresh() {
 
 <style scoped>
 .profiling-panel {
-  background: #1e1e2e;
-  border: 1px solid #2a2a3c;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   margin-top: 8px;
   min-width: 180px;
@@ -87,22 +87,22 @@ function refresh() {
   padding: 8px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: #6c7086;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  border-bottom: 1px solid #2a2a3c;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .refresh-btn {
   background: none;
   border: none;
-  color: #6c7086;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 14px;
   padding: 0 4px;
   border-radius: 3px;
 }
 .refresh-btn:hover {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 
 .profiling-body {
@@ -118,22 +118,22 @@ function refresh() {
   font-size: 11px;
 }
 .stat-label {
-  color: #6c7086;
+  color: var(--text-muted);
 }
 .stat-value {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .cache-savings {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 .stat-detail {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 10px;
 }
 
 .cell-profiles {
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 6px;
 }
 .cell-profile-row {
@@ -146,7 +146,7 @@ function refresh() {
 }
 .cp-name {
   flex: 1;
-  color: #cdd6f4;
+  color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -155,19 +155,19 @@ function refresh() {
   font-size: 10px;
 }
 .cp-ready {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 .cp-stale {
-  color: #f9e2af;
+  color: var(--accent-warning);
 }
 .cp-error {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 .cp-idle {
-  color: #6c7086;
+  color: var(--text-muted);
 }
 .cp-duration {
-  color: #6c7086;
+  color: var(--text-muted);
   min-width: 36px;
   text-align: right;
 }
@@ -175,7 +175,7 @@ function refresh() {
 .profiling-empty {
   padding: 12px;
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
   text-align: center;
 }
 </style>

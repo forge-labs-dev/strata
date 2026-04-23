@@ -328,7 +328,7 @@ const totalTokens = computed(() => {
  * buttons. */
 .llm-panel {
   margin-top: 12px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
 
@@ -339,7 +339,7 @@ const totalTokens = computed(() => {
   width: 100%;
   background: none;
   border: none;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -349,7 +349,7 @@ const totalTokens = computed(() => {
 }
 
 .panel-toggle:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .toggle-label {
@@ -360,14 +360,14 @@ const totalTokens = computed(() => {
 
 .toggle-icon {
   font-size: 10px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .model-badge {
   font-size: 10px;
   font-weight: 400;
-  color: #a6adc8;
-  background: #313244;
+  color: var(--text-secondary);
+  background: var(--bg-input);
   padding: 1px 6px;
   border-radius: 4px;
 }
@@ -377,8 +377,8 @@ const totalTokens = computed(() => {
 }
 
 .model-badge-clickable:hover {
-  background: #45475a;
-  color: #cdd6f4;
+  background: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .model-selector {
@@ -386,12 +386,12 @@ const totalTokens = computed(() => {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border-bottom: 1px solid #2a2a3c;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .model-selector-label {
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -401,28 +401,28 @@ const totalTokens = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 4px 8px;
-  background: #313244;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 11px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   cursor: pointer;
 }
 
 .model-selector-btn:hover {
-  border-color: #89b4fa;
+  border-color: var(--accent-primary);
 }
 
 .model-chevron {
   font-size: 8px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .model-picker {
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  background: #181825;
+  background: var(--bg-surface);
   margin-top: 4px;
   max-height: 250px;
   overflow-y: auto;
@@ -435,46 +435,46 @@ const totalTokens = computed(() => {
   padding: 6px 12px;
   background: none;
   border: none;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 11px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   cursor: pointer;
 }
 
 .model-picker-item:hover {
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  color: var(--text-primary);
 }
 
 .model-picker-item.active {
-  color: #89b4fa;
+  color: var(--accent-primary);
   font-weight: 600;
 }
 
 .model-picker-loading,
 .model-picker-empty {
   padding: 8px 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
 .panel-content {
   margin-top: 8px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 8px;
-  background: #11111b;
+  background: var(--bg-base);
   overflow: hidden;
 }
 
 .llm-unconfigured {
   padding: 16px;
   text-align: center;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 13px;
 }
 
 .llm-unconfigured code {
-  background: #313244;
+  background: var(--bg-input);
   padding: 1px 4px;
   border-radius: 3px;
   font-size: 11px;
@@ -494,7 +494,7 @@ const totalTokens = computed(() => {
 .llm-empty {
   padding: 16px;
   text-align: center;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -505,12 +505,12 @@ const totalTokens = computed(() => {
 }
 
 .llm-msg.user {
-  background: #1e1e2e;
+  background: var(--bg-elevated);
 }
 
 .llm-msg.assistant {
-  background: #181825;
-  border: 1px solid #2a2a3c;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
 }
 
 .msg-header {
@@ -522,22 +522,22 @@ const totalTokens = computed(() => {
 .msg-role {
   font-size: 11px;
   font-weight: 600;
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 
 .llm-msg.user .msg-role {
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 
 .msg-tokens {
   font-size: 10px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .msg-content {
   font-size: 12px;
   line-height: 1.5;
-  color: #cdd6f4;
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
   margin: 0;
@@ -553,8 +553,8 @@ const totalTokens = computed(() => {
 .insert-btn {
   font-size: 11px;
   padding: 3px 8px;
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: var(--accent-primary);
+  color: var(--bg-elevated);
   border: none;
   border-radius: 4px;
   cursor: pointer;
@@ -562,40 +562,40 @@ const totalTokens = computed(() => {
 }
 
 .insert-btn:hover {
-  background: #74c7ec;
+  background: var(--accent-primary-hover);
 }
 
 .insert-btn.insert-all {
-  background: #a6e3a1;
-  color: #1e1e2e;
+  background: var(--accent-success);
+  color: var(--bg-elevated);
 }
 
 .insert-btn.insert-all:hover {
-  background: #94e2d5;
+  background: var(--accent-teal);
 }
 
 .llm-loading {
   padding: 8px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
   font-style: italic;
 }
 
 .llm-error {
   padding: 8px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   font-size: 12px;
-  background: #45252530;
-  border-top: 1px solid #f38ba850;
+  background: var(--tint-danger);
+  border-top: 1px solid var(--tint-danger);
 }
 
 .llm-cell-select {
   width: 100%;
   padding: 6px 8px;
-  background: #1e1e2e;
+  background: var(--bg-elevated);
   border: none;
-  border-top: 1px solid #2a2a3c;
-  color: #a6adc8;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
 }
@@ -611,16 +611,16 @@ const totalTokens = computed(() => {
   flex-direction: column;
   gap: 6px;
   padding: 8px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .llm-input textarea {
   width: 100%;
   padding: 6px 8px;
-  background: #313244;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 12px;
   resize: none;
   font-family: inherit;
@@ -628,7 +628,7 @@ const totalTokens = computed(() => {
 
 .llm-input textarea:focus {
   outline: none;
-  border-color: #89b4fa;
+  border-color: var(--accent-primary);
 }
 
 .input-actions {
@@ -639,9 +639,9 @@ const totalTokens = computed(() => {
 .chat-btn {
   flex: 1;
   padding: 6px 12px;
-  background: #313244;
-  color: #cdd6f4;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
@@ -649,15 +649,15 @@ const totalTokens = computed(() => {
 }
 
 .chat-btn:hover:not(:disabled) {
-  background: #45475a;
+  background: var(--border-strong);
 }
 
 .agent-btn {
   flex: 1;
   padding: 6px 12px;
-  background: #a6e3a120;
-  color: #a6e3a1;
-  border: 1px solid #a6e3a140;
+  background: var(--tint-success);
+  color: var(--accent-success);
+  border: 1px solid var(--tint-success);
   border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
@@ -665,7 +665,7 @@ const totalTokens = computed(() => {
 }
 
 .agent-btn:hover:not(:disabled) {
-  background: #a6e3a140;
+  background: var(--tint-success);
 }
 
 .llm-footer {
@@ -673,17 +673,17 @@ const totalTokens = computed(() => {
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .token-count {
   font-size: 10px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .provider-label {
   font-size: 10px;
-  color: #6c7086;
+  color: var(--text-muted);
   margin-left: auto;
 }
 
@@ -691,15 +691,15 @@ const totalTokens = computed(() => {
   font-size: 10px;
   padding: 2px 6px;
   background: none;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 4px;
-  color: #6c7086;
+  color: var(--text-muted);
   cursor: pointer;
 }
 
 .clear-btn:hover:not(:disabled) {
-  border-color: #f38ba8;
-  color: #f38ba8;
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
 }
 
 .clear-btn:disabled {
@@ -707,7 +707,7 @@ const totalTokens = computed(() => {
   cursor: not-allowed;
 }
 .agent-progress {
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding: 8px;
 }
 
@@ -722,22 +722,22 @@ const totalTokens = computed(() => {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  color: #a6e3a1;
+  color: var(--accent-success);
   letter-spacing: 0.06em;
 }
 
 .agent-cancel-btn {
   font-size: 10px;
   padding: 2px 8px;
-  background: #f38ba830;
-  border: 1px solid #f38ba850;
+  background: var(--tint-danger);
+  border: 1px solid var(--tint-danger);
   border-radius: 4px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   cursor: pointer;
 }
 
 .agent-cancel-btn:hover {
-  background: #f38ba850;
+  background: var(--tint-danger);
 }
 
 .agent-status {
@@ -746,11 +746,11 @@ const totalTokens = computed(() => {
 }
 
 .agent-status.done {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 
 .agent-status.error {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 .agent-log {
@@ -772,28 +772,28 @@ const totalTokens = computed(() => {
 .event-type {
   flex-shrink: 0;
   font-weight: 600;
-  color: #6c7086;
+  color: var(--text-muted);
   min-width: 60px;
 }
 
 .agent-event.tool_call .event-type {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 
 .agent-event.tool_result .event-type {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 
 .agent-event.error .event-type {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 .agent-event.thinking .event-type {
-  color: #f9e2af;
+  color: var(--accent-warning);
 }
 
 .event-detail {
-  color: #a6adc8;
+  color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -802,9 +802,9 @@ const totalTokens = computed(() => {
 .agent-error {
   margin-top: 6px;
   padding: 6px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   font-size: 11px;
-  background: #45252530;
+  background: var(--tint-danger);
   border-radius: 4px;
 }
 </style>

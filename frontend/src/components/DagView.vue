@@ -195,15 +195,15 @@ function scrollToCell(cellId: CellId) {
 function statusColor(status: Cell['status']): string {
   switch (status) {
     case 'ready':
-      return '#a6e3a1'
+      return 'var(--accent-success)'
     case 'running':
-      return '#89b4fa'
+      return 'var(--accent-primary)'
     case 'stale':
-      return '#f9e2af'
+      return 'var(--accent-warning)'
     case 'error':
-      return '#f38ba8'
+      return 'var(--accent-danger)'
     default:
-      return '#6c7086'
+      return 'var(--text-muted)'
   }
 }
 
@@ -261,7 +261,7 @@ function edgePath(points: { x: number; y: number }[]): string {
             markerHeight="6"
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="#6c7086" />
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--text-muted)" />
           </marker>
         </defs>
 
@@ -271,7 +271,7 @@ function edgePath(points: { x: number; y: number }[]): string {
           :key="'e' + i"
           :d="edgePath(e.points)"
           fill="none"
-          stroke="#6c7086"
+          stroke="var(--text-muted)"
           stroke-width="1.5"
           marker-end="url(#arrow)"
         />
@@ -282,7 +282,7 @@ function edgePath(points: { x: number; y: number }[]): string {
           :key="'el' + i"
           :x="e.points[Math.floor(e.points.length / 2)]?.x + 6"
           :y="e.points[Math.floor(e.points.length / 2)]?.y + 3"
-          fill="#585b70"
+          fill="var(--cat-surface2)"
           font-size="9"
           font-family="JetBrains Mono, Fira Code, monospace"
         >
@@ -305,7 +305,7 @@ function edgePath(points: { x: number; y: number }[]): string {
             :x="n.x"
             :y="n.y + 4"
             text-anchor="middle"
-            fill="#cdd6f4"
+            fill="var(--text-primary)"
             font-size="11"
             font-family="JetBrains Mono, Fira Code, monospace"
           >
@@ -336,25 +336,25 @@ function edgePath(points: { x: number; y: number }[]): string {
   padding: 8px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: #6c7086;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  border-bottom: 1px solid #2a2a3c;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .dag-reset {
   font-size: 10px;
   padding: 2px 6px;
   background: none;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 4px;
-  color: #6c7086;
+  color: var(--text-muted);
   cursor: pointer;
   text-transform: none;
   letter-spacing: 0;
 }
 .dag-reset:hover {
-  border-color: #89b4fa;
-  color: #89b4fa;
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 .dag-viewport {
   overflow: hidden;

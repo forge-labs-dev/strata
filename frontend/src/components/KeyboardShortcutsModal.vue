@@ -50,8 +50,8 @@ const shortcuts = [
 }
 
 .shortcuts-dialog {
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-input);
   border-radius: 12px;
   padding: 24px;
   min-width: 360px;
@@ -68,20 +68,20 @@ const shortcuts = [
 
 .shortcuts-header h2 {
   font-size: 16px;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .shortcuts-close {
   background: none;
   border: none;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 20px;
   cursor: pointer;
   padding: 0 4px;
 }
 
 .shortcuts-close:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .shortcuts-table {
@@ -90,7 +90,7 @@ const shortcuts = [
 }
 
 .shortcuts-table tr {
-  border-bottom: 1px solid #2a2a3c;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .shortcuts-table tr:last-child {
@@ -110,24 +110,24 @@ const shortcuts = [
 
 kbd {
   display: inline-block;
-  background: #313244;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: 4px;
   padding: 2px 8px;
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .key-separator {
-  color: #6c7086;
+  color: var(--text-muted);
   margin: 0 4px;
   font-size: 11px;
 }
 
 .shortcut-desc {
   font-size: 13px;
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 </style>

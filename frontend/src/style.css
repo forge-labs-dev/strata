@@ -1,1 +1,189 @@
-/* Reset — all styling lives in Vue components */
+/* Strata color tokens.
+ *
+ * Two layers:
+ *  1. Palette tokens (--cat-*) hold the raw Catppuccin colors for the
+ *     active theme. Mocha (dark) is the default on :root; Latte (light)
+ *     overrides on [data-theme="light"]. System-following is done in
+ *     the useTheme composable, which sets [data-theme] on <html>.
+ *  2. Semantic tokens (--bg-*, --text-*, --border-*, --accent-*) alias
+ *     the palette with intent-based names. Components should only use
+ *     semantic tokens; changing the palette then flips the whole UI.
+ *
+ * Alpha tints for pill backgrounds and focus rings come as explicit
+ * semantic tokens (--tint-*, --ring-focus) with hand-picked values per
+ * theme — color-mix() would be tidier but is a wider browser baseline
+ * and doesn't save enough LOC to justify the swap yet.
+ */
+
+:root,
+[data-theme='dark'] {
+  /* Catppuccin Mocha palette */
+  --cat-crust: #11111b;
+  --cat-mantle: #181825;
+  --cat-base: #1e1e2e;
+  --cat-surface0: #313244;
+  --cat-surface1: #45475a;
+  --cat-surface2: #585b70;
+  --cat-overlay0: #6c7086;
+  --cat-overlay1: #7f849c;
+  --cat-subtext0: #a6adc8;
+  --cat-subtext1: #bac2de;
+  --cat-text: #cdd6f4;
+  --cat-lavender: #b4befe;
+  --cat-blue: #89b4fa;
+  --cat-sapphire: #74c7ec;
+  --cat-sky: #89dceb;
+  --cat-teal: #94e2d5;
+  --cat-green: #a6e3a1;
+  --cat-yellow: #f9e2af;
+  --cat-peach: #fab387;
+  --cat-maroon: #eba0ac;
+  --cat-red: #f38ba8;
+  --cat-mauve: #cba6f7;
+  --cat-pink: #f5c2e7;
+  --cat-rosewater: #f5e0dc;
+
+  /* Semantic — backgrounds */
+  --bg-base: var(--cat-crust);
+  --bg-surface: var(--cat-mantle);
+  --bg-elevated: var(--cat-base);
+  --bg-input: var(--cat-surface0);
+  --bg-hover: var(--cat-surface0);
+  --bg-pressed: var(--cat-surface1);
+
+  /* Semantic — text */
+  --text-primary: var(--cat-text);
+  --text-secondary: var(--cat-subtext0);
+  --text-muted: var(--cat-overlay0);
+  --text-on-accent: var(--cat-base);
+
+  /* Semantic — borders */
+  --border-subtle: #2a2a3c;
+  --border: var(--cat-surface0);
+  --border-strong: var(--cat-surface1);
+
+  /* Semantic — accents */
+  --accent-primary: var(--cat-blue);
+  --accent-primary-hover: var(--cat-sapphire);
+  --accent-success: var(--cat-green);
+  --accent-warning: var(--cat-yellow);
+  --accent-danger: var(--cat-red);
+  --accent-info: var(--cat-sky);
+  --accent-teal: var(--cat-teal);
+  --accent-mauve: var(--cat-mauve);
+  --accent-peach: var(--cat-peach);
+  --accent-lavender: var(--cat-lavender);
+
+  /* Tints — soft, translucent-feeling pill backgrounds */
+  --tint-primary: #89b4fa22;
+  --tint-primary-strong: #89b4fa33;
+  --tint-success: #a6e3a120;
+  --tint-warning: #f9e2af22;
+  --tint-danger: #f38ba822;
+  --tint-info: #89dceb22;
+  --tint-teal: #94e2d522;
+  --tint-mauve: #cba6f722;
+  --tint-peach: #fab38722;
+  --tint-muted: #6c708622;
+
+  /* Misc */
+  --ring-focus: rgba(137, 180, 250, 0.2);
+  --overlay-scrim: rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+[data-theme='light'] {
+  /* Catppuccin Latte palette */
+  --cat-crust: #dce0e8;
+  --cat-mantle: #e6e9ef;
+  --cat-base: #eff1f5;
+  --cat-surface0: #ccd0da;
+  --cat-surface1: #bcc0cc;
+  --cat-surface2: #acb0be;
+  --cat-overlay0: #9ca0b0;
+  --cat-overlay1: #8c8fa1;
+  --cat-subtext0: #6c6f85;
+  --cat-subtext1: #5c5f77;
+  --cat-text: #4c4f69;
+  --cat-lavender: #7287fd;
+  --cat-blue: #1e66f5;
+  --cat-sapphire: #209fb5;
+  --cat-sky: #04a5e5;
+  --cat-teal: #179299;
+  --cat-green: #40a02b;
+  --cat-yellow: #df8e1d;
+  --cat-peach: #fe640b;
+  --cat-maroon: #e64553;
+  --cat-red: #d20f39;
+  --cat-mauve: #8839ef;
+  --cat-pink: #ea76cb;
+  --cat-rosewater: #dc8a78;
+
+  /* Backgrounds invert — base becomes the lightest; surface/elevated
+   * step up in darkness so elevated UI reads as "ahead of" surface. */
+  --bg-base: var(--cat-base);
+  --bg-surface: var(--cat-mantle);
+  --bg-elevated: #ffffff;
+  --bg-input: #ffffff;
+  --bg-hover: var(--cat-mantle);
+  --bg-pressed: var(--cat-surface0);
+
+  --text-primary: var(--cat-text);
+  --text-secondary: var(--cat-subtext1);
+  --text-muted: var(--cat-overlay1);
+  --text-on-accent: #ffffff;
+
+  --border-subtle: var(--cat-surface0);
+  --border: var(--cat-surface1);
+  --border-strong: var(--cat-overlay0);
+
+  --accent-primary: var(--cat-blue);
+  --accent-primary-hover: var(--cat-sapphire);
+  --accent-success: var(--cat-green);
+  --accent-warning: var(--cat-yellow);
+  --accent-danger: var(--cat-red);
+  --accent-info: var(--cat-sky);
+  --accent-teal: var(--cat-teal);
+  --accent-mauve: var(--cat-mauve);
+  --accent-peach: var(--cat-peach);
+  --accent-lavender: var(--cat-lavender);
+
+  /* Latte tints are slightly stronger so pills read on a light bg. */
+  --tint-primary: #1e66f522;
+  --tint-primary-strong: #1e66f533;
+  --tint-success: #40a02b22;
+  --tint-warning: #df8e1d22;
+  --tint-danger: #d20f3922;
+  --tint-info: #04a5e522;
+  --tint-teal: #17929922;
+  --tint-mauve: #8839ef22;
+  --tint-peach: #fe640b22;
+  --tint-muted: #9ca0b022;
+
+  --ring-focus: rgba(30, 102, 245, 0.25);
+  --overlay-scrim: rgba(76, 79, 105, 0.35);
+  --shadow-modal: 0 10px 30px rgba(30, 30, 46, 0.15);
+}
+
+html,
+body {
+  color-scheme: dark;
+}
+[data-theme='light'] {
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}

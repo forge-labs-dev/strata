@@ -32,7 +32,7 @@ const mountCount = computed(() => notebook.mounts.length)
 <style scoped>
 .mounts-panel {
   margin-top: 12px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
 
@@ -43,7 +43,7 @@ const mountCount = computed(() => notebook.mounts.length)
   width: 100%;
   background: none;
   border: none;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -53,12 +53,12 @@ const mountCount = computed(() => notebook.mounts.length)
 }
 
 .mounts-toggle:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .mount-count {
-  background: #313244;
-  color: #89b4fa;
+  background: var(--bg-input);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 8px;
   font-size: 11px;
@@ -77,7 +77,7 @@ const mountCount = computed(() => notebook.mounts.length)
 .mounts-copy {
   margin-bottom: 8px;
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 </style>

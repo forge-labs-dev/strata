@@ -403,7 +403,7 @@ watch(showPanel, (open) => {
 <style scoped>
 .workers-panel {
   margin-top: 12px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
 
@@ -414,7 +414,7 @@ watch(showPanel, (open) => {
   width: 100%;
   background: none;
   border: none;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -424,12 +424,12 @@ watch(showPanel, (open) => {
 }
 
 .workers-toggle:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .worker-label {
-  background: #313244;
-  color: #89b4fa;
+  background: var(--bg-input);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 8px;
   font-size: 11px;
@@ -457,13 +457,13 @@ watch(showPanel, (open) => {
 
 .workers-health-text {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .workers-refresh {
-  border: 1px solid #313244;
-  background: #181825;
-  color: #cdd6f4;
+  border: 1px solid var(--bg-input);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   border-radius: 8px;
   padding: 5px 10px;
   font-size: 12px;
@@ -477,7 +477,7 @@ watch(showPanel, (open) => {
 
 .workers-copy {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
@@ -490,19 +490,19 @@ watch(showPanel, (open) => {
   flex-direction: column;
   gap: 6px;
   padding: 10px 12px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 12px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 
 .workers-mode-card.service {
-  border-color: #89b4fa33;
-  background: #0f1522;
+  border-color: var(--tint-primary-strong);
+  background: var(--tint-primary);
 }
 
 .workers-mode-card.personal {
-  border-color: #a6e3a133;
-  background: #111a16;
+  border-color: var(--tint-success);
+  background: var(--tint-success);
 }
 
 .workers-mode-header {
@@ -517,7 +517,7 @@ watch(showPanel, (open) => {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .workers-mode-badge {
@@ -525,14 +525,14 @@ watch(showPanel, (open) => {
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
-  color: #cdd6f4;
-  background: #313244;
+  color: var(--text-primary);
+  background: var(--bg-input);
 }
 
 .workers-mode-title {
   font-size: 13px;
   font-weight: 600;
-  color: #cdd6f4;
+  color: var(--text-primary);
   line-height: 1.4;
 }
 
@@ -547,14 +547,14 @@ watch(showPanel, (open) => {
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 10px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 
 .workers-summary-card.attention {
-  border-color: #f9e2af55;
-  background: #1d1a14;
+  border-color: var(--tint-warning);
+  background: var(--tint-warning);
 }
 
 .workers-summary-label {
@@ -562,18 +562,18 @@ watch(showPanel, (open) => {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .workers-summary-value {
   font-size: 18px;
   line-height: 1;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .workers-summary-detail {
   font-size: 11px;
-  color: #8a8fa8;
+  color: var(--text-muted);
 }
 
 .workers-catalog {
@@ -594,9 +594,9 @@ watch(showPanel, (open) => {
   justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
-  border: 1px solid #f9e2af33;
+  border: 1px solid var(--tint-warning);
   border-radius: 10px;
-  background: #1d1a14;
+  background: var(--tint-warning);
 }
 
 .workers-attention-main {
@@ -612,12 +612,12 @@ watch(showPanel, (open) => {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #bac2de;
+  color: var(--cat-subtext1);
 }
 
 .workers-attention-reason {
   font-size: 12px;
-  color: #f9e2af;
+  color: var(--accent-warning);
   line-height: 1.4;
 }
 
@@ -626,9 +626,9 @@ watch(showPanel, (open) => {
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 10px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 
 .workers-catalog-title {
@@ -636,7 +636,7 @@ watch(showPanel, (open) => {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 
 .workers-catalog-row {
@@ -645,32 +645,32 @@ watch(showPanel, (open) => {
   flex-wrap: wrap;
   gap: 6px;
   font-size: 12px;
-  color: #bac2de;
+  color: var(--cat-subtext1);
 }
 
 .workers-catalog-meta {
   padding: 1px 6px;
   border-radius: 999px;
-  background: #313244;
-  color: #89b4fa;
+  background: var(--bg-input);
+  color: var(--accent-primary);
   font-size: 11px;
 }
 
 .workers-catalog-meta.disallowed {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 .workers-catalog-meta.disabled,
 .workers-catalog-meta.unknown {
-  color: #fab387;
+  color: var(--accent-peach);
 }
 
 .workers-catalog-meta.unhealthy {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 .workers-catalog-meta.warming {
-  color: #89b4fa;
+  color: var(--accent-primary);
   font-style: italic;
 }
 
@@ -681,9 +681,9 @@ watch(showPanel, (open) => {
 }
 
 .workers-action {
-  border: 1px solid #313244;
-  background: #181825;
-  color: #cdd6f4;
+  border: 1px solid var(--bg-input);
+  background: var(--bg-surface);
+  color: var(--text-primary);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 11px;
@@ -703,12 +703,12 @@ watch(showPanel, (open) => {
 
 .workers-catalog-detail {
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .workers-catalog-error {
   font-size: 12px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   line-height: 1.4;
 }
 
@@ -721,24 +721,24 @@ watch(showPanel, (open) => {
 
 .workers-catalog-history-label {
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 
 .workers-catalog-history-chip {
   padding: 1px 6px;
   border-radius: 999px;
-  background: #181825;
-  border: 1px solid #313244;
-  color: #a6adc8;
+  background: var(--bg-surface);
+  border: 1px solid var(--bg-input);
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
 .workers-catalog-history-chip.unhealthy {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 .workers-catalog-history-chip.unknown {
-  color: #fab387;
+  color: var(--accent-peach);
 }
 
 @media (max-width: 900px) {

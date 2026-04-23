@@ -324,16 +324,16 @@ function cancelEdit(index: number) {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 
 .worker-list-add,
 .worker-list-save,
 .worker-list-save-row,
 .worker-list-remove {
-  background: #313244;
-  border: 1px solid #45475a;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
   border-radius: 6px;
   cursor: pointer;
 }
@@ -384,9 +384,9 @@ function cancelEdit(index: number) {
   justify-content: space-between;
   gap: 8px;
   padding: 8px 10px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 8px;
-  background: #181825;
+  background: var(--bg-surface);
 }
 
 .worker-summary-main {
@@ -398,12 +398,12 @@ function cancelEdit(index: number) {
 }
 
 .worker-summary-name {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 12px;
 }
 
 .worker-summary-meta {
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -413,9 +413,9 @@ function cancelEdit(index: number) {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 6px;
-  border: 1px solid #313244;
-  background: #181825;
-  color: #bac2de;
+  border: 1px solid var(--bg-input);
+  background: var(--bg-surface);
+  color: var(--cat-subtext1);
   font-size: 12px;
 }
 
@@ -427,27 +427,27 @@ function cancelEdit(index: number) {
   width: 100%;
   min-width: 0;
   padding: 6px 8px;
-  background: #11111b;
-  border: 1px solid #313244;
+  background: var(--bg-base);
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 12px;
 }
 
 .worker-list-empty {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
 .worker-list-hint {
   margin-top: -2px;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
 }
 
 .worker-list-hint code {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 
 .worker-list-actions {
@@ -456,7 +456,7 @@ function cancelEdit(index: number) {
 }
 
 .worker-list-error {
-  color: #f38ba8;
+  color: var(--accent-danger);
   font-size: 12px;
   line-height: 1.4;
 }

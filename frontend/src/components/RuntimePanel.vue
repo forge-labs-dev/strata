@@ -254,7 +254,7 @@ async function disconnectSecretManager() {
 <style scoped>
 .runtime-panel {
   margin-top: 12px;
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding-top: 8px;
 }
 
@@ -265,7 +265,7 @@ async function disconnectSecretManager() {
   width: 100%;
   background: none;
   border: none;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -275,12 +275,12 @@ async function disconnectSecretManager() {
 }
 
 .runtime-toggle:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .runtime-label {
-  background: #313244;
-  color: #f9e2af;
+  background: var(--bg-input);
+  color: var(--accent-warning);
   padding: 1px 6px;
   border-radius: 8px;
   font-size: 11px;
@@ -301,12 +301,12 @@ async function disconnectSecretManager() {
 
 .runtime-copy {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 
 .secrets-panel {
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
   padding: 8px 10px;
   display: flex;
@@ -322,14 +322,14 @@ async function disconnectSecretManager() {
 .secrets-title {
   font-size: 12px;
   font-weight: 600;
-  color: #cdd6f4;
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 6px;
 }
 .secrets-provider {
-  background: #313244;
-  color: #a6adc8;
+  background: var(--bg-input);
+  color: var(--text-secondary);
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -338,16 +338,16 @@ async function disconnectSecretManager() {
 }
 .secrets-refresh {
   background: none;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 4px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 11px;
   padding: 2px 8px;
   cursor: pointer;
 }
 .secrets-refresh:hover:not(:disabled) {
-  color: #89b4fa;
-  border-color: #89b4fa;
+  color: var(--accent-primary);
+  border-color: var(--accent-primary);
 }
 .secrets-refresh:disabled {
   opacity: 0.5;
@@ -355,13 +355,13 @@ async function disconnectSecretManager() {
 }
 .secrets-error {
   font-size: 11px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   margin: 0;
   line-height: 1.4;
 }
 .secrets-meta {
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
   margin: 0;
   line-height: 1.4;
 }
@@ -381,7 +381,7 @@ async function disconnectSecretManager() {
 .secrets-field-label {
   font-size: 10px;
   font-weight: 600;
-  color: #6c7086;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -391,10 +391,10 @@ async function disconnectSecretManager() {
 }
 .secrets-input,
 .secrets-select {
-  background: #11111b;
-  border: 1px solid #313244;
+  background: var(--bg-base);
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 12px;
   padding: 6px 8px;
   width: 100%;
@@ -407,11 +407,11 @@ async function disconnectSecretManager() {
 .secrets-hint {
   margin: 0;
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
   line-height: 1.4;
 }
 .secrets-hint code {
-  background: #11111b;
+  background: var(--bg-base);
   padding: 0 4px;
   border-radius: 3px;
   font-size: 10px;
@@ -424,20 +424,20 @@ async function disconnectSecretManager() {
 .secrets-save,
 .secrets-disconnect {
   background: none;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 4px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 11px;
   padding: 3px 10px;
   cursor: pointer;
 }
 .secrets-save:hover:not(:disabled) {
-  color: #a6e3a1;
-  border-color: #a6e3a1;
+  color: var(--accent-success);
+  border-color: var(--accent-success);
 }
 .secrets-disconnect:hover:not(:disabled) {
-  color: #f38ba8;
-  border-color: #f38ba8;
+  color: var(--accent-danger);
+  border-color: var(--accent-danger);
 }
 .secrets-save:disabled,
 .secrets-disconnect:disabled {

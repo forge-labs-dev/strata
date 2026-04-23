@@ -5,6 +5,7 @@ import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import CellEditor from '../components/CellEditor.vue'
 import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal.vue'
+import ThemeToggle from '../components/ThemeToggle.vue'
 import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
 
 const DagView = defineAsyncComponent(() => import('../components/DagView.vue'))
@@ -460,6 +461,7 @@ function goHome() {
         />
       </div>
       <div class="header-right">
+        <ThemeToggle />
         <span
           v-if="!loading && notebook.id"
           class="mode-badge"
@@ -656,12 +658,12 @@ function goHome() {
 }
 
 .add-prompt-btn {
-  border-color: #89b4fa40;
-  color: #89b4fa;
+  border-color: var(--tint-primary-strong);
+  color: var(--accent-primary);
 }
 
 .add-prompt-btn:hover {
-  border-color: #89b4fa;
+  border-color: var(--accent-primary);
 }
 
 .mode-badge {
@@ -671,49 +673,49 @@ function goHome() {
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: #cdd6f4;
-  background: #313244;
+  color: var(--text-primary);
+  background: var(--bg-input);
 }
 
 .mode-badge.service {
-  background: #1e2a3c;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
 }
 
 .mode-badge.personal {
-  background: #1e2d24;
-  color: #a6e3a1;
+  background: var(--tint-success);
+  color: var(--accent-success);
 }
 
 .reconnect-state {
   max-width: 720px;
   margin: 48px auto;
   padding: 24px;
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 12px;
 }
 
 .reconnect-state h2 {
   margin-bottom: 12px;
   font-size: 20px;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .reconnect-message {
-  color: #f9e2af;
+  color: var(--accent-warning);
   margin-bottom: 12px;
   line-height: 1.5;
 }
 
 .reconnect-detail {
-  color: #a6adc8;
+  color: var(--text-secondary);
   margin-bottom: 16px;
   line-height: 1.5;
 }
 
 .reconnect-detail code {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .reconnect-actions {
@@ -722,9 +724,9 @@ function goHome() {
 }
 
 .btn-danger {
-  border-color: #7f1d1d;
-  background: #3f1010;
-  color: #fecaca;
+  border-color: var(--accent-danger);
+  background: var(--tint-danger);
+  color: var(--accent-danger);
 }
 
 .btn-danger:disabled {
@@ -737,7 +739,7 @@ function goHome() {
 }
 @keyframes dag-jump-flash {
   0% {
-    box-shadow: 0 0 0 3px #89b4fa88;
+    box-shadow: 0 0 0 3px var(--tint-primary-strong);
   }
   100% {
     box-shadow: none;

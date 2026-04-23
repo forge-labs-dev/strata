@@ -869,26 +869,26 @@ function outputKey(output: CellOutput, index: number): string {
 <style scoped>
 .cell {
   display: flex;
-  border: 1px solid #2a2a3c;
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   margin-bottom: 8px;
-  background: #1e1e2e;
+  background: var(--bg-elevated);
   transition: border-color 0.2s;
 }
 .cell:hover {
-  border-color: #44447a;
+  border-color: var(--accent-lavender);
 }
 .cell.status-running {
-  border-color: #89b4fa;
+  border-color: var(--accent-primary);
 }
 .cell.status-ready {
-  border-color: #a6e3a1;
+  border-color: var(--accent-success);
 }
 .cell.status-stale {
-  border-color: #f9e2af;
+  border-color: var(--accent-warning);
 }
 .cell.status-error {
-  border-color: #f38ba8;
+  border-color: var(--accent-danger);
 }
 
 .cell-gutter {
@@ -898,24 +898,24 @@ function outputKey(output: CellOutput, index: number): string {
   padding: 8px 4px;
   gap: 8px;
   min-width: 36px;
-  border-right: 1px solid #2a2a3c;
+  border-right: 1px solid var(--border-subtle);
 }
 .status-dot {
   font-size: 14px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 .status-ready .status-dot {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 .status-running .status-dot {
-  color: #89b4fa;
+  color: var(--accent-primary);
   animation: pulse 1s infinite;
 }
 .status-stale .status-dot {
-  color: #f9e2af;
+  color: var(--accent-warning);
 }
 .status-error .status-dot {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 
 @keyframes pulse {
@@ -937,19 +937,19 @@ function outputKey(output: CellOutput, index: number): string {
 .cell-actions button {
   background: none;
   border: none;
-  color: #6c7086;
+  color: var(--text-muted);
   cursor: pointer;
   font-size: 14px;
   padding: 2px 4px;
   border-radius: 3px;
 }
 .cell-actions button:hover {
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  color: var(--text-primary);
 }
 .cell-actions button.active {
-  color: #89b4fa;
-  background: #89b4fa22;
+  color: var(--accent-primary);
+  background: var(--tint-primary);
 }
 
 .cell-folded-summary {
@@ -958,16 +958,16 @@ function outputKey(output: CellOutput, index: number): string {
   gap: 8px;
   padding: 6px 10px;
   cursor: pointer;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
   font-family: monospace;
-  background: #11111b;
+  background: var(--bg-base);
   border-radius: 4px;
 }
 
 .cell-folded-summary:hover {
-  background: #1e1e2e;
-  color: #a6adc8;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
 }
 
 .folded-source {
@@ -981,23 +981,23 @@ function outputKey(output: CellOutput, index: number): string {
 .folded-lines {
   flex-shrink: 0;
   font-size: 10px;
-  color: #45475a;
+  color: var(--border-strong);
 }
 
 .cell-prompt {
-  border-color: #89b4fa40;
+  border-color: var(--tint-primary-strong);
 }
 
 .cell-prompt .cell-lang {
-  background: #89b4fa30;
-  color: #89b4fa;
+  background: var(--tint-primary-strong);
+  color: var(--accent-primary);
 }
 
 .shadow-badge {
   font-size: 10px;
   padding: 1px 6px;
-  background: #f9e2af30;
-  color: #f9e2af;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
   border-radius: 4px;
   cursor: help;
 }
@@ -1012,8 +1012,8 @@ function outputKey(output: CellOutput, index: number): string {
   flex-direction: column;
   padding: 4px 12px;
   font-size: 11px;
-  color: #6c7086;
-  border-bottom: 1px solid #2a2a3c;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
   min-width: 0;
   gap: 2px;
 }
@@ -1047,18 +1047,18 @@ function outputKey(output: CellOutput, index: number): string {
   font-weight: 600;
 }
 .name-badge {
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-weight: 600;
 }
 .cell-vars code {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 .cache-badge {
-  background: #a6e3a133;
-  color: #a6e3a1;
+  background: var(--tint-success);
+  color: var(--accent-success);
   padding: 1px 6px;
   border-radius: 3px;
   font-weight: 600;
@@ -1067,21 +1067,21 @@ function outputKey(output: CellOutput, index: number): string {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
 }
 .loop-progress-badge.running {
-  background: #f9e2af22;
-  color: #f9e2af;
-  border: 1px solid #f9e2af55;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
+  border: 1px solid var(--tint-warning);
 }
 .loop-progress-badge.done {
-  background: #a6e3a133;
-  color: #a6e3a1;
+  background: var(--tint-success);
+  color: var(--accent-success);
 }
 .loop-spinner {
   display: inline-block;
@@ -1098,23 +1098,23 @@ function outputKey(output: CellOutput, index: number): string {
   }
 }
 .mount-badge {
-  background: #94e2d522;
-  color: #94e2d5;
+  background: var(--tint-teal);
+  color: var(--accent-teal);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .worker-badge {
-  background: #cba6f722;
-  color: #cba6f7;
+  background: var(--tint-mauve);
+  color: var(--accent-mauve);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .dispatch-badge {
-  background: #f9e2af22;
-  color: #f9e2af;
-  border: 1px solid #f9e2af55;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
+  border: 1px solid var(--tint-warning);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
@@ -1131,47 +1131,47 @@ function outputKey(output: CellOutput, index: number): string {
   }
 }
 .worker-transport-badge {
-  background: #89dceb22;
-  color: #89dceb;
+  background: var(--tint-info);
+  color: var(--accent-info);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .worker-health-badge {
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .worker-health-badge.warning {
-  background: #f9e2af22;
-  color: #f9e2af;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
 }
 .timeout-badge {
-  background: #f9e2af22;
-  color: #f9e2af;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .env-badge {
-  background: #fab38722;
-  color: #fab387;
+  background: var(--tint-peach);
+  color: var(--accent-peach);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .exec-method-badge {
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .leaf-badge {
-  background: #89b4fa33;
-  color: #89b4fa;
+  background: var(--tint-primary-strong);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-weight: 600;
@@ -1185,67 +1185,67 @@ function outputKey(output: CellOutput, index: number): string {
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
-  border-bottom: 1px solid #2a2a3c;
-  background: #11111b;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-base);
 }
 .remote-execution-summary.tone-info {
-  background: #11111b;
+  background: var(--bg-base);
 }
 .remote-execution-summary.tone-success {
-  background: #13221b;
+  background: var(--tint-success);
 }
 .remote-execution-summary.tone-warning {
-  background: #201b12;
+  background: var(--tint-warning);
 }
 .remote-execution-summary.tone-error {
-  background: #24161b;
+  background: var(--tint-danger);
 }
 .remote-execution-label {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 .remote-execution-detail {
   font-size: 12px;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 .remote-execution-pill {
   padding: 2px 8px;
   border-radius: 999px;
-  background: #313244;
-  color: #89b4fa;
+  background: var(--bg-input);
+  color: var(--accent-primary);
   font-size: 11px;
   font-weight: 600;
 }
 .remote-execution-summary.tone-success .remote-execution-pill {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 .remote-execution-summary.tone-warning .remote-execution-pill {
-  color: #f9e2af;
+  color: var(--accent-warning);
 }
 .remote-execution-summary.tone-error .remote-execution-pill {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 .annotation-badge {
-  background: #f9e2af22;
-  color: #f9e2af;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
 }
 .annotation-summary-chip {
-  background: #fab38722;
-  color: #fab387;
+  background: var(--tint-peach);
+  color: var(--accent-peach);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
 }
 .annotation-diagnostic-badge {
-  background: #f38ba822;
-  color: #f38ba8;
+  background: var(--tint-danger);
+  color: var(--accent-danger);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
@@ -1256,8 +1256,8 @@ function outputKey(output: CellOutput, index: number): string {
 /* Module-cell marker — shown when the cell's source is pure enough to
  * be shared as a synthetic module across downstream cells. */
 .module-cell-badge {
-  background: #89b4fa22;
-  color: #89b4fa;
+  background: var(--tint-primary);
+  color: var(--accent-primary);
   padding: 1px 6px;
   border-radius: 3px;
   font-size: 10px;
@@ -1268,9 +1268,9 @@ function outputKey(output: CellOutput, index: number): string {
 
 /* v1.1: Causality inspector */
 .causality-btn {
-  background: #f9e2af22;
-  color: #f9e2af;
-  border: 1px solid #f9e2af44;
+  background: var(--tint-warning);
+  color: var(--accent-warning);
+  border: 1px solid var(--tint-warning);
   padding: 1px 8px;
   border-radius: 3px;
   font-size: 10px;
@@ -1278,8 +1278,8 @@ function outputKey(output: CellOutput, index: number): string {
   font-weight: 600;
 }
 .causality-btn:hover {
-  background: #f9e2af33;
-  border-color: #f9e2af66;
+  background: var(--tint-warning);
+  border-color: var(--tint-warning);
 }
 
 @media (max-width: 900px) {
@@ -1296,18 +1296,18 @@ function outputKey(output: CellOutput, index: number): string {
 }
 
 .causality-panel {
-  background: #181825;
-  border-bottom: 1px solid #2a2a3c;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
   padding: 8px 12px;
   font-size: 12px;
 }
 .causality-header {
-  color: #f9e2af;
+  color: var(--accent-warning);
   font-weight: 600;
   margin-bottom: 4px;
 }
 .causality-reason {
-  background: #f9e2af22;
+  background: var(--tint-warning);
   padding: 1px 6px;
   border-radius: 3px;
 }
@@ -1317,37 +1317,37 @@ function outputKey(output: CellOutput, index: number): string {
   margin: 0;
 }
 .causality-detail {
-  color: #a6adc8;
+  color: var(--text-secondary);
   padding: 2px 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 .causality-detail code {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 .detail-icon {
-  color: #f9e2af;
+  color: var(--accent-warning);
   font-size: 11px;
   width: 16px;
   text-align: center;
 }
 .version-change {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 10px;
 }
 
 /* Console output */
 .cell-console {
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding: 6px 12px;
   font-size: 12px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 .cell-console pre {
   margin: 0;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
-  color: #a6adc8;
+  color: var(--text-secondary);
   white-space: pre-wrap;
 }
 
@@ -1356,7 +1356,7 @@ function outputKey(output: CellOutput, index: number): string {
 }
 
 .cell-output {
-  border-top: 1px solid #2a2a3c;
+  border-top: 1px solid var(--border-subtle);
   padding: 8px 12px;
   font-size: 13px;
 }
@@ -1364,7 +1364,7 @@ function outputKey(output: CellOutput, index: number): string {
   margin-top: 12px;
 }
 .output-error {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 .output-error-detail {
   margin: 0;
@@ -1377,7 +1377,7 @@ function outputKey(output: CellOutput, index: number): string {
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 8px;
-  color: #f9e2af;
+  color: var(--accent-warning);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 13px;
 }
@@ -1385,31 +1385,31 @@ function outputKey(output: CellOutput, index: number): string {
 .remote-error-pill {
   padding: 2px 8px;
   border-radius: 999px;
-  background: #313244;
-  color: #f9e2af;
+  background: var(--bg-input);
+  color: var(--accent-warning);
   font-size: 11px;
   font-weight: 700;
 }
 .suggest-install {
   margin-top: 8px;
   padding: 8px 10px;
-  background: #89b4fa15;
-  border: 1px solid #89b4fa33;
+  background: var(--tint-primary);
+  border: 1px solid var(--tint-primary-strong);
   border-radius: 6px;
   display: flex;
   align-items: center;
   gap: 12px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 13px;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 .suggest-install code {
-  color: #89b4fa;
+  color: var(--accent-primary);
   font-weight: 600;
 }
 .btn-install {
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: var(--accent-primary);
+  color: var(--bg-elevated);
   border: none;
   padding: 4px 12px;
   border-radius: 4px;
@@ -1420,25 +1420,25 @@ function outputKey(output: CellOutput, index: number): string {
   flex-shrink: 0;
 }
 .btn-install:hover {
-  background: #74c7ec;
+  background: var(--accent-primary-hover);
 }
 .btn-install:disabled {
-  background: #6c7086;
-  color: #cdd6f4;
+  background: var(--text-muted);
+  color: var(--text-primary);
   cursor: wait;
 }
 .install-complete-hint {
   margin-top: 8px;
   padding: 8px 10px;
-  background: #a6e3a115;
-  border: 1px solid #a6e3a133;
+  background: var(--tint-success);
+  border: 1px solid var(--tint-success);
   border-radius: 6px;
-  color: #a6e3a1;
+  color: var(--accent-success);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 13px;
 }
 .install-complete-hint code {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 .output-table-wrap {
   overflow-x: auto;
@@ -1452,12 +1452,12 @@ function outputKey(output: CellOutput, index: number): string {
   display: block;
   max-width: 100%;
   height: auto;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 .output-markdown {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   line-height: 1.6;
 }
@@ -1468,7 +1468,7 @@ function outputKey(output: CellOutput, index: number): string {
 .output-markdown :deep(h5),
 .output-markdown :deep(h6) {
   margin: 0 0 8px;
-  color: #f5e0dc;
+  color: var(--cat-rosewater);
 }
 .output-markdown :deep(p),
 .output-markdown :deep(blockquote),
@@ -1481,17 +1481,17 @@ function outputKey(output: CellOutput, index: number): string {
 .output-markdown :deep(code) {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
-  background: #11111b;
-  color: #f9e2af;
+  background: var(--bg-base);
+  color: var(--accent-warning);
   padding: 1px 4px;
   border-radius: 4px;
 }
 .output-markdown :deep(pre) {
   overflow-x: auto;
   padding: 10px 12px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  background: #11111b;
+  background: var(--bg-base);
 }
 .output-markdown :deep(pre code) {
   padding: 0;
@@ -1499,11 +1499,11 @@ function outputKey(output: CellOutput, index: number): string {
 }
 .output-markdown :deep(blockquote) {
   padding-left: 12px;
-  border-left: 3px solid #89b4fa55;
-  color: #bac2de;
+  border-left: 3px solid var(--accent-primary);
+  color: var(--cat-subtext1);
 }
 .output-markdown :deep(a) {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 .output-markdown :deep(table) {
   width: 100%;
@@ -1512,12 +1512,12 @@ function outputKey(output: CellOutput, index: number): string {
 .output-markdown :deep(th),
 .output-markdown :deep(td) {
   padding: 6px 10px;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   text-align: left;
 }
 .output-markdown :deep(th) {
-  color: #89b4fa;
-  background: #181825;
+  color: var(--accent-primary);
+  background: var(--bg-surface);
 }
 .output-table {
   width: 100%;
@@ -1528,23 +1528,23 @@ function outputKey(output: CellOutput, index: number): string {
 .output-table th {
   text-align: left;
   padding: 4px 12px;
-  color: #89b4fa;
-  border-bottom: 1px solid #313244;
+  color: var(--accent-primary);
+  border-bottom: 1px solid var(--bg-input);
   font-weight: 600;
   position: sticky;
   top: 0;
-  background: #1e1e2e;
+  background: var(--bg-elevated);
 }
 .output-table td {
   padding: 3px 12px;
-  color: #cdd6f4;
-  border-bottom: 1px solid #1e1e2e;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--bg-elevated);
 }
 .output-table tr:hover td {
-  background: #313244;
+  background: var(--bg-input);
 }
 .row-count {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 11px;
   margin-top: 4px;
 }
@@ -1553,21 +1553,21 @@ function outputKey(output: CellOutput, index: number): string {
   margin: 0;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 13px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-all;
 }
 .output-scalar :deep(.json-key) {
-  color: #89b4fa;
+  color: var(--accent-primary);
 }
 .output-scalar :deep(.json-string) {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 .output-scalar :deep(.json-number) {
-  color: #fab387;
+  color: var(--accent-peach);
 }
 .output-scalar :deep(.json-bool) {
-  color: #cba6f7;
+  color: var(--accent-mauve);
 }
 .output-markdown.collapsed {
   max-height: 200px;
@@ -1580,14 +1580,14 @@ function outputKey(output: CellOutput, index: number): string {
   margin-top: 4px;
   padding: 2px 8px;
   background: none;
-  border: 1px solid #313244;
+  border: 1px solid var(--bg-input);
   border-radius: 4px;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 11px;
   cursor: pointer;
 }
 .output-toggle:hover {
-  border-color: #89b4fa;
-  color: #89b4fa;
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 </style>

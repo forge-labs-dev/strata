@@ -1,5 +1,5 @@
-import { onMounted, onBeforeUnmount, ref, type Ref } from 'vue'
-import { EditorState } from '@codemirror/state'
+import { onMounted, onBeforeUnmount, ref, watch, type Ref } from 'vue'
+import { Compartment, EditorState } from '@codemirror/state'
 import {
   EditorView,
   keymap,
@@ -13,6 +13,37 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
 import { closeBrackets } from '@codemirror/autocomplete'
 import type { CellLanguage } from '../types/notebook'
+import { useTheme } from './useTheme'
+
+// ---------------------------------------------------------------------------
+// Theme
+// ---------------------------------------------------------------------------
+// Dark theme: oneDark (bundled) + a gutter tweak to match the Mocha base.
+// Light theme: hand-rolled minimal theme with Catppuccin Latte colors so we
+// don't pull in an extra dep. `defaultHighlightStyle` still provides syntax
+// colors — both themes share it, and it reads well on either background.
+
+const darkTheme = [
+  oneDark,
+  EditorView.theme({
+    '.cm-gutters': { backgroundColor: '#1e1e2e', border: 'none' },
+  }),
+]
+
+const lightTheme = EditorView.theme(
+  {
+    '&': { color: '#4c4f69', backgroundColor: '#ffffff' },
+    '.cm-content': { caretColor: '#1e66f5' },
+    '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#1e66f5' },
+    '&.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground, ::selection': {
+      backgroundColor: '#bcc0cc',
+    },
+    '.cm-gutters': { backgroundColor: '#e6e9ef', color: '#6c6f85', border: 'none' },
+    '.cm-activeLineGutter': { backgroundColor: '#dce0e8' },
+    '.cm-activeLine': { backgroundColor: '#e6e9ef' },
+  },
+  { dark: false },
+)
 
 export function useCodemirror(
   container: Ref<HTMLElement | null>,
@@ -25,6 +56,16 @@ export function useCodemirror(
 ) {
   const view = ref<EditorView | null>(null)
   let suppressNextUpdate = false
+
+  // One compartment per editor instance — the compartment lets us swap the
+  // theme with view.dispatch({ effects: themeCompartment.reconfigure(...) })
+  // instead of rebuilding the EditorState.
+  const themeCompartment = new Compartment()
+  const { resolved } = useTheme()
+
+  function themeFor(mode: 'light' | 'dark') {
+    return mode === 'light' ? lightTheme : darkTheme
+  }
 
   onMounted(() => {
     if (!container.value) return
@@ -58,7 +99,7 @@ export function useCodemirror(
         closeBrackets(),
         syntaxHighlighting(defaultHighlightStyle),
         langExt,
-        oneDark,
+        themeCompartment.of(themeFor(resolved.value)),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         runKeymap,
         updateListener,
@@ -68,13 +109,19 @@ export function useCodemirror(
             fontFamily: '"JetBrains Mono", "Fira Code", monospace',
             padding: '8px 0',
           },
-          '.cm-gutters': { backgroundColor: '#1e1e2e', border: 'none' },
           '.cm-scroller': { overflow: 'auto' },
         }),
       ],
     })
 
     view.value = new EditorView({ state, parent: container.value })
+  })
+
+  // Swap theme live when the user flips the toggle — no editor rebuild.
+  watch(resolved, (mode) => {
+    const v = view.value
+    if (!v) return
+    v.dispatch({ effects: themeCompartment.reconfigure(themeFor(mode)) })
   })
 
   onBeforeUnmount(() => {

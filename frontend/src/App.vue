@@ -3,21 +3,6 @@
 </template>
 
 <style>
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-body {
-  background: #11111b;
-  color: #cdd6f4;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  -webkit-font-smoothing: antialiased;
-}
-
 .app {
   display: flex;
   flex-direction: column;
@@ -29,8 +14,8 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
-  background: #181825;
-  border-bottom: 1px solid #2a2a3c;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
 }
 .header-left {
@@ -47,28 +32,28 @@ body {
 .logo {
   font-weight: 700;
   font-size: 16px;
-  color: #89b4fa;
+  color: var(--accent-primary);
   letter-spacing: -0.5px;
   cursor: pointer;
 }
 .logo:hover {
-  color: #74c7ec;
+  color: var(--accent-primary-hover);
 }
 .notebook-name {
   font-size: 14px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   cursor: pointer;
   padding: 2px 6px;
   border-radius: 4px;
 }
 .notebook-name:hover {
-  background: #313244;
+  background: var(--bg-hover);
 }
 .name-input {
   font-size: 14px;
-  background: #313244;
-  border: 1px solid #89b4fa;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  border: 1px solid var(--accent-primary);
+  color: var(--text-primary);
   padding: 2px 6px;
   border-radius: 4px;
   outline: none;
@@ -76,16 +61,16 @@ body {
 
 .connection {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 .connection.connected {
-  color: #a6e3a1;
+  color: var(--accent-success);
 }
 
 .error-banner {
-  background: #45252530;
-  border-bottom: 1px solid #f38ba8;
-  color: #f38ba8;
+  background: var(--tint-danger);
+  border-bottom: 1px solid var(--accent-danger);
+  color: var(--accent-danger);
   padding: 8px 16px;
   font-size: 13px;
   display: flex;
@@ -93,8 +78,8 @@ body {
 }
 
 .btn {
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: var(--accent-primary);
+  color: var(--text-on-accent);
   border: none;
   padding: 6px 14px;
   border-radius: 6px;
@@ -103,18 +88,18 @@ body {
   cursor: pointer;
 }
 .btn:hover {
-  background: #74c7ec;
+  background: var(--accent-primary-hover);
 }
 .btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .btn-secondary {
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  color: var(--text-primary);
 }
 .btn-secondary:hover {
-  background: #45475a;
+  background: var(--bg-pressed);
 }
 
 .workspace {
@@ -151,16 +136,16 @@ body {
   top: 50%;
   height: 1px;
   transform: translateY(-50%);
-  background: #2a2a3c;
+  background: var(--border-subtle);
 }
 .dag-drawer-resizer:hover::before {
-  background: #89b4fa;
+  background: var(--accent-primary);
 }
 .dag-drawer {
   flex-shrink: 0;
   height: var(--dag-drawer-height, 320px);
-  background: #181825;
-  border-top: 1px solid #313244;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -174,26 +159,26 @@ body {
   justify-content: space-between;
   padding: 6px 16px;
   font-size: 11px;
-  color: #6c7086;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
-  border-bottom: 1px solid #2a2a3c;
+  border-bottom: 1px solid var(--border-subtle);
 }
 .dag-drawer.collapsed .dag-drawer-header {
   border-bottom: none;
 }
 .dag-drawer-header:hover {
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 .dag-drawer-hint {
   font-weight: 500;
   font-size: 10px;
   text-transform: none;
   letter-spacing: 0;
-  color: #6c7086;
+  color: var(--text-muted);
 }
 .dag-drawer-body {
   flex: 1;
@@ -212,7 +197,7 @@ body {
 .dag-drawer-profiling {
   width: 360px;
   flex-shrink: 0;
-  border-left: 1px solid #2a2a3c;
+  border-left: 1px solid var(--border-subtle);
   overflow-y: auto;
   padding: 12px 16px;
 }
@@ -231,10 +216,10 @@ body {
   left: 50%;
   width: 1px;
   transform: translateX(-50%);
-  background: #2a2a3c;
+  background: var(--border-subtle);
 }
 .sidebar-resizer:hover::before {
-  background: #89b4fa;
+  background: var(--accent-primary);
 }
 .sidebar {
   width: var(--sidebar-width);
@@ -249,16 +234,16 @@ body {
   width: 100%;
   padding: 12px;
   background: none;
-  border: 1px dashed #313244;
+  border: 1px dashed var(--border);
   border-radius: 8px;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 13px;
   cursor: pointer;
   margin-top: 4px;
 }
 .add-cell-btn:hover {
-  border-color: #89b4fa;
-  color: #89b4fa;
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
 }
 .add-cell-btn:disabled {
   opacity: 0.4;
@@ -271,7 +256,7 @@ body {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -279,27 +264,27 @@ body {
 }
 
 .modal-dialog {
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 24px;
   min-width: 400px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-modal);
 }
 
 .modal-dialog h2 {
   margin-bottom: 16px;
   font-size: 18px;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .modal-input {
   width: 100%;
   padding: 8px 12px;
-  background: #313244;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 14px;
   margin-bottom: 16px;
   box-sizing: border-box;
@@ -307,8 +292,8 @@ body {
 
 .modal-input:focus {
   outline: none;
-  border-color: #89b4fa;
-  box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--ring-focus);
 }
 
 .modal-actions {
@@ -340,7 +325,7 @@ body.resizing-sidebar {
     min-width: 0;
     max-width: none;
     padding: 12px 16px 16px;
-    border-top: 1px solid #2a2a3c;
+    border-top: 1px solid var(--border-subtle);
   }
 }
 </style>

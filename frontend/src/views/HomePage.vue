@@ -6,6 +6,7 @@ import { preloadNotebookRoute } from '../router'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
 import { primePrefetchedNotebookSession } from '../utils/notebookSessionPrefetch'
 import { clearNotebookPerfMarks, markNotebookPerf, measureNotebookPerf } from '../utils/perf'
+import ThemeToggle from '../components/ThemeToggle.vue'
 
 const router = useRouter()
 const strata = useStrata()
@@ -190,6 +191,9 @@ function formatTime(ts: number): string {
 
 <template>
   <div class="home" data-testid="home-page">
+    <div class="home-theme-slot">
+      <ThemeToggle />
+    </div>
     <div class="home-container">
       <div class="home-header">
         <span class="logo">◆ strata</span>
@@ -395,25 +399,32 @@ function formatTime(ts: number): string {
   margin-bottom: 48px;
 }
 
+.home-theme-slot {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 10;
+}
+
 .logo {
   font-weight: 700;
   font-size: 28px;
-  color: #89b4fa;
+  color: var(--accent-primary);
   letter-spacing: -0.5px;
 }
 
 .subtitle {
   font-size: 28px;
-  color: #6c7086;
+  color: var(--text-muted);
   margin-left: 8px;
   font-weight: 300;
 }
 
 .error-banner {
-  background: #45252530;
-  border: 1px solid #f38ba8;
+  background: var(--tint-danger);
+  border: 1px solid var(--accent-danger);
   border-radius: 8px;
-  color: #f38ba8;
+  color: var(--accent-danger);
   padding: 10px 16px;
   font-size: 13px;
   display: flex;
@@ -432,7 +443,7 @@ function formatTime(ts: number): string {
 .btn-dismiss {
   background: none;
   border: none;
-  color: #f38ba8;
+  color: var(--accent-danger);
   font-size: 18px;
   cursor: pointer;
   padding: 0 4px;
@@ -442,7 +453,7 @@ function formatTime(ts: number): string {
   align-self: flex-start;
   background: none;
   border: none;
-  color: #f9e2af;
+  color: var(--accent-warning);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -461,8 +472,8 @@ function formatTime(ts: number): string {
 
 .action-card {
   flex: 1;
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 24px;
   text-align: center;
@@ -473,8 +484,8 @@ function formatTime(ts: number): string {
 }
 
 .action-card:hover {
-  border-color: #89b4fa;
-  background: #1e1e2e;
+  border-color: var(--accent-primary);
+  background: var(--bg-elevated);
 }
 
 .action-icon {
@@ -485,12 +496,12 @@ function formatTime(ts: number): string {
 .action-label {
   font-size: 14px;
   font-weight: 600;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .form-card {
-  background: #181825;
-  border: 1px solid #313244;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
   border-radius: 12px;
   padding: 24px;
   margin-bottom: 24px;
@@ -498,14 +509,14 @@ function formatTime(ts: number): string {
 
 .form-card h3 {
   font-size: 16px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   margin-bottom: 16px;
 }
 
 .form-label {
   display: block;
   font-size: 12px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   margin-bottom: 12px;
 }
 
@@ -514,10 +525,10 @@ function formatTime(ts: number): string {
   width: 100%;
   padding: 8px 12px;
   margin-top: 4px;
-  background: #313244;
-  border: 1px solid #45475a;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 14px;
 }
 
@@ -526,26 +537,26 @@ function formatTime(ts: number): string {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   margin-bottom: 10px;
 }
 .discovery-root code {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
 }
 .discovery-refresh {
   margin-left: auto;
   background: transparent;
-  border: 1px solid #45475a;
-  color: #a6adc8;
+  border: 1px solid var(--border-strong);
+  color: var(--text-secondary);
   border-radius: 4px;
   padding: 2px 8px;
   cursor: pointer;
   font-size: 12px;
 }
 .discovery-refresh:hover:not(:disabled) {
-  background: #313244;
-  color: #cdd6f4;
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 .discovery-refresh:disabled {
   opacity: 0.4;
@@ -554,11 +565,11 @@ function formatTime(ts: number): string {
 .discovery-status,
 .discovery-error {
   font-size: 12px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   padding: 12px 4px;
 }
 .discovery-error {
-  color: #f38ba8;
+  color: var(--accent-danger);
 }
 .discovery-list {
   list-style: none;
@@ -566,31 +577,31 @@ function formatTime(ts: number): string {
   margin: 0 0 12px 0;
   max-height: 320px;
   overflow-y: auto;
-  border: 1px solid #313244;
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 .discovery-item {
   padding: 8px 12px;
   cursor: pointer;
-  border-bottom: 1px solid #313244;
+  border-bottom: 1px solid var(--border);
 }
 .discovery-item:last-child {
   border-bottom: none;
 }
 .discovery-item:hover:not(.disabled) {
-  background: #313244;
+  background: var(--bg-hover);
 }
 .discovery-item.disabled {
   cursor: default;
   opacity: 0.5;
 }
 .discovery-name {
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 13px;
   font-weight: 500;
 }
 .discovery-path {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 11px;
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   margin-top: 2px;
@@ -598,8 +609,8 @@ function formatTime(ts: number): string {
 
 .form-input:focus {
   outline: none;
-  border-color: #89b4fa;
-  box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.2);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px var(--ring-focus);
 }
 
 .form-actions {
@@ -612,13 +623,13 @@ function formatTime(ts: number): string {
 .form-help {
   display: block;
   margin-top: 6px;
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
 .section-title {
   font-size: 13px;
-  color: #6c7086;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 12px;
@@ -636,7 +647,7 @@ function formatTime(ts: number): string {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 16px;
-  background: #181825;
+  background: var(--bg-surface);
   border: 1px solid transparent;
   border-radius: 8px;
   cursor: pointer;
@@ -646,8 +657,8 @@ function formatTime(ts: number): string {
 }
 
 .recent-item:hover {
-  border-color: #313244;
-  background: #1e1e2e;
+  border-color: var(--border);
+  background: var(--bg-elevated);
 }
 
 .recent-info {
@@ -660,12 +671,12 @@ function formatTime(ts: number): string {
 .recent-name {
   font-size: 14px;
   font-weight: 500;
-  color: #cdd6f4;
+  color: var(--text-primary);
 }
 
 .recent-path {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -673,7 +684,7 @@ function formatTime(ts: number): string {
 
 .recent-time {
   font-size: 12px;
-  color: #6c7086;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -686,9 +697,9 @@ function formatTime(ts: number): string {
 
 .recent-remove {
   background: none;
-  border: 1px solid #45475a;
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  color: #a6adc8;
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 12px;
   padding: 4px 10px;
@@ -699,9 +710,9 @@ function formatTime(ts: number): string {
 }
 
 .recent-remove:hover {
-  background: #1e1e2e;
-  border-color: #f38ba8;
-  color: #f38ba8;
+  background: var(--bg-elevated);
+  border-color: var(--accent-danger);
+  color: var(--accent-danger);
 }
 
 .loading-overlay {
@@ -710,22 +721,22 @@ function formatTime(ts: number): string {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(17, 17, 27, 0.8);
+  background: var(--overlay-scrim);
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 16px;
   z-index: 1000;
-  color: #a6adc8;
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
 .spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid #313244;
-  border-top-color: #89b4fa;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent-primary);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }

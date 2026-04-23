@@ -147,15 +147,15 @@ function save() {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #a6adc8;
+  color: var(--text-secondary);
 }
 
 .mount-add,
 .mount-save,
 .mount-remove {
-  background: #313244;
-  border: 1px solid #45475a;
-  color: #cdd6f4;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
   border-radius: 6px;
   cursor: pointer;
 }
@@ -220,10 +220,10 @@ function save() {
   width: 100%;
   min-width: 0;
   padding: 6px 8px;
-  background: #11111b;
-  border: 1px solid #313244;
+  background: var(--bg-base);
+  border: 1px solid var(--bg-input);
   border-radius: 6px;
-  color: #cdd6f4;
+  color: var(--text-primary);
   font-size: 12px;
 }
 
@@ -232,7 +232,7 @@ function save() {
 }
 
 .mount-empty {
-  color: #6c7086;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
