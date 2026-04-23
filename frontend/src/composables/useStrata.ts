@@ -616,9 +616,7 @@ async function updateNotebookEnv(
   return readJson<NotebookMutationResponse>(resp)
 }
 
-async function refreshNotebookSecretManager(
-  notebookId: string,
-): Promise<NotebookMutationResponse> {
+async function refreshNotebookSecretManager(notebookId: string): Promise<NotebookMutationResponse> {
   const resp = await fetchWithTimeout(
     `${STRATA_BASE}/v1/notebooks/${notebookId}/secret-manager/refresh`,
     { method: 'POST' },

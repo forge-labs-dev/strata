@@ -225,7 +225,9 @@ async function disconnectSecretManager() {
               (service token, legacy). Credentials are never written to disk.
             </p>
           </template>
-          <p v-if="secretManagerConfigError" class="secrets-error">{{ secretManagerConfigError }}</p>
+          <p v-if="secretManagerConfigError" class="secrets-error">
+            {{ secretManagerConfigError }}
+          </p>
           <div class="secrets-actions">
             <button
               v-if="secretManagerConfigured"
