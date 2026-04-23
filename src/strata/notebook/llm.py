@@ -590,29 +590,24 @@ def _pd_display_ctx():
     )
 
 
-def _dataframe_to_text(df: Any, max_chars: int) -> str:
-    """Render a DataFrame for prompt injection without column ellipsis.
+def _fit_rendered_lines(
+    preamble: str,
+    pinned_lines: list[str],
+    data_lines: list[str],
+    max_chars: int,
+) -> str:
+    """Assemble ``preamble`` + pinned lines + as many data lines as fit.
 
-    ``df.to_markdown()`` would give nicer output but requires ``tabulate``
-    (not a dep). We use ``to_string(index=False)`` inside a context that
-    forces every column to render, then truncate row-by-row if the result
-    exceeds the budget — preserving the full column header.
+    ``pinned_lines`` (e.g. a DataFrame's column header row) are always
+    kept; data rows are dropped from the tail until the total length
+    is at or below ``max_chars``. A ``... (N more rows)`` marker is
+    appended when anything is dropped.
     """
-    preamble = f"DataFrame shape={df.shape} columns={list(df.columns)}"
-    with _pd_display_ctx():
-        full = df.to_string(index=False)
+    full = "\n".join([preamble, *pinned_lines, *data_lines])
+    if len(full) <= max_chars:
+        return full
 
-    text = f"{preamble}\n{full}"
-    if len(text) <= max_chars:
-        return text
-
-    lines = full.split("\n")
-    if len(lines) <= 1:
-        return text[:max_chars] + "\n... (truncated)"
-    header_line = lines[0]
-    data_lines = lines[1:]
-
-    overhead = len(preamble) + len(header_line) + 2 + 40
+    overhead = len(preamble) + sum(len(line) + 1 for line in pinned_lines) + 1 + 40
     budget = max(0, max_chars - overhead)
     kept: list[str] = []
     running = 0
@@ -623,9 +618,22 @@ def _dataframe_to_text(df: Any, max_chars: int) -> str:
         running += len(line) + 1
 
     dropped = len(data_lines) - len(kept)
-    body = "\n".join([header_line, *kept])
     tail = f"\n... ({dropped} more rows)" if dropped > 0 else ""
-    return f"{preamble}\n{body}{tail}"
+    return "\n".join([preamble, *pinned_lines, *kept]) + tail
+
+
+def _dataframe_to_text(df: Any, max_chars: int) -> str:
+    """Render a DataFrame for prompt injection without column ellipsis.
+
+    ``df.to_markdown()`` would give nicer output but requires ``tabulate``
+    (not a dep). We use ``to_string(index=False)`` inside a context that
+    forces every column to render, then preserve the column-header line
+    while trimming data rows to fit the budget.
+    """
+    preamble = f"DataFrame shape={df.shape} columns={list(df.columns)}"
+    with _pd_display_ctx():
+        lines = df.to_string(index=False).split("\n")
+    return _fit_rendered_lines(preamble, lines[:1], lines[1:], max_chars)
 
 
 def _series_to_text(s: Any, max_chars: int) -> str:
@@ -633,25 +641,8 @@ def _series_to_text(s: Any, max_chars: int) -> str:
     preamble = f"Series name={s.name!r} length={len(s)} dtype={s.dtype}"
     with _pd_display_ctx():
         body = s.to_string()
-
-    text = f"{preamble}\n{body}"
-    if len(text) <= max_chars:
-        return text
-
-    lines = body.split("\n")
-    overhead = len(preamble) + 2 + 40
-    budget = max(0, max_chars - overhead)
-    kept: list[str] = []
-    running = 0
-    for line in lines:
-        if running + len(line) + 1 > budget:
-            break
-        kept.append(line)
-        running += len(line) + 1
-
-    dropped = len(lines) - len(kept)
-    tail = f"\n... ({dropped} more rows)" if dropped > 0 else ""
-    return f"{preamble}\n" + "\n".join(kept) + tail
+    data_lines = body.split("\n") if body else []
+    return _fit_rendered_lines(preamble, [], data_lines, max_chars)
 
 
 def variable_to_text(value: Any, max_tokens: int = 2000) -> str:
