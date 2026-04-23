@@ -566,6 +566,94 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _pd_display_ctx():
+    """Disable every pandas truncation knob for LLM rendering.
+
+    pandas' default ``str()`` / ``to_string()`` output collapses the middle
+    of a wide frame to ``...`` once the column count exceeds
+    ``display.max_columns``. For prompt injection that is catastrophic —
+    the LLM literally cannot see the hidden columns and responds with
+    empty fields. We lift every limit, then trim rows ourselves to fit
+    the token budget.
+    """
+    import pandas as pd
+
+    return pd.option_context(
+        "display.max_rows",
+        None,
+        "display.max_columns",
+        None,
+        "display.max_colwidth",
+        None,
+        "display.width",
+        10_000,
+    )
+
+
+def _dataframe_to_text(df: Any, max_chars: int) -> str:
+    """Render a DataFrame for prompt injection without column ellipsis.
+
+    ``df.to_markdown()`` would give nicer output but requires ``tabulate``
+    (not a dep). We use ``to_string(index=False)`` inside a context that
+    forces every column to render, then truncate row-by-row if the result
+    exceeds the budget — preserving the full column header.
+    """
+    preamble = f"DataFrame shape={df.shape} columns={list(df.columns)}"
+    with _pd_display_ctx():
+        full = df.to_string(index=False)
+
+    text = f"{preamble}\n{full}"
+    if len(text) <= max_chars:
+        return text
+
+    lines = full.split("\n")
+    if len(lines) <= 1:
+        return text[:max_chars] + "\n... (truncated)"
+    header_line = lines[0]
+    data_lines = lines[1:]
+
+    overhead = len(preamble) + len(header_line) + 2 + 40
+    budget = max(0, max_chars - overhead)
+    kept: list[str] = []
+    running = 0
+    for line in data_lines:
+        if running + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        running += len(line) + 1
+
+    dropped = len(data_lines) - len(kept)
+    body = "\n".join([header_line, *kept])
+    tail = f"\n... ({dropped} more rows)" if dropped > 0 else ""
+    return f"{preamble}\n{body}{tail}"
+
+
+def _series_to_text(s: Any, max_chars: int) -> str:
+    """Render a Series without truncating values, capped at ``max_chars``."""
+    preamble = f"Series name={s.name!r} length={len(s)} dtype={s.dtype}"
+    with _pd_display_ctx():
+        body = s.to_string()
+
+    text = f"{preamble}\n{body}"
+    if len(text) <= max_chars:
+        return text
+
+    lines = body.split("\n")
+    overhead = len(preamble) + 2 + 40
+    budget = max(0, max_chars - overhead)
+    kept: list[str] = []
+    running = 0
+    for line in lines:
+        if running + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        running += len(line) + 1
+
+    dropped = len(lines) - len(kept)
+    tail = f"\n... ({dropped} more rows)" if dropped > 0 else ""
+    return f"{preamble}\n" + "\n".join(kept) + tail
+
+
 def variable_to_text(value: Any, max_tokens: int = 2000) -> str:
     """Convert a Python value to a text representation for prompt injection.
 
@@ -577,14 +665,9 @@ def variable_to_text(value: Any, max_tokens: int = 2000) -> str:
         import pandas as pd
 
         if isinstance(value, pd.DataFrame):
-            text = value.head(20).to_markdown(index=False)
-            if len(text) > max_chars:
-                text = value.describe().to_markdown()
-            if len(text) > max_chars:
-                text = text[:max_chars] + "\n... (truncated)"
-            return text
+            return _dataframe_to_text(value, max_chars)
         if isinstance(value, pd.Series):
-            return str(value.head(20))
+            return _series_to_text(value, max_chars)
     except ImportError:
         pass
 
