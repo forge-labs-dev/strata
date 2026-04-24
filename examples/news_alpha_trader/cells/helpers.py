@@ -33,14 +33,11 @@ class Config:
     MIN_ABS_SENTIMENT = 0.4
 
     # --- Cost model ----------------------------------------------------
-    # Prices are per 1M tokens; bump if you change model in Runtime.
-    LLM_PRICING_USD_PER_M = {
-        "gpt-4o": (2.50, 10.0),
-        "gpt-4o-mini": (0.15, 0.60),
-        "claude-sonnet-4-6": (3.0, 15.0),
-        "claude-opus-4-6": (15.0, 75.0),
-    }
-    DEFAULT_LLM_PRICE = (3.0, 15.0)
+    # LLM pricing is fetched from LiteLLM's public catalog at runtime —
+    # see _fetch_litellm_pricing() below. Fallback rate used only when
+    # the catalog can't be reached AND the model is unknown; matches
+    # mid-tier Sonnet pricing so we overstate rather than log $0.
+    FALLBACK_LLM_PRICE_USD_PER_M = (3.0, 15.0)
 
     # Alpaca equities: $0 commission. Regulatory TAF only on sells.
     TAF_USD_PER_SHARE = 0.000166
@@ -182,17 +179,72 @@ def alpaca_data_clients() -> tuple:
     return StockHistoricalDataClient(key, secret), NewsClient(key, secret)
 
 
+_LITELLM_PRICING_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+
+
+def _fetch_litellm_pricing() -> dict:
+    """Download LiteLLM's pricing catalog. Cached module-wide after first hit.
+
+    LiteLLM maintains per-token USD rates for ~2000 models. If the fetch
+    fails (offline, 403, etc.) we cache an empty dict so we don't retry
+    on every cost lookup — the fallback rate takes over downstream.
+    """
+    global _litellm_pricing_cache  # noqa: PLW0603
+    if _litellm_pricing_cache is not None:
+        return _litellm_pricing_cache
+    import httpx
+
+    try:
+        _litellm_pricing_cache = httpx.get(_LITELLM_PRICING_URL, timeout=5.0).json()
+    except Exception as exc:
+        print(f"warning: LiteLLM pricing fetch failed ({exc}); using fallback rate")
+        _litellm_pricing_cache = {}
+    return _litellm_pricing_cache
+
+
+_litellm_pricing_cache: dict | None = None
+
+
+def active_llm_model() -> str | None:
+    """The model the Runtime panel last wrote to notebook.toml [ai].model.
+
+    Returns None before the user picks one — callers then fall back to the
+    conservative rate below. Notebook directory is CWD at cell execution
+    time, so plain relative-path tomllib is enough.
+    """
+    import tomllib
+
+    try:
+        with open("notebook.toml", "rb") as f:
+            return tomllib.load(f).get("ai", {}).get("model")
+    except Exception:
+        return None
+
+
 def estimate_llm_cost(
     input_tokens: int, output_tokens: int, model: str | None = None
 ) -> float:
-    """Dollar cost of a single LLM call given the model's price sheet.
+    """Dollar cost of a single LLM call.
 
-    Falls back to Config.DEFAULT_LLM_PRICE for unrecognized models so
-    we never silently log $0 for a call that actually cost real money.
+    Pricing comes from LiteLLM's public catalog; the model defaults to
+    whatever the Runtime panel selected. Unknown models fall back to
+    FALLBACK_LLM_PRICE_USD_PER_M so we overstate rather than log $0.
     """
-    pricing = Config.LLM_PRICING_USD_PER_M.get(model or "", Config.DEFAULT_LLM_PRICE)
-    in_price, out_price = pricing
-    return (input_tokens / 1_000_000.0) * in_price + (output_tokens / 1_000_000.0) * out_price
+    if model is None:
+        model = active_llm_model()
+
+    entry = _fetch_litellm_pricing().get(model or "", {})
+    in_per_token = entry.get("input_cost_per_token")
+    out_per_token = entry.get("output_cost_per_token")
+
+    if in_per_token is None or out_per_token is None:
+        in_m, out_m = Config.FALLBACK_LLM_PRICE_USD_PER_M
+        return (input_tokens / 1_000_000.0) * in_m + (output_tokens / 1_000_000.0) * out_m
+
+    return input_tokens * in_per_token + output_tokens * out_per_token
 
 
 def estimate_trade_cost(qty: float, side: str, price: float) -> dict:
