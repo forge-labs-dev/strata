@@ -82,8 +82,8 @@ that:
 
 The proxy must be the *only* ingress path — run Strata on a private
 network / security group / NetworkPolicy. See
-[Trusted Proxy Authorization](../reference/configuration.md) for the
-full protocol.
+[Authentication configuration](../reference/configuration.md#authentication)
+for the full list of identity-header settings.
 
 For multi-tenant hosting, add:
 

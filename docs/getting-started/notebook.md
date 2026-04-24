@@ -111,7 +111,29 @@ When you re-run a cell with the same inputs and source, Strata returns the cache
 
 Change the source or any upstream cell, and the cache is automatically invalidated.
 
-## 8. Try an Example
+## 8. AI Assistant
+
+The top-right **AI Assistant** panel is a conversational sidebar that can read
+your notebook, answer questions, and autonomously edit or run cells. It's
+separate from prompt cells — the assistant lives outside the DAG and doesn't
+create artifacts.
+
+- **Chat mode** (++enter++): stream a response with notebook context included.
+- **Agent mode** (++shift+enter++): the assistant takes actions on the notebook
+  (add/edit/run cells, install packages) with a 10-step limit and a Cancel
+  button.
+
+Requires `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, or
+`MISTRAL_API_KEY` in the Runtime panel. See
+[LLM Integration](../notebook/llm.md) for full details.
+
+## 9. Appearance
+
+The top-right theme toggle cycles **system → light → dark**. Your choice
+persists per browser via `localStorage`; the **system** mode follows your
+OS's `prefers-color-scheme` and flips automatically when it changes.
+
+## 10. Try an Example
 
 Example notebooks must live under the configured notebook storage root
 (`STRATA_NOTEBOOK_STORAGE_DIR`, default `/tmp/strata-notebooks`).
@@ -130,10 +152,18 @@ Then use **Open Existing** and open:
 
 Other bundled examples:
 
-```text
-examples/pandas_basics
-examples/titanic_ml
-```
+| Directory                     | What it shows                                               |
+| ----------------------------- | ----------------------------------------------------------- |
+| `examples/iris_classification` | Basic ML workflow with sklearn                              |
+| `examples/pandas_basics`       | DataFrame manipulation and plotting                         |
+| `examples/titanic_ml`          | End-to-end classifier                                       |
+| `examples/arxiv_classifier`    | LLM-powered paper classification (prompt cells)             |
+| `examples/review_triage`       | Structured-output prompt cells with `@output_schema`        |
+| `examples/loop_hill_climb`     | `@loop` cell with carry state and termination predicate     |
+| `examples/news_alpha_trader`   | Secret manager, LLM pricing lookup, multi-cell DAG          |
+| `examples/s3_mount`            | `@mount` annotations for S3 / file access                   |
+
+See the `examples/` directory in the repo for the full list.
 
 ## Cell Operations
 

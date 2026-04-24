@@ -65,12 +65,13 @@ All messages are JSON with this shape:
 
 ### Cell Status
 
-| Type           | Payload                                                                                           | Description                                      |
-| -------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| `cell_status`  | `{ "cell_id": "...", "status": "running" }`                                                       | Status changed                                   |
-| `cell_output`  | `{ "cell_id": "...", "outputs": {...}, "display": {...}, "displays": [...], "cache_hit": false }` | Execution result, including rich visible outputs |
-| `cell_console` | `{ "cell_id": "...", "stream": "stdout", "text": "..." }`                                         | Incremental output                               |
-| `cell_error`   | `{ "cell_id": "...", "error": "..." }`                                                            | Execution error                                  |
+| Type                      | Payload                                                                                                                  | Description                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------ |
+| `cell_status`             | `{ "cell_id": "...", "status": "running" }`                                                                              | Status changed                                   |
+| `cell_output`             | `{ "cell_id": "...", "outputs": {...}, "display": {...}, "displays": [...], "cache_hit": false }`                        | Execution result, including rich visible outputs |
+| `cell_console`            | `{ "cell_id": "...", "stream": "stdout", "text": "..." }`                                                                | Incremental output                               |
+| `cell_error`              | `{ "cell_id": "...", "error": "..." }`                                                                                   | Execution error                                  |
+| `cell_iteration_progress` | `{ "cell_id": "...", "iteration": 3, "max_iter": 50, "artifact_uri": "...", "content_type": "...", "duration_ms": 128 }` | Per-iteration update from a `@loop` cell         |
 
 ### Cascade
 

@@ -139,8 +139,19 @@ Strata is configured via environment variables (prefixed with `STRATA_`) or a `[
 
 Provider-specific keys auto-configure `base_url` and `model` defaults.
 `STRATA_AI_*` variables override provider defaults. Notebook-level `[ai]`
-config in `notebook.toml` can override `api_key`, `base_url`, `model`,
-`max_context_tokens`, `max_output_tokens`, and `timeout_seconds`.
+config in `notebook.toml` overrides both.
+
+```toml
+[ai]
+api_key = ""              # prefer the Runtime panel; writing here commits the key
+base_url = "http://localhost:11434/v1"
+model = "llama3"
+max_context_tokens = 100000
+max_output_tokens = 4096
+timeout_seconds = 60.0
+```
+
+All fields are optional — set only the ones you want to override.
 
 ## Timeouts
 

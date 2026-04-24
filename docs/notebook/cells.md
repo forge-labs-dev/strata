@@ -342,15 +342,37 @@ The inspect panel shows an iteration picker so you can scrub through the interme
 
 ### Forking a loop
 
-Copy a URI from the inspect panel and paste it into a new loop cell's `start_from`:
+Intermediate iterations are first-class artifacts, so you can branch a new
+run from any step of an old one without re-running the expensive prefix.
 
-```python
-# new loop cell — continues from iteration 17 of the previous run
-# @loop max_iter=20 carry=state start_from=hill_climb@iter=17
-# ... loop body that tries a different strategy
-```
+**Scenario.** You ran a hill-climbing search for 50 iterations. Glancing at
+the inspect panel, iteration 17 looked like it was about to find a better
+local optimum before the sampler drifted away. You want to explore what
+happens if you push harder from that exact state with a different step size.
 
-This is the escape hatch for "that intermediate state looked promising, let me explore from there."
+1. Open the loop cell's **Inspect** panel, scrub to iteration 17, copy its
+   artifact URI. It'll look like
+   `strata://artifact/nb_..._cell_hill_climb_var_state@v=1@iter=17`.
+2. Add a new loop cell below. Reference the original cell's ID (not the full
+   URI) in `start_from`:
+
+    ```python
+    # new loop cell — continues from iteration 17 of the previous run
+    # @loop max_iter=20 carry=state start_from=hill_climb@iter=17
+    state["step_size"] *= 0.5  # smaller steps from here on
+    state = sample_and_score(state)
+    ```
+
+3. Run the new cell. It reads iteration 17's carry value as its seed, runs up
+   to 20 more iterations under the modified strategy, and stores those
+   iterations as its own artifact chain — the original run stays untouched.
+
+You now have two parallel forks materialized in the artifact store. Either
+one can be forked further, and the inspect panel shows both chains.
+
+This is the escape hatch for "that intermediate state looked promising, let
+me explore from there" — the thing that's hard to do in a plain for-loop
+once you've thrown away the intermediates.
 
 ### When not to use a loop cell
 

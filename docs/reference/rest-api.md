@@ -46,6 +46,17 @@ DELETE /v1/notebooks/{session_id}
 
 Deletes the notebook directory and closes the session.
 
+### Discover Notebooks
+
+```
+GET /v1/notebooks/discover
+```
+
+Lists notebook directories under the configured storage root. Returns
+`{ "root", "notebooks": [{ "path", "name", "notebook_id", "updated_at" }] }`
+sorted newest-first. Used by the "Open existing" UI so users pick from a list
+instead of typing a filesystem path. **Personal mode only.**
+
 ### Delete Notebook By Path
 
 ```
@@ -152,6 +163,21 @@ POST /v1/notebooks/{session_id}/cells/{cell_id}/execute
 !!! tip
 For interactive use, prefer the WebSocket `cell_execute` message. The REST endpoint is for programmatic access.
 
+### List Loop Cell Iterations
+
+```
+GET /v1/notebooks/{session_id}/cells/{cell_id}/iterations?variable=<name>
+```
+
+Lists stored iteration artifacts for a `@loop` cell. The `variable` query
+parameter defaults to the loop's `carry` variable if omitted. Non-loop cells
+and loops with no completed iterations return an empty list — safe to poll
+from the inspect panel.
+
+Returns `{ "cell_id", "variable", "iterations": [{ "iteration", "artifact_uri",
+"artifact_id", "version", "content_type", "byte_size", "row_count",
+"created_at" }] }`.
+
 ## DAG
 
 ### Get DAG
@@ -193,6 +219,19 @@ DELETE /v1/notebooks/{session_id}/dependencies/{package_name}
 ```
 GET /v1/notebooks/{session_id}/environment
 ```
+
+### Sync Environment
+
+```
+POST /v1/notebooks/{session_id}/environment/sync
+```
+
+Runs `uv sync` synchronously and invalidates any stale cell runtimes. Returns
+the full environment payload plus `lockfile_changed`, `operation_log`
+(command, duration, stdout/stderr), and the per-cell staleness map.
+
+For long syncs prefer the background `POST /environment/jobs` path — this
+endpoint blocks the request until the sync finishes.
 
 ### Get Current Environment Job
 
@@ -337,15 +376,82 @@ Server-Sent Events stream with `delta`, `done`, and `error` events.
 POST /v1/notebooks/{session_id}/ai/agent
 ```
 
-## Runtime Config
+## Runtime
 
-### Get Notebook Runtime Config
+### Get Server Runtime Config
 
 ```
 GET /v1/notebooks/config
 ```
 
-Returns deployment mode, available Python versions, and default paths.
+Returns deployment mode, available Python versions, and default paths for the
+server as a whole. Not notebook-scoped.
+
+### Update Notebook Default Timeout
+
+```
+PUT /v1/notebooks/{session_id}/timeout
+```
+
+```json
+{
+  "timeout": 60
+}
+```
+
+`timeout` is seconds (0 < t ≤ 86400) or `null` to clear back to the system
+default. Returns the new timeout and the refreshed cell list.
+
+### Update Notebook Default Env
+
+```
+PUT /v1/notebooks/{session_id}/env
+```
+
+```json
+{
+  "env": {
+    "OPENAI_API_KEY": "sk-...",
+    "LOG_LEVEL": "info"
+  }
+}
+```
+
+Replaces the `[env]` block in `notebook.toml`. Sensitive values (keys matching
+`KEY`/`SECRET`/`TOKEN`/`PASSWORD`/`CREDENTIAL`) are blanked on disk but kept
+in-memory for the session so key-dependent cells keep working. Returns the
+merged env, per-key sources, and refreshed cell list.
+
+### Update Secret Manager Config
+
+```
+PUT /v1/notebooks/{session_id}/secret-manager/config
+```
+
+```json
+{
+  "provider": "infisical",
+  "project_id": "your-project-id",
+  "environment": "dev",
+  "path": "/",
+  "base_url": null
+}
+```
+
+Persists the `[secret_manager]` block to `notebook.toml` and immediately
+refetches. An empty payload (all fields null) removes the block —
+"disconnect from secret manager". Credentials are never part of this payload;
+they must be exported in the server's shell environment.
+
+### Refresh Secret Manager
+
+```
+POST /v1/notebooks/{session_id}/secret-manager/refresh
+```
+
+Re-fetches secrets from the configured manager and merges them into env.
+Never returns 500 on fetch failure — the error surfaces in
+`env_fetch_error` so the UI can display it next to the Refresh button.
 
 ## Core API
 

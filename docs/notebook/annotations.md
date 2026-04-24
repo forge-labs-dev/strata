@@ -117,6 +117,123 @@ Format: `# @mount <name> <uri> [ro|rw]`. Defaults to `ro` (read-only) if the mod
 
 ---
 
+## Prompt Cell Annotations
+
+Prompt cells (language `prompt`) accept an additional set of annotations that
+configure the LLM call.
+
+### `@model`
+
+Override the notebook-level LLM model for this cell only.
+
+```
+# @model claude-sonnet-4-20250514
+Summarize {{ df }} in one paragraph.
+```
+
+### `@temperature`
+
+Sampling temperature. Defaults to `0.0`.
+
+```
+# @temperature 0.3
+```
+
+### `@max_tokens`
+
+Ceiling on output tokens for this call.
+
+```
+# @max_tokens 1024
+```
+
+### `@system`
+
+System prompt prepended to the conversation.
+
+```
+# @system You are a terse data analyst. Answer in bullet points.
+```
+
+Multiple `@system` lines are concatenated with newlines.
+
+### `@output`
+
+Force the response format.
+
+```
+# @output json
+```
+
+Currently supports `json`. Auto-applied when `@output_schema` is set.
+
+### `@output_schema`
+
+Inline JSON Schema pinning the response shape. When provided, Strata
+dispatches to provider-native structured output (OpenAI's `json_schema` with
+strict mode; Anthropic's native tool-use) so the response comes back as
+validated JSON rather than free-form text. Providers without schema support
+fall back to `json_object` — valid JSON, shape not enforced — and the
+`@validate_retries` loop catches shape violations.
+
+```
+# @output_schema {"type": "object", "properties": {"themes": {"type": "array", "items": {"type": "string"}}}, "required": ["themes"]}
+```
+
+Editing the schema invalidates the cell's cache — the schema is part of the
+provenance hash.
+
+### `@validate_retries`
+
+Total attempts for the validate-and-retry loop (1 initial call + N-1 retries).
+Defaults to 3. Only takes effect when `@output_schema` is set; each failed
+validation feeds the prior response and path-addressed errors back as a retry
+turn.
+
+```
+# @validate_retries 5
+```
+
+---
+
+## Loop Cell Annotations
+
+A Python cell carrying `@loop` is executed iteratively. The body runs once per
+iteration and the `carry` variable threads state between them.
+
+### `@loop`
+
+```python
+# @loop max_iter=50 carry=state
+# @loop_until state["converged"]
+state = state if "state" in dir() else initial
+state = step(state)
+```
+
+Key/value parameters:
+
+- `max_iter=<N>` — hard upper bound on iterations.
+- `carry=<var>` — the variable threaded between iterations.
+- `start_from=<cell>@iter=<k>` — (optional) resume from another loop cell's
+  stored iteration `k`. Useful for forking a converged run to explore a
+  variant.
+
+### `@loop_until`
+
+Python expression evaluated after each iteration in the cell's namespace. When
+it returns truthy, the loop exits early.
+
+```python
+# @loop max_iter=100 carry=acc
+# @loop_until acc["loss"] < 0.05
+```
+
+Each iteration's carry state is stored as `…@iter=k` artifacts; the final
+iteration becomes the cell's canonical artifact. Progress is broadcast over
+WebSocket as `cell_iteration_progress` messages.
+
+---
+
 ## Precedence Rules
 
 When the same setting is configured at multiple levels, the most specific wins:

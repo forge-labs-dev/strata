@@ -26,6 +26,27 @@ Strata Notebook is a content-addressed compute graph over Python. Every cell out
 
 The notebook is an **orchestration layer** — it decides what to run next. The cell harness is an **executor** — it runs Python code. The artifact store decides whether a result already exists and persists it.
 
+## Why "every output is an artifact"
+
+The guarantees fall out of two design choices:
+
+1. **Provenance is identity.** An artifact's ID is a hash of the cell's source
+   (AST-normalized), its resolved inputs, and the environment fingerprint.
+   Identical computations produce identical IDs, so the cache hit check is
+   "have we computed this exact hash before?" — not "do two things look
+   similar?"
+2. **Artifacts are immutable.** Once stored, a version never mutates. A
+   downstream cell reading artifact `@v=3` today reads the same bytes it
+   would have read yesterday, even if upstream code has since changed and
+   a new `@v=4` exists.
+
+Together: the cache isn't an optimization layer that *might* be stale — it's
+the single source of truth for "has this work been done." That's why cache
+hits are safe to serve in milliseconds, why renaming a cell doesn't
+invalidate a downstream artifact (the provenance hash depends on semantic
+source, not whitespace or comments), and why you can fork a loop from
+iteration 17 without having to re-run iterations 0–16.
+
 ## Notebook File Format
 
 Each notebook is a directory on disk:
