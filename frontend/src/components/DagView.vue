@@ -10,6 +10,7 @@ interface NodeLayout {
   id: CellId
   x: number
   y: number
+  width: number
   label: string
   fullLabel: string
   status: Cell['status']
@@ -22,8 +23,23 @@ interface EdgeLayout {
   points: { x: number; y: number }[]
 }
 
-const nodeSize = { w: 140, h: 36 }
-const maxLabelLen = 18
+// Per-node widths so labels like "Fetch latest prices" (19 chars) don't
+// truncate inside a cramped 140px box, while single-word cells still
+// render compact. JetBrains Mono at 11px renders ~6.6px/char; padding
+// covers the rounded corners plus a little breathing room. Labels that
+// would exceed maxNodeWidth still get ellipsized — unbounded growth
+// makes dagre emit lopsided layouts.
+const nodeHeight = 36
+const charWidthPx = 6.6
+const nodePaddingPx = 20
+const minNodeWidth = 110
+const maxNodeWidth = 260
+const maxLabelLen = Math.floor((maxNodeWidth - nodePaddingPx) / charWidthPx)
+
+function widthForLabel(label: string): number {
+  const estimated = label.length * charWidthPx + nodePaddingPx
+  return Math.max(minNodeWidth, Math.min(maxNodeWidth, estimated))
+}
 
 // Layout using dagre
 const layout = computed(() => {
@@ -40,9 +56,19 @@ const layout = computed(() => {
   })
   g.setDefaultEdgeLabel(() => ({}))
 
+  // Compute per-node width up front so dagre routes edges around the
+  // actual rendered box, not a uniform 140px placeholder.
+  const nodeWidths = new Map<CellId, number>()
+  for (const c of cells) {
+    const name = c.annotations?.name
+    const defines = c.defines.length ? c.defines.join(', ') : null
+    const rawLabel = name || defines || c.id.slice(0, 8)
+    nodeWidths.set(c.id, widthForLabel(rawLabel))
+  }
+
   // Add nodes
   for (const c of cells) {
-    g.setNode(c.id, { width: nodeSize.w, height: nodeSize.h })
+    g.setNode(c.id, { width: nodeWidths.get(c.id) ?? minNodeWidth, height: nodeHeight })
   }
 
   // Add edges (dedupe by from+to since multiple variables can connect same pair)
@@ -74,6 +100,7 @@ const layout = computed(() => {
       id: c.id,
       x: dagreNode.x,
       y: dagreNode.y,
+      width: nodeWidths.get(c.id) ?? minNodeWidth,
       label,
       fullLabel: rawLabel,
       status: c.status,
@@ -106,8 +133,8 @@ const layout = computed(() => {
   for (const [, group] of edgeGroups) {
     const dagreEdge = g.edge(group.from.id, group.to.id)
     const points = dagreEdge?.points ?? [
-      { x: group.from.x, y: group.from.y + nodeSize.h / 2 },
-      { x: group.to.x, y: group.to.y - nodeSize.h / 2 },
+      { x: group.from.x, y: group.from.y + nodeHeight / 2 },
+      { x: group.to.x, y: group.to.y - nodeHeight / 2 },
     ]
     edges.push({
       from: group.from,
@@ -127,14 +154,14 @@ const edges = computed(() => layout.value.edges)
 const svgWidth = computed(() => {
   if (nodes.value.length === 0) return 240
   let maxX = 0
-  for (const n of nodes.value) maxX = Math.max(maxX, n.x + nodeSize.w / 2)
+  for (const n of nodes.value) maxX = Math.max(maxX, n.x + n.width / 2)
   return maxX + 24
 })
 
 const svgHeight = computed(() => {
   if (nodes.value.length === 0) return 100
   let maxY = 0
-  for (const n of nodes.value) maxY = Math.max(maxY, n.y + nodeSize.h / 2)
+  for (const n of nodes.value) maxY = Math.max(maxY, n.y + nodeHeight / 2)
   return maxY + 24
 })
 
@@ -311,10 +338,10 @@ function edgePath(points: { x: number; y: number }[]): string {
         <!-- Nodes -->
         <g v-for="n in nodes" :key="n.id" class="dag-node" @dblclick.stop="scrollToCell(n.id)">
           <rect
-            :x="n.x - nodeSize.w / 2"
-            :y="n.y - nodeSize.h / 2"
-            :width="nodeSize.w"
-            :height="nodeSize.h"
+            :x="n.x - n.width / 2"
+            :y="n.y - nodeHeight / 2"
+            :width="n.width"
+            :height="nodeHeight"
             rx="6"
             :fill="statusFill(n.status)"
             :stroke="statusStroke(n.status)"
