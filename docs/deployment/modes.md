@@ -95,6 +95,48 @@ STRATA_REQUIRE_TENANT_HEADER=true
 Per-tenant QoS isolation, cache keying, and metrics kick in
 automatically.
 
+## Sharing personal mode with a small group
+
+A common deployment shape is "personal mode behind an authenticating proxy"
+— for example, Cloudflare Access in front of a Fly.io app, sharing the
+notebook UI with a handful of trusted users. This isn't full multi-tenancy
+(no per-user storage, no per-user QoS, no artifact isolation), but Strata
+provides a thin per-user filter so each invitee sees their own work in the
+"Open existing" list.
+
+Set:
+
+```bash
+STRATA_DEPLOYMENT_MODE=personal
+STRATA_ALLOW_REMOTE_CLIENTS_IN_PERSONAL=true
+STRATA_PERSONAL_MODE_USER_HEADER=Cf-Access-Authenticated-User-Email
+```
+
+The header value is whatever your proxy injects after authenticating the
+caller. Strata treats the value as opaque — email, GitHub login, internal
+ID, anything stable.
+
+What changes when the header is set:
+
+- `POST /v1/notebooks/create` stamps the caller's identity into
+  `notebook.toml` as `owner`.
+- `GET /v1/notebooks/discover` returns only notebooks where
+  `owner == caller` or `owner is None`.
+- `DELETE /v1/notebooks/{id}` and `POST /v1/notebooks/delete-by-path`
+  return 404 if a non-owner tries to delete an owned notebook.
+- Direct-URL access stays open: anyone with a notebook ID can `POST /open`
+  and view it. This is intentional — it preserves "share a link with a
+  collaborator" while preventing accidents in the discovery list.
+
+What does *not* change:
+- Concurrent edits to the same notebook still race (no per-user sessions).
+- The artifact store is shared; provenance hashes don't include the caller.
+- The LLM API key pool (`STRATA_AI_*`) is shared across all users.
+- Unowned (legacy) notebooks remain visible and deletable by everyone.
+
+This shape is the right answer for a 5–20 person trusted group. For untrusted
+or paid users, migrate to service mode for proper tenant isolation.
+
 ## Coherence enforcement
 
 Strata rejects incoherent mode combinations at startup. These combos
@@ -105,6 +147,7 @@ raise `ValueError` during config load:
 | `deployment_mode=personal` + `auth_mode=trusted_proxy` | Personal mode has no upstream proxy; identity headers would come from the loopback client |
 | `deployment_mode=personal` + `multi_tenant_enabled=True` | Personal mode is single-user; there are no tenants to isolate |
 | `deployment_mode=personal` + `require_tenant_header=True` | Same reason — no tenant dimension in personal mode |
+| `deployment_mode=service` + `personal_mode_user_header` | Service mode uses `X-Strata-Principal` via trusted-proxy auth; the personal-mode shim is for proxy-fronted personal deployments only |
 
 If you see one of these errors, you almost certainly pulled flags from a
 service-mode config into a personal-mode deployment. Remove the

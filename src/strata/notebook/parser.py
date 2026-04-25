@@ -197,6 +197,7 @@ def parse_notebook(directory: Path) -> NotebookState:
     return NotebookState(
         id=notebook_toml.notebook_id,
         name=notebook_toml.name,
+        owner=notebook_toml.owner,
         worker=notebook_toml.worker,
         timeout=notebook_toml.timeout,
         env=dict(notebook_toml.env),

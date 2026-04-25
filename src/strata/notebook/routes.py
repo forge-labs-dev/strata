@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -131,6 +131,58 @@ def _require_personal_mode_notebook_delete() -> None:
             status_code=403,
             detail="Notebook deletion is only available in personal mode",
         )
+
+
+def _caller_identity(request: Request) -> str | None:
+    """Resolve the calling user's identity for personal-mode scoping.
+
+    Personal-mode deployments fronted by an authenticating proxy
+    (Cloudflare Access, Pomerium, etc.) inject the user's identity in a
+    request header. ``personal_mode_user_header`` names which header to
+    read; when it's unset the deployment behaves as single-user and this
+    function returns ``None`` for every request — no scoping kicks in.
+
+    Returning ``None`` is also the correct behavior when the header is
+    configured but missing from a particular request (e.g. health
+    checks, internal services). Endpoints that depend on identity for
+    ACL decisions must treat ``None`` as "no identity available" — they
+    can either fall back to global behavior or refuse the request,
+    whichever matches the operation's safety profile.
+    """
+    try:
+        from strata.server import get_state
+
+        state = get_state()
+    except RuntimeError:
+        return None
+
+    header_name = state.config.personal_mode_user_header
+    if not header_name:
+        return None
+
+    value = request.headers.get(header_name)
+    if not value:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _require_owner(notebook_owner: str | None, caller: str | None) -> None:
+    """Reject the request if a non-owner is touching an owned notebook.
+
+    - Unowned notebooks (``notebook_owner is None``) remain accessible to any
+      caller — they're either legacy notebooks created before scoping was
+      enabled, or notebooks created by services that don't carry a header.
+    - When ``personal_mode_user_header`` is unset (and so ``caller`` is None),
+      every notebook acts as if unowned and access is allowed. This preserves
+      single-user behavior on local deployments.
+    - When the notebook is owned and the caller's identity differs, raise
+      403. Use a generic "not found" body so probes can't enumerate owners.
+    """
+    if notebook_owner is None or caller is None:
+        return
+    if notebook_owner != caller:
+        raise HTTPException(status_code=404, detail="Notebook not found")
 
 
 def _timed_json_response(
@@ -572,11 +624,13 @@ async def open_notebook(req: OpenNotebookRequest) -> JSONResponse:
 
 
 @router.post("/create")
-async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
+async def create_new_notebook(req: CreateNotebookRequest, request: Request) -> JSONResponse:
     """Create a new notebook.
 
     Args:
         req: CreateNotebookRequest with parent_path and name
+        request: FastAPI request — used to resolve the calling identity when
+            personal-mode user-scoping is enabled.
 
     Returns:
         Notebook state as JSON
@@ -610,6 +664,7 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
                 req.name,
                 python_version=selected_python_version,
                 initialize_environment=False,
+                owner=_caller_identity(request),
             )
         if req.starter_cell:
             with timing.phase("create_starter_cell"):
@@ -655,13 +710,15 @@ async def create_new_notebook(req: CreateNotebookRequest) -> JSONResponse:
 
 
 @router.delete("/{notebook_id}")
-async def delete_notebook(notebook_id: str) -> dict:
+async def delete_notebook(notebook_id: str, request: Request) -> dict:
     """Delete a notebook directory and all notebook-owned runtime state."""
     _require_personal_mode_notebook_delete()
 
     session = _session_manager.get_session(notebook_id)
     if not session:
         raise HTTPException(status_code=404, detail="Notebook not found")
+
+    _require_owner(session.notebook_state.owner, _caller_identity(request))
 
     if session.has_active_environment_mutation():
         _raise_environment_busy(
@@ -722,7 +779,7 @@ _DISCOVER_SKIP_DIRS = frozenset(
 
 
 def _read_notebook_metadata(notebook_toml_path: Path) -> dict[str, Any] | None:
-    """Cheaply read a notebook.toml's summary fields (name, id, updated_at).
+    """Cheaply read a notebook.toml's summary fields (name, id, updated_at, owner).
 
     Returns None if the file is unreadable; intentionally does not parse
     cells — discovery should stay fast even on a directory with hundreds
@@ -735,10 +792,12 @@ def _read_notebook_metadata(notebook_toml_path: Path) -> dict[str, Any] | None:
     name = raw.get("name")
     notebook_id = raw.get("notebook_id")
     updated_at = raw.get("updated_at")
+    owner = raw.get("owner")
     return {
         "name": str(name) if isinstance(name, str) and name.strip() else None,
         "notebook_id": str(notebook_id) if isinstance(notebook_id, str) else None,
         "updated_at": str(updated_at) if updated_at is not None else None,
+        "owner": str(owner) if isinstance(owner, str) and owner.strip() else None,
     }
 
 
@@ -794,18 +853,28 @@ def _discover_notebooks(
 
 
 @router.get("/discover")
-async def discover_notebooks() -> dict:
+async def discover_notebooks(request: Request) -> dict:
     """List notebook directories found under the configured storage root.
 
     Used by the "Open existing" UI so users pick from a list instead of
     typing a filesystem path. Returns ``{"root", "notebooks"}`` where
     ``root`` is the scan root (for display) and ``notebooks`` is a
-    ``[{path, name, notebook_id, updated_at}]`` list sorted newest first.
+    ``[{path, name, notebook_id, updated_at, owner}]`` list sorted newest first.
+
+    When ``personal_mode_user_header`` is configured and the request carries
+    that header, the result is filtered to notebooks owned by the caller
+    plus any unowned (legacy) notebooks. Without the config knob the
+    deployment behaves as single-user — no filtering applied.
     """
     root = _get_notebook_storage_root()
     if root is None:
         return {"root": None, "notebooks": []}
-    return {"root": str(root), "notebooks": _discover_notebooks(root)}
+
+    notebooks = _discover_notebooks(root)
+    caller = _caller_identity(request)
+    if caller is not None:
+        notebooks = [n for n in notebooks if n.get("owner") in (None, caller)]
+    return {"root": str(root), "notebooks": notebooks}
 
 
 class DeleteNotebookByPathRequest(BaseModel):
@@ -815,7 +884,7 @@ class DeleteNotebookByPathRequest(BaseModel):
 
 
 @router.post("/delete-by-path")
-async def delete_notebook_by_path(req: DeleteNotebookByPathRequest) -> dict:
+async def delete_notebook_by_path(req: DeleteNotebookByPathRequest, request: Request) -> dict:
     """Delete a notebook directory identified by path.
 
     Unlike ``DELETE /{notebook_id}`` this does not require the notebook to
@@ -826,11 +895,16 @@ async def delete_notebook_by_path(req: DeleteNotebookByPathRequest) -> dict:
     _require_personal_mode_notebook_delete()
 
     notebook_path = _validate_notebook_path(req.path, "notebook path")
-    if not (notebook_path / "notebook.toml").is_file():
+    notebook_toml_path = notebook_path / "notebook.toml"
+    if not notebook_toml_path.is_file():
         raise HTTPException(
             status_code=404,
             detail=f"No notebook found at {notebook_path}",
         )
+
+    metadata = _read_notebook_metadata(notebook_toml_path)
+    if metadata is not None:
+        _require_owner(metadata.get("owner"), _caller_identity(request))
 
     # If a session happens to be open for this path, close it first.
     # _find_session_by_path takes care of path canonicalization.

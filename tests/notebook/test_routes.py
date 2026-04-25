@@ -377,9 +377,11 @@ def test_create_notebook_endpoint_defers_initial_environment_sync(monkeypatch):
         python_version=None,
         *,
         initialize_environment=True,
+        owner=None,
     ):
         captured["initialize_environment"] = initialize_environment
         captured["python_version"] = python_version
+        captured["owner"] = owner
         return Path("/tmp/fake-notebook")
 
     class FakeSession:
@@ -1908,3 +1910,177 @@ class TestCellIterationsEndpoint:
             assert payload["variable"] == "other"
             assert len(payload["iterations"]) == 1
             assert payload["iterations"][0]["iteration"] == 0
+
+
+class TestPersonalModeUserScoping:
+    """Discover/create/delete scoping when STRATA_PERSONAL_MODE_USER_HEADER is set.
+
+    Mirrors the proxy-fronted personal deployment shape: a header injected by
+    Cloudflare Access (or similar) identifies the calling user; notebooks are
+    stamped with that identity on create; discover filters by owner; delete
+    enforces ownership.
+    """
+
+    HEADER = "X-Strata-Test-User"
+
+    @pytest.fixture
+    def configured_state(self, monkeypatch):
+        """Inject server config with personal_mode_user_header set."""
+
+        def _configure(storage_root: Path) -> None:
+            monkeypatch.setattr(
+                "strata.server._state",
+                SimpleNamespace(
+                    config=SimpleNamespace(
+                        deployment_mode="personal",
+                        notebook_storage_dir=storage_root,
+                        notebook_python_versions=["3.13"],
+                        transforms_config={},
+                        personal_mode_user_header=self.HEADER,
+                    )
+                ),
+            )
+
+        return _configure
+
+    def _read_owner(self, notebook_dir: Path) -> str | None:
+        import tomllib
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            return tomllib.load(f).get("owner")
+
+    def test_create_stamps_owner_from_header(self, configured_state):
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            response = client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            assert response.status_code == 200
+            owner = self._read_owner(storage_root / "alice_nb")
+            assert owner == "alice@example.com"
+
+    def test_create_without_header_leaves_unowned(self, configured_state):
+        """Header configured but request omits it (e.g. internal call) → unowned."""
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            response = client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Anon Notebook"},
+            )
+            assert response.status_code == 200
+            assert self._read_owner(storage_root / "anon_notebook") is None
+
+    def test_discover_filters_to_caller_plus_unowned(self, configured_state):
+        """Alice sees her own + unowned; Bob's notebook is hidden from her."""
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            # Three notebooks: Alice's (owned), Bob's (owned), Legacy (unowned).
+            client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Bob NB"},
+                headers={self.HEADER: "bob@example.com"},
+            )
+            create_notebook(storage_root, "Legacy NB")  # no header → no owner
+
+            response = client.get(
+                "/v1/notebooks/discover",
+                headers={self.HEADER: "alice@example.com"},
+            )
+            assert response.status_code == 200
+            names = {nb["name"] for nb in response.json()["notebooks"]}
+            assert names == {"Alice NB", "Legacy NB"}
+
+    def test_discover_no_header_returns_everything(self, configured_state):
+        """A request without the configured header sees every notebook (single-user fallback)."""
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+
+            response = client.get("/v1/notebooks/discover")  # no header
+            assert response.status_code == 200
+            names = {nb["name"] for nb in response.json()["notebooks"]}
+            assert "Alice NB" in names
+
+    def test_delete_by_path_rejects_other_owner(self, configured_state):
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            alice_path = storage_root / "alice_nb"
+
+            response = client.post(
+                "/v1/notebooks/delete-by-path",
+                json={"path": str(alice_path)},
+                headers={self.HEADER: "bob@example.com"},
+            )
+            # Returned as 404 (not 403) so probes can't enumerate owners.
+            assert response.status_code == 404
+            assert alice_path.exists()
+
+    def test_delete_by_path_allows_owner(self, configured_state):
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            alice_path = storage_root / "alice_nb"
+
+            response = client.post(
+                "/v1/notebooks/delete-by-path",
+                json={"path": str(alice_path)},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            assert response.status_code == 200
+            assert not alice_path.exists()
+
+    def test_delete_by_path_allows_unowned_legacy(self, configured_state):
+        """Notebooks without an owner field are deletable by anyone — backwards-compat."""
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+
+            create_notebook(storage_root, "Legacy NB")
+            legacy_path = storage_root / "legacy_nb"
+
+            response = client.post(
+                "/v1/notebooks/delete-by-path",
+                json={"path": str(legacy_path)},
+                headers={self.HEADER: "anyone@example.com"},
+            )
+            assert response.status_code == 200
+            assert not legacy_path.exists()

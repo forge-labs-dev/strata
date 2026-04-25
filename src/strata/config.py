@@ -290,6 +290,13 @@ class StrataConfig(BaseSettings):
     # Deployment mode settings
     deployment_mode: Literal["service", "personal"] = "service"
     allow_remote_clients_in_personal: bool = False
+    # Optional request header that identifies the calling user when a personal
+    # mode deployment is fronted by an authenticating proxy (Cloudflare Access,
+    # Pomerium, etc.). When set, notebooks are stamped with the caller's
+    # identity on create and the discover/delete endpoints scope to it. When
+    # unset, the deployment behaves like a single-user instance — the default
+    # for a developer running on localhost.
+    personal_mode_user_header: str | None = None
     artifact_dir: Path | None = None
     notebook_storage_dir: Path = Field(default_factory=lambda: Path("/tmp/strata-notebooks"))
     notebook_python_versions: list[str] = Field(default_factory=lambda: [current_python_minor()])
@@ -470,6 +477,17 @@ class StrataConfig(BaseSettings):
         always means the operator pulled flags from a service-mode config by
         mistake. Failing fast at startup beats a confusing runtime.
         """
+        # Service mode rejects personal_mode_user_header — service mode uses
+        # `X-Strata-Principal` via the trusted-proxy auth pipeline; the
+        # personal-mode header is a thinner shim for proxy-fronted personal
+        # deployments and doesn't belong in a multi-tenant config.
+        if self.deployment_mode == "service" and self.personal_mode_user_header:
+            raise ValueError(
+                "Deployment mode coherence error: deployment_mode='service' is "
+                "incompatible with personal_mode_user_header. Use auth_mode="
+                "'trusted_proxy' with X-Strata-Principal instead."
+            )
+
         if self.deployment_mode != "personal":
             return self
 

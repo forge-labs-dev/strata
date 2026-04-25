@@ -147,6 +147,19 @@ blob backend configuration, tracing, logging. These apply in either mode.
 deletion are gated to personal mode via `_require_personal_mode_*`
 helpers — the service-mode frontend doesn't expose these either.
 
+**Personal mode + per-user scoping**: setting
+`STRATA_PERSONAL_MODE_USER_HEADER=<name>` (e.g.
+`Cf-Access-Authenticated-User-Email`) turns on a thin per-user filter for
+proxy-fronted personal deployments. On `POST /create`, the caller's identity
+is read from that header and stamped into `notebook.toml` as `owner`. On
+`GET /discover`, only notebooks whose `owner` matches the caller (or are
+unowned) are returned. On `DELETE /{notebook_id}` and `POST /delete-by-path`,
+non-owners get a 404. Unowned notebooks (legacy or created without a header)
+remain global — visible and deletable by anyone, which keeps single-user
+behavior intact when the config is unset. This is *not* multi-tenancy: there
+is no per-user storage, no per-user QoS, no artifact isolation. Use service
+mode (with `auth_mode=trusted_proxy`) for those.
+
 ### Multi-Tenancy
 
 Strata supports multi-tenant deployments with complete isolation between tenants:

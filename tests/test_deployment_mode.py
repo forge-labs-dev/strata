@@ -279,3 +279,23 @@ class TestModeCoherence:
         assert config.auth_mode == "none"
         assert config.multi_tenant_enabled is False
         assert config.require_tenant_header is False
+
+    def test_service_with_personal_user_header_rejected(self, tmp_path):
+        """personal_mode_user_header is a personal-mode shim; reject in service mode."""
+        with pytest.raises(ValueError) as exc_info:
+            StrataConfig(
+                cache_dir=tmp_path / "cache",
+                deployment_mode="service",
+                personal_mode_user_header="X-Auth-User",
+            )
+        assert "personal_mode_user_header" in str(exc_info.value)
+
+    def test_personal_with_user_header_allowed(self, tmp_path):
+        """personal_mode_user_header is the intended shape for proxy-fronted personal deploys."""
+        config = StrataConfig(
+            cache_dir=tmp_path / "cache",
+            deployment_mode="personal",
+            artifact_dir=tmp_path / "artifacts",
+            personal_mode_user_header="Cf-Access-Authenticated-User-Email",
+        )
+        assert config.personal_mode_user_header == "Cf-Access-Authenticated-User-Email"

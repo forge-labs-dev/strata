@@ -192,6 +192,7 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
     toml_data = {
         "notebook_id": toml.notebook_id,
         "name": toml.name,
+        **({"owner": toml.owner} if toml.owner else {}),
         "created_at": (
             toml.created_at.isoformat()
             if isinstance(toml.created_at, datetime)
@@ -248,6 +249,7 @@ def create_notebook(
     python_version: str | None = None,
     *,
     initialize_environment: bool = True,
+    owner: str | None = None,
 ) -> Path:
     """Create a new notebook directory with notebook.toml and pyproject.toml.
 
@@ -256,6 +258,9 @@ def create_notebook(
         name: Notebook name (used for folder and notebook name)
         python_version: Requested notebook Python major.minor version
         initialize_environment: Whether to create the notebook venv immediately
+        owner: Opaque identity string stamped into notebook.toml. None means
+            unowned (the default for non-shared deployments). Set by callers
+            that have resolved a caller identity from a request header.
 
     Returns:
         Path to created notebook directory
@@ -309,11 +314,26 @@ def create_notebook(
 
     notebook_id = existing_notebook_id or str(uuid.uuid4())
 
+    # Preserve owner if the existing notebook.toml had one — only stamp the
+    # incoming owner on a genuinely new notebook so re-creating with a
+    # different identity doesn't silently take over someone else's work.
+    existing_owner: str | None = None
+    if existing_toml_path.exists():
+        try:
+            with open(existing_toml_path, "rb") as f:
+                raw_existing = tomllib.load(f)
+            raw_owner = raw_existing.get("owner")
+            if isinstance(raw_owner, str) and raw_owner:
+                existing_owner = raw_owner
+        except Exception:
+            pass
+
     # Create notebook.toml
     now = datetime.now(tz=UTC)
     notebook_toml = NotebookToml(
         notebook_id=notebook_id,
         name=name,
+        owner=existing_owner if existing_owner is not None else owner,
         created_at=existing_created_at or now,
         updated_at=now,
         cells=existing_cells,
