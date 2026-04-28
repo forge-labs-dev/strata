@@ -316,19 +316,42 @@ class TestModuleExportBlockedDiagnostic:
         cell = _cell("STEP = 0.5\n\ndef scale(x):\n    return x * STEP\n")
         assert _codes(cell, _nb()) == []
 
-    def test_non_literal_assignment_with_def_warns(self):
+    def test_non_literal_assignment_with_def_warns_when_consumed(self):
         cell = _cell("STEP = compute_step()\n\ndef scale(x):\n    return x * STEP\n")
+        # Downstream cell that actually wants `scale` — that's what the
+        # diagnostic exists for: warning the user before the import fails.
+        downstream = _cell("y = scale(2)", cell_id="c2")
+        downstream.references = ["scale"]
+        nb = _nb()
+        nb.cells = [cell, downstream]
         diags = [
-            d for d in validate_cell_annotations(cell, _nb()) if d.code == "module_export_blocked"
+            d for d in validate_cell_annotations(cell, nb) if d.code == "module_export_blocked"
         ]
         assert len(diags) == 1
         assert "`scale`" in diags[0].message
         assert "Split the defs" in diags[0].message
 
-    def test_top_level_expression_with_class_warns(self):
+    def test_top_level_expression_with_class_warns_when_consumed(self):
         cell = _cell("print('hi')\n\nclass Config:\n    debug = True\n")
-        codes = [d.code for d in validate_cell_annotations(cell, _nb())]
+        downstream = _cell("c = Config()", cell_id="c2")
+        downstream.references = ["Config"]
+        nb = _nb()
+        nb.cells = [cell, downstream]
+        codes = [d.code for d in validate_cell_annotations(cell, nb)]
         assert "module_export_blocked" in codes
+
+    def test_unused_helper_def_is_silent(self):
+        """Cells with private helpers nobody else references shouldn't warn.
+
+        Common in benchmark scoring loops, ad-hoc parsing — the def is a
+        local helper, not an export. Warning every such cell drowns the
+        signal users actually care about.
+        """
+        cell = _cell("def parse(raw):\n    return raw.strip()\n\nx = parse('abc')\n")
+        nb = _nb()
+        nb.cells = [cell]
+        codes = [d.code for d in validate_cell_annotations(cell, nb)]
+        assert "module_export_blocked" not in codes
 
     def test_pure_runtime_cell_is_silent(self):
         """No defs/classes → nothing to warn about even if runtime."""

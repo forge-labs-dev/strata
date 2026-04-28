@@ -26,7 +26,7 @@ def validate_cell_annotations(
     if cell.language == "prompt":
         return _validate_prompt_cell_annotations(cell)
     diagnostics: list[AnnotationDiagnostic] = []
-    diagnostics.extend(_validate_module_export(cell))
+    diagnostics.extend(_validate_module_export(cell, notebook_state))
     annotations = parse_annotations(cell.source)
 
     # --- worker_unknown ---
@@ -140,7 +140,10 @@ def validate_cell_annotations(
     return diagnostics
 
 
-def _validate_module_export(cell: CellState) -> list[AnnotationDiagnostic]:
+def _validate_module_export(
+    cell: CellState,
+    notebook_state: NotebookState,
+) -> list[AnnotationDiagnostic]:
     """Warn when a Python cell defines reusable code (def / class) but
     can't be source-reconstituted for cross-cell use.
 
@@ -150,6 +153,14 @@ def _validate_module_export(cell: CellState) -> list[AnnotationDiagnostic]:
     a function from this cell would error at execution time; surfacing
     the issue at validation time tells the user to split the cell
     before they hit the failure.
+
+    Suppressed when no other cell in the notebook actually references any
+    of the would-be exports — small private helpers used only inside a
+    single cell are a common, safe pattern (eval scoring loops, ad-hoc
+    parsing) and shouldn't generate noise. The warning is for users who
+    are *trying* to share defs across cells and accidentally also added
+    runtime code, not for users who never wanted to share in the first
+    place.
     """
     from strata.notebook.module_export import build_module_export_plan
 
@@ -164,6 +175,15 @@ def _validate_module_export(cell: CellState) -> list[AnnotationDiagnostic]:
     ]
     blocked = sorted(set(exported_code) | plan.blocking_symbols)
     if not blocked:
+        return []
+
+    # No downstream cell wants any of these names — silence the warning.
+    referenced_elsewhere: set[str] = set()
+    for other in notebook_state.cells:
+        if other.id == cell.id:
+            continue
+        referenced_elsewhere.update(other.references)
+    if not referenced_elsewhere.intersection(blocked):
         return []
 
     names = ", ".join(f"`{n}`" for n in blocked)
