@@ -106,6 +106,73 @@ def test_notebook_sync(client, temp_notebook, app):
         assert "dag" in state
 
 
+def test_serialize_dag_edges_uses_frontend_field_names(temp_notebook):
+    """Edges sent to the frontend must use ``from_cell_id`` / ``to_cell_id``.
+
+    Regression for a field-name drift in ``broadcast_notebook_sync`` (used by
+    the agent's ``edit_cell`` / ``run_cell`` flows) where edges were emitted
+    as ``{"from": ..., "to": ...}``. The frontend's ``applyBackendDag`` keys
+    off ``from_cell_id`` / ``to_cell_id``, so every edge silently failed the
+    cell lookup and the DAG view rendered as disconnected nodes after every
+    agent edit until the user hard-refreshed.
+    """
+    from strata.notebook.routes import get_session_manager
+    from strata.notebook.ws import _serialize_dag_edges
+
+    notebook_dir, _ = temp_notebook
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    edges = _serialize_dag_edges(session)
+    assert edges, "fixture defines x->y->z, expected at least one DAG edge"
+    for edge in edges:
+        assert set(edge) == {"from_cell_id", "to_cell_id", "variable"}, (
+            f"DAG edge field names must match the frontend contract; got {edge}"
+        )
+
+
+def test_broadcast_notebook_sync_emits_correct_edge_field_names(temp_notebook):
+    """End-to-end: ``broadcast_notebook_sync`` must put correctly-keyed edges on the wire.
+
+    Same regression as above but exercises the full agent-broadcast path: a
+    fake WS captures the message and we inspect the payload directly. If
+    this test ever flips back to ``from`` / ``to``, the agent edit flow has
+    drifted again and the DAG view will silently break.
+    """
+    import asyncio
+    import json
+
+    from strata.notebook.routes import get_session_manager
+    from strata.notebook.ws import _notebook_connections, broadcast_notebook_sync
+
+    notebook_dir, _ = temp_notebook
+    session_manager = get_session_manager()
+    session = session_manager.open_notebook(notebook_dir)
+
+    captured: list[dict] = []
+
+    class FakeWebSocket:
+        async def send_text(self, text: str) -> None:
+            captured.append(json.loads(text))
+
+    fake = cast(WebSocket, FakeWebSocket())
+    _notebook_connections.setdefault(session.id, []).append(fake)
+    try:
+        asyncio.run(broadcast_notebook_sync(session.id, session))
+    finally:
+        _notebook_connections.get(session.id, []).remove(fake)
+
+    assert captured, "broadcast_notebook_sync did not deliver a message"
+    msg = captured[-1]
+    assert msg["type"] == "notebook_state"
+    edges = msg["payload"]["dag"]["edges"]
+    assert edges, "fixture defines x->y->z, expected at least one DAG edge"
+    for edge in edges:
+        assert set(edge) == {"from_cell_id", "to_cell_id", "variable"}, (
+            f"broadcast_notebook_sync emitted bad edge shape: {edge}"
+        )
+
+
 def test_notebook_sync_includes_causality_and_staleness(client, temp_notebook, app):
     """notebook_sync should return enriched cell state, not just bare DAG fields."""
     notebook_dir, _ = temp_notebook
