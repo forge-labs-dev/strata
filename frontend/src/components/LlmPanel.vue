@@ -21,8 +21,12 @@ const {
   agentRunning,
   agentProgress,
   agentError,
+  agentApprovalPrompts,
+  agentAutoApprove,
   runAgentAction,
   cancelAgent,
+  respondToApproval,
+  resetAgentMemory,
 } = useNotebook()
 const strata = useStrata()
 
@@ -114,6 +118,21 @@ function extractCodeBlocks(content: string): string[] {
     if (code) blocks.push(code)
   }
   return blocks
+}
+
+async function handleClear() {
+  // "Clear" wipes both the visible message thread and the backend's
+  // persisted agent conversation memory. Chat-only conversations have
+  // no backend state to reset, but we still call it — the backend
+  // tolerates an empty history.
+  clearLlmHistory()
+  await resetAgentMemory()
+}
+
+function cellOptionLabel(cell: any, idx: number): string {
+  const hint =
+    cell.annotations?.name?.trim() || (cell.defines?.length ? cell.defines.join(', ') : '')
+  return hint ? `Cell ${idx + 1} — ${hint}` : `Cell ${idx + 1}`
 }
 
 function handleInsert(code: string) {
@@ -214,7 +233,11 @@ const totalTokens = computed(() => {
             </div>
             <pre class="msg-content">{{ msg.content }}</pre>
             <div
-              v-if="msg.role === 'assistant' && extractCodeBlocks(msg.content).length > 0"
+              v-if="
+                msg.role === 'assistant' &&
+                msg.source === 'agent' &&
+                extractCodeBlocks(msg.content).length > 0
+              "
               class="msg-actions"
             >
               <button
@@ -239,6 +262,28 @@ const totalTokens = computed(() => {
 
         <!-- Error -->
         <div v-if="llmError" class="llm-error">{{ llmError }}</div>
+
+        <!-- Approval prompts (shown only when manual approval is on) -->
+        <div v-if="agentApprovalPrompts.length > 0" class="approval-stack">
+          <div
+            v-for="prompt in agentApprovalPrompts"
+            :key="prompt.request_id"
+            class="approval-card"
+          >
+            <div class="approval-summary">
+              <span class="approval-tool">{{ prompt.tool }}</span>
+              <span class="approval-detail">{{ prompt.summary }}</span>
+            </div>
+            <div class="approval-actions">
+              <button class="approve-btn" @click="respondToApproval(prompt.request_id, true)">
+                Approve
+              </button>
+              <button class="decline-btn" @click="respondToApproval(prompt.request_id, false)">
+                Decline
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Agent progress -->
         <div v-if="agentRunning || agentProgress.length > 0" class="agent-progress">
@@ -271,8 +316,8 @@ const totalTokens = computed(() => {
         <!-- Cell context selector -->
         <select v-model="selectedCellId" class="llm-cell-select">
           <option :value="null">Entire notebook</option>
-          <option v-for="cell in orderedCells" :key="cell.id" :value="cell.id">
-            {{ cell.defines.length ? cell.defines.join(', ') : `Cell ${cell.id.slice(0, 6)}` }}
+          <option v-for="(cell, i) in orderedCells" :key="cell.id" :value="cell.id">
+            {{ cellOptionLabel(cell, i) }}
           </option>
         </select>
 
@@ -308,11 +353,23 @@ const totalTokens = computed(() => {
 
         <!-- Footer -->
         <div class="llm-footer">
+          <label
+            class="auto-approve-toggle"
+            title="Skip the approval prompt for delete_cell and add_package"
+          >
+            <input v-model="agentAutoApprove" type="checkbox" />
+            <span>Auto-approve</span>
+          </label>
           <span v-if="totalTokens.total > 0" class="token-count">
             {{ totalTokens.total.toLocaleString() }} tokens
           </span>
           <span v-if="llmProvider" class="provider-label">{{ llmProvider }}</span>
-          <button class="clear-btn" :disabled="llmMessages.length === 0" @click="clearLlmHistory">
+          <button
+            class="clear-btn"
+            title="Reset agent memory and clear messages"
+            :disabled="llmMessages.length === 0"
+            @click="handleClear"
+          >
             Clear
           </button>
         </div>
@@ -806,5 +863,83 @@ const totalTokens = computed(() => {
   font-size: 11px;
   background: var(--tint-danger);
   border-radius: 4px;
+}
+
+.approval-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.approval-card {
+  border: 1px solid var(--accent-warning);
+  background: var(--tint-warning, var(--bg-elevated));
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.approval-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.approval-tool {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent-warning);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.approval-detail {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  word-break: break-word;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.approve-btn,
+.decline-btn {
+  flex: 1;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.approve-btn {
+  background: var(--accent-success);
+  color: var(--bg-elevated);
+  border: 1px solid var(--accent-success);
+}
+
+.decline-btn {
+  background: none;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-strong);
+}
+
+.auto-approve-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-right: auto;
+}
+
+.auto-approve-toggle input[type='checkbox'] {
+  accent-color: var(--accent-primary);
 }
 </style>

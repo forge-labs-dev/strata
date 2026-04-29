@@ -528,6 +528,7 @@ export type WsClientMessageType =
   | 'dependency_add' // Add a package dependency
   | 'dependency_remove' // Remove a package dependency
   | 'agent_cancel' // Cancel a running agent loop
+  | 'agent_confirm_response' // User approved/declined a destructive tool call
 
 /** WebSocket message types: server → client */
 export type WsServerMessageType =
@@ -551,6 +552,8 @@ export type WsServerMessageType =
   | 'environment_job_finished' // Background env job completed or failed
   | 'error' // Protocol-level error (auth, not found, etc.)
   | 'agent_progress' // Agent loop progress event
+  | 'agent_text_delta' // Streaming chunk of the agent's intermediate narrative
+  | 'agent_confirm_request' // Agent wants to run a destructive tool — needs approval
   | 'agent_done' // Agent loop completed (success, error, or cancel)
 
 export type WsMessageType = WsClientMessageType | WsServerMessageType

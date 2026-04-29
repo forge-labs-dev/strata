@@ -503,6 +503,13 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
                 from strata.notebook.routes import cancel_agent
 
                 cancel_agent(notebook_id)
+            elif msg_type == "agent_confirm_response":
+                from strata.notebook.llm import resolve_approval
+
+                request_id = payload.get("request_id")
+                approved = bool(payload.get("approved", False))
+                if isinstance(request_id, str):
+                    resolve_approval(request_id, approved)
             elif msg_type == "cell_source_update":
                 await _handle_cell_source_update(
                     websocket, session, payload, execution_state, notebook_id

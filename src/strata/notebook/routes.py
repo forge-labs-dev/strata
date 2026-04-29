@@ -2313,18 +2313,48 @@ class AgentRequest(BaseModel):
     """Request to start an agent loop."""
 
     message: str = Field(..., max_length=10_000, description="User instruction")
+    auto_approve: bool = Field(
+        default=False,
+        description=(
+            "Skip the user-approval gate for destructive tools (``delete_cell``, ``add_package``)."
+        ),
+    )
 
 
 # Per-notebook agent cancellation events
 _agent_cancel_events: dict[str, asyncio.Event] = {}
 
 
+def _short_payload_detail(payload: dict[str, Any]) -> str:
+    """Compact stringification of a structured progress payload.
+
+    The progress log in the panel shows ``event + detail`` lines; we
+    keep that surface stable by collapsing the dict into a short summary
+    while still emitting the full payload alongside.
+    """
+    if "detail" in payload and isinstance(payload["detail"], str):
+        return payload["detail"][:200]
+    if "summary" in payload and isinstance(payload["summary"], str):
+        return payload["summary"][:200]
+    if "tool" in payload:
+        if "result" in payload:
+            return f"{payload['tool']} → {str(payload['result'])[:160]}"
+        if "arguments" in payload:
+            args = payload["arguments"]
+            arg_str = ", ".join(f"{k}={str(v)[:50]}" for k, v in args.items())
+            return f"{payload['tool']}({arg_str})"
+    return ""
+
+
 @router.post("/{notebook_id}/ai/agent")
 async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
-    """Run an LLM agent loop with tool use and observe-retry.
+    """Run an LLM agent loop with tool use, streaming, and approvals.
 
-    Progress is streamed via WebSocket ``agent_progress`` messages.
-    Only one agent can run per notebook at a time.
+    Progress is streamed via WebSocket: ``agent_progress`` for log
+    events, ``agent_text_delta`` for live narrative chunks, and
+    ``agent_confirm_request`` when the agent wants to run a destructive
+    tool. Completion arrives as ``agent_done``. Only one agent runs per
+    notebook at a time.
     """
     session = _session_manager.get_session(notebook_id)
     if not session:
@@ -2355,17 +2385,46 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
 
     job_id = str(uuid.uuid4())[:8]
 
-    async def _progress(event_type: str, detail: str) -> None:
+    async def _progress(event_type: str, payload: dict[str, Any]) -> None:
+        """Translate a structured agent event into the right WS message."""
         from strata.notebook.ws import _broadcast_message
 
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         try:
+            if event_type == "text_delta":
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "agent_text_delta",
+                        "seq": 0,
+                        "ts": ts,
+                        "payload": {"job_id": job_id, "text": payload.get("text", "")},
+                    },
+                )
+                return
+            if event_type == "confirm_request":
+                await _broadcast_message(
+                    notebook_id,
+                    {
+                        "type": "agent_confirm_request",
+                        "seq": 0,
+                        "ts": ts,
+                        "payload": {**payload, "job_id": job_id},
+                    },
+                )
+                return
             await _broadcast_message(
                 notebook_id,
                 {
                     "type": "agent_progress",
                     "seq": 0,
-                    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                    "payload": {"event": event_type, "detail": detail, "job_id": job_id},
+                    "ts": ts,
+                    "payload": {
+                        "event": event_type,
+                        "detail": _short_payload_detail(payload),
+                        "data": payload,
+                        "job_id": job_id,
+                    },
                 },
             )
         except Exception:
@@ -2383,6 +2442,7 @@ async def run_agent(notebook_id: str, req: AgentRequest) -> dict:
                 max_iterations=10,
                 cancel_event=cancel_event,
                 progress_callback=_progress,
+                auto_approve=req.auto_approve,
             )
 
             # Broadcast completion via WS
@@ -2453,3 +2513,15 @@ def cancel_agent(notebook_id: str) -> bool:
         event.set()
         return True
     return False
+
+
+@router.post("/{notebook_id}/ai/agent/reset")
+async def reset_agent(notebook_id: str) -> dict:
+    """Clear the persistent conversation history for a notebook."""
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    from strata.notebook.llm import reset_history
+
+    reset_history(notebook_id)
+    return {"status": "ok"}

@@ -1463,6 +1463,10 @@ interface LlmMessage {
   tokens?: { input: number; output: number }
   timestamp: number
   streaming?: boolean
+  // Tracks which entry point produced the message. Chat is
+  // conversation-only; agent messages may surface insertable code blocks
+  // alongside the agent's own tool-driven cell edits.
+  source?: 'chat' | 'agent'
 }
 const llmAvailable = ref(false)
 const llmModel = ref<string | null>(null)
@@ -1481,9 +1485,22 @@ interface AgentProgressEvent {
   detail: string
   timestamp: number
 }
+
+// Pending approval prompts emitted by the backend when the agent wants
+// to run a destructive tool (delete_cell, add_package). The user must
+// resolve each one before the agent loop continues.
+interface AgentApprovalPrompt {
+  request_id: string
+  tool: string
+  arguments: Record<string, any>
+  summary: string
+}
+
 const agentRunning = ref(false)
 const agentProgress = ref<AgentProgressEvent[]>([])
 const agentError = ref<string | null>(null)
+const agentApprovalPrompts = ref<AgentApprovalPrompt[]>([])
+const agentAutoApprove = ref(false)
 
 let wsInstance: ReturnType<typeof useWebSocket> | null = null
 
@@ -1953,6 +1970,42 @@ function initializeWebSocket() {
         event: String(p.event || ''),
         detail: String(p.detail || ''),
         timestamp: Date.now(),
+      })
+    })
+
+    // Live narrative chunks from the agent's intermediate turns. We
+    // append them onto a streaming assistant message so the user sees
+    // the agent "think out loud" instead of waiting for `agent_done`.
+    wsInstance.onMessage('agent_text_delta', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      const text = String(p.text || '')
+      if (!text) return
+      const last = llmMessages.value.at(-1)
+      if (last && last.role === 'assistant' && last.streaming && last.source === 'agent') {
+        last.content += text
+      } else {
+        llmMessages.value.push({
+          role: 'assistant',
+          content: text,
+          timestamp: Date.now(),
+          streaming: true,
+          source: 'agent',
+        })
+      }
+    })
+
+    // Approval prompt for a destructive tool. The user must accept or
+    // decline before the agent loop continues. Auto-approve mode bypasses
+    // this on the backend, so this handler only fires when the user has
+    // opted into manual approval.
+    wsInstance.onMessage('agent_confirm_request', (msg: WsMessage) => {
+      const p = msg.payload as Record<string, any>
+      if (typeof p.request_id !== 'string') return
+      agentApprovalPrompts.value.push({
+        request_id: p.request_id,
+        tool: String(p.tool || ''),
+        arguments: (p.arguments as Record<string, any>) ?? {},
+        summary: String(p.summary || ''),
       })
     })
 
@@ -2771,6 +2824,7 @@ async function llmChat(message: string, cellId?: string) {
     role: 'user',
     content: message,
     timestamp: Date.now(),
+    source: 'chat',
   })
 
   const assistantMsg: LlmMessage = {
@@ -2778,6 +2832,7 @@ async function llmChat(message: string, cellId?: string) {
     content: '',
     timestamp: Date.now(),
     streaming: true,
+    source: 'chat',
   }
   llmMessages.value.push(assistantMsg)
 
@@ -2826,16 +2881,20 @@ async function runAgentAction(message: string) {
 
   agentRunning.value = true
   agentProgress.value = []
+  agentApprovalPrompts.value = []
   agentError.value = null
 
   llmMessages.value.push({
     role: 'user',
     content: message,
     timestamp: Date.now(),
+    source: 'agent',
   })
 
   try {
-    const resp = await strata.agentRun(sid, message)
+    const resp = await strata.agentRun(sid, message, {
+      autoApprove: agentAutoApprove.value,
+    })
     // Agent now runs as a background task — resp just has { job_id, status }
     // Completion arrives via WS agent_done message
     if (resp.error) {
@@ -2850,11 +2909,29 @@ async function runAgentAction(message: string) {
 
 function _handleAgentDone(payload: Record<string, any>) {
   agentRunning.value = false
+  agentApprovalPrompts.value = []
 
   const content = payload.content || ''
   const error = payload.error || null
 
-  if (content) {
+  // Finalize the streaming assistant message if one is in flight, or
+  // append the final content as a new message if streaming wasn't used.
+  const last = llmMessages.value.at(-1)
+  if (last && last.role === 'assistant' && last.streaming && last.source === 'agent') {
+    last.streaming = false
+    if (content && content !== last.content) {
+      // Backend may include richer final content than the streamed
+      // narrative — prefer it over the partial when they differ.
+      last.content = content
+    }
+    last.model = payload.model ?? last.model
+    if (payload.tokens) {
+      last.tokens = {
+        input: payload.tokens.input || 0,
+        output: payload.tokens.output || 0,
+      }
+    }
+  } else if (content) {
     llmMessages.value.push({
       role: 'assistant',
       content,
@@ -2863,6 +2940,7 @@ function _handleAgentDone(payload: Record<string, any>) {
         ? { input: payload.tokens.input || 0, output: payload.tokens.output || 0 }
         : undefined,
       timestamp: Date.now(),
+      source: 'agent',
     })
   }
 
@@ -2878,6 +2956,30 @@ function _handleAgentDone(payload: Record<string, any>) {
 function cancelAgent() {
   if (wsInstance && wsInstance.connected()) {
     wsInstance.send('agent_cancel', {})
+  }
+}
+
+function respondToApproval(request_id: string, approved: boolean) {
+  agentApprovalPrompts.value = agentApprovalPrompts.value.filter((p) => p.request_id !== request_id)
+  if (wsInstance && wsInstance.connected()) {
+    wsInstance.send('agent_confirm_response', { request_id, approved })
+  }
+}
+
+async function resetAgentMemory() {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  try {
+    await strata.agentReset(sid)
+    // Drop any prior agent messages from the visible thread so the user
+    // sees the reset reflected immediately.
+    llmMessages.value = llmMessages.value.filter((m) => m.source !== 'agent')
+    agentProgress.value = []
+    agentApprovalPrompts.value = []
+    agentError.value = null
+  } catch (err: any) {
+    agentError.value = err.message || 'Reset failed'
   }
 }
 
@@ -3037,7 +3139,11 @@ export function useNotebook() {
     agentRunning,
     agentProgress,
     agentError,
+    agentApprovalPrompts,
+    agentAutoApprove,
     runAgentAction,
     cancelAgent,
+    respondToApproval,
+    resetAgentMemory,
   }
 }

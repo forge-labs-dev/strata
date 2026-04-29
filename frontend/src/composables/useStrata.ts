@@ -1120,17 +1120,32 @@ function parseSseEvent(raw: string): LlmStreamEvent | null {
   return null
 }
 
-async function agentRun(notebookId: string, message: string): Promise<any> {
+async function agentRun(
+  notebookId: string,
+  message: string,
+  opts: { autoApprove?: boolean } = {},
+): Promise<any> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/agent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, auto_approve: opts.autoApprove ?? false }),
     timeoutMs: 30_000, // Just needs to start the background task
   })
   if (!resp.ok) {
     await throwApiError(resp, 'Agent run failed')
   }
   return resp.json()
+}
+
+async function agentReset(notebookId: string): Promise<void> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/ai/agent/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    timeoutMs: 5_000,
+  })
+  if (!resp.ok) {
+    await throwApiError(resp, 'Agent reset failed')
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,5 +1202,6 @@ export function useStrata() {
     updateLlmModel,
     llmChatStream,
     agentRun,
+    agentReset,
   }
 }
