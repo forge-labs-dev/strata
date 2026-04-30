@@ -1913,12 +1913,12 @@ class TestCellIterationsEndpoint:
 
 
 class TestPersonalModeUserScoping:
-    """Discover/create/delete scoping when STRATA_PERSONAL_MODE_USER_HEADER is set.
+    """Per-user subdir scoping when STRATA_PERSONAL_MODE_USER_HEADER is set.
 
     Mirrors the proxy-fronted personal deployment shape: a header injected by
-    Cloudflare Access (or similar) identifies the calling user; notebooks are
-    stamped with that identity on create; discover filters by owner; delete
-    enforces ownership.
+    Cloudflare Access (or similar) identifies the calling user. Each user gets
+    a private storage subdirectory and physically cannot see — let alone
+    create or delete — notebooks belonging to anyone else.
     """
 
     HEADER = "X-Strata-Test-User"
@@ -1949,54 +1949,87 @@ class TestPersonalModeUserScoping:
         with open(notebook_dir / "notebook.toml", "rb") as f:
             return tomllib.load(f).get("owner")
 
-    def test_create_stamps_owner_from_header(self, configured_state):
+    def _user_subdir(self, storage_root: Path, identity: str) -> Path:
+        """The per-user subdir as the runtime config endpoint would advertise it."""
+        from strata.notebook.routes import _sanitize_user_dir_name
+
+        sanitized = _sanitize_user_dir_name(identity)
+        assert sanitized is not None
+        return storage_root / sanitized
+
+    def test_runtime_config_returns_user_subdir(self, configured_state):
+        """``/config`` returns ``<base>/<user>`` so the frontend creates there."""
         client = TestClient(create_test_app())
         with tempfile.TemporaryDirectory() as tmpdir:
             storage_root = Path(tmpdir)
             configured_state(storage_root)
 
-            response = client.post(
-                "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Alice NB"},
+            response = client.get(
+                "/v1/notebooks/config",
                 headers={self.HEADER: "alice@example.com"},
             )
             assert response.status_code == 200
-            owner = self._read_owner(storage_root / "alice_nb")
-            assert owner == "alice@example.com"
+            expected = self._user_subdir(storage_root, "alice@example.com").resolve()
+            assert Path(response.json()["default_parent_path"]) == expected
 
-    def test_create_without_header_leaves_unowned(self, configured_state):
-        """Header configured but request omits it (e.g. internal call) → unowned."""
+    def test_create_lands_in_user_subdir(self, configured_state):
+        """Creating with the user's parent_path stamps owner and lands in their subdir."""
         client = TestClient(create_test_app())
         with tempfile.TemporaryDirectory() as tmpdir:
             storage_root = Path(tmpdir)
             configured_state(storage_root)
+            alice_root = self._user_subdir(storage_root, "alice@example.com")
 
             response = client.post(
                 "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Anon Notebook"},
+                json={"parent_path": str(alice_root), "name": "Alice NB"},
+                headers={self.HEADER: "alice@example.com"},
             )
             assert response.status_code == 200
-            assert self._read_owner(storage_root / "anon_notebook") is None
+            notebook_dir = alice_root / "alice_nb"
+            assert notebook_dir.exists()
+            assert self._read_owner(notebook_dir) == "alice@example.com"
 
-    def test_discover_filters_to_caller_plus_unowned(self, configured_state):
-        """Alice sees her own + unowned; Bob's notebook is hidden from her."""
+    def test_create_outside_own_subdir_is_rejected(self, configured_state):
+        """A user passing another user's subdir as parent_path → 400."""
+        client = TestClient(create_test_app())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage_root = Path(tmpdir)
+            configured_state(storage_root)
+            bob_root = self._user_subdir(storage_root, "bob@example.com")
+            # Pre-create bob's dir to rule out "rejected because dir missing".
+            bob_root.mkdir(parents=True)
+
+            response = client.post(
+                "/v1/notebooks/create",
+                json={"parent_path": str(bob_root), "name": "Sneak"},
+                headers={self.HEADER: "alice@example.com"},
+            )
+            assert response.status_code == 400
+
+    def test_discover_returns_only_callers_subdir(self, configured_state):
+        """Alice sees her notebooks; Bob's are physically isolated."""
         client = TestClient(create_test_app())
         with tempfile.TemporaryDirectory() as tmpdir:
             storage_root = Path(tmpdir)
             configured_state(storage_root)
 
-            # Three notebooks: Alice's (owned), Bob's (owned), Legacy (unowned).
             client.post(
                 "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                json={
+                    "parent_path": str(self._user_subdir(storage_root, "alice@example.com")),
+                    "name": "Alice NB",
+                },
                 headers={self.HEADER: "alice@example.com"},
             )
             client.post(
                 "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Bob NB"},
+                json={
+                    "parent_path": str(self._user_subdir(storage_root, "bob@example.com")),
+                    "name": "Bob NB",
+                },
                 headers={self.HEADER: "bob@example.com"},
             )
-            create_notebook(storage_root, "Legacy NB")  # no header → no owner
 
             response = client.get(
                 "/v1/notebooks/discover",
@@ -2004,83 +2037,60 @@ class TestPersonalModeUserScoping:
             )
             assert response.status_code == 200
             names = {nb["name"] for nb in response.json()["notebooks"]}
-            assert names == {"Alice NB", "Legacy NB"}
+            assert names == {"Alice NB"}
 
-    def test_discover_no_header_returns_everything(self, configured_state):
-        """A request without the configured header sees every notebook (single-user fallback)."""
+    def test_delete_by_path_rejects_cross_user_path(self, configured_state):
+        """Bob cannot delete a notebook by passing alice's path — boundary rejects."""
         client = TestClient(create_test_app())
         with tempfile.TemporaryDirectory() as tmpdir:
             storage_root = Path(tmpdir)
             configured_state(storage_root)
+            alice_root = self._user_subdir(storage_root, "alice@example.com")
 
             client.post(
                 "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                json={"parent_path": str(alice_root), "name": "Alice NB"},
                 headers={self.HEADER: "alice@example.com"},
             )
-
-            response = client.get("/v1/notebooks/discover")  # no header
-            assert response.status_code == 200
-            names = {nb["name"] for nb in response.json()["notebooks"]}
-            assert "Alice NB" in names
-
-    def test_delete_by_path_rejects_other_owner(self, configured_state):
-        client = TestClient(create_test_app())
-        with tempfile.TemporaryDirectory() as tmpdir:
-            storage_root = Path(tmpdir)
-            configured_state(storage_root)
-
-            client.post(
-                "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Alice NB"},
-                headers={self.HEADER: "alice@example.com"},
-            )
-            alice_path = storage_root / "alice_nb"
+            alice_nb = alice_root / "alice_nb"
 
             response = client.post(
                 "/v1/notebooks/delete-by-path",
-                json={"path": str(alice_path)},
+                json={"path": str(alice_nb)},
                 headers={self.HEADER: "bob@example.com"},
             )
-            # Returned as 404 (not 403) so probes can't enumerate owners.
-            assert response.status_code == 404
-            assert alice_path.exists()
+            # Path validator rejects the cross-subdir reference at the boundary.
+            assert response.status_code == 400
+            assert alice_nb.exists()
 
     def test_delete_by_path_allows_owner(self, configured_state):
         client = TestClient(create_test_app())
         with tempfile.TemporaryDirectory() as tmpdir:
             storage_root = Path(tmpdir)
             configured_state(storage_root)
+            alice_root = self._user_subdir(storage_root, "alice@example.com")
 
             client.post(
                 "/v1/notebooks/create",
-                json={"parent_path": str(storage_root), "name": "Alice NB"},
+                json={"parent_path": str(alice_root), "name": "Alice NB"},
                 headers={self.HEADER: "alice@example.com"},
             )
-            alice_path = storage_root / "alice_nb"
+            alice_nb = alice_root / "alice_nb"
 
             response = client.post(
                 "/v1/notebooks/delete-by-path",
-                json={"path": str(alice_path)},
+                json={"path": str(alice_nb)},
                 headers={self.HEADER: "alice@example.com"},
             )
             assert response.status_code == 200
-            assert not alice_path.exists()
+            assert not alice_nb.exists()
 
-    def test_delete_by_path_allows_unowned_legacy(self, configured_state):
-        """Notebooks without an owner field are deletable by anyone — backwards-compat."""
-        client = TestClient(create_test_app())
-        with tempfile.TemporaryDirectory() as tmpdir:
-            storage_root = Path(tmpdir)
-            configured_state(storage_root)
+    def test_sanitize_user_dir_name_collapses_unsafe_chars(self):
+        """Sanity check: hostile header values can't escape the storage root."""
+        from strata.notebook.routes import _sanitize_user_dir_name
 
-            create_notebook(storage_root, "Legacy NB")
-            legacy_path = storage_root / "legacy_nb"
-
-            response = client.post(
-                "/v1/notebooks/delete-by-path",
-                json={"path": str(legacy_path)},
-                headers={self.HEADER: "anyone@example.com"},
-            )
-            assert response.status_code == 200
-            assert not legacy_path.exists()
+        assert _sanitize_user_dir_name("alice@example.com") == "alice@example.com"
+        assert _sanitize_user_dir_name("../etc/passwd") == "etc_passwd"
+        assert _sanitize_user_dir_name("alice/bob") == "alice_bob"
+        assert _sanitize_user_dir_name("") is None
+        assert _sanitize_user_dir_name("...") is None  # all-trim chars

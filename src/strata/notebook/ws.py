@@ -461,6 +461,24 @@ async def notebook_websocket(websocket: WebSocket, notebook_id: str):
         await websocket.close(code=1008, reason="Notebook not found")
         return
 
+    # Per-user scoping: refuse the upgrade if a non-owner tries to
+    # connect to someone else's notebook session. Without this gate, a
+    # leaked notebook_id would let user B observe user A's live state
+    # (status, console, DAG) over WS even after the REST surface has
+    # been locked down.
+    owner = session.notebook_state.owner
+    if owner is not None:
+        try:
+            from strata.server import get_state
+
+            header_name = get_state().config.personal_mode_user_header
+        except RuntimeError:
+            header_name = None
+        caller = (websocket.headers.get(header_name) or "").strip() or None if header_name else None
+        if caller is not None and owner != caller:
+            await websocket.close(code=1008, reason="Notebook not found")
+            return
+
     # Accept connection
     await websocket.accept()
 

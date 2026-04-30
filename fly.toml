@@ -38,7 +38,10 @@ primary_region = "sjc"
 [[vm]]
   size = "shared-cpu-4x"
   memory = "2048mb"
-  count = 2
+  # Single machine: notebook storage lives on a per-machine volume, so
+  # multi-machine routes users randomly across diverging volumes. For
+  # personal-mode sharing one machine is plenty.
+  count = 1
 
 [[mounts]]
   source = "strata_data"
