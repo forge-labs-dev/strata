@@ -1,0 +1,18 @@
+notebook_id = "library-cells-001"
+name = "Library Cells"
+created_at = 2026-05-01T00:00:00+00:00
+updated_at = "2026-05-01T00:00:00+00:00"
+cells = [
+    { id = "intro", file = "intro.md", language = "markdown", order = 0 },
+    { id = "pure_lib", file = "pure_lib.py", language = "python", order = 1 },
+    { id = "use_pure", file = "use_pure.py", language = "python", order = 2 },
+    { id = "mixed_intro", file = "mixed_intro.md", language = "markdown", order = 3 },
+    { id = "mixed_lib", file = "mixed_lib.py", language = "python", order = 4 },
+    { id = "use_mixed", file = "use_mixed.py", language = "python", order = 5 },
+    { id = "typed_intro", file = "typed_intro.md", language = "markdown", order = 6 },
+    { id = "typed_lib", file = "typed_lib.py", language = "python", order = 7 },
+    { id = "use_typed", file = "use_typed.py", language = "python", order = 8 },
+    { id = "limits", file = "limits.md", language = "markdown", order = 9 },
+    { id = "blocked", file = "blocked.py", language = "python", order = 10 },
+    { id = "try_blocked", file = "try_blocked.py", language = "python", order = 11 },
+]
