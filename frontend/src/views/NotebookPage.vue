@@ -501,6 +501,14 @@ function goHome() {
           + Prompt
         </button>
         <button
+          class="btn btn-secondary"
+          :disabled="!connected"
+          title="Add a markdown cell (documentation)"
+          @click="addCell(undefined, 'markdown')"
+        >
+          + Markdown
+        </button>
+        <button
           class="btn btn-danger"
           data-testid="notebook-delete"
           :disabled="deleteButtonDisabled"
@@ -588,6 +596,13 @@ function goHome() {
               @click="addCell(undefined, 'prompt')"
             >
               + Add prompt cell
+            </button>
+            <button
+              class="add-cell-btn add-markdown-btn"
+              :disabled="!connected"
+              @click="addCell(undefined, 'markdown')"
+            >
+              + Add markdown cell
             </button>
           </div>
         </div>

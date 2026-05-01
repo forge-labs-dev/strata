@@ -99,7 +99,7 @@ AGENT_TOOLS: list[dict[str, Any]] = [
                     },
                     "language": {
                         "type": "string",
-                        "enum": ["python", "prompt"],
+                        "enum": ["python", "prompt", "markdown"],
                         "default": "python",
                     },
                     "after_variable": {

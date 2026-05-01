@@ -519,6 +519,22 @@ class CellExecutor:
                     use_cache=use_cache,
                 )
 
+            # Markdown cells are pure prose — no execution, no subprocess,
+            # no provenance chain. Return success with no display outputs:
+            # the frontend already renders the source in-place via the
+            # cell's preview view, so emitting it again as a display
+            # output would just duplicate the same content in the output
+            # panel below the editor.
+            if cell is not None and cell.language == "markdown":
+                duration_ms = (time.monotonic() - start_time) * 1000
+                return CellExecutionResult(
+                    cell_id=cell_id,
+                    success=True,
+                    duration_ms=duration_ms,
+                    execution_method="cached",
+                    cache_hit=True,
+                )
+
             # ① Materialise every upstream cell whose artifact is missing.
             #   This is the recursive ``materialize`` call — each upstream
             #   that is a cache miss will itself execute its own upstreams.

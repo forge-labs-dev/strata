@@ -501,7 +501,7 @@ def add_cell_to_notebook(
         notebook_dir: Path to notebook directory
         cell_id: New cell ID
         after_cell_id: Cell ID to add after (None = at end)
-        language: Cell language ("python" or "prompt")
+        language: Cell language ("python", "prompt", or "markdown")
     """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
@@ -520,8 +520,11 @@ def add_cell_to_notebook(
     else:
         order = len(cells_data)
 
-    # Create cell file
-    cell_filename = f"{cell_id}.py"
+    # Create cell file. Markdown cells use ``.md`` so the file is editable
+    # outside the notebook UI (in any markdown-aware editor) without the
+    # ``.py`` extension confusing syntax highlighters.
+    extension = "md" if language == "markdown" else "py"
+    cell_filename = f"{cell_id}.{extension}"
     cells_dir = notebook_dir / "cells"
     cells_dir.mkdir(exist_ok=True)
 

@@ -343,6 +343,13 @@ class NotebookSession:
                 defines = prompt_analysis.defines
                 references = prompt_analysis.references
                 mutation_defines: list[str] = []
+            elif cell.language == "markdown":
+                # Markdown cells are pure prose — no Python identifiers
+                # to define or reference, so they sit isolated in the
+                # DAG with no edges in or out.
+                defines = []
+                references = []
+                mutation_defines = []
             else:
                 analysis = analyze_cell(cell.source)
                 defines = analysis.defines
@@ -484,6 +491,10 @@ class NotebookSession:
             prompt_analysis = analyze_prompt_cell(cell.source)
             cell.defines = prompt_analysis.defines
             cell.references = prompt_analysis.references
+        elif cell.language == "markdown":
+            # Markdown is prose — no identifiers in or out of the DAG.
+            cell.defines = []
+            cell.references = []
         else:
             analysis = analyze_cell(cell.source)
             cell.defines = analysis.defines
@@ -524,6 +535,13 @@ class NotebookSession:
         for cell_id in self.dag.topological_order:
             cell = next((c for c in self.notebook_state.cells if c.id == cell_id), None)
             if cell is None:
+                continue
+
+            # Markdown cells are pure prose — they have no inputs, no
+            # subprocess, and can never be stale. Mark ready and move on
+            # without computing provenance hashes or hitting the cache.
+            if cell.language == "markdown":
+                staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 continue
 
             # If ANY upstream cell is stale, this cell is also stale —
@@ -766,9 +784,9 @@ class NotebookSession:
 
         # Module-cell classification — drives the "module" pill in the
         # UI and the richer tooltip on the module_export_blocked
-        # diagnostic. Only meaningful for Python cells; prompt cells
-        # always serialize their output via the LLM path.
-        if cell.language != "prompt":
+        # diagnostic. Only meaningful for Python cells; prompt and
+        # markdown cells have no Python identifiers to export.
+        if cell.language == "python":
             from strata.notebook.module_export import build_module_export_plan
 
             export_plan = build_module_export_plan(cell.source)

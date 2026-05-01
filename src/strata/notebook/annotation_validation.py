@@ -25,6 +25,10 @@ def validate_cell_annotations(
     """Validate a cell's annotations against notebook-wide context."""
     if cell.language == "prompt":
         return _validate_prompt_cell_annotations(cell)
+    if cell.language == "markdown":
+        # Markdown cells are pure prose; ``# @worker`` etc. would be a
+        # markdown heading, not an annotation. No validation applies.
+        return []
     diagnostics: list[AnnotationDiagnostic] = []
     diagnostics.extend(_validate_module_export(cell, notebook_state))
     annotations = parse_annotations(cell.source)

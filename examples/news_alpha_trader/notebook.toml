@@ -3,7 +3,7 @@ name = "News Alpha Trader"
 created_at = 2026-04-22 00:00:00+00:00
 updated_at = "2026-04-24T05:25:21.094539+00:00"
 cells = [
-    { id = "disclaimer", file = "disclaimer.py", language = "python", order = 0 },
+    { id = "disclaimer", file = "disclaimer.md", language = "markdown", order = 0 },
     { id = "helpers", file = "helpers.py", language = "python", order = 1 },
     { id = "fetch_news", file = "fetch_news.py", language = "python", order = 2 },
     { id = "extract_signals", file = "extract_signals.py", language = "prompt", order = 3 },

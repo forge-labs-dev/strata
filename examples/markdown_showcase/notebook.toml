@@ -1,0 +1,17 @@
+notebook_id = "markdown-showcase-001"
+name = "Markdown Showcase"
+created_at = 2026-04-30T00:00:00+00:00
+updated_at = "2026-04-30T00:00:00+00:00"
+cells = [
+    { id = "intro", file = "intro.md", language = "markdown", order = 0 },
+    { id = "headings", file = "headings.md", language = "markdown", order = 1 },
+    { id = "emphasis", file = "emphasis.md", language = "markdown", order = 2 },
+    { id = "lists", file = "lists.md", language = "markdown", order = 3 },
+    { id = "tables", file = "tables.md", language = "markdown", order = 4 },
+    { id = "code_blocks", file = "code_blocks.md", language = "markdown", order = 5 },
+    { id = "blockquotes", file = "blockquotes.md", language = "markdown", order = 6 },
+    { id = "links", file = "links.md", language = "markdown", order = 7 },
+    { id = "security", file = "security.md", language = "markdown", order = 8 },
+    { id = "dynamic_md", file = "dynamic_md.py", language = "python", order = 9 },
+    { id = "templated_md", file = "templated_md.py", language = "python", order = 10 },
+]

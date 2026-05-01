@@ -8,6 +8,7 @@ import {
   highlightActiveLineGutter,
 } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { syntaxHighlighting, defaultHighlightStyle, bracketMatching } from '@codemirror/language'
@@ -70,7 +71,8 @@ export function useCodemirror(
   onMounted(() => {
     if (!container.value) return
 
-    const langExt = opts.language === 'prompt' ? [] : python()
+    const langExt =
+      opts.language === 'markdown' ? markdown() : opts.language === 'prompt' ? [] : python()
 
     const runKeymap = keymap.of([
       {

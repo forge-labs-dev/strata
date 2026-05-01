@@ -236,6 +236,23 @@ async def _run_async(args: argparse.Namespace) -> int:
             # but don't crash.
             continue
 
+        # Markdown cells are non-executable prose; surface them as
+        # success-with-no-op so ``strata run`` doesn't print a misleading
+        # "skipped: unsupported language" line for documentation cells.
+        if cell.language == "markdown":
+            entry = {
+                "id": cell_id,
+                "label": f"[markdown] {_cell_label(cell.source)}",
+                "status": "ok",
+                "reason": None,
+                "duration_ms": 0,
+                "cache_hit": True,
+            }
+            results.append(entry)
+            if args.format == "human" and not args.quiet:
+                _print_cell_line(entry)
+            continue
+
         # Skip languages we can't execute headlessly.
         if cell.language not in {"python", "prompt"}:
             entry = {

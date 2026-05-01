@@ -52,6 +52,38 @@ const showCausality = ref(false)
 const folded = ref(false)
 const installRequestedPackage = ref<string | null>(null)
 
+// Markdown cells default to a rendered "preview" view; clicking the
+// preview swaps in the CodeMirror editor for editing. New (empty)
+// markdown cells start in edit mode so the user can begin typing
+// immediately. Non-markdown cells ignore this state entirely.
+const isMarkdownPreviewing = ref(
+  props.cell.language === 'markdown' && Boolean(props.cell.source.trim()),
+)
+
+const renderedMarkdownSource = computed(() => {
+  if (props.cell.language !== 'markdown' || !props.cell.source.trim()) {
+    return ''
+  }
+  return renderMarkdownToHtml(props.cell.source)
+})
+
+function enterMarkdownEdit() {
+  if (props.cell.language !== 'markdown') return
+  isMarkdownPreviewing.value = false
+  // Focus the editor on the next tick so the click handler doesn't race
+  // with CodeMirror's mount/show transition.
+  setTimeout(() => view.value?.focus(), 0)
+}
+
+function exitMarkdownEditOnBlur() {
+  // Persist any pending source first; blur is when the debounced flush
+  // would otherwise lose un-WS'd edits.
+  flushCellSource(props.cell.id)
+  if (props.cell.language === 'markdown' && props.cell.source.trim()) {
+    isMarkdownPreviewing.value = true
+  }
+}
+
 const { view, setDoc } = useCodemirror(editorEl, {
   initialDoc: props.cell.source,
   language: props.cell.language,
@@ -454,7 +486,13 @@ function outputKey(output: CellOutput, index: number): string {
 <template>
   <div
     class="cell"
-    :class="[statusClass, { 'cell-prompt': cell.language === 'prompt' }]"
+    :class="[
+      statusClass,
+      {
+        'cell-prompt': cell.language === 'prompt',
+        'cell-markdown': cell.language === 'markdown',
+      },
+    ]"
     data-testid="notebook-cell"
     :data-cell-id="cell.id"
   >
@@ -463,6 +501,7 @@ function outputKey(output: CellOutput, index: number): string {
       <span class="status-dot" :title="cell.status">{{ statusLabel }}</span>
       <div class="cell-actions">
         <button
+          v-if="cell.language !== 'markdown'"
           title="Run (Shift+Enter)"
           :disabled="environmentMutationActive"
           @click="emit('run', cell.id)"
@@ -704,11 +743,23 @@ function outputKey(output: CellOutput, index: number): string {
         </span>
       </div>
 
+      <!-- Rendered preview for markdown cells. Click anywhere to edit. -->
       <div
-        v-show="!folded"
+        v-if="!folded && cell.language === 'markdown' && isMarkdownPreviewing"
+        class="markdown-preview"
+        :class="{ empty: !renderedMarkdownSource }"
+        title="Click to edit"
+        @click="enterMarkdownEdit"
+        v-html="renderedMarkdownSource || '<p class=\'placeholder\'>(empty markdown cell)</p>'"
+      ></div>
+
+      <div
+        v-show="!folded && !(cell.language === 'markdown' && isMarkdownPreviewing)"
         ref="editorEl"
         class="editor-container"
-        @focusout="flushCellSource(cell.id)"
+        @focusout="
+          cell.language === 'markdown' ? exitMarkdownEditOnBlur() : flushCellSource(cell.id)
+        "
       />
 
       <!-- Console output (stdout/stderr) -->
@@ -991,6 +1042,122 @@ function outputKey(output: CellOutput, index: number): string {
 .cell-prompt .cell-lang {
   background: var(--tint-primary-strong);
   color: var(--accent-primary);
+}
+
+.cell-markdown {
+  border-color: var(--border-subtle);
+}
+
+.cell-markdown .cell-lang {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+}
+
+.markdown-preview {
+  padding: 12px 16px;
+  cursor: text;
+  color: var(--text-primary);
+  border-radius: 4px;
+  min-height: 32px;
+}
+
+.markdown-preview:hover {
+  background: var(--bg-elevated);
+}
+
+.markdown-preview.empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.markdown-preview .placeholder {
+  margin: 0;
+}
+
+.markdown-preview :deep(h1),
+.markdown-preview :deep(h2),
+.markdown-preview :deep(h3),
+.markdown-preview :deep(h4),
+.markdown-preview :deep(h5),
+.markdown-preview :deep(h6) {
+  margin: 0.6em 0 0.3em;
+  font-weight: 600;
+}
+
+.markdown-preview :deep(h1) {
+  font-size: 1.6em;
+}
+.markdown-preview :deep(h2) {
+  font-size: 1.35em;
+}
+.markdown-preview :deep(h3) {
+  font-size: 1.15em;
+}
+.markdown-preview :deep(p),
+.markdown-preview :deep(ul),
+.markdown-preview :deep(ol),
+.markdown-preview :deep(blockquote),
+.markdown-preview :deep(pre),
+.markdown-preview :deep(table) {
+  margin: 0.4em 0;
+}
+
+/* The global ``* { padding: 0 }`` reset wipes the browser default
+ * ``padding-inline-start: 40px`` on lists, which collapses every nesting
+ * level to the same column. Restore an explicit indent on each ``ul``/
+ * ``ol`` so each level visually steps in. ``list-style-position: outside``
+ * is the default but we set it explicitly because we're re-establishing
+ * the layout from scratch.
+ */
+.markdown-preview :deep(ul),
+.markdown-preview :deep(ol) {
+  padding-inline-start: 1.6em;
+  list-style-position: outside;
+}
+
+.markdown-preview :deep(li) {
+  margin: 0.15em 0;
+}
+
+.markdown-preview :deep(code) {
+  background: var(--bg-input);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+.markdown-preview :deep(pre) {
+  background: var(--bg-input);
+  padding: 8px 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+
+.markdown-preview :deep(pre code) {
+  background: none;
+  padding: 0;
+}
+
+.markdown-preview :deep(blockquote) {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+
+.markdown-preview :deep(table) {
+  border-collapse: collapse;
+}
+
+.markdown-preview :deep(th),
+.markdown-preview :deep(td) {
+  border: 1px solid var(--border-subtle);
+  padding: 4px 8px;
+}
+
+.markdown-preview :deep(a) {
+  color: var(--accent-primary);
+  text-decoration: underline;
 }
 
 .shadow-badge {
@@ -1479,10 +1646,9 @@ function outputKey(output: CellOutput, index: number): string {
   margin: 0 0 10px;
 }
 
-/* The global ``* { padding: 0 }`` reset wipes the browser default
- * ``padding-inline-start: 40px`` on lists, which collapses every nesting
- * level to the same column. Restore an explicit indent so each level
- * visually steps in. */
+/* Mirror the .markdown-preview indent fix: the global ``* { padding: 0 }``
+ * reset removes the browser default list indent, so without restoring
+ * ``padding-inline-start`` every nesting level lands at column zero. */
 .output-markdown :deep(ul),
 .output-markdown :deep(ol) {
   padding-inline-start: 1.6em;

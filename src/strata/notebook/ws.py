@@ -1063,7 +1063,7 @@ async def _handle_cell_source_update(
                 "is_leaf": cell.is_leaf,
                 "annotation_diagnostics": [d.model_dump() for d in cell.annotation_diagnostics],
             }
-            if cell.language != "prompt":
+            if cell.language == "python":
                 plan = build_module_export_plan(cell.source)
                 has_code_export = any(
                     s.kind in ("function", "async function", "class")
