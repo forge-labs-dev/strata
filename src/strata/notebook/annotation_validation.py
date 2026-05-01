@@ -149,22 +149,24 @@ def _validate_module_export(
     notebook_state: NotebookState,
 ) -> list[AnnotationDiagnostic]:
     """Warn when a Python cell defines reusable code (def / class) but
-    can't be source-reconstituted for cross-cell use.
+    the slice we'd re-execute in the synthetic module isn't safe.
 
-    The common failure is mixing top-level runtime logic (assignments
-    whose RHS isn't a literal, expression statements, control flow)
-    with ``def`` / ``class`` definitions. Downstream cells that import
-    a function from this cell would error at execution time; surfacing
-    the issue at validation time tells the user to split the cell
-    before they hit the failure.
+    The slicer keeps imports, defs, classes, and literal constants and
+    drops everything else. After slicing we still block when:
+      - a kept def/class references a name that isn't imported or
+        defined as a literal in this cell (the synthetic module would
+        NameError on import or call);
+      - a kept name is also rebound by dropped runtime code (the
+        synthetic module's value would diverge from the cell's runtime
+        value);
+      - the cell has a lambda assignment to a downstream-consumed name
+        (lambdas don't ride the source-backed module path).
 
-    Suppressed when no other cell in the notebook actually references any
-    of the would-be exports — small private helpers used only inside a
-    single cell are a common, safe pattern (eval scoring loops, ad-hoc
-    parsing) and shouldn't generate noise. The warning is for users who
-    are *trying* to share defs across cells and accidentally also added
-    runtime code, not for users who never wanted to share in the first
-    place.
+    Suppressed when no other cell in the notebook references the
+    affected names — small private helpers used only inside a single
+    cell are a common, safe pattern. The warning is for users who are
+    *trying* to share defs across cells and hit one of the failure
+    modes above.
     """
     from strata.notebook.module_export import build_module_export_plan
 
@@ -196,9 +198,9 @@ def _validate_module_export(
             severity="warn",
             code="module_export_blocked",
             message=(
-                f"This cell defines reusable code ({names}) but the cell also "
-                f"has top-level runtime logic that blocks sharing across cells: "
-                f"{plan.format_error()}. Split the defs into their own cell."
+                f"This cell defines reusable code ({names}) that downstream cells "
+                f"reference, but it can't be shared across cells: "
+                f"{plan.format_error()}."
             ),
             line=None,
         )

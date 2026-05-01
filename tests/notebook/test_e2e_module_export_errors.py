@@ -29,10 +29,12 @@ def setup():
 class TestUnsupportedModuleExports:
     """Unsupported reusable-code cells should fail clearly over WS."""
 
-    def test_top_level_runtime_state_error_surfaces_over_websocket(self, setup):
-        # ``x = len([])`` is a non-literal runtime assignment — plain
-        # literal constants (``x = 1``) would export fine alongside
-        # the ``def`` under the current plan rules.
+    def test_def_with_unresolved_runtime_dep_error_surfaces_over_websocket(self, setup):
+        # ``add`` references ``x``, which is computed at runtime by
+        # ``x = len([])`` and isn't part of the cell's exportable slice.
+        # The synthetic module would NameError when ``add`` is called,
+        # so we block at execution time and surface a precise message
+        # naming both the function and the unresolved variable.
         client, tmp = setup
         nb = (
             NotebookBuilder(tmp)
@@ -54,7 +56,8 @@ def add(y):
 
                 assert result["type"] == "cell_error"
                 assert "cannot be shared across cells yet" in result["payload"]["error"]
-                assert "top-level runtime state" in result["payload"]["error"]
+                assert "function `add`" in result["payload"]["error"]
+                assert "x" in result["payload"]["error"]
 
                 state = ws.sync()
                 c1 = next(cell for cell in state["payload"]["cells"] if cell["id"] == "c1")

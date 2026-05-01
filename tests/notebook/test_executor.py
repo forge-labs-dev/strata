@@ -1385,7 +1385,10 @@ def add(y):
         assert result.success is False
         assert result.error is not None
         assert "cannot be shared across cells yet" in result.error
-        assert "top-level runtime state" in result.error
+        # ``add`` references runtime-only ``x`` that's dropped from the
+        # slice — error message names the function and the unresolved var.
+        assert "function `add`" in result.error
+        assert "x" in result.error
 
     @pytest.mark.asyncio
     async def test_execute_rejects_cross_cell_export_with_top_level_lambda(self, sample_notebook):

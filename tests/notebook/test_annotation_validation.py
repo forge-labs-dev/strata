@@ -316,10 +316,13 @@ class TestModuleExportBlockedDiagnostic:
         cell = _cell("STEP = 0.5\n\ndef scale(x):\n    return x * STEP\n")
         assert _codes(cell, _nb()) == []
 
-    def test_non_literal_assignment_with_def_warns_when_consumed(self):
+    def test_def_with_unresolved_runtime_dep_warns_when_consumed(self):
+        """``scale`` closes over ``STEP``, which is computed at runtime
+        and thus dropped from the slice. The synthetic module would
+        NameError when ``scale`` is called downstream — surface the
+        problem at validation time so the user can fix it before
+        execution."""
         cell = _cell("STEP = compute_step()\n\ndef scale(x):\n    return x * STEP\n")
-        # Downstream cell that actually wants `scale` — that's what the
-        # diagnostic exists for: warning the user before the import fails.
         downstream = _cell("y = scale(2)", cell_id="c2")
         downstream.references = ["scale"]
         nb = _nb()
@@ -328,17 +331,39 @@ class TestModuleExportBlockedDiagnostic:
             d for d in validate_cell_annotations(cell, nb) if d.code == "module_export_blocked"
         ]
         assert len(diags) == 1
-        assert "`scale`" in diags[0].message
-        assert "Split the defs" in diags[0].message
+        message = diags[0].message
+        assert "`scale`" in message
+        # The diagnostic now names the unresolved variable so the user
+        # knows exactly what to move or import.
+        assert "STEP" in message
 
-    def test_top_level_expression_with_class_warns_when_consumed(self):
+    def test_top_level_expression_alongside_self_contained_class_is_silent(self):
+        """Slicing drops the top-level expression; ``Config``'s body
+        only references literals/builtins, so the slice exports it
+        cleanly. No diagnostic — this is one of the user-facing wins of
+        slicing."""
         cell = _cell("print('hi')\n\nclass Config:\n    debug = True\n")
         downstream = _cell("c = Config()", cell_id="c2")
         downstream.references = ["Config"]
         nb = _nb()
         nb.cells = [cell, downstream]
         codes = [d.code for d in validate_cell_annotations(cell, nb)]
-        assert "module_export_blocked" in codes
+        assert "module_export_blocked" not in codes
+
+    def test_class_with_unresolved_base_warns_when_consumed(self):
+        """A base class whose name isn't bound in the slice is a real
+        export blocker — class body executes at module load and would
+        NameError on the missing base."""
+        cell = _cell("Parent = make_parent()\n\nclass Child(Parent):\n    pass\n")
+        downstream = _cell("c = Child()", cell_id="c2")
+        downstream.references = ["Child"]
+        nb = _nb()
+        nb.cells = [cell, downstream]
+        diags = [
+            d for d in validate_cell_annotations(cell, nb) if d.code == "module_export_blocked"
+        ]
+        assert len(diags) == 1
+        assert "Parent" in diags[0].message
 
     def test_unused_helper_def_is_silent(self):
         """Cells with private helpers nobody else references shouldn't warn.

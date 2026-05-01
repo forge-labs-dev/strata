@@ -140,6 +140,53 @@ class TestLocalModuleExports:
                 assert result2["type"] == "cell_output"
                 assert result2["payload"]["outputs"]["result"]["preview"] == 84
 
+    def test_cross_cell_def_export_with_runtime_state_alongside(self, setup):
+        """The producing cell mixes a runtime statement with a self-
+        contained def. Slicing should let the def export cleanly while
+        the runtime variable flows through the regular artifact path.
+        """
+        client, tmp = setup
+        nb = (
+            NotebookBuilder(tmp)
+            .add_cell(
+                "c1",
+                """
+df_size = len([1, 2, 3, 4, 5])
+THRESHOLD = 3
+
+def is_big(n):
+    return n > THRESHOLD
+""".strip(),
+            )
+            # Downstream consumes both the runtime variable (df_size,
+            # via the regular artifact path) and the def (via module
+            # export). THRESHOLD is referenced in c2 to verify the
+            # literal-const-alongside-def path still works under
+            # slicing.
+            .add_cell(
+                "c2",
+                "result = [df_size, is_big(df_size), THRESHOLD]",
+                after="c1",
+            )
+        )
+
+        with open_notebook_session(client, nb.path) as (sid, session):
+            with ws_connect(client, sid) as ws:
+                result1 = execute_cell_and_wait(ws, "c1")
+                assert result1["type"] == "cell_output"
+                # is_big and THRESHOLD ride the synthetic module
+                # because c2 consumes them and a def is also kept.
+                assert result1["payload"]["outputs"]["is_big"]["content_type"] == "module/cell"
+                assert result1["payload"]["outputs"]["THRESHOLD"]["content_type"] == "module/cell"
+                # df_size flows through the regular artifact path.
+                assert result1["payload"]["outputs"]["df_size"]["content_type"] != "module/cell"
+                assert result1["payload"]["outputs"]["df_size"]["preview"] == 5
+
+                result2 = execute_cell_and_wait(ws, "c2")
+                assert result2["type"] == "cell_output"
+                # is_big(5) > THRESHOLD(3) → True; result is [5, True, 3]
+                assert result2["payload"]["outputs"]["result"]["preview"] == [5, True, 3]
+
     def test_cross_cell_exported_class_instance(self, setup):
         client, tmp = setup
         nb = (

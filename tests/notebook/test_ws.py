@@ -566,7 +566,10 @@ def test_cell_execute_surfaces_module_export_error(client, temp_notebook, app):
         error_msg = websocket.receive_json()
         assert error_msg["type"] == "cell_error"
         assert "cannot be shared across cells yet" in error_msg["payload"]["error"]
-        assert "top-level runtime state" in error_msg["payload"]["error"]
+        # The slicer pinpoints the unresolved free var and the symbol
+        # that depends on it.
+        assert "function `add`" in error_msg["payload"]["error"]
+        assert "x" in error_msg["payload"]["error"]
 
         terminal = websocket.receive_json()
         assert terminal["type"] == "cell_status"
