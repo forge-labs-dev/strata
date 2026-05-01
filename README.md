@@ -146,6 +146,9 @@ it on first read and caches the bytes locally for the session.
 | [titanic_ml](examples/titanic_ml) | Feature engineering + model comparison |
 | [s3_mount](examples/s3_mount) | Reading a public S3 bucket via a mount |
 | [arxiv_classifier](examples/arxiv_classifier) | Distributed execution via `@worker` + Modal GPU + Fly cluster |
+| [markdown_showcase](examples/markdown_showcase) | Markdown cells, dynamic `Markdown(...)` outputs, security cases |
+| [library_cells](examples/library_cells) | Cross-cell library code: pure module cells, mixed runtime+library cells, the limits |
+| [news_alpha_trader](examples/news_alpha_trader) | Multi-stage trading pipeline with prompt cells and structured LLM outputs |
 
 ---
 

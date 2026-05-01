@@ -21,9 +21,27 @@ release framing rather than exhaustive commit history.
   - ordered multiple visible outputs per cell
 - local service-mode demo stack, smoke script, and deployment guide
 - notebook create/open timing instrumentation and browser benchmark tooling
+- markdown cell language for prose / documentation cells
+- `library_cells` example notebook walking through cross-cell library code
 
 ### Changed
 
+- cells that mix runtime work and library code (defs, classes, literal
+  constants) can now share the library code across cells. The planner
+  slices the cell's AST, keeps the shareable parts, and validates the
+  slice with `symtable` to make sure each kept def/class is
+  self-contained. Runtime values flow through the regular artifact
+  path; previously a single `df = load()` line would block every def
+  in the same cell from being shared.
+- the `module_export_blocked` diagnostic now names the specific
+  function and unresolved variable instead of the generic "top-level
+  runtime state" message, so the fix is obvious.
+- `from __future__ import annotations` now correctly relaxes
+  cross-cell type-hint references (PEP 563 stringifies annotations,
+  so the free-variable check drops them).
+- the markdown renderer is now `markdown-it` + `DOMPurify` rather than
+  hand-rolled, with consistent output between in-place cell preview
+  and `Markdown(...)` display outputs
 - the docs are now split into separate Strata Core and Strata Notebook
   quickstarts, with the root README acting as an umbrella landing page
 - notebook create now bootstraps the initial environment asynchronously, which
