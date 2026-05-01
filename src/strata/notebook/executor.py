@@ -526,7 +526,11 @@ class CellExecutor:
             # output would just duplicate the same content in the output
             # panel below the editor.
             if cell is not None and cell.language == "markdown":
-                duration_ms = (time.monotonic() - start_time) * 1000
+                # ``start_time`` is wall-clock (``time.time()``), so subtract
+                # in the same clock — mixing ``monotonic()`` here produces a
+                # ~1.7e12 ms negative because the two clocks have different
+                # epochs.
+                duration_ms = (time.time() - start_time) * 1000
                 return CellExecutionResult(
                     cell_id=cell_id,
                     success=True,

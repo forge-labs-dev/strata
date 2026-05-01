@@ -100,6 +100,12 @@ class TestMarkdownCellExecution:
         assert result.display_outputs == []
         assert result.display_output is None
         assert result.cache_hit is True
+        # Regression: the executor's start_time is wall-clock, so the
+        # markdown branch must subtract via ``time.time()`` not
+        # ``time.monotonic()`` — mixing the two produces a huge negative
+        # duration that the UI then renders as "-1.7e12 ms".
+        assert result.duration_ms >= 0
+        assert result.duration_ms < 500
 
 
 class TestHarnessCrashDiagnostic:
