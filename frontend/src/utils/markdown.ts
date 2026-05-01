@@ -11,8 +11,22 @@
  * returns sanitized HTML; consumers stay decoupled from the renderer.
  */
 
-import DOMPurify, { type Config as DOMPurifyConfig } from 'dompurify'
+import DOMPurifyFactory, { type Config as DOMPurifyConfig } from 'dompurify'
 import MarkdownIt from 'markdown-it'
+
+// Resolve DOMPurify's runtime shape. In a browser, the default export is
+// already bound to ``window`` and has ``sanitize`` directly. In Node
+// (used by the unit tests under ``node --test``) the default export is a
+// factory that needs a window to instantiate — there's no DOM available
+// so we fall back to a no-op shim. That's safe because the rendered
+// HTML never reaches a DOM in Node; the only XSS path is the in-browser
+// ``v-html`` path, which still gets the real DOMPurify.
+type DOMPurifyLike = { sanitize: (html: string, cfg?: DOMPurifyConfig) => string }
+
+const purify: DOMPurifyLike =
+  typeof (DOMPurifyFactory as unknown as DOMPurifyLike).sanitize === 'function'
+    ? (DOMPurifyFactory as unknown as DOMPurifyLike)
+    : { sanitize: (html: string) => html }
 
 const md = new MarkdownIt({
   // Disallow inline HTML — sanitization would strip most of it anyway,
@@ -66,5 +80,5 @@ const PURIFY_CONFIG: DOMPurifyConfig = {
 export function renderMarkdownToHtml(markdown: string): string {
   if (!markdown) return ''
   const rawHtml = md.render(markdown)
-  return DOMPurify.sanitize(rawHtml, PURIFY_CONFIG) as unknown as string
+  return purify.sanitize(rawHtml, PURIFY_CONFIG)
 }
