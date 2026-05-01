@@ -10,6 +10,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from strata.notebook.executor import CellExecutor
 from strata.notebook.parser import parse_notebook
 from strata.notebook.session import NotebookSession
@@ -98,6 +100,80 @@ class TestMarkdownCellExecution:
         assert result.display_outputs == []
         assert result.display_output is None
         assert result.cache_hit is True
+
+
+class TestHarnessCrashDiagnostic:
+    """When the harness dies on import, the executor must surface stderr.
+
+    Regression for a real bug: notebooks missing harness runtime deps
+    (orjson, pyarrow, cloudpickle) failed with a generic "Unknown error"
+    because the executor read the leftover input manifest as if it were
+    the result. We now detect a manifest that lacks the ``success`` key
+    and surface the subprocess's stderr instead.
+    """
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_run_harness_returns_meaningful_error_when_subprocess_crashes(
+        self, tmp_path, monkeypatch
+    ):
+        import asyncio
+        import json
+
+        from strata.notebook.executor import CellExecutor
+
+        # Hand-craft an "output_dir" containing only an input-shaped
+        # manifest.json (no ``success`` field) to simulate a harness that
+        # exited before writing its result.
+        output_dir = tmp_path / "out"
+        output_dir.mkdir()
+        manifest_path = output_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps({"source": "x = 1", "inputs": {}, "output_dir": str(output_dir)})
+        )
+
+        # Build a fake executor. The implementation under test
+        # (``_run_harness``) only uses ``self`` for ``self.harness_path``
+        # and ``self.session.path``, so a minimal stand-in is enough.
+        class _FakeSession:
+            path = output_dir
+
+        executor = CellExecutor.__new__(CellExecutor)
+        executor.harness_path = output_dir / "harness.py"  # not actually executed
+        executor.session = _FakeSession()  # type: ignore[assignment]
+
+        class _FakeProc:
+            pid = 0
+
+            async def communicate(self):
+                return (
+                    b"",
+                    b"Traceback (most recent call last):\n"
+                    b'  File "harness.py", line 1, in <module>\n'
+                    b"    import orjson\n"
+                    b"ModuleNotFoundError: No module named 'orjson'\n",
+                )
+
+            def kill(self):
+                pass
+
+            async def wait(self):
+                return None
+
+        async def fake_subprocess_exec(*args, **kwargs):
+            return _FakeProc()
+
+        # Use monkeypatch so cleanup is automatic and pytest's event loop
+        # plumbing isn't confused by manual reassignment.
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_subprocess_exec)
+
+        result = await executor._run_harness(manifest_path, output_dir, 5.0)
+
+        assert result["success"] is False
+        assert "ModuleNotFoundError" in result["error"]
+        assert "orjson" in result["error"]
+        # stderr should also be preserved verbatim for the UI's stderr panel.
+        assert "ModuleNotFoundError" in result["stderr"]
 
 
 class TestMarkdownCellStaleness:
