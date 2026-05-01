@@ -1478,6 +1478,20 @@ function outputKey(output: CellOutput, index: number): string {
 .output-markdown :deep(ol) {
   margin: 0 0 10px;
 }
+
+/* The global ``* { padding: 0 }`` reset wipes the browser default
+ * ``padding-inline-start: 40px`` on lists, which collapses every nesting
+ * level to the same column. Restore an explicit indent so each level
+ * visually steps in. */
+.output-markdown :deep(ul),
+.output-markdown :deep(ol) {
+  padding-inline-start: 1.6em;
+  list-style-position: outside;
+}
+
+.output-markdown :deep(li) {
+  margin: 0.15em 0;
+}
 .output-markdown :deep(code) {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;
   font-size: 12px;
