@@ -437,3 +437,117 @@ class TestAnalyzerEdgeCases:
         result = analyze_cell("raise ValueError(msg)")
         assert result.defines == []
         assert result.references == ["msg"]
+
+
+class TestAnalyzerNestedScopes:
+    """Test that references inside nested scopes (function/class
+    bodies, decorators, default arg values, base classes, type
+    annotations) are picked up correctly.
+
+    Without this, a cell like ``def f(): return upstream_var`` would
+    show no references, the DAG wouldn't add the upstream cell as a
+    parent, and the synthetic module wouldn't be loaded — leading to a
+    NameError at call time.
+    """
+
+    def test_function_body_reference(self):
+        """Free variable inside a function body becomes a reference."""
+        result = analyze_cell("def f():\n    return upstream_var")
+        assert "f" in result.defines
+        assert "upstream_var" in result.references
+
+    def test_function_body_local_assign_not_a_reference(self):
+        """Names bound by an assignment inside the function don't bubble out."""
+        result = analyze_cell("def f():\n    x = 1\n    return x")
+        assert "f" in result.defines
+        assert "x" not in result.references
+
+    def test_method_body_reference(self):
+        """Free variable inside a method body becomes a reference."""
+        result = analyze_cell("class C:\n    def m(self):\n        return upstream_var")
+        assert "C" in result.defines
+        assert "upstream_var" in result.references
+
+    def test_method_self_attribute_not_a_reference(self):
+        """``self.x`` is attribute access, not a free-variable lookup."""
+        result = analyze_cell("class C:\n    def m(self):\n        return self.x")
+        assert "C" in result.defines
+        assert result.references == []
+
+    def test_decorator_reference(self):
+        """``@upstream_decorator`` evaluates at module load — picked up."""
+        result = analyze_cell("@upstream_decorator\ndef f():\n    pass")
+        assert "f" in result.defines
+        assert "upstream_decorator" in result.references
+
+    def test_default_arg_reference(self):
+        """Default arg value evaluates at module load — picked up."""
+        result = analyze_cell("def f(x=upstream_default):\n    pass")
+        assert "f" in result.defines
+        assert "upstream_default" in result.references
+
+    def test_class_base_reference(self):
+        """Class base evaluates at module load — picked up."""
+        result = analyze_cell("class C(UpstreamBase):\n    pass")
+        assert "C" in result.defines
+        assert "UpstreamBase" in result.references
+
+    def test_class_body_reference(self):
+        """Class body assignments at the class scope reference module globals."""
+        result = analyze_cell("class C:\n    value = upstream_helper(0)")
+        assert "C" in result.defines
+        assert "upstream_helper" in result.references
+
+    def test_annotation_reference_without_future_import(self):
+        """Type annotations (without ``from __future__ import annotations``)
+        evaluate at function-definition time, so they reference module globals."""
+        result = analyze_cell("def f(x: UpstreamType) -> UpstreamType:\n    return x")
+        assert "f" in result.defines
+        assert "UpstreamType" in result.references
+
+    def test_annotation_reference_with_future_annotations_is_skipped(self):
+        """With ``from __future__ import annotations`` (PEP 563), annotations
+        are stringified and never evaluated. ``symtable`` correctly drops
+        them from the reference set."""
+        result = analyze_cell(
+            "from __future__ import annotations\n"
+            "def f(x: UpstreamType) -> UpstreamType:\n"
+            "    return x"
+        )
+        assert "f" in result.defines
+        assert "UpstreamType" not in result.references
+
+    def test_closure_over_outer_parameter_is_not_a_reference(self):
+        """A nested function closing over its outer function's parameter
+        resolves via the closure chain, not module globals — should NOT
+        be flagged."""
+        result = analyze_cell(
+            "def outer(items):\n    def inner():\n        return items\n    return inner"
+        )
+        assert "outer" in result.defines
+        assert result.references == []
+
+    def test_lambda_inside_function_closes_over_param(self):
+        """Lambda inside a function, closing over the function's parameter,
+        is a closure — not a module-globals lookup."""
+        result = analyze_cell(
+            "def sort_by_score(items):\n    return sorted(items, key=lambda i: items[i])"
+        )
+        assert "sort_by_score" in result.defines
+        assert result.references == []
+
+    def test_function_referencing_cross_cell_helper_picks_it_up(self):
+        """The motivating case: a cell defines a function that calls a
+        helper from another cell. The reference must surface so the
+        DAG adds an upstream edge and the synthetic module is loaded."""
+        result = analyze_cell("def use_helper():\n    return cross_cell_helper(42)")
+        assert "use_helper" in result.defines
+        assert "cross_cell_helper" in result.references
+
+    def test_existing_module_scope_reference_still_works(self):
+        """The existing AST visitor's module-scope refs are preserved
+        unchanged — nothing in the new symtable pass should break the
+        common case."""
+        result = analyze_cell("y = x + 1")
+        assert result.defines == ["y"]
+        assert result.references == ["x"]

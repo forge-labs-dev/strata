@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import symtable
 from dataclasses import dataclass, field
 
 
@@ -49,9 +50,20 @@ class VariableAnalyzer(ast.NodeVisitor):
         self.mutation_defines: set[str] = set()
         self._in_nested_scope = False
         self._local_vars: set[str] = set()  # Track local scope variables
+        # Set in visit_Module if the cell carries
+        # ``from __future__ import annotations``. PEP 563 stringifies
+        # annotations, so a name in a parameter or return annotation
+        # shouldn't count as a runtime reference under that flag.
+        self._future_annotations: bool = False
 
     def visit_Module(self, node: ast.Module) -> None:
         """Visit module — process top-level statements."""
+        self._future_annotations = any(
+            isinstance(s, ast.ImportFrom)
+            and s.module == "__future__"
+            and any(alias.name == "annotations" for alias in s.names)
+            for s in node.body
+        )
         for child in node.body:
             self.visit(child)
 
@@ -86,18 +98,65 @@ class VariableAnalyzer(ast.NodeVisitor):
             self.visit(node.value)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """Handle: def f(): ... — function name is defined, body is nested scope."""
+        """Handle: def f(): ... — function name is defined, body is nested scope.
+
+        Decorators, default arg values, return annotation, and arg
+        annotations all evaluate at module load (the latter only when
+        ``from __future__ import annotations`` is *not* set), so any
+        free variables in those positions are real module-scope
+        references. Body free vars are picked up by the symtable pass.
+        """
         self.defines.add(node.name)
+        self._visit_function_signature(node)
         # Don't recurse into function body (it's a nested scope)
 
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         """Handle: async def f(): ..."""
         self.defines.add(node.name)
+        self._visit_function_signature(node)
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """Handle: class C: ... — class name is defined, body is nested scope."""
+        """Handle: class C: ... — class name is defined, body is nested scope.
+
+        Decorators, base classes, and class keyword arguments
+        (``metaclass=`` etc.) evaluate at module load and are walked
+        here. The class body itself is a nested scope; the symtable
+        pass picks up its free variables.
+        """
         self.defines.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for kw in node.keywords:
+            self.visit(kw.value)
         # Don't recurse into class body
+
+    def _visit_function_signature(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        """Visit decorators, default values, and (when not under PEP 563)
+        type annotations of a function definition.
+        """
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for default in node.args.defaults:
+            self.visit(default)
+        for default in node.args.kw_defaults:
+            if default is not None:
+                self.visit(default)
+        if not self._future_annotations:
+            if node.returns is not None:
+                self.visit(node.returns)
+            for arg_list in (node.args.posonlyargs, node.args.args, node.args.kwonlyargs):
+                for arg in arg_list:
+                    if arg.annotation is not None:
+                        self.visit(arg.annotation)
+            if node.args.vararg is not None and node.args.vararg.annotation is not None:
+                self.visit(node.args.vararg.annotation)
+            if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+                self.visit(node.args.kwarg.annotation)
 
     def visit_Import(self, node: ast.Import) -> None:
         """Handle: import foo or import foo as bar."""
@@ -321,6 +380,56 @@ class VariableAnalyzer(ast.NodeVisitor):
             self._add_mutation_define(node.value)
 
 
+def _collect_body_refs(source: str) -> set[str]:
+    """Find names referenced inside function/class bodies that resolve
+    via module globals at runtime.
+
+    The AST visitor walks module-scope expressions (including, after
+    the recent extension, decorators / defaults / bases / annotations)
+    but deliberately stops at the boundary of a function or class
+    *body*. Bodies are a nested scope and need real scope analysis to
+    tell a free variable apart from a parameter or a closure
+    reference. ``symtable`` does that analysis exactly the way the
+    Python compiler does, so we delegate.
+
+    Returns names that should be added to the cell's references — let
+    the caller filter for builtins / privates / defines.
+    """
+    try:
+        root = symtable.symtable(source, "<cell>", "exec")
+    except SyntaxError:
+        return set()
+
+    refs: set[str] = set()
+    for child in root.get_children():
+        if child.get_type() in ("function", "class"):
+            _walk_body(child, refs)
+    return refs
+
+
+def _walk_body(scope: symtable.SymbolTable, refs: set[str]) -> None:
+    """Recursively collect names that fall through to module globals.
+
+    Within a function or class scope, a symbol falls through to module
+    globals iff it's referenced AND ``is_global()`` AND not locally
+    bound, not a parameter, not a closure variable. Closures
+    (``is_free()``) resolve via the enclosing scope chain, not module
+    globals — Python's compiler has already wired them up correctly.
+    """
+    for sym in scope.get_symbols():
+        if (
+            sym.is_referenced()
+            and sym.is_global()
+            and not sym.is_local()
+            and not sym.is_parameter()
+            and not sym.is_free()
+        ):
+            refs.add(sym.get_name())
+    for inner in scope.get_children():
+        if inner.get_type() in ("function", "class"):
+            _walk_body(inner, refs)
+
+
 def analyze_cell(source: str) -> CellAnalysis:
     """Analyze a cell's source code and extract defines/references.
 
@@ -344,9 +453,20 @@ def analyze_cell(source: str) -> CellAnalysis:
             error=f"Syntax error: {e.msg}",
         )
 
-    # Analyze the tree
+    # Analyze the tree for defines, mutation_defines, and module-scope
+    # references. The AST visitor handles the bookkeeping that's
+    # specific to Strata (mutation_defines, pure_defines for the
+    # demote-on-rebind logic) but it deliberately doesn't recurse into
+    # function/class bodies.
     analyzer = VariableAnalyzer()
     analyzer.visit(tree)
+
+    # Augment references with names referenced inside function/class
+    # *bodies* — those are nested scopes and the AST visitor stops at
+    # the boundary. ``symtable`` does correct scope analysis: closure
+    # variables (``is_free()``) and parameters don't surface as module
+    # references; only names that fall through to module globals do.
+    nested_refs = _collect_body_refs(source)
 
     # Filter: exclude private variables and builtins
     builtin_names = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__"}
@@ -365,9 +485,10 @@ def analyze_cell(source: str) -> CellAnalysis:
     # filtered from references as before — that handles intra-cell
     # rebinds like ``x = x + 1``.
     pure_defined_names = set(defines) - effective_mutation_defines
+    combined_refs = set(analyzer.references) | nested_refs
     references = [
         v
-        for v in analyzer.references
+        for v in combined_refs
         if not v.startswith("_") and v not in builtin_names and v not in pure_defined_names
     ]
 

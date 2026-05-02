@@ -107,7 +107,7 @@ features = ["pyo3/extension-module"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-extend-exclude = ["examples/"]
+extend-exclude = ["examples/", "experiments/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

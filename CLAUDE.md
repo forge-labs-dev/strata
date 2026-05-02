@@ -563,7 +563,13 @@ is missing).
 
 ### DAG & Variable Analysis
 
-Each cell is analyzed via AST to extract `defines` (top-level assignments) and `references` (free variables). The DAG builder connects references to producers:
+Each cell is analyzed to extract `defines` (top-level assignments) and `references` (free variables). The defines pass walks the cell's AST module-scope; the references pass picks up free variables anywhere they appear, including:
+
+- module-scope expressions (existing AST visitor)
+- decorators, default arg values, class bases, and type annotations (visited as part of each `def`/`class` signature; annotations are skipped under `from __future__ import annotations` because PEP 563 stringifies them)
+- function/method bodies (resolved via `symtable` so closures and parameters don't leak as references)
+
+The DAG builder connects references to producers:
 
 - **Variable producer**: Last cell that defines each variable (handles shadowing)
 - **`consumed_variables[cell_id]`**: Variables from this cell that downstream cells reference (drives what gets stored as artifacts)
