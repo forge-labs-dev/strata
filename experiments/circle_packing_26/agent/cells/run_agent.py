@@ -30,7 +30,7 @@ MAX_TOKENS_PER_RESPONSE = 2048
 
 SYSTEM_PROMPT = """You are working on the n=26 circle packing problem.
 Your goal is to maximize the sum of radii of 26 non-overlapping circles
-inside the unit square [0, 1] x [0, 1]. The known best is around 2.636.
+inside the unit square [0, 1] x [0, 1]. The known SOTA is around 2.6358.
 
 You design a Python function with the signature
 
@@ -57,6 +57,17 @@ Strategy notes:
   hypothesis, say so. Memory is a record of reasoning, not just code.
 - When you've tried enough strategies in this round, end your turn.
   The outer loop will start a fresh round if the budget allows.
+
+Local-optimum awareness: if your top attempts are clustered within
+~0.01-0.02 of each other, you have found a local optimum but haven't
+escaped its basin. Refining variants of the same layout will not
+get you out. Try a structurally different topology — different number
+of rows, hex-derived arrangements, asymmetric layouts, mixed-radius
+patterns where corner/edge circles differ from interior ones.
+For global search inside one optimization, ``scipy.optimize.basin_hopping``
+or ``scipy.optimize.dual_annealing`` can escape minima that SLSQP
+cannot. The known SOTA layouts for n=26 are NOT 5x5+1 — that
+configuration tops out near 2.631.
 """
 
 
@@ -95,6 +106,44 @@ TOOLS = [
 ]
 
 
+# ---- Plateau detection + budget bookkeeping -----------------------------
+
+
+def _detect_plateau(memory: list[dict], rel_threshold: float = 0.01) -> dict | None:
+    """If the top-3 successful attempts span less than *rel_threshold*
+    fraction of the best score, the agent is polishing one local
+    optimum. Return a small descriptor for the prompt; ``None`` when
+    we're still exploring or have too few data points.
+    """
+    ok = [m for m in memory if m["status"] == "ok"]
+    if len(ok) < 3:
+        return None
+    sorted_ok = sorted(ok, key=lambda m: m["score"], reverse=True)
+    top, third = sorted_ok[0]["score"], sorted_ok[2]["score"]
+    if top <= 0:
+        return None
+    spread = top - third
+    if spread / top >= rel_threshold:
+        return None
+    return {"top": top, "third": third, "spread": spread}
+
+
+def _next_call_fits(total_tokens: int, last_input_tokens: int) -> bool:
+    """Conservative budget check: assume the next API call costs
+    ``last_input_tokens`` (or 1024 if we have no observation) plus the
+    worst-case ``MAX_TOKENS_PER_RESPONSE``. Skip the call when that
+    would exceed ``TOKEN_BUDGET``.
+
+    The first call has ``last_input_tokens == 0`` so the guard is
+    cheap; subsequent calls auto-tune from observed input sizes,
+    which grow as memory accumulates. Inputs in this experiment are
+    monotone-increasing, so using the most recent observation is
+    safe enough — it slightly under-reserves but never over-reserves.
+    """
+    estimated_input = max(last_input_tokens, 1024)
+    return total_tokens + estimated_input + MAX_TOKENS_PER_RESPONSE <= TOKEN_BUDGET
+
+
 # ---- Memory rendering ----------------------------------------------------
 
 
@@ -121,15 +170,28 @@ def _format_memory(memory: list[dict]) -> str:
 def _build_user_prompt(memory: list[dict], total_tokens: int, best_score: float) -> str:
     n_total = len(memory)
     n_ok = sum(1 for m in memory if m["status"] == "ok")
+    plateau = _detect_plateau(memory)
+    plateau_note = ""
+    if plateau is not None:
+        plateau_note = (
+            f"\n**Stagnation alert**: your top-3 attempts span only "
+            f"{plateau['spread']:.4f} (best {plateau['top']:.4f}, "
+            f"3rd {plateau['third']:.4f}). You are polishing a local "
+            f"optimum. Refining variants of the same layout will not "
+            f"escape it. Try a structurally different topology — "
+            f"hex-derived, asymmetric rows, mixed radii — or use "
+            f"basin_hopping / dual_annealing for global search.\n"
+        )
     return (
         f"Memory ({n_total} attempts, {n_ok} feasible, best score "
         f"{best_score:.4f}):\n\n"
         f"{_format_memory(memory)}\n\n"
         f"Tokens used: {total_tokens:,} / {TOKEN_BUDGET:,}.\n"
-        f"Target: {TARGET}.\n\n"
+        f"Target: {TARGET}."
+        f"{plateau_note}\n"
         "Propose and score new strategies. Use score_candidate as many "
-        "times as you need (cap 12 per round). End your turn when "
-        "you're done with this round."
+        f"times as you need (cap {TOOL_CALL_CAP} per round). End your turn "
+        "when you're done with this round."
     )
 
 
@@ -184,12 +246,20 @@ def _run_agent() -> dict:
     memory: list[dict] = []
     total_tokens = 0
     round_idx = 0
+    last_input_tokens = 0
     history: list[dict] = []
 
-    while total_tokens < TOKEN_BUDGET:
+    while True:
         best_score = max((m["score"] for m in memory), default=0.0)
         if best_score >= TARGET:
             print(f"target hit at score {best_score:.4f} — stopping")
+            break
+        if not _next_call_fits(total_tokens, last_input_tokens):
+            print(
+                f"\nbudget headroom too low (used {total_tokens:,} / "
+                f"{TOKEN_BUDGET:,}, last_input ~{last_input_tokens:,}); "
+                "stopping before next call"
+            )
             break
 
         round_idx += 1
@@ -200,6 +270,9 @@ def _run_agent() -> dict:
         ]
 
         for step in range(TOOL_CALL_CAP):
+            if not _next_call_fits(total_tokens, last_input_tokens):
+                # Outer loop will print and break on the next iteration.
+                break
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS_PER_RESPONSE,
@@ -207,6 +280,7 @@ def _run_agent() -> dict:
                 messages=messages,
                 tools=TOOLS,
             )
+            last_input_tokens = response.usage.input_tokens
             used = response.usage.input_tokens + response.usage.output_tokens
             total_tokens += used
 
@@ -238,9 +312,6 @@ def _run_agent() -> dict:
                 )
             messages.append({"role": "user", "content": tool_results})
 
-            if total_tokens >= TOKEN_BUDGET:
-                break
-
         history.append(
             {
                 "round": round_idx,
@@ -249,10 +320,6 @@ def _run_agent() -> dict:
                 "best_score": max((m["score"] for m in memory), default=0.0),
             }
         )
-
-        if total_tokens >= TOKEN_BUDGET:
-            print(f"\nbudget exhausted at {total_tokens:,} tokens")
-            break
 
     return {
         "memory": memory,
