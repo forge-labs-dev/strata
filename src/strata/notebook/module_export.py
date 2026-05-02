@@ -333,6 +333,11 @@ def _scope_unresolved(scope: symtable.SymbolTable, module_locals: set[str]) -> s
     For function scopes this represents call-time NameErrors; for class
     scopes it represents module-load-time NameErrors when the class
     body executes.
+
+    Skips ``is_free()`` symbols — those are closure variables that
+    Python has already resolved to an enclosing scope's binding, so
+    they're guaranteed to exist at runtime even though they're not in
+    module_locals.
     """
     missing: set[str] = set()
     for sym in scope.get_symbols():
@@ -341,6 +346,7 @@ def _scope_unresolved(scope: symtable.SymbolTable, module_locals: set[str]) -> s
             sym.is_referenced()
             and not sym.is_local()
             and not sym.is_parameter()
+            and not sym.is_free()
             and name not in module_locals
             and name not in _BUILTIN_NAMES
         ):

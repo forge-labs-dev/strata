@@ -231,6 +231,22 @@ def count(items):
     assert "count" in plan.exported_symbols
 
 
+def test_def_with_inner_closure_over_parameter_is_exportable() -> None:
+    """A nested lambda that closes over its outer function's parameter
+    should NOT be flagged as referencing an unbound name. Python's
+    symtable marks these as ``is_free()`` and resolves them via the
+    closure chain, not via module globals.
+    """
+    plan = build_module_export_plan(
+        """
+def sort_by_score(items):
+    return sorted(items, key=lambda i: items[i]["score"])
+""".strip()
+    )
+    assert plan.is_exportable is True
+    assert "sort_by_score" in plan.exported_symbols
+
+
 def test_control_flow_alongside_self_contained_def_is_exportable() -> None:
     """Control flow at module scope is dropped from the slice. As long
     as the def doesn't depend on names bound by that control flow, it
