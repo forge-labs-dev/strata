@@ -58,16 +58,12 @@ Strategy notes:
 - When you've tried enough strategies in this round, end your turn.
   The outer loop will start a fresh round if the budget allows.
 
-Local-optimum awareness: if your top attempts are clustered within
-~0.01-0.02 of each other, you have found a local optimum but haven't
-escaped its basin. Refining variants of the same layout will not
-get you out. Try a structurally different topology — different number
-of rows, hex-derived arrangements, asymmetric layouts, mixed-radius
-patterns where corner/edge circles differ from interior ones.
-For global search inside one optimization, ``scipy.optimize.basin_hopping``
-or ``scipy.optimize.dual_annealing`` can escape minima that SLSQP
-cannot. The known SOTA layouts for n=26 are NOT 5x5+1 — that
-configuration tops out near 2.631.
+When your top attempts cluster in a tight band (< 1% spread) the user
+prompt will flag it as a stagnation alert. When that happens, try a
+structurally different topology (hex-derived, asymmetric rows,
+mixed-radius patterns) before refining further. For global search
+inside a single optimization, ``scipy.optimize.basin_hopping`` or
+``scipy.optimize.dual_annealing`` can escape minima that SLSQP cannot.
 """
 
 
@@ -189,9 +185,10 @@ def _build_user_prompt(memory: list[dict], total_tokens: int, best_score: float)
         f"Tokens used: {total_tokens:,} / {TOKEN_BUDGET:,}.\n"
         f"Target: {TARGET}."
         f"{plateau_note}\n"
-        "Propose and score new strategies. Use score_candidate as many "
-        f"times as you need (cap {TOOL_CALL_CAP} per round). End your turn "
-        "when you're done with this round."
+        "Propose at least one new strategy and score it before ending "
+        f"your turn. You may iterate within this round — call score_candidate "
+        f"up to {TOOL_CALL_CAP} times, observe the result of each, and "
+        "refine. End the turn when you're done."
     )
 
 
@@ -273,12 +270,19 @@ def _run_agent() -> dict:
             if not _next_call_fits(total_tokens, last_input_tokens):
                 # Outer loop will print and break on the next iteration.
                 break
+            # Force a tool call on the first step of each round so the
+            # agent can't end its turn without trying anything (the
+            # earlier run had 17/22 rounds spent on text-only thinking
+            # with no progress). After step 0, ``auto`` lets the agent
+            # observe its tool result, refine, or end naturally.
+            tool_choice = {"type": "any"} if step == 0 else {"type": "auto"}
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS_PER_RESPONSE,
                 system=SYSTEM_PROMPT,
                 messages=messages,
                 tools=TOOLS,
+                tool_choice=tool_choice,
             )
             last_input_tokens = response.usage.input_tokens
             used = response.usage.input_tokens + response.usage.output_tokens
