@@ -227,6 +227,10 @@ examples/*/.strata/
 examples/*/uv.lock
 examples/*/*.db
 examples/*/*.duckdb
+experiments/**/.strata/
+experiments/**/uv.lock
+experiments/**/*.db
+experiments/**/*.duckdb
 
 # Claude Code session state
 .claude/
