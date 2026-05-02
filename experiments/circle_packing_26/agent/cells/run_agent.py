@@ -21,9 +21,8 @@ import anthropic
 
 # ---- Configuration -------------------------------------------------------
 MODEL = "claude-opus-4-7"
-TEMPERATURE = 0.7
 TOKEN_BUDGET = 200_000  # input + output tokens across the whole run
-TOOL_CALL_CAP = 12       # max tool calls per agent round
+TOOL_CALL_CAP = 12  # max tool calls per agent round
 PER_CANDIDATE_TIMEOUT = 30.0
 TARGET = 2.636
 MAX_TOKENS_PER_RESPONSE = 2048
@@ -194,10 +193,7 @@ def _run_agent() -> dict:
             break
 
         round_idx += 1
-        print(
-            f"\n--- round {round_idx} (best={best_score:.4f}, "
-            f"tokens={total_tokens:,}) ---"
-        )
+        print(f"\n--- round {round_idx} (best={best_score:.4f}, tokens={total_tokens:,}) ---")
 
         messages = [
             {"role": "user", "content": _build_user_prompt(memory, total_tokens, best_score)},
@@ -207,7 +203,6 @@ def _run_agent() -> dict:
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS_PER_RESPONSE,
-                temperature=TEMPERATURE,
                 system=SYSTEM_PROMPT,
                 messages=messages,
                 tools=TOOLS,

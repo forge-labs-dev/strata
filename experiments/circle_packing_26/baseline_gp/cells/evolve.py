@@ -29,7 +29,6 @@ POPULATION_CAP = 8
 TOP_K_IN_PROMPT = 3
 N_RECENT_FAILURES_IN_PROMPT = 3
 MODEL = "claude-opus-4-7"
-TEMPERATURE = 0.7
 PER_CANDIDATE_TIMEOUT = 30.0
 
 
@@ -56,7 +55,9 @@ def _format_population_section(population: list[dict], top_k: int) -> str:
         return "(no successful strategies yet)"
     parts = []
     for i, d in enumerate(sorted_pop):
-        parts.append(f"### Strategy #{i + 1} — score {d['score']:.4f}\n```python\n{d['source']}\n```")
+        parts.append(
+            f"### Strategy #{i + 1} — score {d['score']:.4f}\n```python\n{d['source']}\n```"
+        )
     return "\n\n".join(parts)
 
 
@@ -106,7 +107,6 @@ def _call_llm(state: dict) -> tuple[str, int]:
     message = client.messages.create(
         model=MODEL,
         max_tokens=2048,
-        temperature=TEMPERATURE,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_prompt(state)}],
     )
@@ -156,7 +156,8 @@ state = {
     "recent_failures": new_failures,
     "best_score": new_best,
     "total_tokens": total_tokens,
-    "history": state["history"] + [
+    "history": state["history"]
+    + [
         {
             "iter": next_iter,
             "best_score": new_best,
