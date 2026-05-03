@@ -150,6 +150,10 @@ state = {
     "recent_failures": [result_to_dict(r) for r in _initial_failures],
     "best_score": _best,
     "total_tokens": 0,
+    # Default predictor for the first iteration's cost — replaced by
+    # the actual measurement after each iter. 7000 reserves headroom
+    # for the next API call (~5k input + 2k max output).
+    "last_iter_tokens": 7000,
     "history": [
         {
             "iter": 0,

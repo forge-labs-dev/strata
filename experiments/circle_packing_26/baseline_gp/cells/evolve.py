@@ -1,6 +1,6 @@
 # @name Evolve — one LLM-driven generation
 # @loop max_iter=200 carry=state
-# @loop_until state["best_score"] >= 2.636 or state["total_tokens"] >= 200000
+# @loop_until state["best_score"] >= 2.636 or state["total_tokens"] + state.get("last_iter_tokens", 7000) >= 200000
 # @timeout 120
 #
 # One iteration of the outer loop:
@@ -39,11 +39,18 @@ packing problem. The function signature is:
 
 It must return EXACTLY 26 (x, y, r) circles inside the unit square
 [0, 1] x [0, 1], with no overlap (distance between centers >= sum of
-radii). Maximize the sum of radii. The known best is around 2.636.
+radii). Maximize the sum of radii. The known SOTA is around 2.6358.
 
 You may use numpy and scipy freely. The function runs with a 30s
 timeout. Be deterministic given the rng — don't call random or
 np.random outside of the rng you're given.
+
+When the user prompt flags a stagnation alert, your top strategies
+have all converged to one local optimum. Switch to a structurally
+different topology (hex-derived arrangements, asymmetric rows,
+mixed-radius patterns) before refining further. For global search
+inside a single optimization, ``scipy.optimize.basin_hopping`` or
+``scipy.optimize.dual_annealing`` can escape minima that SLSQP cannot.
 
 Output ONLY a Python code block containing the `propose` function and
 any helpers it needs. No prose, no commentary outside the code."""
@@ -59,6 +66,24 @@ def _format_population_section(population: list[dict], top_k: int) -> str:
             f"### Strategy #{i + 1} — score {d['score']:.4f}\n```python\n{d['source']}\n```"
         )
     return "\n\n".join(parts)
+
+
+def _detect_plateau(population: list[dict], rel_threshold: float = 0.01) -> dict | None:
+    """If the top-3 of the population span less than *rel_threshold*
+    fraction of the best score, the GP loop is polishing one local
+    optimum. Returns a small descriptor for the prompt; ``None`` when
+    we're still exploring or have too few feasible attempts.
+    """
+    if len(population) < 3:
+        return None
+    sorted_pop = sorted(population, key=lambda d: d["score"], reverse=True)
+    top, third = sorted_pop[0]["score"], sorted_pop[2]["score"]
+    if top <= 0:
+        return None
+    spread = top - third
+    if spread / top >= rel_threshold:
+        return None
+    return {"top": top, "third": third, "spread": spread}
 
 
 def _format_failures_section(failures: list[dict], k: int) -> str:
@@ -79,9 +104,22 @@ def _build_user_prompt(state: dict) -> str:
     pop_block = _format_population_section(state["population"], TOP_K_IN_PROMPT)
     fail_block = _format_failures_section(state["recent_failures"], N_RECENT_FAILURES_IN_PROMPT)
     best = state["best_score"]
+    plateau = _detect_plateau(state["population"])
+    plateau_note = ""
+    if plateau is not None:
+        plateau_note = (
+            f"\n**Stagnation alert**: the top-3 strategies span only "
+            f"{plateau['spread']:.4f} (best {plateau['top']:.4f}, "
+            f"3rd {plateau['third']:.4f}). The population has converged "
+            f"on one local optimum. Refining variants of the same layout "
+            f"will not escape it. Try a structurally different topology "
+            f"or use basin_hopping / dual_annealing for global search.\n"
+        )
     return (
         f"Best score so far: {best:.4f} (target: 2.636).\n"
-        f"Iteration: {state['iter'] + 1} / 80.\n\n"
+        f"Iteration: {state['iter'] + 1} / 200.\n"
+        f"Tokens used: {state['total_tokens']:,} / 200,000.\n"
+        f"{plateau_note}\n"
         "## Top strategies\n\n"
         f"{pop_block}\n\n"
         "## Recent failures (learn from these)\n\n"
@@ -156,6 +194,11 @@ state = {
     "recent_failures": new_failures,
     "best_score": new_best,
     "total_tokens": total_tokens,
+    # Used by the @loop_until predicate to decide whether the next
+    # iteration would push us past the budget. Predicting next-call
+    # cost from the last call's cost is a good proxy because GP iters
+    # are independent (no growing conversation history).
+    "last_iter_tokens": tokens_used,
     "history": state["history"]
     + [
         {
