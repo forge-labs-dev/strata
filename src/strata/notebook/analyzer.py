@@ -256,39 +256,78 @@ class VariableAnalyzer(ast.NodeVisitor):
                 self.references.add(node.id)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
-        """List comprehension — comprehension variables are scoped.
-
-        In [x * factor for x in items]:
-        - 'items' is referenced from outer scope (first generator iterable)
-        - 'x' is a loop variable scoped to the comprehension
-        - 'factor' is referenced from outer scope (in element)
-        - But we can't easily distinguish x from factor without building the scope
-
-        For simplicity, we treat comprehensions as opaque and only visit the
-        first generator's iterable (which is guaranteed to be evaluated in outer scope).
-        References in the element and conditions are skipped to avoid false positives.
-
-        This means [x * y for x in items] will miss y as a reference, which is
-        acceptable for the v1 analyzer — notebooks should avoid such patterns.
-        """
-        if node.generators:
-            # First generator's iterable is evaluated in outer scope
-            self.visit(node.generators[0].iter)
+        """``[elt for x in iter if cond]`` — visit element/conditions with
+        loop targets locally scoped, visit iters in outer scope."""
+        self._visit_comprehension(node, [node.elt])
 
     def visit_SetComp(self, node: ast.SetComp) -> None:
-        """Set comprehension."""
-        if node.generators:
-            self.visit(node.generators[0].iter)
+        """``{elt for x in iter}``."""
+        self._visit_comprehension(node, [node.elt])
 
     def visit_DictComp(self, node: ast.DictComp) -> None:
-        """Dict comprehension."""
-        if node.generators:
-            self.visit(node.generators[0].iter)
+        """``{k: v for x in iter}`` — both key and value are scoped."""
+        self._visit_comprehension(node, [node.key, node.value])
 
     def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
-        """Generator expression."""
-        if node.generators:
-            self.visit(node.generators[0].iter)
+        """``(elt for x in iter)``."""
+        self._visit_comprehension(node, [node.elt])
+
+    def _visit_comprehension(
+        self,
+        node: ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp,
+        elements: list[ast.expr],
+    ) -> None:
+        """Walk comp parts with loop variables locally scoped.
+
+        The first generator's iterable runs in the OUTER scope, so it's
+        visited without any local additions. Subsequent generators'
+        iterables run inside the comprehension's scope (they can see
+        prior loop variables), so they're visited under the local
+        binding. Element(s) and ``if`` clauses always see all loop
+        variables.
+
+        Python 3.13 inlines comprehensions into the enclosing scope
+        (PEP 709), so ``symtable`` no longer creates a child scope for
+        them — the AST-level scope tracking here is what actually picks
+        up free variables in comp elements.
+        """
+        if not node.generators:
+            return
+
+        # First generator's iter runs in the OUTER scope.
+        self.visit(node.generators[0].iter)
+
+        old_local_vars = self._local_vars
+        try:
+            local_vars = set(self._local_vars)
+            for gen in node.generators:
+                local_vars |= self._extract_target_names(gen.target)
+            self._local_vars = local_vars
+
+            # Element(s) and if-clauses see all loop targets.
+            for elt in elements:
+                self.visit(elt)
+            # Subsequent generators' iter expressions can see prior
+            # loop targets, so they get visited under the local scope.
+            for gen in node.generators[1:]:
+                self.visit(gen.iter)
+            for gen in node.generators:
+                for cond in gen.ifs:
+                    self.visit(cond)
+        finally:
+            self._local_vars = old_local_vars
+
+    def _extract_target_names(self, target: ast.expr) -> set[str]:
+        """Names bound by a comprehension or for-loop target."""
+        names: set[str] = set()
+        if isinstance(target, ast.Name):
+            names.add(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                names |= self._extract_target_names(elt)
+        elif isinstance(target, ast.Starred):
+            names |= self._extract_target_names(target.value)
+        return names
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
         """Lambda expression — arguments are local scope."""

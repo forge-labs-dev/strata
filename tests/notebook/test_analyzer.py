@@ -274,15 +274,51 @@ class TestAnalyzerComprehensions:
         assert result.references == ["items"]
 
     def test_list_comprehension_with_outer_var(self):
-        """List comp using outer variable: [x * factor for x in items].
-
-        Note: In v1, the analyzer treats comprehensions as opaque and only
-        visits the first generator's iterable. References inside the element
-        expression are not extracted. This is acceptable for typical notebooks.
-        """
+        """List comp using outer variable: free names in the element are
+        picked up; the loop variable stays comp-local."""
         result = analyze_cell("[x * factor for x in items]")
         assert result.defines == []
-        assert result.references == ["items"]  # factor inside comprehension not detected
+        assert set(result.references) == {"items", "factor"}
+
+    def test_list_comprehension_function_call_in_element(self):
+        """``[helper(x) for x in items]`` — ``helper`` is a free var in
+        the element position, must be picked up so the DAG can load
+        the synthetic module that exports it. This is the seed-cell
+        case that motivated the fix."""
+        result = analyze_cell("out = [helper(x) for x in items]")
+        assert "out" in result.defines
+        assert set(result.references) == {"items", "helper"}
+
+    def test_list_comprehension_with_condition_outer_var(self):
+        """``[x for x in items if predicate(x)]`` — ``predicate`` is a
+        free var in the condition position."""
+        result = analyze_cell("[x for x in items if predicate(x)]")
+        assert result.defines == []
+        assert set(result.references) == {"items", "predicate"}
+
+    def test_dict_comprehension_with_outer_vars(self):
+        """``{f(k): g(v) for k, v in items}`` — ``f`` and ``g`` are
+        outer-scope free vars; ``k`` and ``v`` are comp-local."""
+        result = analyze_cell("{f(k): g(v) for k, v in items}")
+        assert result.defines == []
+        assert set(result.references) == {"items", "f", "g"}
+
+    def test_nested_comprehension(self):
+        """``[a + b for a in xs for b in ys]`` — outer iter ``xs`` runs
+        in outer scope, inner iter ``ys`` runs in comp scope but ``ys``
+        is still a free var; ``a`` and ``b`` stay comp-local."""
+        result = analyze_cell("[a + b for a in xs for b in ys]")
+        assert result.defines == []
+        assert set(result.references) == {"xs", "ys"}
+
+    def test_comprehension_target_does_not_leak(self):
+        """The loop variable ``x`` in a comprehension is comp-scoped and
+        must not surface as a module reference even though Python 3.13
+        inlines comp scopes (PEP 709)."""
+        result = analyze_cell("out = [x * 2 for x in items]")
+        # ``x`` is bound by the comp, not a free var. Should not appear
+        # in references regardless of PEP 709 inlining.
+        assert "x" not in result.references
 
     def test_dict_comprehension(self):
         """Dict comprehension: {k: v for k, v in items}."""
