@@ -43,6 +43,7 @@ else:
     ax.set_yticks([])
     plt.tight_layout()
     plt.show()
+    plt.close(fig)
 
     # ------- Top-3 source listing -------
     print("\n" + "=" * 60)
@@ -66,3 +67,4 @@ else:
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.show()
+    plt.close(fig2)
