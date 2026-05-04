@@ -587,3 +587,81 @@ class TestAnalyzerNestedScopes:
         result = analyze_cell("y = x + 1")
         assert result.defines == ["y"]
         assert result.references == ["x"]
+
+
+class TestAnalyzerGlobalWrites:
+    """``def f(): global X; X = ...`` binds ``X`` at module scope at
+    runtime. The analyzer must register ``X`` as a define so downstream
+    cells that read ``X`` correctly see this cell as their upstream
+    producer."""
+
+    def test_global_write_registered_as_define(self):
+        """The lazy-init pattern: function declares + writes a global."""
+        result = analyze_cell(
+            "def lazy_init():\n    global STATE\n    STATE = compute()\nlazy_init()"
+        )
+        assert "STATE" in result.defines
+        assert "lazy_init" in result.defines
+        # ``STATE`` is only written inside the function (no read), so
+        # it shouldn't appear as a reference.
+        assert "STATE" not in result.references
+        # ``compute`` is referenced but not bound — upstream dependency.
+        assert "compute" in result.references
+
+    def test_global_read_and_write_keeps_name_in_references(self):
+        """``STATE = compute(STATE)`` reads the prior value and writes
+        a new one. The cell is both consumer and producer of STATE,
+        same shape as ``df["col"] = df["col"] * 2``. The DAG needs
+        STATE in both defines AND references so it routes the
+        downstream read through this cell, not the original producer."""
+        result = analyze_cell("def lazy_init():\n    global STATE\n    STATE = compute(STATE)\n")
+        assert "STATE" in result.defines
+        assert "STATE" in result.references
+        assert "STATE" in result.mutation_defines
+
+    def test_multiple_globals_in_one_declaration(self):
+        """``global STATE, FLAG`` declares both — the analyzer should
+        register every name that's actually written."""
+        result = analyze_cell(
+            "def init():\n    global STATE, FLAG\n    STATE = compute()\n    FLAG = True\n"
+        )
+        assert "STATE" in result.defines
+        assert "FLAG" in result.defines
+
+    def test_bare_global_declaration_without_assign_is_not_a_define(self):
+        """``global Y`` without an assignment doesn't bind Y at module
+        scope. Symtable flags it as ``declared_global`` but not
+        ``assigned``, and we filter on the assigned flag."""
+        result = analyze_cell("def f():\n    global Y\n    return 1\n")
+        assert "Y" not in result.defines
+        # Y should also not be in references — it's just a declaration,
+        # no actual access.
+        assert "Y" not in result.references
+
+    def test_nonlocal_does_not_register_as_module_define(self):
+        """``nonlocal`` writes to the enclosing function's scope, not
+        module scope. Symtable flags those as ``is_local()`` (not
+        ``is_declared_global()``), so they don't surface as defines
+        from this cell."""
+        result = analyze_cell(
+            "def outer():\n    x = 1\n    def inner():\n        nonlocal x\n        x = 2\n"
+        )
+        assert "x" not in result.defines
+        assert result.defines == ["outer"]
+
+    def test_global_write_in_method_body(self):
+        """A method inside a class can also write a module-level
+        global. Symtable's recursive scope walk catches it."""
+        result = analyze_cell(
+            "class Service:\n    def init(self):\n        global READY\n        READY = True\n"
+        )
+        assert "READY" in result.defines
+        assert "Service" in result.defines
+
+    def test_local_assignment_inside_function_is_not_a_define(self):
+        """A function that assigns to a local name (no ``global``) does
+        NOT define that name at module scope, even though the AST
+        contains ``Name(Store)`` nodes inside the function body."""
+        result = analyze_cell("def f():\n    x = 1\n    return x\n")
+        assert "x" not in result.defines
+        assert result.defines == ["f"]

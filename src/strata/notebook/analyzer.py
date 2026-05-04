@@ -469,6 +469,63 @@ def _walk_body(scope: symtable.SymbolTable, refs: set[str]) -> None:
             _walk_body(inner, refs)
 
 
+def _collect_global_writes(source: str) -> tuple[set[str], set[str]]:
+    """Find names assigned at module scope from inside a function via
+    an explicit ``global`` declaration.
+
+    A pattern like::
+
+        def lazy_init():
+            global STATE
+            STATE = compute()
+        lazy_init()
+
+    binds ``STATE`` at module scope at runtime. The AST visitor only
+    walks module-level statements for ``defines``, so it would miss
+    this. Symtable flags such names as ``is_assigned() and
+    is_declared_global()`` at the function's scope, which is enough
+    to detect the binding without simulating runtime.
+
+    Returns ``(writes, writes_with_reads)``:
+
+    * ``writes`` — every name that's a global-declared assign target,
+      including those that are also read in the same function.
+    * ``writes_with_reads`` — subset that's *also* referenced. These
+      need to stay in the cell's references (mutation_defines path)
+      so the DAG records this cell as both a consumer and producer of
+      the name, parallel to ``df["col"] = df["col"] * 2``.
+
+    Bare ``global X`` declarations without a matching assign are
+    skipped (no binding occurs). ``nonlocal`` is skipped — those
+    write to the enclosing function's scope, not module scope.
+    """
+    try:
+        root = symtable.symtable(source, "<cell>", "exec")
+    except SyntaxError:
+        return set(), set()
+    writes: set[str] = set()
+    read_writes: set[str] = set()
+    for child in root.get_children():
+        if child.get_type() in ("function", "class"):
+            _walk_global_writes(child, writes, read_writes)
+    return writes, read_writes
+
+
+def _walk_global_writes(
+    scope: symtable.SymbolTable,
+    writes: set[str],
+    read_writes: set[str],
+) -> None:
+    for sym in scope.get_symbols():
+        if sym.is_assigned() and sym.is_declared_global():
+            writes.add(sym.get_name())
+            if sym.is_referenced():
+                read_writes.add(sym.get_name())
+    for inner in scope.get_children():
+        if inner.get_type() in ("function", "class"):
+            _walk_global_writes(inner, writes, read_writes)
+
+
 def analyze_cell(source: str) -> CellAnalysis:
     """Analyze a cell's source code and extract defines/references.
 
@@ -507,16 +564,24 @@ def analyze_cell(source: str) -> CellAnalysis:
     # references; only names that fall through to module globals do.
     nested_refs = _collect_body_refs(source)
 
+    # Augment defines with module-scope bindings produced from inside a
+    # function via explicit ``global`` declarations (e.g. lazy-init
+    # patterns). Without this, a downstream cell that consumes such a
+    # name would see no upstream producer. ``global_read_writes`` is
+    # the subset that's also read in the same function — those stay in
+    # references (parallel to ``df["col"] = df["col"] * 2``).
+    global_writes, global_read_writes = _collect_global_writes(source)
+
     # Filter: exclude private variables and builtins
     builtin_names = set(dir(builtins)) | {"__name__", "__file__", "__doc__", "__package__"}
-    defines = [v for v in analyzer.defines if not v.startswith("_")]
+    defines = [v for v in (analyzer.defines | global_writes) if not v.startswith("_")]
     # A name only counts as a mutation-define if the cell didn't also
     # pure-assign it. If a cell does ``df = ...`` and later
     # ``df["col"] = ...``, the pure assignment supersedes — ``df`` is
     # locally produced and shouldn't drag in a phantom upstream.
     effective_mutation_defines = {
         v
-        for v in analyzer.mutation_defines
+        for v in (analyzer.mutation_defines | global_read_writes)
         if not v.startswith("_") and v in set(defines) and v not in analyzer.pure_defines
     }
     # Mutation-defines stay in references (the cell depends on an
