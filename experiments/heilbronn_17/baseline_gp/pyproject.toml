@@ -1,0 +1,19 @@
+[project]
+name = "circle-packing-26"
+version = "0.1.0"
+description = "LLM-driven code evolution for the n=26 circle packing problem"
+requires-python = ">=3.12"
+dependencies = [
+    # harness deps — every Strata notebook needs these
+    "pyarrow>=18.0.0",
+    "orjson>=3.10.0",
+    "cloudpickle>=3.0.0",
+    # numerical tooling — used by the inner deterministic optimizer
+    "numpy>=2.0.0",
+    "scipy>=1.13.0",
+    "matplotlib>=3.8.0",
+    # outer LLM-driven loop
+    "anthropic>=0.40.0",
+]
+
+[tool.uv]

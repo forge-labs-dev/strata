@@ -1,0 +1,10 @@
+notebook_id = "heilbronn-17-agent"
+name = "Heilbronn 17 — Agent variant"
+created_at = 2026-05-04T00:00:00+00:00
+updated_at = "2026-05-04T00:00:00+00:00"
+cells = [
+    { id = "problem", file = "problem.md", language = "markdown", order = 0 },
+    { id = "harness", file = "harness.py", language = "python", order = 1 },
+    { id = "run_agent", file = "run_agent.py", language = "python", order = 2 },
+    { id = "report", file = "report.py", language = "python", order = 3 },
+]
