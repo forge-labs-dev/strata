@@ -3,6 +3,14 @@
 # @loop_until state["total_tokens"] + state.get("last_iter_tokens", 7000) >= 200000
 # @timeout 600
 #
+# Note on max_tokens: this cell was originally 2048, then bumped to
+# 8192 to fix mid-response truncation. 8192 caused per-iteration wall
+# times in the 5-10 minute range as Opus elaborated to the cap, and
+# iter 2 of the second GP run timed out at 600s. Settled on 4096 plus
+# a more robust ``_extract_code`` that handles truncated fences —
+# halves worst-case generation time, and the parser recovers from
+# the common truncation patterns when 4096 isn't enough.
+#
 # One iteration of the outer loop:
 #   1. Build a prompt showing the LLM the top-K population members
 #      (verbatim source, score, and the bottleneck triple — the three
@@ -153,27 +161,44 @@ def _build_user_prompt(state: dict) -> str:
 
 
 def _extract_code(content: str) -> str:
+    """Pull a Python source block out of an LLM response.
+
+    The LLM is asked to emit a single ``` ```python ... ``` `` fenced
+    block. We try four strategies in order:
+
+    1. Complete fenced block — the happy path. Use the regex that
+       requires both an opening and closing fence.
+    2. Truncated fence (no closing) — happens when the response is
+       cut off by ``max_tokens``. Strip the opening fence and use
+       everything after it.
+    3. No fence at all — the LLM ignored the formatting instruction.
+       Find the first occurrence of ``def propose`` or ``import``
+       and use everything from there.
+    4. Last resort — return the raw content. ``compile`` will likely
+       fail and the harness records the failure with a syntax error.
+    """
     match = re.search(r"```(?:python)?\s*\n(.*?)```", content, re.DOTALL)
     if match:
         return match.group(1).strip()
-    # Fallback: assume the whole content is code.
+    open_match = re.search(r"```(?:python)?\s*\n", content)
+    if open_match:
+        return content[open_match.end() :].strip()
+    for marker in ("def propose", "import "):
+        idx = content.find(marker)
+        if idx >= 0:
+            return content[idx:].strip()
     return content.strip()
 
 
 def _call_llm(state: dict) -> tuple[str, int]:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    # 8192 instead of 2048 — Heilbronn's seed strategies are 60-80
-    # lines of dense scipy code, and the LLM frequently writes
-    # multi-start variants with bottleneck-targeted polish that run
-    # well past 2048 output tokens. When that happens, the response
-    # gets truncated mid-code-block; ``_extract_code`` falls through
-    # to the raw content because there's no closing ``` to match,
-    # and ``compile()`` chokes on the leading ``` of the fence.
-    # Result: every iteration silently fails with "invalid syntax at
-    # line 1", which is what we observed on the first GP run.
+    # 4096 strikes the balance: 2048 truncated nearly every Heilbronn
+    # response, 8192 caused per-iter wall times in the 5-10 minute
+    # range and timeouts. ``_extract_code`` handles the occasional
+    # truncation gracefully so 4096 is comfortable.
     message = client.messages.create(
         model=MODEL,
-        max_tokens=8192,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_prompt(state)}],
     )
