@@ -1,7 +1,7 @@
 # @name Evolve — one LLM-driven generation
 # @loop max_iter=200 carry=state
 # @loop_until state["total_tokens"] + state.get("last_iter_tokens", 7000) >= 200000
-# @timeout 120
+# @timeout 300
 #
 # One iteration of the outer loop:
 #   1. Build a prompt showing the LLM the top-K population members
