@@ -66,6 +66,25 @@ else:
         print(f"insight: {m.get('insight') or '(none)'}")
         print(m["source"])
 
+    # ------- Failed attempts (diagnostic) -------
+    # Agent memory stores every attempt regardless of status; the
+    # non-ok entries are useful when we want to see what shape of
+    # candidate the LLM tripped on (timeouts, syntax errors, output
+    # shape mismatches, etc.).
+    failed = [m for m in state["memory"] if m["status"] != "ok"]
+    print("\n" + "=" * 60)
+    print(f"FAILED ATTEMPTS ({len(failed)})")
+    print("=" * 60)
+    if not failed:
+        print("(no failures — the agent's proposals were all feasible)")
+    for i, m in enumerate(failed):
+        print(f"\n--- #{i + 1}: status={m['status']} ---")
+        if m.get("insight"):
+            print(f"insight: {m['insight']}")
+        if m.get("error"):
+            print(f"error: {m['error'][:300]}")
+        print(m["source"])
+
     fig2, ax2 = plt.subplots(1, 1, figsize=(8, 3.5))
     running_best = []
     cur = 0.0

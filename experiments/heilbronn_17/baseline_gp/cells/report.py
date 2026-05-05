@@ -66,6 +66,24 @@ else:
         print(f"\n--- #{i + 1}: score {d['score']:.6f} ---")
         print(d["source"])
 
+    # ------- Recent failures (diagnostic) -------
+    # The state's ``recent_failures`` is pruned to the last N (per the
+    # evolve cell's policy) and shows what went wrong on the LLM's
+    # most-recent unsuccessful attempts. Useful when the population
+    # never grew past the seeds — tells you whether failures were
+    # timeouts, syntax errors, output-shape issues, or something else.
+    failures = state.get("recent_failures", [])
+    print("\n" + "=" * 60)
+    print(f"RECENT FAILURES ({len(failures)} kept)")
+    print("=" * 60)
+    if not failures:
+        print("(no recent failures recorded)")
+    for i, d in enumerate(failures):
+        print(f"\n--- #{i + 1}: status={d['status']} ---")
+        if d.get("error"):
+            print(f"error: {d['error'][:300]}")
+        print(d["source"])
+
     # ------- Score-over-time plot -------
     fig2, ax2 = plt.subplots(1, 1, figsize=(8, 3.5))
     iters = [h["iter"] for h in state["history"]]
