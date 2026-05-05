@@ -21,7 +21,7 @@ MODEL = "claude-opus-4-7"
 TOKEN_BUDGET = 200_000  # input + output tokens across the whole run
 TOOL_CALL_CAP = 12  # max tool calls per agent round
 PER_CANDIDATE_TIMEOUT = 30.0
-MAX_TOKENS_PER_RESPONSE = 2048
+MAX_TOKENS_PER_RESPONSE = 8192  # match GP — Heilbronn proposals run long
 
 
 SYSTEM_PROMPT = """You are working on the n=17 Heilbronn triangle

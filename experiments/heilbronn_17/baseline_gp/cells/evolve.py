@@ -162,9 +162,18 @@ def _extract_code(content: str) -> str:
 
 def _call_llm(state: dict) -> tuple[str, int]:
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # 8192 instead of 2048 — Heilbronn's seed strategies are 60-80
+    # lines of dense scipy code, and the LLM frequently writes
+    # multi-start variants with bottleneck-targeted polish that run
+    # well past 2048 output tokens. When that happens, the response
+    # gets truncated mid-code-block; ``_extract_code`` falls through
+    # to the raw content because there's no closing ``` to match,
+    # and ``compile()`` chokes on the leading ``` of the fence.
+    # Result: every iteration silently fails with "invalid syntax at
+    # line 1", which is what we observed on the first GP run.
     message = client.messages.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=8192,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_prompt(state)}],
     )
