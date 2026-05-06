@@ -127,7 +127,11 @@ def test_validation_flags_invalid_ttl():
 
 
 def test_validation_clean_for_valid_cache_policies():
-    state = _state_with([ConnectionSpec(name="db", driver="sqlite")])
+    # Use a registered driver so the connection-level checks
+    # (connection_driver_unknown) don't add noise to this assertion —
+    # what we're testing is that valid cache policies don't produce a
+    # cache_policy_unknown / cache_ttl_invalid diagnostic.
+    state = _state_with([ConnectionSpec(name="db", driver="postgresql")])
     for policy in ("fingerprint", "forever", "session", "snapshot", "ttl=600"):
         cell = _sql_cell(f"# @sql connection=db\n# @cache {policy}\nSELECT 1")
         diags = validate_cell_annotations(cell, state)
@@ -170,7 +174,11 @@ def test_validation_flags_unknown_driver():
     isn't in the SQL adapter registry. The runtime would fail later;
     we surface it at validation time."""
     from strata.notebook.sql import AdapterCapabilities, FreshnessToken, SchemaFingerprint
-    from strata.notebook.sql.registry import _reset_for_tests, register_adapter
+    from strata.notebook.sql.registry import (
+        _reset_for_tests,
+        _restore_defaults_for_tests,
+        register_adapter,
+    )
 
     class _Stub:
         name = "postgresql"
@@ -205,7 +213,7 @@ def test_validation_flags_unknown_driver():
         assert "snowflakez" in err.message
         assert "postgresql" in err.message  # known-driver hint
     finally:
-        _reset_for_tests()
+        _restore_defaults_for_tests()
 
 
 def test_validation_skips_driver_check_when_registry_empty():
@@ -213,13 +221,16 @@ def test_validation_skips_driver_check_when_registry_empty():
     installed), don't flag every connection as 'driver unknown' — that
     would be noise. The runtime will produce the right error when the
     cell actually executes."""
-    from strata.notebook.sql.registry import _reset_for_tests
+    from strata.notebook.sql.registry import _reset_for_tests, _restore_defaults_for_tests
 
     _reset_for_tests()
-    cell = _sql_cell("# @sql connection=warehouse\nSELECT 1")
-    state = _state_with([ConnectionSpec(name="warehouse", driver="madeup")])
-    diags = validate_cell_annotations(cell, state)
-    assert all(d.code != "connection_driver_unknown" for d in diags)
+    try:
+        cell = _sql_cell("# @sql connection=warehouse\nSELECT 1")
+        state = _state_with([ConnectionSpec(name="warehouse", driver="madeup")])
+        diags = validate_cell_annotations(cell, state)
+        assert all(d.code != "connection_driver_unknown" for d in diags)
+    finally:
+        _restore_defaults_for_tests()
 
 
 def test_validation_flags_literal_auth_values():

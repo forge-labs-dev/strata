@@ -46,5 +46,23 @@ def known_drivers() -> list[str]:
 
 
 def _reset_for_tests() -> None:
-    """Drop all registrations. Test-only helper."""
+    """Drop all registrations. Test-only helper.
+
+    Tests that use this should restore default adapters after they're
+    done (see ``_restore_defaults_for_tests``) — otherwise later tests
+    in the same session see an empty registry.
+    """
     _REGISTRY.clear()
+
+
+def _restore_defaults_for_tests() -> None:
+    """Re-register the built-in driver adapters.
+
+    Pairs with ``_reset_for_tests`` for fixtures that need to scrub
+    test-only registrations without leaking the empty state into
+    subsequent tests.
+    """
+    _REGISTRY.clear()
+    from strata.notebook.sql.drivers import register_default_adapters
+
+    register_default_adapters()

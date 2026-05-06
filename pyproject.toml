@@ -63,6 +63,16 @@ notebook = [
     "matplotlib>=3.8.0",
     "Pillow>=10.0.0",
 ]
+# SQL cells: query parsing + ADBC connection management. Per-driver
+# packages live in their own extras so users only install what they
+# actually connect to.
+sql = [
+    "sqlglot>=25.0.0",
+    "adbc-driver-manager>=1.0.0",
+]
+sql-postgres = [
+    "adbc-driver-postgresql>=1.0.0",
+]
 
 [dependency-groups]
 dev = [
@@ -78,6 +88,10 @@ dev = [
     "datafusion>=50.1.0",
     "ty>=0.0.24",
     "s3fs>=2026.3.0",
+    "sqlglot>=25.0.0",
+    "adbc-driver-manager>=1.0.0",
+    "adbc-driver-postgresql>=1.0.0",
+    "adbc-driver-sqlite>=1.0.0",
 ]
 docs = [
     "mkdocs>=1.6.0",

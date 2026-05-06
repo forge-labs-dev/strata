@@ -14,7 +14,7 @@ from strata.notebook.sql import (
     known_drivers,
     register_adapter,
 )
-from strata.notebook.sql.registry import _reset_for_tests
+from strata.notebook.sql.registry import _reset_for_tests, _restore_defaults_for_tests
 
 # --- QualifiedTable -----------------------------------------------------
 
@@ -82,9 +82,11 @@ def test_schema_fingerprint_equality_by_value():
 
 @pytest.fixture
 def clean_registry():
+    """Empty the registry for the test, restore default adapters at
+    teardown so later tests still see auto-registered drivers."""
     _reset_for_tests()
     yield
-    _reset_for_tests()
+    _restore_defaults_for_tests()
 
 
 class _StubAdapter:
