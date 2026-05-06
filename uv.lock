@@ -3122,6 +3122,9 @@ sql = [
 sql-postgres = [
     { name = "adbc-driver-postgresql" },
 ]
+sql-sqlite = [
+    { name = "adbc-driver-sqlite" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -3151,6 +3154,7 @@ docs = [
 requires-dist = [
     { name = "adbc-driver-manager", marker = "extra == 'sql'", specifier = ">=1.0.0" },
     { name = "adbc-driver-postgresql", marker = "extra == 'sql-postgres'", specifier = ">=1.0.0" },
+    { name = "adbc-driver-sqlite", marker = "extra == 'sql-sqlite'", specifier = ">=1.0.0" },
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.15.0" },
     { name = "azure-storage-blob", marker = "extra == 'azure'", specifier = ">=12.20.0" },
     { name = "cloudpickle", marker = "extra == 'notebook'", specifier = ">=3.0.0" },
@@ -3178,7 +3182,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.32.0" },
     { name = "websockets", specifier = ">=13.0" },
 ]
-provides-extras = ["otel", "azure", "notebook", "sql", "sql-postgres"]
+provides-extras = ["otel", "azure", "notebook", "sql", "sql-postgres", "sql-sqlite"]
 
 [package.metadata.requires-dev]
 dev = [

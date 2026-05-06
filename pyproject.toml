@@ -73,6 +73,9 @@ sql = [
 sql-postgres = [
     "adbc-driver-postgresql>=1.0.0",
 ]
+sql-sqlite = [
+    "adbc-driver-sqlite>=1.0.0",
+]
 
 [dependency-groups]
 dev = [
