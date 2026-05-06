@@ -132,6 +132,62 @@ def test_connection_id_memory_distinct_from_file():
     assert a.canonicalize_connection_id(mem) != a.canonicalize_connection_id(file)
 
 
+def test_connection_id_preserves_identity_shaping_query_params():
+    """Codex review fix: the canonicalizer must NOT drop all query
+    params — ``cache=shared``, ``mode=memory``, ``vfs=`` etc. all
+    affect which database is opened, and collapsing them onto the
+    same id would alias distinct connections.
+
+    Before the fix, ``file:memdb1?mode=memory&cache=shared`` and
+    ``file:memdb1`` produced the same id; they describe completely
+    different databases (a shared in-memory DB vs a literal file
+    named ``memdb1`` in cwd)."""
+    a = SqliteAdapter()
+    shared_memory = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri="file:memdb1?mode=memory&cache=shared",
+    )
+    file_named_memdb1 = ConnectionSpec(name="db", driver="sqlite", uri="file:memdb1")
+    private_memory = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri="file:memdb1?mode=memory",
+    )
+    cid_shared = a.canonicalize_connection_id(shared_memory)
+    cid_file = a.canonicalize_connection_id(file_named_memdb1)
+    cid_private = a.canonicalize_connection_id(private_memory)
+    assert cid_shared != cid_file
+    assert cid_shared != cid_private
+    assert cid_file != cid_private
+
+
+def test_connection_id_distinguishes_named_memory_dbs():
+    """Two named in-memory DBs (different names) must produce
+    different connection_ids — they're distinct logical databases."""
+    a = SqliteAdapter()
+    db1 = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri="file:db1?mode=memory&cache=shared",
+    )
+    db2 = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri="file:db2?mode=memory&cache=shared",
+    )
+    assert a.canonicalize_connection_id(db1) != a.canonicalize_connection_id(db2)
+
+
+def test_connection_id_preserves_vfs_param():
+    """``vfs=`` selects an alternate VFS implementation — affects
+    *which* file is opened in some configurations. Identity-shaping."""
+    a = SqliteAdapter()
+    base = ConnectionSpec(name="db", driver="sqlite", uri="file:/tmp/db.sqlite")
+    custom = ConnectionSpec(name="db", driver="sqlite", uri="file:/tmp/db.sqlite?vfs=unix-dotfile")
+    assert a.canonicalize_connection_id(base) != a.canonicalize_connection_id(custom)
+
+
 # --- open() URI building --------------------------------------------------
 
 
@@ -161,19 +217,57 @@ def test_open_without_read_only_uses_bare_path():
     assert captured["uri"] == "/tmp/events.sqlite"
 
 
-def test_open_memory_db_passes_through_unchanged():
-    """``:memory:`` databases can't be read-only — there's nothing to
-    restrict — so we hand the literal back even when read_only=True."""
-    captured: dict[str, str] = {}
+def test_open_memory_db_passes_through_unchanged_uri():
+    """``:memory:`` databases can't take ``mode=ro`` in the URI; the
+    pragma in ``open()`` is what enforces read-only for them.
+    The URI itself stays as the literal."""
+    captured_uri: dict[str, str] = {}
+    cursor = _FakeCursor(scripts=[])
+    conn = _FakeConn(cursor)
 
     def fake_connect(uri):
-        captured["uri"] = uri
-        return _FakeConn(_FakeCursor(scripts=[]))
+        captured_uri["uri"] = uri
+        return conn
 
     a = SqliteAdapter(connect_fn=fake_connect)
     spec = ConnectionSpec(name="db", driver="sqlite", path=":memory:")
     a.open(spec, read_only=True)
-    assert captured["uri"] == ":memory:"
+    assert captured_uri["uri"] == ":memory:"
+
+
+def test_open_read_only_always_issues_query_only_pragma():
+    """The session-level guard is the universal read-only enforcement —
+    runs after every ``open(read_only=True)`` regardless of URI form,
+    so that file-handle ``mode=ro`` failure (or its absence on memory
+    DBs) is backstopped at the engine."""
+    cases = [
+        ConnectionSpec(name="db", driver="sqlite", path="/tmp/a.sqlite"),
+        ConnectionSpec(name="db", driver="sqlite", path=":memory:"),
+        ConnectionSpec(name="db", driver="sqlite", uri="file:/tmp/b.sqlite"),
+        ConnectionSpec(name="db", driver="sqlite", uri="file:/tmp/c.sqlite?mode=rwc"),
+        ConnectionSpec(
+            name="db",
+            driver="sqlite",
+            uri="file:memdb1?mode=memory&cache=shared",
+        ),
+    ]
+    for spec in cases:
+        cursor = _FakeCursor(scripts=[])
+        conn = _FakeConn(cursor)
+        a = SqliteAdapter(connect_fn=lambda uri: conn)
+        a.open(spec, read_only=True)
+        assert any("PRAGMA query_only" in sql for sql, _ in cursor.executions), (
+            f"{spec!r} did not issue PRAGMA query_only"
+        )
+
+
+def test_open_does_not_issue_query_only_when_not_read_only():
+    cursor = _FakeCursor(scripts=[])
+    conn = _FakeConn(cursor)
+    a = SqliteAdapter(connect_fn=lambda uri: conn)
+    spec = ConnectionSpec(name="db", driver="sqlite", path="/tmp/x.sqlite")
+    a.open(spec, read_only=False)
+    assert not any("PRAGMA query_only" in sql for sql, _ in cursor.executions)
 
 
 def test_open_existing_uri_appends_mode_ro_when_missing():
@@ -189,7 +283,11 @@ def test_open_existing_uri_appends_mode_ro_when_missing():
     assert "mode=ro" in captured["uri"]
 
 
-def test_open_existing_uri_with_mode_does_not_double_append():
+def test_open_existing_uri_overrides_user_supplied_mode_rwc():
+    """Codex review fix: ``mode=rwc`` (or any user-supplied
+    access-mode) MUST be overridden to ``mode=ro`` when read_only=True.
+    Letting the user's writability hint win would silently break the
+    read-only contract."""
     captured: dict[str, str] = {}
 
     def fake_connect(uri):
@@ -203,8 +301,30 @@ def test_open_existing_uri_with_mode_does_not_double_append():
         uri="file:/tmp/events.sqlite?mode=rwc",
     )
     a.open(spec, read_only=True)
-    # User wrote mode=rwc; we don't override it, just pass through.
-    assert captured["uri"] == "file:/tmp/events.sqlite?mode=rwc"
+    # User wrote mode=rwc; under read_only, we override.
+    assert "mode=ro" in captured["uri"]
+    assert "mode=rwc" not in captured["uri"]
+
+
+def test_open_existing_uri_with_mode_memory_keeps_memory():
+    """``mode=memory`` and ``mode=ro`` are mutually exclusive in
+    SQLite. The URI stays as ``mode=memory``; ``PRAGMA query_only``
+    is the read-only enforcement."""
+    captured: dict[str, str] = {}
+
+    def fake_connect(uri):
+        captured["uri"] = uri
+        return _FakeConn(_FakeCursor(scripts=[]))
+
+    a = SqliteAdapter(connect_fn=fake_connect)
+    spec = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri="file:memdb1?mode=memory&cache=shared",
+    )
+    a.open(spec, read_only=True)
+    assert "mode=memory" in captured["uri"]
+    assert "mode=ro" not in captured["uri"]
 
 
 def test_open_raises_when_neither_path_nor_uri_set():
@@ -320,6 +440,70 @@ def test_probe_schema_uses_pragma_table_info():
     assert params == ("events",)
 
 
+def test_probe_schema_qualifies_attached_database():
+    """Codex review fix: when ``QualifiedTable.schema`` is set (the
+    SQLite attached-database name), the pragma must run against THAT
+    database, not the default ``main``. Otherwise ``aux.events``
+    silently fingerprints ``main.events`` (or whatever the search
+    order resolves)."""
+    a = SqliteAdapter()
+    cursor = _FakeCursor(scripts=[("pragma_table_info", [])])
+    conn = _FakeConn(cursor)
+    a.probe_schema(conn, [QualifiedTable(None, "aux", "events")])
+    sql, params = cursor.executions[0]
+    assert '"aux".pragma_table_info' in sql, sql
+    assert params == ("events",)
+
+
+def test_probe_schema_unqualified_uses_default_pragma():
+    """Without an attached-DB schema, the default-DB pragma form
+    runs — preserves backward compatibility with simple cases."""
+    a = SqliteAdapter()
+    cursor = _FakeCursor(scripts=[("pragma_table_info", [])])
+    conn = _FakeConn(cursor)
+    a.probe_schema(conn, [QualifiedTable(None, None, "events")])
+    sql, _ = cursor.executions[0]
+    # Bare pragma form — no "<schema>".pragma_table_info qualifier.
+    assert "pragma_table_info" in sql
+    assert '".pragma_table_info' not in sql
+
+
+def test_probe_schema_distinguishes_same_table_in_different_attached_dbs():
+    """The fingerprint must differ between ``aux.events`` and
+    ``main.events`` even when both happen to have identical column
+    structure right now — the qualified pragma queries different
+    objects, and the QualifiedTable.render() in the hash already
+    differs. This belt-and-suspenders test guards against a
+    regression that probed both against ``main``."""
+    a = SqliteAdapter()
+
+    rows = [("id", "INTEGER", 1, None, 1)]
+
+    def make_token(table):
+        cursor = _FakeCursor(scripts=[("pragma_table_info", list(rows))])
+        return a.probe_schema(_FakeConn(cursor), [table]).value
+
+    aux_token = make_token(QualifiedTable(None, "aux", "events"))
+    main_token = make_token(QualifiedTable(None, "main", "events"))
+    bare_token = make_token(QualifiedTable(None, None, "events"))
+    assert aux_token != main_token
+    assert aux_token != bare_token
+    assert main_token != bare_token
+
+
+def test_probe_schema_rejects_invalid_attached_db_name():
+    """Pragma functions don't accept bind params in the schema
+    position, so the schema name is splice-inlined. Identifier
+    validation is the injection guard — anything that doesn't match
+    the SQLite identifier pattern raises before SQL hits the
+    connection."""
+    a = SqliteAdapter()
+    conn = _FakeConn(_FakeCursor(scripts=[]))
+    bad_table = QualifiedTable(None, '"; DROP TABLE x; --', "events")
+    with pytest.raises(RuntimeError, match="identifier"):
+        a.probe_schema(conn, [bad_table])
+
+
 # --- registry integration -------------------------------------------------
 
 
@@ -372,9 +556,67 @@ def test_real_open_read_only_rejects_write(tmp_path):
         # Wrap the whole cursor lifecycle, not just .execute(): ADBC
         # SQLite surfaces the read-only failure during statement
         # finalize/close, not at execute time.
-        with pytest.raises(Exception, match="readonly"):
+        with pytest.raises(Exception, match="readonly|read.only"):
             with conn.cursor() as cursor:
                 cursor.execute("INSERT INTO t VALUES (2)")
+    finally:
+        conn.close()
+
+
+@pytestmark_real_db
+def test_real_read_only_rejects_write_for_mode_rwc_uri(tmp_path):
+    """Codex review fix verification: a user-supplied URI with
+    ``mode=rwc`` must NOT remain writable when read_only=True.
+    Both the URI override (mode=ro) and the ``PRAGMA query_only``
+    fallback exist to make sure this can't slip through."""
+    db_path = tmp_path / "rwc.sqlite"
+    seed = sqlite3.connect(db_path)
+    seed.execute("CREATE TABLE t (x INTEGER)")
+    seed.commit()
+    seed.close()
+
+    a = SqliteAdapter()
+    spec = ConnectionSpec(
+        name="db",
+        driver="sqlite",
+        uri=f"file:{db_path}?mode=rwc",
+    )
+    conn = a.open(spec, read_only=True)
+    try:
+        with pytest.raises(Exception, match="readonly|read.only"):
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO t VALUES (1)")
+    finally:
+        conn.close()
+
+
+@pytestmark_real_db
+def test_real_query_only_pragma_alone_rejects_writes(tmp_path):
+    """Codex review fix verification: ``PRAGMA query_only = ON`` is
+    the universal session-level enforcement that backstops ``mode=ro``
+    URI flag — for in-memory DBs and any future quirk where ``mode=ro``
+    might not propagate. Verify the pragma alone rejects writes when
+    applied to an otherwise-writable file connection.
+
+    DDL is also blocked by ``query_only``, so we can't open a fresh
+    DB inside the read-only session — seed it externally first."""
+    db_path = tmp_path / "qo.sqlite"
+    seed = sqlite3.connect(db_path)
+    seed.execute("CREATE TABLE t (x INTEGER)")
+    seed.commit()
+    seed.close()
+
+    a = SqliteAdapter()
+    spec = ConnectionSpec(name="db", driver="sqlite", path=str(db_path))
+    # Open without URI mode=ro so this isn't covered by the file-handle
+    # path; rely on the pragma alone.
+    conn = a.open(spec, read_only=False)
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("PRAGMA query_only = ON")
+        with pytest.raises(Exception, match="query_only|readonly|read.only"):
+            with conn.cursor() as cursor:
+                cursor.execute("INSERT INTO t VALUES (1)")
     finally:
         conn.close()
 

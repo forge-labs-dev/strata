@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -45,15 +46,117 @@ _CAPABILITIES = AdapterCapabilities(
     needs_separate_probe_conn=False,
 )
 
+# SQLite attached-database identifier — same shape as Postgres unquoted
+# identifiers. Used to splice the schema name into the qualified pragma
+# form (``"<schema>".pragma_table_info(?)``); pragma functions don't
+# accept bind parameters in the schema position, so identifier
+# validation is what keeps the splice injection-safe.
+_SQLITE_IDENT_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 # ``pragma_table_info`` is the table-valued form of ``PRAGMA table_info(...)``;
-# it accepts bind parameters and projects standard columns. Using the
-# function form here means we don't have to splice the table name into
-# the SQL text and re-derive identifier quoting.
-_SCHEMA_QUERY = """
+# it accepts bind parameters and projects standard columns. The default
+# query targets ``main``; the qualified form (``"<schema>".pragma_table_info(?)``)
+# is built on demand for attached-database schemas.
+_SCHEMA_QUERY_DEFAULT = """
 SELECT name, type, "notnull", dflt_value, pk
 FROM pragma_table_info(?)
 ORDER BY cid
 """
+
+# URI query parameters that don't change which objects the connection
+# sees. Stripped from ``connection_id`` canonicalization so toggling
+# read-only or asserting immutability doesn't perturb the cache key.
+# Everything else (``cache``, ``mode=memory``, ``vfs``, named memory
+# DBs, etc.) IS identity-shaping and MUST be preserved.
+_NON_IDENTITY_ACCESS_MODES = frozenset({"ro", "rw", "rwc"})
+
+
+def _split_query(query: str) -> list[tuple[str, str]]:
+    """Split a URI query string into (key, raw_value) pairs."""
+    if not query:
+        return []
+    out: list[tuple[str, str]] = []
+    for part in query.split("&"):
+        if not part:
+            continue
+        key, _, value = part.partition("=")
+        out.append((key, value))
+    return out
+
+
+def _strip_non_identity_params(query: str) -> str:
+    """Return the query string with non-identity params removed.
+
+    Strips ONLY ``mode=ro|rw|rwc`` and ``immutable=1``. Other params
+    (``cache``, ``mode=memory``, ``vfs``, ``psow``, etc.) stay because
+    they affect either visibility (``cache=shared`` exposes a different
+    object set) or how the file is read at a level that callers
+    treat as identity. Output is sorted so two equivalent inputs
+    produce the same canonical string.
+    """
+    kept: list[tuple[str, str]] = []
+    for key, value in _split_query(query):
+        if key == "mode" and value in _NON_IDENTITY_ACCESS_MODES:
+            continue
+        if key == "immutable":
+            continue
+        kept.append((key, value))
+    if not kept:
+        return ""
+    return "&".join(f"{k}={v}" if v else k for k, v in sorted(kept))
+
+
+def _build_schema_probe_query(table: QualifiedTable) -> tuple[str, tuple[str]]:
+    """Build the schema-probe SQL for ``pragma_table_info`` on ``table``.
+
+    SQLite's "schema" is the attached-database name (default ``main``).
+    A qualified table — e.g. ``aux.events`` after ``ATTACH DATABASE
+    'aux.db' AS aux`` — must run the pragma against ``aux``, not the
+    default search order, otherwise we'd fingerprint a same-named
+    table in the wrong DB.
+
+    Pragma functions don't accept bind parameters in the schema
+    position, so the schema name is splice-inlined. ``_SQLITE_IDENT_RE``
+    rejects anything that isn't a plain identifier — that's the
+    injection guard.
+    """
+    if not table.schema:
+        return _SCHEMA_QUERY_DEFAULT, (table.name,)
+    if not _SQLITE_IDENT_RE.match(table.schema):
+        raise RuntimeError(
+            f"SQLite attached-database name {table.schema!r} is not a "
+            "valid identifier; must match [a-zA-Z_][a-zA-Z0-9_]*"
+        )
+    sql = (
+        'SELECT name, type, "notnull", dflt_value, pk\n'
+        f'FROM "{table.schema}".pragma_table_info(?)\n'
+        "ORDER BY cid"
+    )
+    return sql, (table.name,)
+
+
+def _force_mode_ro_in_uri(uri: str) -> str:
+    """Replace any ``mode=ro|rw|rwc`` with ``mode=ro`` and append it
+    when no ``mode=`` is present, except for ``mode=memory`` URIs.
+
+    ``mode=memory`` is mutually exclusive with the access-mode values
+    in SQLite's URI syntax — combining them would error. Memory DBs
+    rely on the post-open ``PRAGMA query_only = ON`` for read-only
+    enforcement.
+    """
+    if uri == ":memory:":
+        return uri
+    base, sep, query = uri.partition("?")
+    if not sep:
+        return f"{uri}?mode=ro"
+    pairs = _split_query(query)
+    if any(k == "mode" and v == "memory" for k, v in pairs):
+        # Can't combine mode=memory with mode=ro; PRAGMA query_only
+        # is the read-only enforcement for these URIs.
+        return uri
+    other = [(k, v) for k, v in pairs if k != "mode"]
+    other.append(("mode", "ro"))
+    return f"{base}?{'&'.join(f'{k}={v}' if v else k for k, v in other)}"
 
 
 class SqliteAdapter:
@@ -99,64 +202,95 @@ class SqliteAdapter:
         return identity
 
     def _canonicalize_uri(self, uri: str) -> str:
-        """Strip read-only query parameters from URI for identity hashing.
+        """Canonicalize a SQLite URI for identity hashing.
 
-        ``mode=ro`` and ``immutable=1`` change *how* we open, not which
-        objects we see — they shouldn't perturb the cache key. The
-        path portion of a ``file:`` URI is canonicalized to absolute.
+        Three things happen:
+        1. ``mode=ro|rw|rwc`` and ``immutable=1`` are stripped — they
+           change *how* we open, not which objects we see.
+        2. All other query params (``cache``, ``mode=memory``,
+           ``vfs``, ``psow``, named memory DBs) are PRESERVED. They
+           affect visibility, locking, or which physical DB is opened
+           — collapsing them onto the same id would alias distinct
+           connections.
+        3. The path portion of a non-memory ``file:`` URI is
+           canonicalized to absolute. Memory-backed URIs (``mode=memory``)
+           keep their bare name because it's a logical identifier,
+           not a filesystem path.
         """
         if uri == ":memory:":
             return uri
         if not uri.startswith("file:"):
             # Non-URI form; treat as a path.
             return os.path.abspath(uri)
-        # Split file:<path>?<query>
+
         rest = uri[len("file:") :]
         if "?" in rest:
-            path_part, _ = rest.split("?", 1)
+            path_part, query = rest.split("?", 1)
         else:
-            path_part = rest
-        # Drop leading "//" if URI uses authority form.
+            path_part, query = rest, ""
+
+        # Drop leading "//" authority form.
         if path_part.startswith("//"):
             path_part = path_part[2:]
-            # Drop any host portion after "//".
             if "/" in path_part:
                 path_part = "/" + path_part.split("/", 1)[1]
-        if not path_part:
-            return uri
-        return f"file:{os.path.abspath(path_part)}"
+
+        is_memory_uri = any(k == "mode" and v == "memory" for k, v in _split_query(query))
+
+        if path_part and not is_memory_uri:
+            path_part = os.path.abspath(path_part)
+
+        canonical_query = _strip_non_identity_params(query)
+        if canonical_query:
+            return f"file:{path_part}?{canonical_query}"
+        return f"file:{path_part}"
 
     # --- connection lifecycle --------------------------------------------
 
     def open(self, spec: Any, *, read_only: bool) -> Any:
         """Open an ADBC SQLite connection.
 
-        ``read_only=True`` builds a ``file:<path>?mode=ro`` URI so
-        SQLite enforces read-only at the file-handle level. Attempts
-        to issue DML through the connection error at the engine; this
-        is the security boundary, not SQL-text keyword filtering.
+        Read-only enforcement is layered:
+
+        1. **File-handle level** — for file-backed connections, the
+           URI carries ``mode=ro`` so the SQLite engine refuses to
+           open a writable handle. Any user-supplied access-mode
+           (``mode=rwc``, ``mode=rw``) is overridden when the
+           executor asks for read-only.
+        2. **Session level** — every read-only open also issues
+           ``PRAGMA query_only = ON``, which the engine consults on
+           every statement. This catches in-memory databases
+           (``:memory:`` and ``mode=memory`` URIs) where ``mode=ro``
+           can't apply, plus any future quirk where ``mode=ro``
+           might not propagate.
+
+        Both layers together mean a SQL cell can't write to the
+        database regardless of how the connection URI was specified.
+        This is the security boundary, not SQL-text keyword filtering.
         """
         uri = self._build_uri(spec, read_only=read_only)
-        return self._invoke_connect(uri)
+        conn = self._invoke_connect(uri)
+        if read_only:
+            with conn.cursor() as cursor:
+                cursor.execute("PRAGMA query_only = ON")
+        return conn
 
     def _build_uri(self, spec: Any, *, read_only: bool) -> str:
         path = getattr(spec, "path", None)
         existing_uri = getattr(spec, "uri", None)
 
         if existing_uri:
-            if existing_uri == ":memory:":
-                return existing_uri
-            if read_only and "mode=" not in existing_uri:
-                sep = "&" if "?" in existing_uri else "?"
-                return f"{existing_uri}{sep}mode=ro"
+            if read_only:
+                return _force_mode_ro_in_uri(existing_uri)
             return existing_uri
 
         if not path:
             raise RuntimeError("SQLite connection requires either ``path`` or ``uri`` to be set")
 
         if path == ":memory:":
-            # In-memory DBs can't be read-only — there's nothing to
-            # restrict. Just hand the literal back.
+            # ``mode=ro`` doesn't apply to in-memory DBs; the
+            # ``PRAGMA query_only = ON`` in ``open()`` is the
+            # enforcement.
             return ":memory:"
 
         abspath = os.path.abspath(path)
@@ -223,11 +357,21 @@ class SqliteAdapter:
     ) -> SchemaFingerprint:
         """Per-table schema fingerprint via ``pragma_table_info``.
 
-        SQLite's freshness probe is DB-wide, but column structure is
-        per-table — and a schema-only change (rename column, ADD
-        COLUMN) on a table that no other connection has written to
-        wouldn't move ``data_version``. The schema probe is what
-        catches that.
+        Each ``QualifiedTable.schema`` (when set) is treated as the
+        attached-database name. ``main`` is implicit when schema is
+        None. This matters for queries against ``ATTACH DATABASE``
+        targets — without the qualified pragma form, a probe of
+        ``aux.events`` would silently fingerprint ``main.events``
+        (or whatever the search-order resolution turns up).
+
+        Pragma functions don't accept bind parameters in the schema
+        position, so the schema name is splice-inlined and validated
+        against the SQLite identifier pattern; an unsafe value raises
+        before any SQL hits the connection.
+
+        Per-table schema fingerprint catches metadata-only changes
+        (ADD COLUMN, type changes, nullability flips) that the
+        DB-wide freshness probe would miss.
         """
         if not tables:
             return SchemaFingerprint(value=b"")
@@ -235,12 +379,8 @@ class SqliteAdapter:
         h = hashlib.sha256()
         with probe_conn.cursor() as cursor:
             for table in sorted(tables, key=lambda t: t.render()):
-                # SQLite's notion of "schema" is attached-database
-                # name (default ``main``). For Phase 1 we ignore the
-                # attached-DB layer and look up by bare table name —
-                # ``pragma_table_info`` resolves through the connection's
-                # standard search order.
-                cursor.execute(_SCHEMA_QUERY, (table.name,))
+                sql, params = _build_schema_probe_query(table)
+                cursor.execute(sql, params)
                 rows = cursor.fetchall() or []
 
                 h.update(table.render().encode())
