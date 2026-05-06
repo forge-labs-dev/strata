@@ -12,10 +12,10 @@ if TYPE_CHECKING:
     from strata.notebook.sql.adapter import DriverAdapter
 
 
-_REGISTRY: dict[str, "DriverAdapter"] = {}
+_REGISTRY: dict[str, DriverAdapter] = {}
 
 
-def register_adapter(adapter: "DriverAdapter") -> None:
+def register_adapter(adapter: DriverAdapter) -> None:
     """Register a ``DriverAdapter`` under its ``name``.
 
     Called at module import time by each driver implementation.
@@ -25,7 +25,7 @@ def register_adapter(adapter: "DriverAdapter") -> None:
     _REGISTRY[adapter.name] = adapter
 
 
-def get_adapter(name: str) -> "DriverAdapter":
+def get_adapter(name: str) -> DriverAdapter:
     """Look up the adapter registered for ``name``.
 
     Raises ``KeyError`` with the known-driver list when ``name`` isn't

@@ -173,13 +173,8 @@ def test_writer_roundtrip_preserves_connections():
         body_after = _read_raw_toml(nb)
         assert "connections" in body_after
         assert body_after["connections"]["warehouse"]["driver"] == "postgresql"
-        assert (
-            body_after["connections"]["warehouse"]["uri"]
-            == "postgresql://localhost:5432/dev"
-        )
-        assert body_after["connections"]["warehouse"]["options"] == {
-            "application_name": "strata"
-        }
+        assert body_after["connections"]["warehouse"]["uri"] == "postgresql://localhost:5432/dev"
+        assert body_after["connections"]["warehouse"]["options"] == {"application_name": "strata"}
 
 
 def test_writer_elides_empty_auth_and_options():

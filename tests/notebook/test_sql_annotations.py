@@ -6,7 +6,6 @@ from strata.notebook.annotation_validation import validate_cell_annotations
 from strata.notebook.annotations import CachePolicy, parse_annotations
 from strata.notebook.models import CellState, ConnectionSpec, NotebookState
 
-
 # --- annotation parsing ---------------------------------------------------
 
 
@@ -170,8 +169,8 @@ def test_validation_flags_unknown_driver():
     """The connection is declared and parses, but its `driver` value
     isn't in the SQL adapter registry. The runtime would fail later;
     we surface it at validation time."""
-    from strata.notebook.sql.registry import _reset_for_tests, register_adapter
     from strata.notebook.sql import AdapterCapabilities, FreshnessToken, SchemaFingerprint
+    from strata.notebook.sql.registry import _reset_for_tests, register_adapter
 
     class _Stub:
         name = "postgresql"
@@ -198,9 +197,7 @@ def test_validation_flags_unknown_driver():
     register_adapter(_Stub())
     try:
         cell = _sql_cell("# @sql connection=warehouse\nSELECT 1")
-        state = _state_with(
-            [ConnectionSpec(name="warehouse", driver="snowflakez")]
-        )
+        state = _state_with([ConnectionSpec(name="warehouse", driver="snowflakez")])
         diags = validate_cell_annotations(cell, state)
         codes = [d.code for d in diags]
         assert "connection_driver_unknown" in codes
@@ -244,15 +241,10 @@ def test_validation_flags_literal_auth_values():
         ]
     )
     diags = validate_cell_annotations(cell, state)
-    literal_diags = [
-        d for d in diags if d.code == "connection_auth_literal_secret"
-    ]
+    literal_diags = [d for d in diags if d.code == "connection_auth_literal_secret"]
     # One per literal; the ${VAR} indirection is silent.
     assert len(literal_diags) == 2
-    keys_flagged = {
-        ("password" in d.message, "extra_secret" in d.message)
-        for d in literal_diags
-    }
+    keys_flagged = {("password" in d.message, "extra_secret" in d.message) for d in literal_diags}
     assert keys_flagged == {(True, False), (False, True)}
 
 

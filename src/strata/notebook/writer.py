@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 import time
@@ -14,8 +15,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import tomli_w
-
-import re
 
 from strata.notebook.models import (
     CellMeta,
@@ -116,10 +115,7 @@ def _scrub_auth_for_disk(auth: dict[str, Any]) -> dict[str, Any]:
     through unchanged. Non-string values (a typo writing
     ``password = 1234``) are coerced to empty string.
     """
-    return {
-        k: (v if is_auth_indirection(v) else "")
-        for k, v in auth.items()
-    }
+    return {k: (v if is_auth_indirection(v) else "") for k, v in auth.items()}
 
 
 def _serialize_connections(

@@ -329,15 +329,11 @@ def _validate_sql_cell_annotations(
         )
     else:
         valid_by_name = {c.name: c for c in notebook_state.connections}
-        malformed_by_name = {
-            m.name: m for m in notebook_state.malformed_connections
-        }
+        malformed_by_name = {m.name: m for m in notebook_state.malformed_connections}
         sql_line = _find_annotation_line(cell.source, "sql")
         target = sql.connection
         if target in valid_by_name:
-            diagnostics.extend(
-                _validate_referenced_connection(valid_by_name[target], sql_line)
-            )
+            diagnostics.extend(_validate_referenced_connection(valid_by_name[target], sql_line))
         elif target in malformed_by_name:
             mal = malformed_by_name[target]
             diagnostics.append(
@@ -400,10 +396,7 @@ def _validate_sql_cell_annotations(
                 AnnotationDiagnostic(
                     severity="warn",
                     code="cache_ttl_invalid",
-                    message=(
-                        f"`@cache ttl={raw}` requires a positive integer "
-                        "(seconds)."
-                    ),
+                    message=(f"`@cache ttl={raw}` requires a positive integer (seconds)."),
                     line=lineno,
                 )
             )

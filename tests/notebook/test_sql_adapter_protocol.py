@@ -16,21 +16,16 @@ from strata.notebook.sql import (
 )
 from strata.notebook.sql.registry import _reset_for_tests
 
-
 # --- QualifiedTable -----------------------------------------------------
 
 
 def test_qualified_table_renders_dotted():
-    assert QualifiedTable(catalog="db", schema="public", name="t").render() == (
-        "db.public.t"
-    )
+    assert QualifiedTable(catalog="db", schema="public", name="t").render() == ("db.public.t")
 
 
 def test_qualified_table_drops_missing_layers():
     assert QualifiedTable(catalog=None, schema=None, name="t").render() == "t"
-    assert QualifiedTable(catalog=None, schema="public", name="t").render() == (
-        "public.t"
-    )
+    assert QualifiedTable(catalog=None, schema="public", name="t").render() == ("public.t")
 
 
 # --- hash_connection_identity ------------------------------------------
