@@ -15,7 +15,16 @@ from typing import TYPE_CHECKING, Any
 
 import tomli_w
 
-from strata.notebook.models import CellMeta, MountSpec, NotebookToml, WorkerSpec
+import re
+
+from strata.notebook.models import (
+    CellMeta,
+    ConnectionSpec,
+    MalformedConnection,
+    MountSpec,
+    NotebookToml,
+    WorkerSpec,
+)
 from strata.notebook.python_versions import (
     current_python_minor,
     format_requires_python,
@@ -79,6 +88,76 @@ def _env_has_meaningful_content(env: dict[str, str]) -> bool:
             continue
         return True
     return False
+
+
+_AUTH_INDIRECTION_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def is_auth_indirection(value: object) -> bool:
+    """Return True for ``${VAR}`` env-var indirections.
+
+    Used by both the writer (to scrub literals before disk) and the
+    annotation_validation layer (to warn about literals before they
+    get scrubbed). The regex matches ASCII identifiers wrapped in
+    ``${…}`` — empty braces, lowercase-only names, and shell-style
+    ``$VAR`` forms are all rejected on purpose to keep the contract
+    narrow and unambiguous.
+    """
+    return isinstance(value, str) and bool(_AUTH_INDIRECTION_RE.match(value))
+
+
+def _scrub_auth_for_disk(auth: dict[str, Any]) -> dict[str, Any]:
+    """Replace literal auth values with empty strings before writing.
+
+    Mirrors the existing ``_serialize_env`` behavior for sensitive env
+    keys: the key name is preserved so the notebook remembers *which*
+    credentials are configured, but the literal value is dropped so
+    secrets never reach disk. Only ``${VAR}`` indirections pass
+    through unchanged. Non-string values (a typo writing
+    ``password = 1234``) are coerced to empty string.
+    """
+    return {
+        k: (v if is_auth_indirection(v) else "")
+        for k, v in auth.items()
+    }
+
+
+def _serialize_connections(
+    connections: list[ConnectionSpec],
+    malformed: list[MalformedConnection] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Convert connection specs into the ``[connections.<name>]`` TOML shape.
+
+    Round-trips both valid and malformed blocks so an unrelated save
+    (cell add/remove, worker change) doesn't erase a hand-edited
+    typo. ``auth`` values that aren't ``${VAR}`` indirections are
+    blanked here so secrets never reach disk; the validation layer
+    surfaces the corresponding diagnostic before the user saves.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for conn in connections:
+        body = conn.model_dump(exclude={"name"})
+        if body.get("auth"):
+            body["auth"] = _scrub_auth_for_disk(body["auth"])
+        else:
+            body.pop("auth", None)
+        if not body.get("options"):
+            body.pop("options", None)
+        out[conn.name] = body
+
+    for mal in malformed or []:
+        if mal.name in out:
+            # Same name appears as both valid and malformed — the valid
+            # entry wins. This shouldn't happen in practice (the parser
+            # only emits a malformed record when the valid path errors)
+            # but guards against double-write.
+            continue
+        body = dict(mal.body)
+        if isinstance(body.get("auth"), dict):
+            body["auth"] = _scrub_auth_for_disk(body["auth"])
+        out[mal.name] = body
+
+    return out
 
 
 def _serialize_workers(workers: list[WorkerSpec]) -> list[dict[str, object]]:
@@ -229,6 +308,16 @@ def write_notebook_toml(notebook_dir: Path, toml: NotebookToml) -> None:
         ),
         "workers": _serialize_workers(toml.workers),
         "mounts": _serialize_mounts(toml.mounts),
+        **(
+            {
+                "connections": _serialize_connections(
+                    toml.connections,
+                    toml.malformed_connections,
+                )
+            }
+            if toml.connections or toml.malformed_connections
+            else {}
+        ),
         **({"ai": toml.ai} if toml.ai else {}),
         **({"secret_manager": toml.secret_manager} if toml.secret_manager else {}),
         # Runtime state that used to live in this file — ``artifacts``

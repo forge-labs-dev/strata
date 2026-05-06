@@ -54,6 +54,68 @@ class MountSpec(BaseModel):
     )
 
 
+class ConnectionSpec(BaseModel):
+    """A named database connection from ``[connections.<name>]``.
+
+    SQL cells reference connections by name via ``# @sql connection=<name>``.
+    Driver-specific top-level keys (``uri``, ``host``, ``account``,
+    ``database``, ``role``, ``path``, ...) are preserved as-is; the
+    ``DriverAdapter`` for the chosen ``driver`` interprets them.
+
+    The ``auth`` block is intentionally separate so secret values (typed
+    with ``${VAR}`` indirection) live in one well-known place; ``options``
+    is for runtime tunables that don't change which objects the connection
+    sees (e.g. ``application_name``, ``connect_timeout``).
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str = Field(
+        ...,
+        description=(
+            "Connection name — referenced by SQL cells via "
+            "``# @sql connection=<name>``."
+        ),
+        pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$",
+    )
+    driver: str = Field(
+        ...,
+        description="Driver name: ``postgresql``, ``sqlite``, ``snowflake``, ...",
+    )
+    auth: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Credential ``${VAR}`` indirections; values resolved at execute "
+            "time. Never hashed into provenance."
+        ),
+    )
+    options: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Driver-specific runtime options that don't change which objects "
+            "the connection sees."
+        ),
+    )
+
+
+class MalformedConnection(BaseModel):
+    """A ``[connections.<name>]`` block that failed to parse.
+
+    Preserved across notebook saves so a hand-edited mistake (typo,
+    missing ``driver``, bad name pattern) doesn't get silently erased
+    by an unrelated rewrite (cell add, worker change, etc.). The
+    annotation_validation layer reads ``error`` to surface a
+    user-visible diagnostic.
+    """
+
+    name: str = Field(..., description="Connection name as written in TOML")
+    body: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Raw TOML body, preserved verbatim for round-trip",
+    )
+    error: str = Field(..., description="Reason this block failed validation")
+
+
 class WorkerBackendType(StrEnum):
     """Execution backend type for notebook workers."""
 
@@ -208,6 +270,18 @@ class NotebookToml(BaseModel):
     mounts: list[MountSpec] = Field(
         default_factory=list,
         description="Notebook-level filesystem mounts",
+    )
+    connections: list[ConnectionSpec] = Field(
+        default_factory=list,
+        description="Named database connections from ``[connections.<name>]``",
+    )
+    malformed_connections: list[MalformedConnection] = Field(
+        default_factory=list,
+        description=(
+            "Connection blocks that failed to parse. Preserved verbatim "
+            "across saves so users don't lose hand-edited config to a "
+            "transient typo."
+        ),
     )
     ai: dict[str, Any] = Field(
         default_factory=dict,
@@ -452,6 +526,18 @@ class NotebookState(BaseModel):
     mounts: list[MountSpec] = Field(
         default_factory=list,
         description="Notebook-level filesystem mount defaults",
+    )
+    connections: list[ConnectionSpec] = Field(
+        default_factory=list,
+        description="Named database connections available to SQL cells",
+    )
+    malformed_connections: list[MalformedConnection] = Field(
+        default_factory=list,
+        description=(
+            "Connection blocks that failed to parse, preserved so "
+            "annotation_validation can surface them and the writer "
+            "round-trip doesn't erase them."
+        ),
     )
     secret_manager_config: dict[str, Any] = Field(
         default_factory=dict,

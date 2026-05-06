@@ -25,6 +25,8 @@ def validate_cell_annotations(
     """Validate a cell's annotations against notebook-wide context."""
     if cell.language == "prompt":
         return _validate_prompt_cell_annotations(cell)
+    if cell.language == "sql":
+        return _validate_sql_cell_annotations(cell, notebook_state)
     if cell.language == "markdown":
         # Markdown cells are pure prose; ``# @worker`` etc. would be a
         # markdown heading, not an annotation. No validation applies.
@@ -226,6 +228,198 @@ def _validate_prompt_cell_annotations(cell: CellState) -> list[AnnotationDiagnos
                 line=_find_annotation_line(cell.source, "output_schema"),
             )
         )
+    return diagnostics
+
+
+def _validate_referenced_connection(
+    conn,
+    line: int | None,
+) -> list[AnnotationDiagnostic]:
+    """Emit diagnostics for a connection that a SQL cell references.
+
+    Two checks:
+
+    1. ``connection_driver_unknown`` — the chosen ``driver`` isn't in
+       the SQL-adapter registry. The runtime would fail later with a
+       harder-to-diagnose error.
+    2. ``connection_auth_literal_secret`` — an ``auth.*`` value is a
+       literal string instead of a ``${VAR}`` indirection. The writer
+       will blank it on next save, breaking the connection silently
+       unless the user is told.
+    """
+    diagnostics: list[AnnotationDiagnostic] = []
+
+    # Driver registry check. Imported lazily so notebook code paths
+    # that don't touch SQL don't pay the import cost, and so missing
+    # optional ADBC packages don't crash validation.
+    try:
+        from strata.notebook.sql.registry import known_drivers
+
+        registered = set(known_drivers())
+    except ImportError:
+        registered = set()
+
+    if registered and conn.driver not in registered:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="error",
+                code="connection_driver_unknown",
+                message=(
+                    f"Connection {conn.name!r} declares driver "
+                    f"{conn.driver!r}, which is not registered. Known "
+                    f"drivers: {', '.join(sorted(registered))}."
+                ),
+                line=line,
+            )
+        )
+
+    # Auth literal-secret check. Importing from writer keeps the
+    # contract about what counts as a ${VAR} indirection in one place.
+    from strata.notebook.writer import is_auth_indirection
+
+    for key, value in (conn.auth or {}).items():
+        if not value:
+            continue
+        if is_auth_indirection(value):
+            continue
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="warn",
+                code="connection_auth_literal_secret",
+                message=(
+                    f"Connection {conn.name!r} `auth.{key}` contains a "
+                    "literal value, not a `${VAR}` reference. The "
+                    "literal will be blanked on next save to keep "
+                    "secrets off disk; switch to ${VAR} form to "
+                    "preserve the binding."
+                ),
+                line=line,
+            )
+        )
+
+    return diagnostics
+
+
+def _validate_sql_cell_annotations(
+    cell: CellState,
+    notebook_state: NotebookState,
+) -> list[AnnotationDiagnostic]:
+    """Surface SQL-cell annotation issues.
+
+    Checks the cell's ``# @sql`` / ``# @cache`` directives, plus the
+    referenced connection itself: malformed body, unknown driver, or
+    auth values written as literals (which the writer will scrub on
+    next save).
+    """
+    diagnostics: list[AnnotationDiagnostic] = []
+    annotations = parse_annotations(cell.source)
+
+    sql = annotations.sql
+    if sql is None or not sql.connection:
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="error",
+                code="sql_connection_missing",
+                message=(
+                    "SQL cells require `# @sql connection=<name>`. The connection "
+                    "must match a `[connections.<name>]` block in notebook.toml."
+                ),
+                line=_find_annotation_line(cell.source, "sql"),
+            )
+        )
+    else:
+        valid_by_name = {c.name: c for c in notebook_state.connections}
+        malformed_by_name = {
+            m.name: m for m in notebook_state.malformed_connections
+        }
+        sql_line = _find_annotation_line(cell.source, "sql")
+        target = sql.connection
+        if target in valid_by_name:
+            diagnostics.extend(
+                _validate_referenced_connection(valid_by_name[target], sql_line)
+            )
+        elif target in malformed_by_name:
+            mal = malformed_by_name[target]
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="error",
+                    code="connection_malformed",
+                    message=(
+                        f"Connection {target!r} is declared but failed to "
+                        f"parse: {mal.error}. Fix the `[connections."
+                        f"{target}]` block in notebook.toml."
+                    ),
+                    line=sql_line,
+                )
+            )
+        else:
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="warn",
+                    code="sql_connection_unknown",
+                    message=(
+                        f"`@sql connection={target}` is not declared in this "
+                        f"notebook. Add a `[connections.{target}]` block to "
+                        "notebook.toml."
+                    ),
+                    line=sql_line,
+                )
+            )
+
+    # Re-scan raw lines to catch malformed @cache values that the
+    # permissive parser silently dropped.
+    for lineno, line_text in _annotation_lines(cell.source):
+        match = _ANNOTATION_RE.match(line_text.strip())
+        if not match or match.group(1).lower() != "cache":
+            continue
+        value = match.group(2).strip()
+        if not value:
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="warn",
+                    code="cache_policy_unknown",
+                    message=(
+                        "`@cache` requires a policy: fingerprint | forever | "
+                        "session | snapshot | ttl=<seconds>."
+                    ),
+                    line=lineno,
+                )
+            )
+            continue
+        head = value.split()[0]
+        if head in {"fingerprint", "forever", "session", "snapshot"}:
+            continue
+        if head.startswith("ttl="):
+            raw = head.removeprefix("ttl=")
+            try:
+                if int(raw) > 0:
+                    continue
+            except ValueError:
+                pass
+            diagnostics.append(
+                AnnotationDiagnostic(
+                    severity="warn",
+                    code="cache_ttl_invalid",
+                    message=(
+                        f"`@cache ttl={raw}` requires a positive integer "
+                        "(seconds)."
+                    ),
+                    line=lineno,
+                )
+            )
+            continue
+        diagnostics.append(
+            AnnotationDiagnostic(
+                severity="warn",
+                code="cache_policy_unknown",
+                message=(
+                    f"`@cache {head}` is not a recognized policy. Use "
+                    "fingerprint | forever | session | snapshot | ttl=<seconds>."
+                ),
+                line=lineno,
+            )
+        )
+
     return diagnostics
 
 

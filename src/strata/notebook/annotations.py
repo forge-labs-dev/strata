@@ -29,6 +29,32 @@ from strata.notebook.models import MountMode, MountSpec
 
 
 @dataclass
+class CachePolicy:
+    """Resolved ``# @cache`` policy for a SQL cell.
+
+    ``kind`` is one of:
+      - ``fingerprint`` — driver-derived freshness token in hash (default)
+      - ``forever`` — static salt; never invalidates from DB-side state
+      - ``session`` — session-unique salt; invalidates across sessions
+      - ``ttl`` — time-bucketed salt; ``ttl_seconds`` is required
+      - ``snapshot`` — driver MUST return a real snapshot ID
+
+    The default (no ``# @cache`` annotation) is ``fingerprint``; the
+    caller substitutes that when ``CellAnnotations.cache`` is ``None``.
+    """
+
+    kind: str
+    ttl_seconds: int | None = None
+
+
+@dataclass
+class SqlAnnotation:
+    """Resolved ``# @sql connection=<name>`` directive for a SQL cell."""
+
+    connection: str | None = None
+
+
+@dataclass
 class LoopAnnotation:
     """Parsed ``@loop`` / ``@loop_until`` directives for a loop cell.
 
@@ -74,6 +100,10 @@ class CellAnnotations:
 
     # Loop cell annotations
     loop: LoopAnnotation | None = None
+
+    # SQL cell annotations
+    sql: SqlAnnotation | None = None
+    cache: CachePolicy | None = None
 
 
 def parse_annotations(source: str) -> CellAnnotations:
@@ -151,6 +181,12 @@ def parse_annotations(source: str) -> CellAnnotations:
         elif key == "system":
             result.system_prompt = value or None
 
+        elif key == "sql":
+            _parse_sql_annotation(result, value)
+
+        elif key == "cache":
+            _parse_cache_annotation(result, value)
+
         elif key == "loop":
             _merge_loop_annotation(result, value)
 
@@ -162,6 +198,56 @@ def parse_annotations(source: str) -> CellAnnotations:
                     result.loop.until_expr = value
 
     return result
+
+
+_VALID_CACHE_KINDS = frozenset({"fingerprint", "forever", "session", "snapshot", "ttl"})
+
+
+def _parse_sql_annotation(result: CellAnnotations, value: str) -> None:
+    """Parse ``@sql connection=<name>`` into ``result.sql``.
+
+    Multiple ``@sql`` lines accumulate into the same ``SqlAnnotation``;
+    later lines override earlier ones. Unknown keys are dropped silently
+    here — annotation_validation surfaces them as user-visible
+    diagnostics.
+    """
+    if result.sql is None:
+        result.sql = SqlAnnotation()
+    for token in value.split():
+        if "=" not in token:
+            continue
+        k, _, v = token.partition("=")
+        k = k.strip()
+        v = v.strip()
+        if k == "connection" and v:
+            result.sql.connection = v
+
+
+def _parse_cache_annotation(result: CellAnnotations, value: str) -> None:
+    """Parse ``@cache <policy>`` into ``result.cache``.
+
+    Forms:
+      - ``@cache fingerprint`` / ``forever`` / ``session`` / ``snapshot``
+      - ``@cache ttl=<seconds>``
+
+    Malformed values yield ``None`` so annotation_validation can surface a
+    diagnostic instead of silently applying the wrong policy.
+    """
+    tokens = value.split()
+    if not tokens:
+        return
+    head = tokens[0]
+    if head in _VALID_CACHE_KINDS and head != "ttl":
+        result.cache = CachePolicy(kind=head)
+        return
+    if head.startswith("ttl="):
+        try:
+            seconds = int(head.removeprefix("ttl="))
+        except ValueError:
+            return
+        if seconds <= 0:
+            return
+        result.cache = CachePolicy(kind="ttl", ttl_seconds=seconds)
 
 
 _LOOP_START_FROM_RE = re.compile(r"^(?P<cell>[^@]+)@iter=(?P<iter>-?\d+)$")

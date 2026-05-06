@@ -12,11 +12,69 @@ from strata.notebook.models import (
     CellMeta,
     CellOutput,
     CellState,
+    ConnectionSpec,
+    MalformedConnection,
     MountSpec,
     NotebookState,
     NotebookToml,
     WorkerSpec,
 )
+
+
+def _parse_connections(
+    toml_data: dict,
+) -> tuple[list[ConnectionSpec], list[MalformedConnection]]:
+    """Split ``[connections.<name>]`` blocks into valid and malformed.
+
+    TOML shape: ``{"connections": {"<name>": {"driver": ..., ...}, ...}}``.
+    Two outputs:
+
+    1. Valid ``ConnectionSpec``s — fully parsed, ready for the adapter.
+    2. ``MalformedConnection`` records carrying the raw body and a
+       human-readable error. The annotation_validation layer reads
+       these to surface diagnostics; the writer round-trips them so a
+       transient typo doesn't get erased by an unrelated save.
+
+    Pydantic's ``extra="allow"`` on ``ConnectionSpec`` preserves
+    driver-specific keys (``uri``, ``host``, ``account``, ...) for the
+    adapter to interpret.
+    """
+    raw = toml_data.get("connections")
+    if not isinstance(raw, dict):
+        return [], []
+    valid: list[ConnectionSpec] = []
+    malformed: list[MalformedConnection] = []
+    for name, body in raw.items():
+        name_str = str(name)
+        if not isinstance(body, dict):
+            malformed.append(
+                MalformedConnection(
+                    name=name_str,
+                    body={},
+                    error="connection body must be a TOML table",
+                )
+            )
+            continue
+        if "driver" not in body:
+            malformed.append(
+                MalformedConnection(
+                    name=name_str,
+                    body=dict(body),
+                    error="connection is missing required 'driver' key",
+                )
+            )
+            continue
+        try:
+            valid.append(ConnectionSpec(name=name_str, **body))
+        except Exception as exc:
+            malformed.append(
+                MalformedConnection(
+                    name=name_str,
+                    body=dict(body),
+                    error=f"validation failed: {exc}",
+                )
+            )
+    return valid, malformed
 
 
 def parse_notebook(directory: Path) -> NotebookState:
@@ -92,6 +150,8 @@ def parse_notebook(directory: Path) -> NotebookState:
     if updated_at is None:
         updated_at = datetime.now(tz=UTC)
 
+    _parsed_connections, _parsed_malformed = _parse_connections(toml_data)
+
     notebook_toml = NotebookToml(
         notebook_id=toml_data.get("notebook_id", ""),
         name=toml_data.get("name", "Untitled Notebook"),
@@ -103,6 +163,8 @@ def parse_notebook(directory: Path) -> NotebookState:
         workers=[WorkerSpec(**worker) for worker in toml_data.get("workers", [])],
         cells=[CellMeta(**cell_meta) for cell_meta in toml_data.get("cells", [])],
         mounts=[MountSpec(**m) for m in toml_data.get("mounts", [])],
+        connections=_parsed_connections,
+        malformed_connections=_parsed_malformed,
         ai=toml_data.get("ai", {}),
         secret_manager=toml_data.get("secret_manager", {}),
         artifacts=toml_data.get("artifacts", {}),
@@ -203,6 +265,8 @@ def parse_notebook(directory: Path) -> NotebookState:
         env=dict(notebook_toml.env),
         workers=list(notebook_toml.workers),
         mounts=list(notebook_toml.mounts),
+        connections=list(notebook_toml.connections),
+        malformed_connections=list(notebook_toml.malformed_connections),
         secret_manager_config=dict(notebook_toml.secret_manager),
         cells=cell_states,
         path=directory,
