@@ -2205,11 +2205,11 @@ def test_update_notebook_connections_preserves_malformed_blocks():
         opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
         nb_id = opened.json()["session_id"]
 
-        # The malformed block should appear in the list endpoint.
-        listing = client.get(f"/v1/notebooks/{nb_id}/connections").json()
-        # Valid list excludes it (no driver) but malformed does.
-        # Use a separate sanity read of the parsed state via the model
-        # for definitive coverage.
+        # The list endpoint exposes only valid connections; the
+        # malformed sibling is preserved on disk and surfaced via
+        # parse_notebook's malformed_connections field. Pin the
+        # latter directly — that's the contract the route should
+        # honor when wiring the writer.
         from strata.notebook.parser import parse_notebook
 
         before = parse_notebook(notebook_dir)
