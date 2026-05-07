@@ -376,52 +376,53 @@ def test_is_auth_indirection_recognizes_var_pattern():
     assert not is_auth_indirection(1234)
 
 
-def test_relative_connection_path_resolves_against_notebook_dir(tmp_path):
-    """A relative ``path = "analytics.db"`` in notebook.toml resolves
-    relative to the notebook directory, not to whatever CWD the
-    server happens to be running from. Without this resolution, the
-    SQLite adapter opens the wrong file (or fails to open at all)
-    because the server's process CWD is unrelated to the notebook."""
+def test_parser_keeps_relative_path_verbatim():
+    """The parser does NOT resolve relative paths — the on-disk
+    value round-trips byte-for-byte through any unrelated edit.
+
+    Codex review fix: an earlier iteration resolved relative paths
+    in the parser, which meant editing a connection list through
+    the UI rewrote ``path = "analytics.db"`` to a host-specific
+    absolute path. The cell executor now resolves at adapter-open
+    time instead (see ``cell_executor._resolve_runtime_spec``);
+    the on-disk shape is preserved here."""
     from strata.notebook.parser import _parse_connections
 
     valid, malformed = _parse_connections(
-        {
-            "connections": {
-                "warehouse": {"driver": "sqlite", "path": "analytics.db"},
-            }
-        },
-        notebook_dir=tmp_path,
+        {"connections": {"warehouse": {"driver": "sqlite", "path": "analytics.db"}}}
     )
     assert malformed == []
-    assert len(valid) == 1
-    spec = valid[0]
-    # The path resolves through .resolve() which normalizes.
-    assert spec.path == str((tmp_path / "analytics.db").resolve())
+    assert valid[0].path == "analytics.db"
 
 
-def test_absolute_connection_path_left_unchanged(tmp_path):
-    """Absolute paths are taken at face value — users with a shared
-    DB outside the notebook dir aren't second-guessed."""
-    import os
-
-    from strata.notebook.parser import _parse_connections
-
-    abs_path = os.path.abspath("/tmp/elsewhere.db")
-    valid, _ = _parse_connections(
-        {"connections": {"db": {"driver": "sqlite", "path": abs_path}}},
-        notebook_dir=tmp_path,
-    )
-    assert valid[0].path == abs_path
-
-
-def test_connection_path_resolution_skipped_without_notebook_dir():
-    """The parser is also invoked from contexts that don't have a
-    notebook dir handy (round-trip tests, ad-hoc fixtures); leave
-    paths untouched in that case so behavior is identical to the
-    pre-fix surface."""
+def test_parser_keeps_absolute_path_verbatim():
     from strata.notebook.parser import _parse_connections
 
     valid, _ = _parse_connections(
-        {"connections": {"db": {"driver": "sqlite", "path": "rel.db"}}},
+        {"connections": {"db": {"driver": "sqlite", "path": "/tmp/elsewhere.db"}}}
     )
-    assert valid[0].path == "rel.db"
+    assert valid[0].path == "/tmp/elsewhere.db"
+
+
+def test_relative_path_resolves_at_adapter_open_time(tmp_path):
+    """Cell-executor resolution: a relative ``path`` is rewritten
+    to an absolute one only in the runtime view handed to the
+    adapter. The original spec stays untouched."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.cell_executor import _resolve_runtime_spec
+
+    spec = ConnectionSpec(name="db", driver="sqlite", path="analytics.db")
+    runtime = _resolve_runtime_spec(spec, tmp_path)
+    assert runtime.path == str((tmp_path / "analytics.db").resolve())
+    # The original is unchanged — important for round-tripping
+    # through the writer.
+    assert spec.path == "analytics.db"
+
+
+def test_absolute_path_unchanged_at_adapter_open_time(tmp_path):
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.cell_executor import _resolve_runtime_spec
+
+    spec = ConnectionSpec(name="db", driver="sqlite", path="/tmp/already.db")
+    runtime = _resolve_runtime_spec(spec, tmp_path)
+    assert runtime.path == "/tmp/already.db"

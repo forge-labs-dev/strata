@@ -611,9 +611,11 @@ def test_update_notebook_connections_round_trip():
         assert names == {"warehouse", "prod"}
 
         warehouse = next(c for c in state.connections if c.name == "warehouse")
-        # Path was relative on write; the parser resolves against the
-        # notebook dir so the spec carries an absolute path now.
-        assert warehouse.path == str((notebook_dir / "data/db.sqlite").resolve())
+        # The on-disk path round-trips byte-for-byte; relative
+        # paths stay relative. The cell executor resolves against
+        # the notebook dir at adapter-open time so notebook.toml
+        # is portable across machines.
+        assert warehouse.path == "data/db.sqlite"
 
         prod = next(c for c in state.connections if c.name == "prod")
         assert prod.uri == "postgresql://localhost:5432/prod"

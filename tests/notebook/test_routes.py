@@ -2136,11 +2136,11 @@ def test_list_and_update_notebook_connections():
         names = sorted(c["name"] for c in body["connections"])
         assert names == ["prod", "warehouse"]
 
-        # SQLite path resolves against the notebook dir at parse
-        # time, so the on-disk relative path comes back absolute.
+        # The relative path survives the round-trip exactly. (The
+        # cell executor resolves against the notebook dir at
+        # adapter-open time; notebook.toml stays portable.)
         warehouse = next(c for c in body["connections"] if c["name"] == "warehouse")
-        assert warehouse["path"].endswith("analytics.db")
-        assert Path(warehouse["path"]).is_absolute()
+        assert warehouse["path"] == "analytics.db"
 
         # Literal "hunter2" is blanked — UI sees the slot is set
         # but value isn't viable until ${PGPASS} is provided.
@@ -2182,3 +2182,133 @@ def test_update_notebook_connections_rejects_duplicate_names():
         )
         assert resp.status_code == 400
         assert "duplicate" in resp.json()["detail"].lower()
+
+
+def test_update_notebook_connections_preserves_malformed_blocks():
+    """Codex review fix: a PUT that touches one connection must NOT
+    erase ``[connections.<name>]`` blocks that previously failed to
+    parse. The parser flags those entries as ``MalformedConnection``
+    and the writer round-trips them. The route used to drop the
+    malformed list before passing it to the writer, silently
+    erasing the on-disk record on every save.
+    """
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Conn Malformed Test")
+        # Inject a malformed [connections.<name>] block (driver missing).
+        toml_path = notebook_dir / "notebook.toml"
+        toml_path.write_text(
+            toml_path.read_text() + '\n[connections.broken]\nhost = "localhost"\nport = 5432\n'
+        )
+
+        opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        nb_id = opened.json()["session_id"]
+
+        # The malformed block should appear in the list endpoint.
+        listing = client.get(f"/v1/notebooks/{nb_id}/connections").json()
+        # Valid list excludes it (no driver) but malformed does.
+        # Use a separate sanity read of the parsed state via the model
+        # for definitive coverage.
+        from strata.notebook.parser import parse_notebook
+
+        before = parse_notebook(notebook_dir)
+        assert "broken" in {m.name for m in before.malformed_connections}
+
+        # Add a valid connection through the API. The malformed
+        # block must survive on disk.
+        resp = client.put(
+            f"/v1/notebooks/{nb_id}/connections",
+            json={
+                "connections": [
+                    {"name": "warehouse", "driver": "sqlite", "path": "analytics.db"},
+                ]
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        after = parse_notebook(notebook_dir)
+        # Valid connection is added.
+        assert {c.name for c in after.connections} == {"warehouse"}
+        # Malformed connection still there.
+        assert {m.name for m in after.malformed_connections} == {"broken"}
+        # And the body of the malformed block round-tripped intact.
+        broken = next(m for m in after.malformed_connections if m.name == "broken")
+        assert broken.body == {"host": "localhost", "port": 5432}
+
+
+def test_update_notebook_connections_preserves_unknown_driver_extras():
+    """Codex review fix: ``ConnectionSpec`` is open-ended (Pydantic
+    extra=allow) so a driver-specific ``options`` table or any
+    forward-compat key set by a future driver must round-trip
+    unchanged. The route persists exactly what the UI sends; the
+    UI in turn preserves anything outside its known field set."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Conn Extras Test")
+        opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        nb_id = opened.json()["session_id"]
+
+        # PUT a connection with driver-specific extras: an ``options``
+        # table and a stray forward-compat key.
+        body = {
+            "name": "snowflake_dev",
+            "driver": "snowflake",
+            "uri": "snowflake://acct.region/db",
+            "options": {"warehouse": "ANALYTICS", "schema": "public"},
+            "future_extra": "preserve-me",
+            "auth": {"user": "${SF_USER}", "api_token": "${SF_TOKEN}"},
+        }
+        resp = client.put(
+            f"/v1/notebooks/{nb_id}/connections",
+            json={"connections": [body]},
+        )
+        assert resp.status_code == 200, resp.text
+        out = resp.json()["connections"][0]
+        # Every field round-trips, including the unknown driver, the
+        # options table, the future-extra key, and the non-standard
+        # auth.api_token.
+        assert out["driver"] == "snowflake"
+        assert out["uri"] == "snowflake://acct.region/db"
+        assert out["options"] == {"warehouse": "ANALYTICS", "schema": "public"}
+        assert out["future_extra"] == "preserve-me"
+        assert out["auth"]["user"] == "${SF_USER}"
+        assert out["auth"]["api_token"] == "${SF_TOKEN}"
+
+
+def test_update_notebook_connections_keeps_relative_paths_relative():
+    """Codex review fix: a relative SQLite path round-trips
+    byte-for-byte through a no-op edit. The parser stopped
+    resolving paths so the writer persists exactly what the UI
+    sends; the cell executor handles resolution at adapter-open
+    time."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Conn Rel Path Test")
+        opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        nb_id = opened.json()["session_id"]
+
+        client.put(
+            f"/v1/notebooks/{nb_id}/connections",
+            json={
+                "connections": [
+                    {"name": "warehouse", "driver": "sqlite", "path": "analytics.db"},
+                ]
+            },
+        )
+
+        # Round-trip a no-op edit by re-sending what the GET returned.
+        listing = client.get(f"/v1/notebooks/{nb_id}/connections").json()
+        client.put(
+            f"/v1/notebooks/{nb_id}/connections",
+            json={"connections": listing["connections"]},
+        )
+
+        # On disk the path is still relative.
+        import tomllib as _tomllib
+
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = _tomllib.load(f)
+        assert data["connections"]["warehouse"]["path"] == "analytics.db"

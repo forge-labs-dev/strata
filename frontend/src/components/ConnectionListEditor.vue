@@ -27,12 +27,35 @@ interface DraftConnection {
   authPassword: string
   role: string
   searchPath: string
+  // Round-trip for fields the form doesn't editorialize. Two slots:
+  //  - extras: top-level keys outside the known set (``options``,
+  //    plus driver-specific extras a future driver may add).
+  //  - extraAuth: auth-map keys other than ``user``/``password``,
+  //    so a driver-specific credential (e.g. ``api_token``) survives
+  //    a save unchanged.
+  extras: Record<string, unknown>
+  extraAuth: Record<string, string>
 }
+
+// Field names handled explicitly in the per-driver forms. Anything
+// else found on a ConnectionSpec is preserved verbatim via
+// ``extras`` and re-emitted by ``toSpec``.
+const KNOWN_TOP_LEVEL_KEYS = new Set([
+  'name',
+  'driver',
+  'path',
+  'uri',
+  'auth',
+  'role',
+  'search_path',
+])
 
 const DRIVER_OPTIONS = [
   { value: 'sqlite', label: 'SQLite' },
   { value: 'postgresql', label: 'PostgreSQL' },
 ] as const
+
+const KNOWN_DRIVERS = new Set(DRIVER_OPTIONS.map((o) => o.value))
 
 const draft = ref<DraftConnection[]>([])
 let nextKey = 0
@@ -42,16 +65,26 @@ const validationErrors = ref<Record<string, string>>({})
 
 function toDraft(spec?: ConnectionSpec): DraftConnection {
   const auth = (spec?.auth ?? {}) as Record<string, string>
+  const { user: authUser = '', password: authPassword = '', ...extraAuth } = auth
+  const extras: Record<string, unknown> = {}
+  if (spec) {
+    for (const [key, value] of Object.entries(spec)) {
+      if (KNOWN_TOP_LEVEL_KEYS.has(key)) continue
+      extras[key] = value
+    }
+  }
   return {
     _key: `conn-${nextKey++}`,
     name: spec?.name ?? '',
     driver: spec?.driver ?? 'sqlite',
     path: typeof spec?.path === 'string' ? spec.path : '',
     uri: typeof spec?.uri === 'string' ? spec.uri : '',
-    authUser: auth.user ?? '',
-    authPassword: auth.password ?? '',
+    authUser,
+    authPassword,
     role: typeof spec?.role === 'string' ? spec.role : '',
     searchPath: typeof spec?.search_path === 'string' ? spec.search_path : '',
+    extras,
+    extraAuth,
   }
 }
 
@@ -111,24 +144,47 @@ function validate(): boolean {
 }
 
 function toSpec(d: DraftConnection): ConnectionSpec {
+  // Start from preserved extras so unknown driver-specific fields
+  // (``options``, future-driver-keys) survive a save unchanged.
+  // The known fields below overwrite, never drop.
   const spec: ConnectionSpec = {
+    ...d.extras,
     name: d.name.trim(),
     driver: d.driver,
   }
   if (d.driver === 'sqlite') {
     if (d.path.trim()) spec.path = d.path.trim()
+    else delete spec.path
     if (d.uri.trim()) spec.uri = d.uri.trim()
+    else delete spec.uri
   } else if (d.driver === 'postgresql') {
     if (d.uri.trim()) spec.uri = d.uri.trim()
-    const auth: Record<string, string> = {}
+    else delete spec.uri
+    if (d.path.trim()) spec.path = d.path.trim()
+    else delete spec.path
+
+    const auth: Record<string, string> = { ...d.extraAuth }
     if (d.authUser.trim()) auth.user = d.authUser.trim()
     if (d.authPassword.trim()) auth.password = d.authPassword.trim()
     if (Object.keys(auth).length) spec.auth = auth
+    else delete spec.auth
+
     if (d.role.trim()) spec.role = d.role.trim()
+    else delete spec.role
     if (d.searchPath.trim()) spec.search_path = d.searchPath.trim()
+    else delete spec.search_path
   } else {
+    // Unknown driver — preserve every editable text field but
+    // don't impose Postgres-shaped auth structure.
     if (d.uri.trim()) spec.uri = d.uri.trim()
+    else delete spec.uri
     if (d.path.trim()) spec.path = d.path.trim()
+    else delete spec.path
+    const auth: Record<string, string> = { ...d.extraAuth }
+    if (d.authUser.trim()) auth.user = d.authUser.trim()
+    if (d.authPassword.trim()) auth.password = d.authPassword.trim()
+    if (Object.keys(auth).length) spec.auth = auth
+    else delete spec.auth
   }
   return spec
 }
@@ -159,6 +215,17 @@ function isLiteralSecret(value: string): boolean {
   if (!value) return false
   return !/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value)
 }
+
+function isUnknownDriver(driver: string): boolean {
+  return driver.length > 0 && !KNOWN_DRIVERS.has(driver as 'sqlite' | 'postgresql')
+}
+
+function preservedExtraSummary(d: DraftConnection): string {
+  const keys: string[] = []
+  for (const k of Object.keys(d.extras)) keys.push(k)
+  for (const k of Object.keys(d.extraAuth)) keys.push(`auth.${k}`)
+  return keys.join(', ')
+}
 </script>
 
 <template>
@@ -184,6 +251,13 @@ function isLiteralSecret(value: string): boolean {
           <option v-for="opt in DRIVER_OPTIONS" :key="opt.value" :value="opt.value">
             {{ opt.label }}
           </option>
+          <!-- Preserve an unknown driver (e.g. one declared by hand
+               in notebook.toml) instead of silently coercing to
+               sqlite. The value still selects in the dropdown, just
+               via the synthetic option below. -->
+          <option v-if="isUnknownDriver(conn.driver)" :value="conn.driver">
+            {{ conn.driver }} (custom)
+          </option>
         </select>
         <button
           class="conn-remove-btn"
@@ -194,6 +268,17 @@ function isLiteralSecret(value: string): boolean {
           ×
         </button>
       </div>
+
+      <p v-if="isUnknownDriver(conn.driver)" class="conn-driver-hint">
+        Unknown driver — only the URI / path / auth fields are editable here. Everything else
+        round-trips unchanged.
+      </p>
+      <p
+        v-if="Object.keys(conn.extras).length > 0 || Object.keys(conn.extraAuth).length > 0"
+        class="conn-extras-hint"
+      >
+        Preserved from notebook.toml: <code>{{ preservedExtraSummary(conn) }}</code>
+      </p>
 
       <div class="conn-fields">
         <template v-if="conn.driver === 'sqlite'">
@@ -261,6 +346,20 @@ function isLiteralSecret(value: string): boolean {
               />
             </label>
           </div>
+        </template>
+        <template v-else-if="isUnknownDriver(conn.driver)">
+          <!-- Unknown driver: surface the common URI + path slots
+               so the user can adjust them without losing the rest
+               of the on-disk shape. ``extras`` round-trips
+               anything the form doesn't editorialize. -->
+          <label class="conn-field">
+            <span class="field-label">URI</span>
+            <input v-model="conn.uri" type="text" placeholder="driver://…" :disabled="readOnly" />
+          </label>
+          <label class="conn-field">
+            <span class="field-label">Path</span>
+            <input v-model="conn.path" type="text" :disabled="readOnly" />
+          </label>
         </template>
       </div>
 
@@ -386,13 +485,20 @@ function isLiteralSecret(value: string): boolean {
   background: var(--bg-warning, rgba(243, 156, 18, 0.08));
 }
 
-.conn-secret-hint {
+.conn-secret-hint,
+.conn-driver-hint,
+.conn-extras-hint {
   font-size: 11px;
   color: var(--text-secondary);
-  margin: 0;
+  margin: 4px 0 0;
 }
 
-.conn-secret-hint code {
+.conn-driver-hint {
+  color: var(--accent-warning, #b58400);
+}
+
+.conn-secret-hint code,
+.conn-extras-hint code {
   background: var(--bg-input);
   padding: 1px 4px;
   border-radius: 3px;

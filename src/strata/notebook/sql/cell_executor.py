@@ -113,12 +113,18 @@ async def execute_sql_cell(
     except CachePolicyError as exc:
         return _error_result(str(exc), start_time)
 
+    # The on-disk spec keeps relative paths verbatim (so notebook.toml
+    # round-trips byte-for-byte); resolve them just before the
+    # adapter sees them so the in-process call site stays
+    # notebook-unaware.
+    runtime_spec = _resolve_runtime_spec(spec, session.path)
+
     # ---- probes (optional) -----------------------------------------
     freshness = None
     schema_fp = None
     if policy.freshness_required or policy.schema_required:
         try:
-            freshness, schema_fp = _run_probes(adapter, spec, analysis.tables, policy)
+            freshness, schema_fp = _run_probes(adapter, runtime_spec, analysis.tables, policy)
         except Exception as exc:  # noqa: BLE001
             return _error_result(f"probe failed: {exc}", start_time)
         if policy.snapshot_required and (freshness is None or not freshness.is_snapshot):
@@ -164,7 +170,7 @@ async def execute_sql_cell(
 
     # ---- execute query ---------------------------------------------
     try:
-        table = _execute_query(adapter, spec, analysis, params)
+        table = _execute_query(adapter, runtime_spec, analysis, params)
     except Exception as exc:  # noqa: BLE001
         return _error_result(
             f"SQL execution failed: {_exception_message(exc)}",
@@ -228,6 +234,32 @@ def _find_connection(session: NotebookSession, name: str) -> ConnectionSpec | No
         if spec.name == name:
             return spec
     return None
+
+
+def _resolve_runtime_spec(spec: ConnectionSpec, notebook_dir: Any) -> ConnectionSpec:
+    """Return a spec copy with relative file paths resolved.
+
+    The on-disk ``[connections.<name>]`` block is round-tripped
+    verbatim — relative paths stay relative so a notebook can move
+    between machines without notebook.toml needing edits. The
+    runtime view (handed to the adapter) needs an absolute path
+    because the server's process CWD is unrelated to the notebook
+    directory.
+
+    Only ``path`` is rewritten; ``uri`` round-trips as-is because
+    SQLite's URI form already has well-defined absolute / relative
+    semantics that the engine handles.
+    """
+    raw_path = getattr(spec, "path", None)
+    if not isinstance(raw_path, str) or not raw_path:
+        return spec
+    from pathlib import Path
+
+    p = Path(raw_path)
+    if p.is_absolute():
+        return spec
+    resolved = str((Path(str(notebook_dir)) / p).resolve())
+    return spec.model_copy(update={"path": resolved})
 
 
 def _load_upstream_variables(

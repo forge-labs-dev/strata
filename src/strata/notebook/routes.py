@@ -1545,7 +1545,16 @@ async def update_notebook_connections_endpoint(
         seen.add(conn.name)
 
     try:
-        update_notebook_connections(session.path, req.connections)
+        # Preserve any [connections.<name>] blocks that previously
+        # failed to parse — a transient typo in one entry shouldn't
+        # be silently erased by an unrelated edit elsewhere. The
+        # writer's malformed-passthrough is the durable surface for
+        # that contract; the route just has to wire it through.
+        update_notebook_connections(
+            session.path,
+            req.connections,
+            session.notebook_state.malformed_connections,
+        )
         session.reload()
         return {
             "connections": [conn.model_dump() for conn in session.notebook_state.connections],
