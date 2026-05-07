@@ -522,7 +522,7 @@ class AddCellRequest(BaseModel):
     """Request to add a new cell."""
 
     after_cell_id: str | None = None
-    language: Literal["python", "prompt", "markdown"] = "python"
+    language: Literal["python", "prompt", "markdown", "sql"] = "python"
 
 
 class MountConfigRequest(BaseModel):

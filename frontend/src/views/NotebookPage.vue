@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, ref, 
 import { useRoute, useRouter } from 'vue-router'
 import { useNotebook } from '../stores/notebook'
 import { useRecentNotebooks } from '../stores/recentNotebooks'
+import AddCellMenu from '../components/AddCellMenu.vue'
 import CellEditor from '../components/CellEditor.vue'
 import KeyboardShortcutsModal from '../components/KeyboardShortcutsModal.vue'
 import ThemeToggle from '../components/ThemeToggle.vue'
@@ -484,30 +485,12 @@ function goHome() {
         >
           ▶ Run All
         </button>
-        <button
-          class="btn btn-secondary"
+        <AddCellMenu
+          variant="header"
           data-testid="notebook-add-cell"
           :disabled="!connected"
-          @click="addCell()"
-        >
-          + Cell
-        </button>
-        <button
-          class="btn btn-secondary"
-          :disabled="!connected"
-          title="Add a prompt cell (LLM-powered)"
-          @click="addCell(undefined, 'prompt')"
-        >
-          + Prompt
-        </button>
-        <button
-          class="btn btn-secondary"
-          :disabled="!connected"
-          title="Add a markdown cell (documentation)"
-          @click="addCell(undefined, 'markdown')"
-        >
-          + Markdown
-        </button>
+          @select="(language) => addCell(undefined, language)"
+        />
         <button
           class="btn btn-danger"
           data-testid="notebook-delete"
@@ -587,23 +570,11 @@ function goHome() {
             @move-down="(id) => moveCell(id, 'down')"
           />
           <div class="add-cell-row">
-            <button class="add-cell-btn" :disabled="!connected" @click="addCell()">
-              + Add cell
-            </button>
-            <button
-              class="add-cell-btn add-prompt-btn"
+            <AddCellMenu
+              variant="inline"
               :disabled="!connected"
-              @click="addCell(undefined, 'prompt')"
-            >
-              + Add prompt cell
-            </button>
-            <button
-              class="add-cell-btn add-markdown-btn"
-              :disabled="!connected"
-              @click="addCell(undefined, 'markdown')"
-            >
-              + Add markdown cell
-            </button>
+              @select="(language) => addCell(undefined, language)"
+            />
           </div>
         </div>
 

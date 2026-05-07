@@ -586,7 +586,7 @@ def add_cell_to_notebook(
         notebook_dir: Path to notebook directory
         cell_id: New cell ID
         after_cell_id: Cell ID to add after (None = at end)
-        language: Cell language ("python", "prompt", or "markdown")
+        language: Cell language ("python", "prompt", "markdown", or "sql")
     """
     notebook_dir = Path(notebook_dir)
     notebook_toml_path = notebook_dir / "notebook.toml"
