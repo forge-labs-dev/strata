@@ -151,11 +151,28 @@ async def test_sql_injection_via_bind_does_not_alter_database(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sql_cache_invalidates_on_upstream_bind_value_change(tmp_path):
-    """upstream_input_hashes feeds the SQL provenance hash. Same SQL,
-    different upstream value → cache must miss. Without the upstream
-    hash in provenance, two cells with different bind values could
-    silently share a cached artifact — wrong rows."""
+async def test_sql_cache_keyed_on_upstream_bind_value_not_rerun(tmp_path):
+    """The SQL provenance hash folds in upstream_input_hashes, so
+    cache identity tracks the *upstream value*, not "did the
+    upstream re-execute".
+
+    Codex review fix: the prior test only asserted "value changed
+    → re-execution," which a buggy "always re-execute when
+    upstream re-runs" implementation would also satisfy. The
+    strengthened version round-trips the upstream value (15 → 25
+    → 15) and asserts the third run returns the *same artifact
+    URI* as the first. Same upstream value ⇒ same provenance
+    hash ⇒ same artifact ID, regardless of whether the upstream
+    re-executed in between.
+
+    Three properties pinned together:
+
+    1. Different upstream value ⇒ different artifact (cache key
+       depends on value).
+    2. Re-running the upstream with the same value ⇒ same artifact
+       (cache key isn't "did the upstream re-run").
+    3. Round-trip back to the original value ⇒ original artifact
+       (the value-to-hash function is deterministic and pure)."""
     from strata.notebook.executor import CellExecutor
 
     db_path = tmp_path / "events.db"
@@ -177,50 +194,94 @@ async def test_sql_cache_invalidates_on_upstream_bind_value_change(tmp_path):
     session = _session(nb_dir)
     executor = CellExecutor(session)
 
-    # First: min_value=15 → 2 rows.
+    py_cell = next(c for c in session.notebook_state.cells if c.id == "py")
+    sql_src = _read(nb_dir, "sql")
+
+    async def set_upstream_and_run_sql(new_src: str):
+        (nb_dir / "cells" / "py.py").write_text(new_src)
+        py_cell.source = new_src
+        session.re_analyze_cell("py")
+        await executor.execute_cell("py", new_src)
+        return await executor.execute_cell("sql", sql_src)
+
+    def _provenance_hash_for(uri: str) -> str:
+        """Pull the artifact's provenance hash via the artifact store."""
+        body = uri.removeprefix("strata://artifact/")
+        art_id, version = body.rsplit("@v=", 1)
+        artifact = session.get_artifact_manager().artifact_store.get_artifact(art_id, int(version))
+        assert artifact is not None
+        return artifact.provenance_hash
+
+    # Run 1: min_value=15 → 2 rows, fresh artifact.
     await executor.execute_cell("py", _read(nb_dir, "py"))
-    first = await executor.execute_cell("sql", _read(nb_dir, "sql"))
+    first = await executor.execute_cell("sql", sql_src)
     assert first.success
     assert first.cache_hit is False
-    first_table = _load_arrow(session, first.artifact_uri)
-    assert first_table.num_rows == 2
+    assert _load_arrow(session, first.artifact_uri).num_rows == 2
+    first_hash = _provenance_hash_for(first.artifact_uri)
 
-    # Edit the upstream cell so min_value=25 — expect re-execution
-    # and 1 row. Mutate both the on-disk file and the in-memory
-    # cell.source field so re_analyze_cell + execute see the new
-    # source (the route normally does this through
-    # update_cell_source, but tests don't have that surface).
-    py_cell = next(c for c in session.notebook_state.cells if c.id == "py")
-    new_py_src = "min_value = 25\n"
-    (nb_dir / "cells" / "py.py").write_text(new_py_src)
-    py_cell.source = new_py_src
-    session.re_analyze_cell("py")
-    await executor.execute_cell("py", new_py_src)
-
-    second = await executor.execute_cell("sql", _read(nb_dir, "sql"))
+    # Run 2: change to min_value=25 → cache miss, different
+    # artifact (different bind ⇒ different provenance hash).
+    second = await set_upstream_and_run_sql("min_value = 25\n")
     assert second.success
-    assert second.cache_hit is False, (
-        "SQL cell must re-execute when an upstream bind variable changes"
+    assert second.cache_hit is False
+    assert _load_arrow(session, second.artifact_uri).num_rows == 1
+    second_hash = _provenance_hash_for(second.artifact_uri)
+    assert second_hash != first_hash, (
+        "different bind value must produce a different provenance hash"
     )
-    second_table = _load_arrow(session, second.artifact_uri)
-    assert second_table.num_rows == 1
 
-    # Third run with the same min_value=25 → cache hit on the SQL cell.
-    third = await executor.execute_cell("sql", _read(nb_dir, "sql"))
+    # Run 3: re-run upstream with the SAME value (25). The
+    # upstream's source_hash is unchanged here, so it cache-hits.
+    # The SQL cell should also cache-hit — same bind ⇒ same hash.
+    third = await executor.execute_cell("sql", sql_src)
     assert third.success
     assert third.cache_hit is True
+    assert _provenance_hash_for(third.artifact_uri) == second_hash
+
+    # Run 4: round-trip back to min_value=15. The SQL cell's
+    # provenance hash must equal the first run's hash — proving
+    # the cache key is a pure function of the upstream value, not
+    # "did the upstream re-run between SQL invocations". (The
+    # artifact-store may assign a fresh version number, but the
+    # hash is the cache-key contract; same hash ⇒ same data.)
+    fourth = await set_upstream_and_run_sql("min_value = 15\n")
+    assert fourth.success
+    assert _load_arrow(session, fourth.artifact_uri).num_rows == 2
+    assert _provenance_hash_for(fourth.artifact_uri) == first_hash, (
+        "round-trip to the original upstream value must produce the "
+        "original SQL provenance hash — the cache key is keyed on the "
+        "bind value, not on whether the upstream re-executed"
+    )
+
+    # And as a bytewise sanity check, the data round-trips:
+    assert (
+        _load_arrow(session, fourth.artifact_uri).to_pylist()
+        == _load_arrow(session, first.artifact_uri).to_pylist()
+    )
 
 
 # --- 3. Snapshot policy on non-snapshot driver ---------------------------
 
 
 @pytest.mark.asyncio
-async def test_sql_snapshot_policy_errors_on_sqlite(tmp_path):
+async def test_sql_snapshot_policy_errors_before_opening_connection(tmp_path, monkeypatch):
     """SQLite has no durable snapshot identity (capabilities.
     supports_snapshot=False). ``# @cache snapshot`` must fail at
-    resolve_cache_policy before the executor opens the connection,
-    surfacing a clear diagnostic."""
+    ``resolve_cache_policy`` *before* the executor opens any
+    connection — this is the contract that lets users discover
+    the misuse without burning a probe round-trip.
+
+    Codex review fix: the prior shape only asserted "snapshot"
+    appeared in the error message, which a regression that opens
+    a connection, runs probes, then fails later would still
+    satisfy. The fix monkeypatches the SQLite adapter's ``open``
+    to crash; if the executor reaches it, the test fails with the
+    crash message rather than the snapshot diagnostic. Counts the
+    open calls too so a future regression where probes run before
+    the policy check fails loudly."""
     from strata.notebook.sql.cell_executor import execute_sql_cell
+    from strata.notebook.sql.drivers.sqlite import SqliteAdapter
 
     db_path = tmp_path / "events.db"
     _seed_sqlite(db_path)
@@ -237,10 +298,22 @@ async def test_sql_snapshot_policy_errors_on_sqlite(tmp_path):
     )
     session = _session(nb_dir)
 
+    open_calls: list[Any] = []
+
+    def boom(self, spec, *, read_only):
+        open_calls.append((spec, read_only))
+        raise RuntimeError("SqliteAdapter.open must not be reached for @cache snapshot")
+
+    monkeypatch.setattr(SqliteAdapter, "open", boom)
+
     result = await execute_sql_cell(session, "c1", _read(nb_dir, "c1"))
     assert result["success"] is False
     err = (result.get("error") or "").lower()
     assert "snapshot" in err, f"unexpected error: {result['error']!r}"
+    assert open_calls == [], (
+        "executor opened a connection before the snapshot policy "
+        f"check fired; open() called {len(open_calls)} time(s)"
+    )
 
 
 # --- 4. NULL bind values --------------------------------------------------
@@ -248,47 +321,66 @@ async def test_sql_snapshot_policy_errors_on_sqlite(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sql_null_bind_param_via_none_upstream(tmp_path):
-    """A ``None`` upstream value binds as SQL NULL. SQL's three-
-    valued logic means ``= NULL`` is never true, so the query must
-    use ``IS NULL`` to match the existing NULL row. This test pins
-    that None flows through the bind layer correctly."""
+    """A ``None`` upstream value binds as SQL NULL.
+
+    Codex review fix: the previous shape ``WHERE value IS NULL OR
+    value = :sentinel`` matched a NULL row through the IS NULL
+    branch regardless of what ``:sentinel`` was bound to — even if
+    None binding were broken or ignored, the assertion would pass.
+    The fix selects the bound value back as a column so the bind
+    is the only path to the result, and pairs the run with a
+    non-None counterpart (passing the value through directly) so
+    we can compare both directions on the same surface."""
     from strata.notebook.executor import CellExecutor
 
     db_path = tmp_path / "events.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, name TEXT, value INTEGER)")
-        conn.executemany(
-            "INSERT INTO events (id, name, value) VALUES (?, ?, ?)",
-            [(1, "alpha", None), (2, "beta", 20)],
-        )
-        conn.commit()
-
+    _seed_sqlite(db_path)
     nb_dir = _build_notebook(
         tmp_path,
         db_path=db_path,
         cells=[
             ("py", "python", "sentinel = None\n"),
-            # ``:sentinel`` is bound but unused for matching — the
-            # query selects rows with NULL value. The point is that
-            # binding ``None`` doesn't crash the executor.
+            # The bind value flows back as the result column, so the
+            # only way to get NULL in ``sentinel_back`` is for the
+            # binding to actually pass through as NULL.
             (
                 "sql",
                 "sql",
-                "# @sql connection=db\n"
-                "# @cache forever\n"
-                "SELECT id FROM events WHERE value IS NULL OR value = :sentinel\n",
+                "# @sql connection=db\n# @cache forever\nSELECT :sentinel AS sentinel_back\n",
             ),
         ],
     )
     session = _session(nb_dir)
     executor = CellExecutor(session)
 
+    # Run 1: None upstream → NULL bind → result column is NULL.
     await executor.execute_cell("py", _read(nb_dir, "py"))
-    result = await executor.execute_cell("sql", _read(nb_dir, "sql"))
-    assert result.success, result.error
-    table = _load_arrow(session, result.artifact_uri)
-    rows = table.to_pylist()
-    assert rows == [{"id": 1}]
+    none_result = await executor.execute_cell("sql", _read(nb_dir, "sql"))
+    assert none_result.success, none_result.error
+    table = _load_arrow(session, none_result.artifact_uri)
+    assert table.num_rows == 1
+    null_mask = table.column("sentinel_back").is_null().to_pylist()
+    assert null_mask == [True], (
+        "binding None as a SQL parameter must produce SQL NULL — "
+        f"got {table.column('sentinel_back').to_pylist()!r}"
+    )
+
+    # Run 2: change the upstream to a non-None value and verify the
+    # same query now returns that value, not NULL. Same query +
+    # different bind ⇒ different result, isolating that the bind
+    # path actually feeds the column.
+    py_cell = next(c for c in session.notebook_state.cells if c.id == "py")
+    new_src = "sentinel = 'hello'\n"
+    (nb_dir / "cells" / "py.py").write_text(new_src)
+    py_cell.source = new_src
+    session.re_analyze_cell("py")
+    await executor.execute_cell("py", new_src)
+
+    str_result = await executor.execute_cell("sql", _read(nb_dir, "sql"))
+    assert str_result.success, str_result.error
+    table2 = _load_arrow(session, str_result.artifact_uri)
+    assert table2.column("sentinel_back").is_null().to_pylist() == [False]
+    assert table2.column("sentinel_back").to_pylist() == ["hello"]
 
 
 # --- 5. Empty result set --------------------------------------------------
