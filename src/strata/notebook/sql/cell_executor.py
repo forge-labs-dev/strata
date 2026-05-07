@@ -280,10 +280,11 @@ async def _execute_write_cell(
        runs within the same session. Users opt into other policies
        via ``# @cache``.
 
-    The cell still produces an Arrow artifact (a one-row status
-    table with ``statements_executed`` and ``last_rowcount``
-    columns) so downstream cells with ``# @after seed`` can find
-    the artifact via ``cell.artifact_uris``.
+    The cell still produces an Arrow artifact: one row per
+    statement with ``stmt`` (1-indexed), ``kind`` (CREATE TABLE /
+    INSERT / etc), and ``rows_affected`` (nullable; None when the
+    driver doesn't report — typically DDL). Downstream cells with
+    ``# @after seed`` find the artifact via ``cell.artifact_uris``.
     """
     from strata.notebook.annotations import CachePolicy
 
@@ -434,7 +435,14 @@ def _execute_write_statements(
     same way in a write cell as it would in a read cell, just with
     the cell's mutating semantics.
 
-    Returns ``{"statements_executed": int, "last_rowcount": int}``.
+    Returns ``{"statements": [{"kind": str, "rows_affected": int|None}, ...]}``.
+    One entry per statement, in source order. ``rows_affected`` is
+    None when the driver couldn't report a row count for that
+    statement (DDL via PEP-249's ``cursor.rowcount = -1`` convention,
+    or no rowcount reported at all). DML statements produce an
+    integer; a 0 there is genuine ("UPDATE matched no rows"), not a
+    sentinel.
+
     A failed statement aborts the run; partial state on disk is
     the user's problem (DDL/DML in SQLite isn't transactional by
     default, and Postgres' transaction semantics are driver-specific).
@@ -457,16 +465,20 @@ def _execute_write_statements(
         # single opaque statement (covers vendor-specific syntax we
         # can't fully parse). Placeholders still get extracted via
         # the regex path so :name bindings keep working.
-        statements_text = [body]
+        prepared = [(body, _statement_kind_from_text(body))]
     else:
-        statements_text = [
-            stmt.sql(dialect=adapter.sqlglot_dialect, comments=False) for stmt in parsed
+        prepared = [
+            (
+                stmt.sql(dialect=adapter.sqlglot_dialect, comments=False),
+                _statement_kind_from_expr(stmt),
+            )
+            for stmt in parsed
         ]
 
-    last_rowcount = -1
+    statements: list[dict[str, Any]] = []
     conn = adapter.open(spec, read_only=False)
     try:
-        for stmt_text in statements_text:
+        for stmt_text, stmt_kind in prepared:
             placeholders = _extract_placeholder_positions(stmt_text)
             if placeholders:
                 stmt_params = resolve_bind_params(placeholders, namespace)
@@ -481,10 +493,17 @@ def _execute_write_statements(
                 else:
                     cursor.execute(stmt_to_execute)
                 rc = getattr(cursor, "rowcount", -1)
-                if isinstance(rc, int):
-                    last_rowcount = rc
+                # PEP 249 sentinel: -1 means "not available"; preserve
+                # 0 as a real count (UPDATE matched zero rows).
+                rows_affected: int | None
+                if isinstance(rc, int) and rc >= 0:
+                    rows_affected = rc
+                else:
+                    rows_affected = None
             finally:
                 _safely_close(cursor)
+            statements.append({"kind": stmt_kind, "rows_affected": rows_affected})
+
         # Commit explicitly. ADBC's DBAPI defaults autocommit=False
         # so user writes are buffered until commit. Surfaces any
         # commit-time error as the cell's failure — silencing was
@@ -495,20 +514,74 @@ def _execute_write_statements(
     finally:
         _safely_close(conn)
 
-    return {
-        "statements_executed": len(statements_text),
-        "last_rowcount": last_rowcount,
-    }
+    return {"statements": statements}
+
+
+def _statement_kind_from_expr(expr: Any) -> str:
+    """Best-effort label for a parsed sqlglot statement.
+
+    Returns strings like ``CREATE TABLE`` / ``DROP TABLE`` /
+    ``INSERT`` / ``UPDATE`` / ``ALTER TABLE``. The label is what
+    the synthesized result table surfaces in its ``kind`` column,
+    so it should be self-explanatory at a glance.
+    """
+    if expr is None:
+        return "UNKNOWN"
+    cls_name = type(expr).__name__.upper()
+    if cls_name in {"CREATE", "DROP"}:
+        kind_arg = expr.args.get("kind") if hasattr(expr, "args") else None
+        kind_str = (kind_arg or "TABLE").upper() if isinstance(kind_arg, str) else "TABLE"
+        return f"{cls_name} {kind_str}"
+    if cls_name in {"ALTERTABLE", "ALTER"}:
+        return "ALTER TABLE"
+    return cls_name
+
+
+def _statement_kind_from_text(text: str) -> str:
+    """Fallback kind extractor when sqlglot can't parse the body.
+
+    Strips leading comments / whitespace and returns the first
+    keyword (uppercased). Better than ``UNKNOWN`` for vendor-
+    specific or pragmatic SQL the parser doesn't fully understand.
+    """
+    cleaned = text.lstrip()
+    while cleaned.startswith("--"):
+        nl = cleaned.find("\n")
+        cleaned = cleaned[nl + 1 :].lstrip() if nl != -1 else ""
+    head = cleaned.split(None, 2)
+    if not head:
+        return "UNKNOWN"
+    first = head[0].upper().rstrip(";")
+    if first in {"CREATE", "DROP", "ALTER"} and len(head) > 1:
+        return f"{first} {head[1].upper().rstrip(';')}"
+    return first or "UNKNOWN"
 
 
 def _synthesize_write_result_table(stats: dict[str, Any]) -> Any:
-    """One-row Arrow table summarizing a write cell's execution."""
+    """Per-statement Arrow table summarizing a write cell's execution.
+
+    Schema: one row per statement, in source order, with
+    ``stmt`` (1-indexed), ``kind`` (CREATE TABLE / INSERT / …),
+    and ``rows_affected`` (nullable; None when the driver didn't
+    report — typically DDL).
+    """
     import pyarrow as pa
 
+    statements = stats.get("statements") or []
     return pa.table(
         {
-            "statements_executed": [int(stats.get("statements_executed", 0))],
-            "last_rowcount": [int(stats.get("last_rowcount", -1))],
+            "stmt": pa.array(
+                list(range(1, len(statements) + 1)),
+                type=pa.int32(),
+            ),
+            "kind": pa.array(
+                [s.get("kind", "UNKNOWN") for s in statements],
+                type=pa.string(),
+            ),
+            "rows_affected": pa.array(
+                [s.get("rows_affected") for s in statements],
+                type=pa.int64(),
+            ),
         }
     )
 

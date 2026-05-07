@@ -823,3 +823,59 @@ async def test_sql_write_cell_propagates_commit_failure(tmp_path, monkeypatch):
     assert result["success"] is False
     err = (result["error"] or "").lower()
     assert "simulated commit failure" in err, f"unexpected error: {result['error']!r}"
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_emits_per_statement_status_table(tmp_path):
+    """The write-cell artifact is a per-statement table: one row
+    per statement with ``stmt`` (1-indexed), ``kind`` (CREATE
+    TABLE / INSERT / ...), and ``rows_affected`` (nullable; None
+    when the driver doesn't report — typically DDL). The earlier
+    one-row {statements_executed, last_rowcount} shape masked the
+    middle of multi-statement bodies and showed -1 for DDL,
+    confusing for users."""
+    db_path = tmp_path / "perstmt.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n"
+            "DROP TABLE IF EXISTS t;\n"
+            "CREATE TABLE t (n INTEGER);\n"
+            "INSERT INTO t VALUES (1), (2), (3);\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"], result.get("error")
+
+    table = _load_arrow_from_uri(session, result["artifact_uri"])
+    assert table.num_rows == 3
+    assert table.schema.names == ["stmt", "kind", "rows_affected"]
+    rows = table.to_pylist()
+    # Order preserved.
+    assert [r["stmt"] for r in rows] == [1, 2, 3]
+    # Kinds reflect the statement type.
+    kinds = [r["kind"] for r in rows]
+    assert kinds[0] == "DROP TABLE"
+    assert kinds[1] == "CREATE TABLE"
+    assert kinds[2] == "INSERT"
+    # DDL gets null rows_affected (driver returns -1; we map to None).
+    assert rows[0]["rows_affected"] is None
+    assert rows[1]["rows_affected"] is None
+    # INSERT may or may not return a row count depending on the
+    # driver; assert the value is either a non-negative int or
+    # None — both honest, neither is the legacy -1 sentinel.
+    insert_count = rows[2]["rows_affected"]
+    assert insert_count is None or (isinstance(insert_count, int) and insert_count >= 0)
+
+
+def _load_arrow_from_uri(session: Any, uri: str) -> Any:
+    """Pull an artifact's bytes back and decode as a pyarrow Table.
+
+    Older tests in this file hand-rolled this; refactoring the
+    helper out keeps the per-statement test self-contained.
+    """
+    return _load_artifact_as_arrow(session, uri)
