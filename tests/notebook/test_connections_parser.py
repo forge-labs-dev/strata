@@ -374,3 +374,54 @@ def test_is_auth_indirection_recognizes_var_pattern():
     assert not is_auth_indirection("${PGPASS} extra")
     assert not is_auth_indirection(None)
     assert not is_auth_indirection(1234)
+
+
+def test_relative_connection_path_resolves_against_notebook_dir(tmp_path):
+    """A relative ``path = "analytics.db"`` in notebook.toml resolves
+    relative to the notebook directory, not to whatever CWD the
+    server happens to be running from. Without this resolution, the
+    SQLite adapter opens the wrong file (or fails to open at all)
+    because the server's process CWD is unrelated to the notebook."""
+    from strata.notebook.parser import _parse_connections
+
+    valid, malformed = _parse_connections(
+        {
+            "connections": {
+                "warehouse": {"driver": "sqlite", "path": "analytics.db"},
+            }
+        },
+        notebook_dir=tmp_path,
+    )
+    assert malformed == []
+    assert len(valid) == 1
+    spec = valid[0]
+    # The path resolves through .resolve() which normalizes.
+    assert spec.path == str((tmp_path / "analytics.db").resolve())
+
+
+def test_absolute_connection_path_left_unchanged(tmp_path):
+    """Absolute paths are taken at face value — users with a shared
+    DB outside the notebook dir aren't second-guessed."""
+    import os
+
+    from strata.notebook.parser import _parse_connections
+
+    abs_path = os.path.abspath("/tmp/elsewhere.db")
+    valid, _ = _parse_connections(
+        {"connections": {"db": {"driver": "sqlite", "path": abs_path}}},
+        notebook_dir=tmp_path,
+    )
+    assert valid[0].path == abs_path
+
+
+def test_connection_path_resolution_skipped_without_notebook_dir():
+    """The parser is also invoked from contexts that don't have a
+    notebook dir handy (round-trip tests, ad-hoc fixtures); leave
+    paths untouched in that case so behavior is identical to the
+    pre-fix surface."""
+    from strata.notebook.parser import _parse_connections
+
+    valid, _ = _parse_connections(
+        {"connections": {"db": {"driver": "sqlite", "path": "rel.db"}}},
+    )
+    assert valid[0].path == "rel.db"

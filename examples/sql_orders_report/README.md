@@ -30,11 +30,19 @@ sensitive) and `# @cache forever` (reference-data) policies.
 
 | Cell | Language | What it does |
 |---|---|---|
-| `setup` | Python | Seeds `analytics.db` with five products and ten orders. Run this once. |
+| `seed` | Python | Seeds `analytics.db` with five products and ten orders. |
 | `threshold` | Python | Defines `min_amount = 50`. Edit and rerun to vary the threshold. |
-| `top_orders` | SQL | `WHERE amount > :min_amount`, joined to the product catalog, top 5. |
-| `category_summary` | SQL | Revenue by category with `# @cache forever`. |
+| `top_orders` | SQL | `WHERE amount > :min_amount`, joined to the product catalog, top 5. Declares `# @after seed`. |
+| `category_summary` | SQL | Revenue by category with `# @cache forever`. Declares `# @after seed`. |
 | `report` | Python | Stitches the two SQL outputs into a markdown report. |
+
+## DAG dependencies
+
+`top_orders` and `category_summary` depend on the SQLite file that
+`seed` produces, but no Python variable flows between them — the
+dependency is on a side effect. The `# @after seed` annotation adds
+an ordering-only edge to the DAG so cascade execution and staleness
+both see the link.
 
 ## Running
 

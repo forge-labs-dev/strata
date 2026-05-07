@@ -23,6 +23,7 @@ from strata.notebook.models import (
 
 def _parse_connections(
     toml_data: dict,
+    notebook_dir: Path | None = None,
 ) -> tuple[list[ConnectionSpec], list[MalformedConnection]]:
     """Split ``[connections.<name>]`` blocks into valid and malformed.
 
@@ -38,6 +39,14 @@ def _parse_connections(
     Pydantic's ``extra="allow"`` on ``ConnectionSpec`` preserves
     driver-specific keys (``uri``, ``host``, ``account``, ...) for the
     adapter to interpret.
+
+    Path resolution: when ``notebook_dir`` is provided, a relative
+    ``path`` value (e.g. SQLite's ``path = "analytics.db"``) is
+    resolved against the notebook directory. The adapter runs
+    in-process on the server, whose CWD is unrelated to the notebook,
+    so without this step a relative path gets pinned to the server's
+    process CWD — causing a confusing "failed to open" error in
+    place of the obvious "next to notebook.toml" semantics.
     """
     raw = toml_data.get("connections")
     if not isinstance(raw, dict):
@@ -64,8 +73,15 @@ def _parse_connections(
                 )
             )
             continue
+        body_with_resolved = dict(body)
+        if notebook_dir is not None:
+            raw_path = body_with_resolved.get("path")
+            if isinstance(raw_path, str) and raw_path:
+                p = Path(raw_path)
+                if not p.is_absolute():
+                    body_with_resolved["path"] = str((notebook_dir / p).resolve())
         try:
-            valid.append(ConnectionSpec(name=name_str, **body))
+            valid.append(ConnectionSpec(name=name_str, **body_with_resolved))
         except Exception as exc:
             malformed.append(
                 MalformedConnection(
@@ -150,7 +166,7 @@ def parse_notebook(directory: Path) -> NotebookState:
     if updated_at is None:
         updated_at = datetime.now(tz=UTC)
 
-    _parsed_connections, _parsed_malformed = _parse_connections(toml_data)
+    _parsed_connections, _parsed_malformed = _parse_connections(toml_data, notebook_dir=directory)
 
     notebook_toml = NotebookToml(
         notebook_id=toml_data.get("notebook_id", ""),

@@ -105,6 +105,13 @@ class CellAnnotations:
     sql: SqlAnnotation | None = None
     cache: CachePolicy | None = None
 
+    # Explicit ordering dependencies. ``# @after <cell-id>`` adds a DAG
+    # edge from ``<cell-id>`` to this cell without requiring a shared
+    # variable — the ergonomic answer to "this SQL cell reads a SQLite
+    # file the setup cell created" or any other side-effecting upstream.
+    # Multiple ``@after`` lines may stack; each line adds one edge.
+    after: list[str] = field(default_factory=list)
+
 
 def parse_annotations(source: str) -> CellAnnotations:
     """Extract annotations from the leading comment block of a cell.
@@ -196,6 +203,15 @@ def parse_annotations(source: str) -> CellAnnotations:
                     result.loop = LoopAnnotation(max_iter=0, carry="", until_expr=value)
                 else:
                     result.loop.until_expr = value
+
+        elif key == "after":
+            # ``# @after <cell-id>`` declares an ordering dependency
+            # without sharing a variable. Multiple lines stack; one
+            # edge per identifier on the line (whitespace-separated).
+            for token in value.split():
+                token = token.strip().rstrip(",")
+                if token and token not in result.after:
+                    result.after.append(token)
 
     return result
 

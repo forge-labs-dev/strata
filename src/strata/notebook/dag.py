@@ -59,11 +59,15 @@ class CellAnalysisWithId:
         id: Cell ID
         defines: Variables defined by this cell
         references: Variables referenced by this cell
+        after: Explicit ordering dependencies (``# @after <cell-id>``).
+            Each entry is an upstream cell ID; the DAG edge is
+            ordering-only (no variable flows along it).
     """
 
     id: str
     defines: list[str]
     references: list[str]
+    after: list[str] = field(default_factory=list)
 
 
 def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
@@ -113,6 +117,32 @@ def build_dag(cells: list[CellAnalysisWithId]) -> NotebookDag:
             if cell.id not in dag.cell_downstream[producer_id]:
                 dag.cell_downstream[producer_id].append(cell.id)
             dag.consumed_variables[producer_id].add(var)
+
+        # ``# @after <cell-id>`` adds an ordering-only edge (no
+        # variable flows along it). Used by SQL cells whose dependency
+        # is on an upstream side-effect, like a setup cell that seeds
+        # a SQLite file the connection points at. The edge participates
+        # in upstream/downstream wiring and topological order, but does
+        # not appear in consumed_variables (there's no variable to
+        # consume), so per-variable provenance is unaffected.
+        cell_id_set = set(cell_ids)
+        for upstream_id in cell.after:
+            if upstream_id == cell.id or upstream_id not in cell_id_set:
+                # Self-references and dangling IDs are silently dropped
+                # here; annotation_validation surfaces them as
+                # diagnostics so the user sees the issue without the
+                # DAG build crashing.
+                continue
+            edge = DagEdge(
+                from_cell_id=upstream_id,
+                to_cell_id=cell.id,
+                variable="",
+            )
+            dag.edges.append(edge)
+            if upstream_id not in dag.cell_upstream[cell.id]:
+                dag.cell_upstream[cell.id].append(upstream_id)
+            if cell.id not in dag.cell_downstream[upstream_id]:
+                dag.cell_downstream[upstream_id].append(cell.id)
 
         # Now apply this cell's defines so later cells see it as the
         # producer. Shadow warnings still fire when a later cell

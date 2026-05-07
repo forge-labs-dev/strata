@@ -1,10 +1,11 @@
-# @name setup_status
+# @name seed_status
 """Seed `analytics.db` with a small orders table.
 
-Run this once before the SQL cells. It writes a SQLite file in the
-notebook directory; subsequent edits to other cells leave it alone.
-The file is the side-effect artifact of this cell — Strata's cache
-is on the returned status string, not on the database.
+Downstream SQL cells declare ``# @after seed`` so the DAG knows
+they depend on this cell — even though no Python variable flows
+between them, the SQLite file does. Subsequent edits to other
+cells leave the database alone; Strata's cache is on the returned
+status string, not on the file itself.
 """
 
 import sqlite3
@@ -57,5 +58,5 @@ conn.executemany(
 conn.commit()
 conn.close()
 
-setup_status = f"seeded {db.absolute()}"
-setup_status
+seed_status = f"seeded {db.absolute()}"
+seed_status

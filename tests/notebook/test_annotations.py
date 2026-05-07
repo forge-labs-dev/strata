@@ -223,3 +223,27 @@ class TestLoopAnnotation:
 
         cell = next(c for c in data["cells"] if c["id"] == "c1")
         assert cell["annotations"]["loop"] is None
+
+
+class TestAfterAnnotation:
+    """Tests for the @after ordering-dependency annotation."""
+
+    def test_after_single_cell(self):
+        result = parse_annotations("# @after setup\nx = 1")
+        assert result.after == ["setup"]
+
+    def test_after_multiple_lines_stack(self):
+        result = parse_annotations("# @after setup\n# @after seed_db\nx = 1")
+        assert result.after == ["setup", "seed_db"]
+
+    def test_after_multiple_ids_on_one_line(self):
+        result = parse_annotations("# @after setup seed_db\nx = 1")
+        assert result.after == ["setup", "seed_db"]
+
+    def test_after_dedupes_repeated_ids(self):
+        result = parse_annotations("# @after setup\n# @after setup\nx = 1")
+        assert result.after == ["setup"]
+
+    def test_after_empty_when_absent(self):
+        result = parse_annotations("x = 1")
+        assert result.after == []

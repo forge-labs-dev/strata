@@ -438,3 +438,79 @@ class TestRealWorldDAGs:
 
         # features is shared by both train and evaluate
         assert dag.cell_downstream["features"] == ["train", "evaluate"]
+
+
+class TestAfterEdges:
+    """Tests for the ``@after`` ordering-only edge wiring.
+
+    SQL cells whose dependency is on an upstream side effect (e.g.
+    a setup cell that seeds a SQLite file) declare it via
+    ``# @after <cell-id>``. The DAG edge participates in
+    upstream/downstream wiring and the topological order without
+    contributing a variable to ``consumed_variables``.
+    """
+
+    def test_after_creates_upstream_edge(self):
+        cells = [
+            CellAnalysisWithId(id="setup", defines=[], references=[]),
+            CellAnalysisWithId(id="query", defines=[], references=[], after=["setup"]),
+        ]
+        dag = build_dag(cells)
+        assert dag.cell_upstream["query"] == ["setup"]
+        assert dag.cell_downstream["setup"] == ["query"]
+        assert dag.topological_order == ["setup", "query"]
+
+    def test_after_edge_carries_no_variable(self):
+        """Ordering-only — no variable, so consumed_variables stays empty."""
+        cells = [
+            CellAnalysisWithId(id="setup", defines=[], references=[]),
+            CellAnalysisWithId(id="query", defines=[], references=[], after=["setup"]),
+        ]
+        dag = build_dag(cells)
+        assert dag.consumed_variables["setup"] == set()
+        assert all(e.variable == "" for e in dag.edges if e.from_cell_id == "setup")
+
+    def test_after_dangling_id_silently_dropped(self):
+        """Reference to a cell that doesn't exist — no edge, no
+        crash. ``annotation_validation`` is the surface that flags
+        this for the user; the DAG builder stays robust."""
+        cells = [
+            CellAnalysisWithId(id="query", defines=[], references=[], after=["does-not-exist"]),
+        ]
+        dag = build_dag(cells)
+        assert dag.cell_upstream["query"] == []
+        assert dag.edges == []
+
+    def test_after_self_reference_silently_dropped(self):
+        cells = [
+            CellAnalysisWithId(id="c", defines=[], references=[], after=["c"]),
+        ]
+        dag = build_dag(cells)
+        assert dag.cell_upstream["c"] == []
+
+    def test_after_combines_with_variable_edges(self):
+        """A cell can have both ``@after`` and variable references; the
+        edges accumulate, no double-edge for the same upstream."""
+        cells = [
+            CellAnalysisWithId(id="setup", defines=[], references=[]),
+            CellAnalysisWithId(id="config", defines=["min_value"], references=[]),
+            CellAnalysisWithId(
+                id="query",
+                defines=[],
+                references=["min_value"],
+                after=["setup"],
+            ),
+        ]
+        dag = build_dag(cells)
+        assert sorted(dag.cell_upstream["query"]) == ["config", "setup"]
+
+    def test_after_cycle_still_detected(self):
+        """Ordering edges feed cycle detection same as variable edges."""
+        import pytest
+
+        cells = [
+            CellAnalysisWithId(id="a", defines=[], references=[], after=["b"]),
+            CellAnalysisWithId(id="b", defines=[], references=[], after=["a"]),
+        ]
+        with pytest.raises(ValueError, match="Cycle"):
+            build_dag(cells)

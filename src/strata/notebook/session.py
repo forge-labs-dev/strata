@@ -389,6 +389,7 @@ class NotebookSession:
                     id=cell.id,
                     defines=defines,
                     references=references,
+                    after=list(annotations.after),
                 )
             )
             # Update cell with analysis results
