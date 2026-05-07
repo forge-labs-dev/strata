@@ -287,14 +287,22 @@ async def _execute_write_cell(
     """
     from strata.notebook.annotations import CachePolicy
 
-    body_source = _strip_leading_annotation_lines(source)
-    if not body_source.strip():
+    # Run the analyzer so the write path participates in the same
+    # bind / placeholder / # @name surface as the read path. The
+    # only divergence below is execution: read calls
+    # adapter.probe_freshness then runs the (single) statement
+    # read-only; write opens writable, splits the body via
+    # sqlglot, and runs each statement with its own slice of the
+    # cell-level bind tuple.
+    analysis = analyze_sql_cell(source, dialect=adapter.sqlglot_dialect)
+    if analysis.parse_error:
+        return _error_result(f"SQL parse error: {analysis.parse_error}", start_time)
+    if not analysis.sql_body:
         return _error_result("Write SQL cell body is empty.", start_time)
 
     # Resolve cache policy — default to session when not specified.
     # Probe-based policies (fingerprint / snapshot) don't make
-    # sense for writes; coerce to session with a diagnostic-style
-    # error so the user knows.
+    # sense for writes; surface a diagnostic so the user knows.
     cache_annotation = annotations.cache or CachePolicy(kind="session")
     if cache_annotation.kind in {"fingerprint", "snapshot"}:
         return _error_result(
@@ -314,23 +322,38 @@ async def _execute_write_cell(
     except CachePolicyError as exc:
         return _error_result(str(exc), start_time)
 
-    output_name = "result"
-    cache_payload = b"\n".join(
-        [
-            b"strata.sql.write",
-            policy.salt,
-            body_source.encode("utf-8"),
-            adapter.canonicalize_connection_id(spec).encode("utf-8"),
-        ]
+    # Bind resolution + upstream-input hashes — same as read path.
+    # Without these in provenance, an upstream variable change
+    # wouldn't invalidate the write cell's cache and the seed would
+    # silently use stale values.
+    namespace, upstream_input_hashes = _load_upstream_variables(
+        session, cell_id, analysis.references
     )
-    provenance_hash = hashlib.sha256(cache_payload).hexdigest()
+    try:
+        params = resolve_bind_params(analysis.placeholder_positions, namespace)
+    except BindError as exc:
+        return _error_result(str(exc), start_time)
+
+    # Provenance via the same hash function read cells use, with
+    # the freshness/schema slots set to None (no probe).
+    query_normalized = normalize_query(analysis.sql_body, adapter.sqlglot_dialect)
+    connection_id = adapter.canonicalize_connection_id(spec)
+    provenance_hash = compute_sql_provenance_hash(
+        query_normalized=query_normalized,
+        bind_params=params,
+        connection_id=connection_id,
+        upstream_input_hashes=upstream_input_hashes,
+        cache_salt=policy.salt,
+        freshness_token=None,
+        schema_fingerprint=None,
+    )
+    output_name = analysis.name
     var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
 
     artifact_mgr = session.get_artifact_manager()
     notebook_id = session.notebook_state.id
     canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{output_name}"
 
-    # Cache check — only for non-skip policies.
     if use_cache:
         cached = artifact_mgr.find_cached(var_provenance)
         if cached is not None:
@@ -348,7 +371,7 @@ async def _execute_write_cell(
     runtime_spec = _resolve_runtime_spec(spec, session.path)
 
     try:
-        stats = _execute_write_statements(adapter, runtime_spec, body_source)
+        stats = _execute_write_statements(adapter, runtime_spec, analysis.sql_body, namespace)
     except Exception as exc:  # noqa: BLE001
         return _error_result(f"SQL execution failed: {_exception_message(exc)}", start_time)
 
@@ -396,68 +419,84 @@ async def _execute_write_cell(
     }
 
 
-def _strip_leading_annotation_lines(source: str) -> str:
-    """Return the SQL body with ``# @…`` lines stripped from the top."""
-    lines = source.splitlines()
-    body_start = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            body_start = i + 1
-            continue
-        break
-    return "\n".join(lines[body_start:])
-
-
 def _execute_write_statements(
     adapter: DriverAdapter,
     spec: ConnectionSpec,
     body: str,
+    namespace: dict[str, Any],
 ) -> dict[str, Any]:
-    """Open writable, split into statements, execute each.
+    """Open writable, split into statements, execute each with binds.
+
+    Each split statement gets its own placeholder pass — the bind
+    layer's allowlist still gates upstream values, and the
+    statement is rewritten to the dialect's positional form before
+    execute. This means ``INSERT INTO t VALUES (:n)`` works the
+    same way in a write cell as it would in a read cell, just with
+    the cell's mutating semantics.
 
     Returns ``{"statements_executed": int, "last_rowcount": int}``.
     A failed statement aborts the run; partial state on disk is
     the user's problem (DDL/DML in SQLite isn't transactional by
     default, and Postgres' transaction semantics are driver-specific).
+
+    Commit failures propagate. Earlier the implementation silenced
+    all commit-time exceptions to paper over autocommit-mode
+    "nothing to commit" warnings — that also hid real
+    deferred-constraint, transaction, and transport failures.
+    Surfacing the raw error means a failed commit produces a
+    visible cell error instead of a misleading "success" with
+    nothing actually persisted.
     """
     import sqlglot
+
+    from strata.notebook.sql.analyzer import _extract_placeholder_positions
 
     parsed = [s for s in sqlglot.parse(body, dialect=adapter.sqlglot_dialect) if s]
     if not parsed:
         # sqlglot returned no statements — treat the whole body as a
         # single opaque statement (covers vendor-specific syntax we
-        # can't fully parse).
-        statements = [body]
+        # can't fully parse). Placeholders still get extracted via
+        # the regex path so :name bindings keep working.
+        statements_text = [body]
     else:
-        statements = [stmt.sql(dialect=adapter.sqlglot_dialect, comments=False) for stmt in parsed]
+        statements_text = [
+            stmt.sql(dialect=adapter.sqlglot_dialect, comments=False) for stmt in parsed
+        ]
 
     last_rowcount = -1
     conn = adapter.open(spec, read_only=False)
     try:
-        for stmt in statements:
+        for stmt_text in statements_text:
+            placeholders = _extract_placeholder_positions(stmt_text)
+            if placeholders:
+                stmt_params = resolve_bind_params(placeholders, namespace)
+                stmt_to_execute = rewrite_named_to_positional(stmt_text, adapter.sqlglot_dialect)
+            else:
+                stmt_params = ()
+                stmt_to_execute = stmt_text
             cursor = conn.cursor()
             try:
-                cursor.execute(stmt)
+                if stmt_params:
+                    cursor.execute(stmt_to_execute, parameters=stmt_params)
+                else:
+                    cursor.execute(stmt_to_execute)
                 rc = getattr(cursor, "rowcount", -1)
                 if isinstance(rc, int):
                     last_rowcount = rc
             finally:
                 _safely_close(cursor)
-        # Some drivers buffer changes — commit explicitly when the
-        # connection's commit is exposed (ADBC's autocommit defaults
-        # vary). Catch any "no transaction" errors silently.
+        # Commit explicitly. ADBC's DBAPI defaults autocommit=False
+        # so user writes are buffered until commit. Surfaces any
+        # commit-time error as the cell's failure — silencing was
+        # the previous bug.
         commit = getattr(conn, "commit", None)
         if callable(commit):
-            try:
-                commit()
-            except Exception:  # noqa: BLE001
-                pass
+            commit()
     finally:
         _safely_close(conn)
 
     return {
-        "statements_executed": len(statements),
+        "statements_executed": len(statements_text),
         "last_rowcount": last_rowcount,
     }
 

@@ -622,3 +622,204 @@ async def test_sql_write_cell_makes_db_visible_to_read_cell(tmp_path):
         {"id": 1, "label": "alpha"},
         {"id": 2, "label": "beta"},
     ]
+
+
+# --- Codex review fixes for write cells -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_resolves_bind_placeholders_from_upstream(tmp_path):
+    """Codex review fix: write cells go through the same analyzer +
+    bind layer as read cells. ``INSERT INTO t VALUES (:n)`` resolves
+    ``:n`` against the upstream namespace, type-checks via the bind
+    allowlist, and rewrites to the dialect's positional form before
+    cursor.execute. Without this, the write path bypassed binds
+    entirely and a ``:n`` token would appear verbatim in the
+    statement (or silently fail)."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.session import NotebookSession
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        create_notebook,
+        write_cell,
+    )
+
+    db_path = tmp_path / "binds.db"
+    nb_dir = create_notebook(tmp_path, "Bind Write")
+    add_cell_to_notebook(nb_dir, "cfg", language="python")
+    write_cell(nb_dir, "cfg", "label = 'alpha'\ncount = 7\n")
+    add_cell_to_notebook(nb_dir, "seed", after_cell_id="cfg", language="sql")
+    write_cell(
+        nb_dir,
+        "seed",
+        (
+            "# @sql connection=db write=true\n"
+            "DROP TABLE IF EXISTS t;\n"
+            "CREATE TABLE t (label TEXT, n INTEGER);\n"
+            "INSERT INTO t VALUES (:label, :count);\n"
+        ),
+    )
+    toml = nb_dir / "notebook.toml"
+    toml.write_text(
+        toml.read_text() + f'\n[connections.db]\ndriver = "sqlite"\npath = "{db_path}"\n'
+    )
+
+    session = NotebookSession(parse_notebook(nb_dir), nb_dir)
+    executor = CellExecutor(session)
+
+    cfg_src = (nb_dir / "cells" / "cfg.py").read_text()
+    cfg_result = await executor.execute_cell("cfg", cfg_src)
+    assert cfg_result.success
+
+    seed_src = (nb_dir / "cells" / "seed.py").read_text()
+    seed_result = await executor.execute_cell("seed", seed_src)
+    assert seed_result.success, seed_result.error
+
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT label, n FROM t").fetchall()
+    assert rows == [("alpha", 7)]
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_invalidates_on_upstream_value_change(tmp_path):
+    """Codex review fix: upstream_input_hashes feeds the write
+    cell's provenance hash. Same source + different upstream value
+    must miss the cache (otherwise the seed silently re-uses the
+    old value)."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.session import NotebookSession
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        create_notebook,
+        write_cell,
+    )
+
+    db_path = tmp_path / "invalidate.db"
+    nb_dir = create_notebook(tmp_path, "Bind Invalidate")
+    add_cell_to_notebook(nb_dir, "cfg", language="python")
+    write_cell(nb_dir, "cfg", "value = 1\n")
+    add_cell_to_notebook(nb_dir, "seed", after_cell_id="cfg", language="sql")
+    write_cell(
+        nb_dir,
+        "seed",
+        (
+            "# @sql connection=db write=true\n"
+            "DROP TABLE IF EXISTS t;\n"
+            "CREATE TABLE t (n INTEGER);\n"
+            "INSERT INTO t VALUES (:value);\n"
+        ),
+    )
+    toml = nb_dir / "notebook.toml"
+    toml.write_text(
+        toml.read_text() + f'\n[connections.db]\ndriver = "sqlite"\npath = "{db_path}"\n'
+    )
+
+    session = NotebookSession(parse_notebook(nb_dir), nb_dir)
+    executor = CellExecutor(session)
+    cells = {c.id: c for c in session.notebook_state.cells}
+
+    await executor.execute_cell("cfg", cells["cfg"].source)
+    seed_src = (nb_dir / "cells" / "seed.py").read_text()
+    first = await executor.execute_cell("seed", seed_src)
+    assert first.success and not first.cache_hit
+
+    # Change upstream value; rerun cfg + seed.
+    cells["cfg"].source = "value = 99\n"
+    (nb_dir / "cells" / "cfg.py").write_text(cells["cfg"].source)
+    session.re_analyze_cell("cfg")
+    await executor.execute_cell("cfg", cells["cfg"].source)
+
+    second = await executor.execute_cell("seed", seed_src)
+    assert second.success
+    assert second.cache_hit is False, (
+        "write cell must re-execute when an upstream bind variable changes"
+    )
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT n FROM t").fetchall()
+    assert rows == [(99,)]
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_honors_at_name_for_artifact_key(tmp_path):
+    """Codex review fix: the write path used to hardcode
+    ``output_name = "result"``, mismatching what the analyzer's
+    ``defines`` advertised when the cell carried ``# @name``.
+    Downstream cells looking up the named output by canonical id
+    would miss it. Now both the analyzer and the executor agree
+    on the name."""
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.session import NotebookSession
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    db_path = tmp_path / "named.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n# @name seed_status\nCREATE TABLE t (n INTEGER);\n"
+        ),
+    )
+    session = NotebookSession(parse_notebook(nb_dir), nb_dir)
+
+    src = _read_cell(nb_dir, "c1")
+    result = await execute_sql_cell(session, "c1", src)
+    assert result["success"], result.get("error")
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    # Analyzer-side defines list reflects the @name override.
+    assert cell.defines == ["seed_status"]
+    # Executor-side artifact map uses the same key so a downstream
+    # ``_collect_input_hashes`` walk lands on the right URI.
+    assert "seed_status" in cell.artifact_uris
+    assert "result" not in cell.artifact_uris
+
+    # And the canonical artifact id matches the analyzer's output name.
+    notebook_id = session.notebook_state.id
+    canonical_id = f"nb_{notebook_id}_cell_c1_var_seed_status"
+    canonical = session.get_artifact_manager().artifact_store.get_latest_version(canonical_id)
+    assert canonical is not None
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_propagates_commit_failure(tmp_path, monkeypatch):
+    """Codex review fix: the write path used to swallow every
+    exception from ``conn.commit()``, so a real deferred-constraint
+    or transport failure surfaced as a misleading ``success=True``
+    with nothing actually persisted. Now commit errors propagate
+    as a normal cell error."""
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+    from strata.notebook.sql.drivers.sqlite import SqliteAdapter
+
+    db_path = tmp_path / "commit_fail.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=("# @sql connection=db write=true\nCREATE TABLE t (n INTEGER);\n"),
+    )
+    session = _make_session(nb_dir)
+
+    real_open = SqliteAdapter.open
+
+    def opening(self, spec, *, read_only):
+        conn = real_open(self, spec, read_only=read_only)
+
+        original_commit = conn.commit
+
+        def explode(*_args, **_kwargs):
+            raise RuntimeError("simulated commit failure")
+
+        # Replace just commit; keep the rest of the interface.
+        conn.commit = explode  # type: ignore[method-assign]
+        # Keep ``original_commit`` reachable so it's not GC'd into a
+        # dangling reference; not strictly necessary but cleaner.
+        conn._original_commit = original_commit  # type: ignore[attr-defined]
+        return conn
+
+    monkeypatch.setattr(SqliteAdapter, "open", opening)
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"] is False
+    err = (result["error"] or "").lower()
+    assert "simulated commit failure" in err, f"unexpected error: {result['error']!r}"
