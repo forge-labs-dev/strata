@@ -450,3 +450,175 @@ def _load_artifact_as_arrow(session: Any, uri: str) -> Any:
     artifact_mgr = session.get_artifact_manager()
     blob = artifact_mgr.load_artifact_data(art_id, int(version))
     return pa.ipc.open_stream(blob).read_all()
+
+
+# --- # @sql write=true ----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_creates_table_and_inserts_rows(tmp_path):
+    """A write cell opens the connection writable, splits the body
+    into statements via sqlglot, and runs each in sequence. The
+    cell still produces an Arrow artifact (a status table) so
+    downstream cells can find it via cell.artifact_uris."""
+    db_path = tmp_path / "fresh.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n"
+            "# @cache session\n"
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, label TEXT);\n"
+            "INSERT INTO events VALUES (1, 'alpha');\n"
+            "INSERT INTO events VALUES (2, 'beta');\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    src = _read_cell(nb_dir, "c1")
+    result = await execute_sql_cell(session, "c1", src)
+    assert result["success"], result.get("error")
+
+    # The DB has the rows.
+    with sqlite3.connect(db_path) as conn:
+        rows = conn.execute("SELECT id, label FROM events ORDER BY id").fetchall()
+    assert rows == [(1, "alpha"), (2, "beta")]
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_caches_within_session(tmp_path):
+    """Default cache policy for write cells is ``session`` — re-run
+    inside the same session cache-hits, dedup'ing minor edits to
+    downstream cells. (A new session would re-execute.)"""
+    db_path = tmp_path / "cache.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n"
+            "CREATE TABLE t (n INTEGER);\n"
+            "INSERT INTO t VALUES (1);\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    src = _read_cell(nb_dir, "c1")
+    first = await execute_sql_cell(session, "c1", src)
+    assert first["success"]
+    assert first["cache_hit"] is False
+
+    second = await execute_sql_cell(session, "c1", src)
+    assert second["success"]
+    assert second["cache_hit"] is True
+    # And the second call did NOT actually re-run the inserts.
+    with sqlite3.connect(db_path) as conn:
+        (count,) = conn.execute("SELECT COUNT(*) FROM t").fetchone()
+        assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_rejects_fingerprint_policy(tmp_path):
+    """Probe-based policies don't apply to writes — surface a clear
+    error instead of silently coercing."""
+    db_path = tmp_path / "x.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n# @cache fingerprint\nCREATE TABLE t (n INTEGER);\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"] is False
+    assert "fingerprint" in (result["error"] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_sql_write_false_still_blocks_writes(tmp_path):
+    """Without ``write=true``, the read-only enforcement still fires
+    — adding the new flag doesn't broaden the security boundary
+    for the default case."""
+    _seed_sqlite(tmp_path / "events.db")
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=tmp_path / "events.db",
+        cell_source=(
+            "# @sql connection=db\n"  # write flag NOT set
+            "INSERT INTO events VALUES (99, 'sneak', 1)\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"] is False
+    # Row count unchanged.
+    with sqlite3.connect(tmp_path / "events.db") as conn:
+        (count,) = conn.execute("SELECT COUNT(*) FROM events").fetchone()
+        assert count == 3
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_makes_db_visible_to_read_cell(tmp_path):
+    """End-to-end: a write cell creates the DB, a read cell queries
+    it. This is the core "use a SQL cell instead of a Python seed"
+    workflow the example should support."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.session import NotebookSession
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        create_notebook,
+        write_cell,
+    )
+
+    db_path = tmp_path / "shared.db"
+    nb_dir = create_notebook(tmp_path, "Write+Read")
+    add_cell_to_notebook(nb_dir, "seed", language="sql")
+    write_cell(
+        nb_dir,
+        "seed",
+        (
+            "# @sql connection=db write=true\n"
+            "DROP TABLE IF EXISTS events;\n"
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, label TEXT);\n"
+            "INSERT INTO events VALUES (1, 'alpha'), (2, 'beta');\n"
+        ),
+    )
+    add_cell_to_notebook(nb_dir, "query", after_cell_id="seed", language="sql")
+    write_cell(
+        nb_dir,
+        "query",
+        (
+            "# @sql connection=db\n"
+            "# @cache fingerprint\n"
+            "# @after seed\n"
+            "SELECT id, label FROM events ORDER BY id\n"
+        ),
+    )
+    toml = nb_dir / "notebook.toml"
+    toml.write_text(
+        toml.read_text() + f'\n[connections.db]\ndriver = "sqlite"\npath = "{db_path}"\n'
+    )
+
+    session = NotebookSession(parse_notebook(nb_dir), nb_dir)
+    executor = CellExecutor(session)
+
+    seed_src = (nb_dir / "cells" / "seed.py").read_text()
+    seed_result = await executor.execute_cell("seed", seed_src)
+    assert seed_result.success, seed_result.error
+
+    query_src = (nb_dir / "cells" / "query.py").read_text()
+    query_result = await executor.execute_cell("query", query_src)
+    assert query_result.success, query_result.error
+    table = _load_artifact_as_arrow(session, query_result.artifact_uri)
+    assert table.to_pylist() == [
+        {"id": 1, "label": "alpha"},
+        {"id": 2, "label": "beta"},
+    ]

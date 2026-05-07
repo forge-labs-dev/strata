@@ -49,9 +49,17 @@ class CachePolicy:
 
 @dataclass
 class SqlAnnotation:
-    """Resolved ``# @sql connection=<name>`` directive for a SQL cell."""
+    """Resolved ``# @sql connection=<name> [write=true]`` directive.
+
+    ``write=true`` opts the cell into writable execution: the
+    adapter opens the connection without the read-only enforcement
+    (``mode=ro``, ``PRAGMA query_only=ON``, etc) so DDL / DML can
+    run. The default is read-only, matching the design-doc
+    security boundary for read cells.
+    """
 
     connection: str | None = None
+    write: bool = False
 
 
 @dataclass
@@ -220,12 +228,17 @@ _VALID_CACHE_KINDS = frozenset({"fingerprint", "forever", "session", "snapshot",
 
 
 def _parse_sql_annotation(result: CellAnnotations, value: str) -> None:
-    """Parse ``@sql connection=<name>`` into ``result.sql``.
+    """Parse ``@sql connection=<name> [write=true]`` into ``result.sql``.
 
     Multiple ``@sql`` lines accumulate into the same ``SqlAnnotation``;
     later lines override earlier ones. Unknown keys are dropped silently
     here — annotation_validation surfaces them as user-visible
     diagnostics.
+
+    Booleans (``write=true|false``) are case-insensitive; anything
+    other than the truthy literals ``true``/``yes``/``1`` resolves to
+    False so a typo (``write=tru``) doesn't silently flip the cell
+    into writable mode.
     """
     if result.sql is None:
         result.sql = SqlAnnotation()
@@ -237,6 +250,8 @@ def _parse_sql_annotation(result: CellAnnotations, value: str) -> None:
         v = v.strip()
         if k == "connection" and v:
             result.sql.connection = v
+        elif k == "write":
+            result.sql.write = v.lower() in {"true", "yes", "1"}
 
 
 def _parse_cache_annotation(result: CellAnnotations, value: str) -> None:

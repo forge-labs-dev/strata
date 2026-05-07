@@ -87,6 +87,23 @@ async def execute_sql_cell(
     except KeyError as exc:
         return _error_result(str(exc), start_time)
 
+    # Write cells take a separate path: open the connection
+    # writable, split the body into individual statements, run each
+    # one, return a synthetic status table. No freshness probe (the
+    # cache key is purely source-derived for writes), no read-only
+    # enforcement.
+    if annotations.sql.write:
+        return await _execute_write_cell(
+            session=session,
+            cell_id=cell_id,
+            source=source,
+            adapter=adapter,
+            spec=spec,
+            annotations=annotations,
+            start_time=start_time,
+            use_cache=use_cache,
+        )
+
     # ---- analyze ---------------------------------------------------
     analysis = analyze_sql_cell(source, dialect=adapter.sqlglot_dialect)
     if analysis.parse_error:
@@ -234,6 +251,227 @@ def _find_connection(session: NotebookSession, name: str) -> ConnectionSpec | No
         if spec.name == name:
             return spec
     return None
+
+
+async def _execute_write_cell(
+    *,
+    session: NotebookSession,
+    cell_id: str,
+    source: str,
+    adapter: DriverAdapter,
+    spec: ConnectionSpec,
+    annotations: Any,
+    start_time: float,
+    use_cache: bool,
+) -> dict[str, Any]:
+    """Run a ``# @sql connection=… write=true`` cell.
+
+    Differs from the read path in three ways:
+
+    1. The adapter opens the connection writable. SQLite drops the
+       ``mode=ro`` URI override and the ``PRAGMA query_only=ON``;
+       Postgres skips ``SET default_transaction_read_only=on``.
+    2. The body may be multi-statement. ADBC's cursor.execute()
+       runs only the first statement on most drivers, so we split
+       via sqlglot (dialect-aware) and execute each in sequence.
+    3. The cache key is source-only — no freshness probe, no
+       schema fingerprint. Default policy is ``session`` so a
+       seed cell runs once per session and dedupes subsequent
+       runs within the same session. Users opt into other policies
+       via ``# @cache``.
+
+    The cell still produces an Arrow artifact (a one-row status
+    table with ``statements_executed`` and ``last_rowcount``
+    columns) so downstream cells with ``# @after seed`` can find
+    the artifact via ``cell.artifact_uris``.
+    """
+    from strata.notebook.annotations import CachePolicy
+
+    body_source = _strip_leading_annotation_lines(source)
+    if not body_source.strip():
+        return _error_result("Write SQL cell body is empty.", start_time)
+
+    # Resolve cache policy — default to session when not specified.
+    # Probe-based policies (fingerprint / snapshot) don't make
+    # sense for writes; coerce to session with a diagnostic-style
+    # error so the user knows.
+    cache_annotation = annotations.cache or CachePolicy(kind="session")
+    if cache_annotation.kind in {"fingerprint", "snapshot"}:
+        return _error_result(
+            f"@cache {cache_annotation.kind} isn't valid on a write cell — "
+            "writes mutate state, so probe-based invalidation has no anchor. "
+            "Use `# @cache session` (run once per session) or `# @cache forever` "
+            "(idempotent setup; cache by source).",
+            start_time,
+        )
+
+    try:
+        policy = resolve_cache_policy(
+            cache_annotation,
+            capabilities=adapter.capabilities,
+            session_id=session.id,
+        )
+    except CachePolicyError as exc:
+        return _error_result(str(exc), start_time)
+
+    output_name = "result"
+    cache_payload = b"\n".join(
+        [
+            b"strata.sql.write",
+            policy.salt,
+            body_source.encode("utf-8"),
+            adapter.canonicalize_connection_id(spec).encode("utf-8"),
+        ]
+    )
+    provenance_hash = hashlib.sha256(cache_payload).hexdigest()
+    var_provenance = hashlib.sha256(f"{provenance_hash}:{output_name}".encode()).hexdigest()
+
+    artifact_mgr = session.get_artifact_manager()
+    notebook_id = session.notebook_state.id
+    canonical_id = f"nb_{notebook_id}_cell_{cell_id}_var_{output_name}"
+
+    # Cache check — only for non-skip policies.
+    if use_cache:
+        cached = artifact_mgr.find_cached(var_provenance)
+        if cached is not None:
+            canonical = artifact_mgr.artifact_store.get_latest_version(canonical_id)
+            if canonical is not None and canonical.provenance_hash == var_provenance:
+                return _cache_hit_result(
+                    artifact_mgr,
+                    canonical,
+                    output_name,
+                    start_time,
+                    session=session,
+                    cell_id=cell_id,
+                )
+
+    runtime_spec = _resolve_runtime_spec(spec, session.path)
+
+    try:
+        stats = _execute_write_statements(adapter, runtime_spec, body_source)
+    except Exception as exc:  # noqa: BLE001
+        return _error_result(f"SQL execution failed: {_exception_message(exc)}", start_time)
+
+    table = _synthesize_write_result_table(stats)
+    blob = _serialize_arrow_ipc(table)
+    artifact = artifact_mgr.store_cell_output(
+        cell_id=cell_id,
+        variable_name=output_name,
+        blob_data=blob,
+        content_type="arrow/ipc",
+        provenance_hash=var_provenance,
+        source_hash=provenance_hash,
+    )
+    uri = f"strata://artifact/{artifact.id}@v={artifact.version}"
+
+    cell_state = next(
+        (c for c in session.notebook_state.cells if c.id == cell_id),
+        None,
+    )
+    if cell_state is not None:
+        cell_state.artifact_uris[output_name] = uri
+        cell_state.artifact_uri = uri
+
+    duration_ms = (time.time() - start_time) * 1000
+    display_output = _table_display(table)
+    return {
+        "success": True,
+        "outputs": {
+            output_name: {
+                "content_type": "arrow/ipc",
+                "bytes": len(blob),
+                "preview": display_output["preview"],
+            }
+        },
+        "display_outputs": [display_output],
+        "display_output": display_output,
+        "stdout": "",
+        "stderr": "",
+        "error": None,
+        "cache_hit": False,
+        "duration_ms": int(duration_ms),
+        "execution_method": "sql",
+        "artifact_uri": uri,
+        "mutation_warnings": [],
+    }
+
+
+def _strip_leading_annotation_lines(source: str) -> str:
+    """Return the SQL body with ``# @…`` lines stripped from the top."""
+    lines = source.splitlines()
+    body_start = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            body_start = i + 1
+            continue
+        break
+    return "\n".join(lines[body_start:])
+
+
+def _execute_write_statements(
+    adapter: DriverAdapter,
+    spec: ConnectionSpec,
+    body: str,
+) -> dict[str, Any]:
+    """Open writable, split into statements, execute each.
+
+    Returns ``{"statements_executed": int, "last_rowcount": int}``.
+    A failed statement aborts the run; partial state on disk is
+    the user's problem (DDL/DML in SQLite isn't transactional by
+    default, and Postgres' transaction semantics are driver-specific).
+    """
+    import sqlglot
+
+    parsed = [s for s in sqlglot.parse(body, dialect=adapter.sqlglot_dialect) if s]
+    if not parsed:
+        # sqlglot returned no statements — treat the whole body as a
+        # single opaque statement (covers vendor-specific syntax we
+        # can't fully parse).
+        statements = [body]
+    else:
+        statements = [stmt.sql(dialect=adapter.sqlglot_dialect, comments=False) for stmt in parsed]
+
+    last_rowcount = -1
+    conn = adapter.open(spec, read_only=False)
+    try:
+        for stmt in statements:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(stmt)
+                rc = getattr(cursor, "rowcount", -1)
+                if isinstance(rc, int):
+                    last_rowcount = rc
+            finally:
+                _safely_close(cursor)
+        # Some drivers buffer changes — commit explicitly when the
+        # connection's commit is exposed (ADBC's autocommit defaults
+        # vary). Catch any "no transaction" errors silently.
+        commit = getattr(conn, "commit", None)
+        if callable(commit):
+            try:
+                commit()
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        _safely_close(conn)
+
+    return {
+        "statements_executed": len(statements),
+        "last_rowcount": last_rowcount,
+    }
+
+
+def _synthesize_write_result_table(stats: dict[str, Any]) -> Any:
+    """One-row Arrow table summarizing a write cell's execution."""
+    import pyarrow as pa
+
+    return pa.table(
+        {
+            "statements_executed": [int(stats.get("statements_executed", 0))],
+            "last_rowcount": [int(stats.get("last_rowcount", -1))],
+        }
+    )
 
 
 def _resolve_runtime_spec(spec: ConnectionSpec, notebook_dir: Any) -> ConnectionSpec:

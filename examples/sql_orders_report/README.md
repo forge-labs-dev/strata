@@ -19,9 +19,12 @@ sensitive) and `# @cache forever` (reference-data) policies.
   hash) so a DDL change to the warehouse re-executes it. `category_summary`
   uses `forever` because the user's asserting the catalog is reference
   data; only edits to the SQL body itself invalidate it.
-- **Read-only enforcement.** SQL cells open the connection with
-  `mode=ro` plus `PRAGMA query_only = ON`. Any cell that tried
-  `INSERT`/`UPDATE`/`DELETE` would error before mutating the DB.
+- **Read-only by default, opt-in writes.** SQL cells open the
+  connection with `mode=ro` plus `PRAGMA query_only = ON` so a
+  stray `INSERT` can't mutate the DB. The seed cell explicitly
+  opts into writable execution via `# @sql connection=warehouse
+  write=true` — that's the per-cell escape hatch for setup
+  scripts. Other cells in the notebook stay read-only.
 - **Cross-language pipeline.** The two SQL results flow back into the
   `report` Python cell as pandas DataFrames (the Arrow IPC artifacts
   decode through the standard notebook serializer).
@@ -30,7 +33,7 @@ sensitive) and `# @cache forever` (reference-data) policies.
 
 | Cell | Language | What it does |
 |---|---|---|
-| `seed` | Python | Seeds `analytics.db` with five products and ten orders. |
+| `seed` | SQL (`write=true`) | Drops + creates `products` and `orders` and inserts ten rows. Default `session` cache policy means a re-run inside the same session cache-hits. |
 | `threshold` | Python | Defines `min_amount = 50`. Edit and rerun to vary the threshold. |
 | `top_orders` | SQL | `WHERE amount > :min_amount`, joined to the product catalog, top 5. Declares `# @after seed`. |
 | `category_summary` | SQL | Revenue by category with `# @cache forever`. Declares `# @after seed`. |
