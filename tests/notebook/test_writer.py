@@ -24,6 +24,7 @@ from strata.notebook.writer import (
     rename_notebook,
     reorder_cells,
     update_environment_metadata,
+    update_notebook_connections,
     update_notebook_env,
     update_notebook_timeout,
     update_notebook_worker,
@@ -578,3 +579,95 @@ def test_create_notebook_preserves_existing_id():
         assert reopened.id == original_id, "create_notebook must preserve the existing notebook_id"
         assert len(reopened.cells) == 1
         assert reopened.cells[0].id == "c1"
+
+
+def test_update_notebook_connections_round_trip():
+    """``update_notebook_connections`` writes a [connections.<name>]
+    block that survives a parser round-trip. SQLite path stays
+    relative on disk; resolution against the notebook dir happens
+    on read."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.parser import parse_notebook
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "ConnTest")
+
+        update_notebook_connections(
+            notebook_dir,
+            [
+                ConnectionSpec(name="warehouse", driver="sqlite", path="data/db.sqlite"),
+                ConnectionSpec(
+                    name="prod",
+                    driver="postgresql",
+                    uri="postgresql://localhost:5432/prod",
+                    auth={"user": "${PGUSER}", "password": "${PGPASS}"},
+                ),
+            ],
+        )
+
+        # Re-read the notebook and confirm both connections are back.
+        state = parse_notebook(notebook_dir)
+        names = {c.name for c in state.connections}
+        assert names == {"warehouse", "prod"}
+
+        warehouse = next(c for c in state.connections if c.name == "warehouse")
+        # Path was relative on write; the parser resolves against the
+        # notebook dir so the spec carries an absolute path now.
+        assert warehouse.path == str((notebook_dir / "data/db.sqlite").resolve())
+
+        prod = next(c for c in state.connections if c.name == "prod")
+        assert prod.uri == "postgresql://localhost:5432/prod"
+        assert prod.auth == {"user": "${PGUSER}", "password": "${PGPASS}"}
+
+
+def test_update_notebook_connections_blanks_literal_secrets():
+    """A literal password is scrubbed at write time. The on-disk
+    body keeps the key (so the user knows which slot is configured)
+    but the value is blanked."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.parser import parse_notebook
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "ConnSecretTest")
+        update_notebook_connections(
+            notebook_dir,
+            [
+                ConnectionSpec(
+                    name="db",
+                    driver="postgresql",
+                    uri="postgresql://localhost/db",
+                    auth={"user": "${PGUSER}", "password": "hunter2"},
+                ),
+            ],
+        )
+
+        state = parse_notebook(notebook_dir)
+        db = next(c for c in state.connections if c.name == "db")
+        # ${PGUSER} round-trips. "hunter2" is blanked.
+        assert db.auth["user"] == "${PGUSER}"
+        assert db.auth["password"] == ""
+
+
+def test_update_notebook_connections_empty_drops_block():
+    """Sending an empty list deletes the [connections] table from
+    notebook.toml entirely so the file doesn't carry a stub."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.parser import parse_notebook
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "ConnEmpty")
+        update_notebook_connections(
+            notebook_dir,
+            [ConnectionSpec(name="db", driver="sqlite", path="db.sqlite")],
+        )
+        # Confirm it landed.
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            assert "connections" in tomllib.load(f)
+
+        # Empty list deletes the block.
+        update_notebook_connections(notebook_dir, [])
+        with open(notebook_dir / "notebook.toml", "rb") as f:
+            data = tomllib.load(f)
+        assert "connections" not in data
+        state = parse_notebook(notebook_dir)
+        assert state.connections == []

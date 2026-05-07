@@ -8,6 +8,7 @@
 import { ref } from 'vue'
 import type {
   CellOutput,
+  ConnectionSpec,
   DependencyInfo,
   MaterializeRequest,
   MaterializeResponse,
@@ -569,6 +570,41 @@ async function updateNotebookMounts(
     throw new Error(`Failed to update notebook mounts: ${resp.status}`)
   }
   return readJson<NotebookMutationResponse>(resp)
+}
+
+async function listNotebookConnections(notebookId: string): Promise<ConnectionSpec[]> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/connections`)
+  if (!resp.ok) {
+    throw new Error(`Failed to list notebook connections: ${resp.status}`)
+  }
+  const body = await readJson<{ connections?: ConnectionSpec[] }>(resp)
+  return body.connections ?? []
+}
+
+async function updateNotebookConnections(
+  notebookId: string,
+  connections: ConnectionSpec[],
+): Promise<{ connections: ConnectionSpec[]; malformed_connections: ConnectionSpec[] }> {
+  const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/connections`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ connections }),
+  })
+  if (!resp.ok) {
+    let detail = ''
+    try {
+      detail = ((await readJson<{ detail?: string }>(resp)).detail ?? '').toString()
+    } catch {
+      // ignore
+    }
+    throw new Error(
+      `Failed to update notebook connections: ${resp.status}${detail ? ` — ${detail}` : ''}`,
+    )
+  }
+  return readJson<{
+    connections: ConnectionSpec[]
+    malformed_connections: ConnectionSpec[]
+  }>(resp)
 }
 
 async function updateNotebookWorker(
@@ -1171,6 +1207,8 @@ export function useStrata() {
     reorderCells,
     listCellIterations,
     updateNotebookMounts,
+    listNotebookConnections,
+    updateNotebookConnections,
     updateNotebookWorker,
     updateNotebookTimeout,
     updateNotebookEnv,

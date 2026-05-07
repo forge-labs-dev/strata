@@ -28,7 +28,7 @@ from strata.notebook.dependencies import (
     preview_requirements_text,
 )
 from strata.notebook.executor import CellExecutor
-from strata.notebook.models import CellStatus, MountSpec, WorkerSpec
+from strata.notebook.models import CellStatus, ConnectionSpec, MountSpec, WorkerSpec
 from strata.notebook.python_versions import current_python_minor, normalize_python_minor
 from strata.notebook.session import SessionManager
 from strata.notebook.timing import NotebookTimingRecorder
@@ -44,6 +44,7 @@ from strata.notebook.writer import (
     remove_cell_from_notebook,
     rename_notebook,
     reorder_cells,
+    update_notebook_connections,
     update_notebook_env,
     update_notebook_mounts,
     update_notebook_timeout,
@@ -529,6 +530,20 @@ class MountConfigRequest(BaseModel):
     """Request to replace a mount list."""
 
     mounts: list[MountSpec] = Field(default_factory=list)
+
+
+class ConnectionConfigRequest(BaseModel):
+    """Request to replace the full ``[connections.<name>]`` set.
+
+    The list is the canonical state — sending an empty list deletes
+    every connection. The route handler scrubs auth literals at the
+    serializer boundary, same as a hand-edited notebook.toml save,
+    so a UI form that includes a literal secret keeps the key as a
+    placeholder on disk while the running session keeps the value
+    in memory until reload.
+    """
+
+    connections: list[ConnectionSpec] = Field(default_factory=list)
 
 
 class WorkerConfigRequest(BaseModel):
@@ -1481,6 +1496,62 @@ async def update_notebook_mounts_endpoint(
         session.reload()
         return {
             "mounts": [mount.model_dump() for mount in session.notebook_state.mounts],
+            "cells": session.serialize_cells(),
+        }
+    except Exception:
+        logger.exception("Internal server error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/{notebook_id}/connections")
+async def list_notebook_connections(notebook_id: str) -> dict:
+    """List the notebook's declared connections.
+
+    Returns the same shape used by ``serialize_notebook_state`` so the
+    UI can stay in sync with what the parser already exposes.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+    return {
+        "connections": [conn.model_dump() for conn in session.notebook_state.connections],
+    }
+
+
+@router.put("/{notebook_id}/connections")
+async def update_notebook_connections_endpoint(
+    notebook_id: str,
+    req: ConnectionConfigRequest,
+) -> dict:
+    """Replace the notebook's ``[connections.<name>]`` blocks.
+
+    The whole list is canonical — sending ``connections=[]`` deletes
+    every connection. Auth literals are scrubbed at write time; the
+    response reflects the on-disk state after the round-trip so the
+    UI immediately sees blanked secrets and can prompt the user to
+    move them to ``${VAR}`` indirections.
+    """
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    seen: set[str] = set()
+    for conn in req.connections:
+        if conn.name in seen:
+            raise HTTPException(
+                status_code=400,
+                detail=f"duplicate connection name {conn.name!r}",
+            )
+        seen.add(conn.name)
+
+    try:
+        update_notebook_connections(session.path, req.connections)
+        session.reload()
+        return {
+            "connections": [conn.model_dump() for conn in session.notebook_state.connections],
+            "malformed_connections": [
+                m.model_dump() for m in session.notebook_state.malformed_connections
+            ],
             "cells": session.serialize_cells(),
         }
     except Exception:

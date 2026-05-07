@@ -2,7 +2,7 @@
 
 export type CellId = string
 
-export type CellLanguage = 'python' | 'prompt' | 'markdown'
+export type CellLanguage = 'python' | 'prompt' | 'markdown' | 'sql'
 export type MountMode = 'ro' | 'rw'
 export type WorkerBackend = 'local' | 'executor'
 export type WorkerHealth = 'healthy' | 'unknown' | 'unavailable' | 'warming'
@@ -13,6 +13,36 @@ export interface MountSpec {
   uri: string
   mode: MountMode
   pin?: string | null
+}
+
+/** SQL connection driver. Open-ended (server adds new drivers); UI
+ * forms know how to render the two phase-1 drivers and fall back
+ * to a generic key/value editor for anything else. */
+export type ConnectionDriver = string
+
+/** Auth values as stored: ``${VAR}`` indirection or empty (literal
+ * values are scrubbed to "" before they reach disk). */
+export type ConnectionAuth = Record<string, string>
+
+export interface ConnectionSpec {
+  name: string
+  driver: ConnectionDriver
+  /** SQLite: filesystem path. Resolved against the notebook dir
+   * when relative. */
+  path?: string | null
+  /** Postgres / Flight SQL: connection URI. */
+  uri?: string | null
+  /** Postgres: search_path / role / etc. Driver-defined keys. */
+  options?: Record<string, unknown> | null
+  /** Auth credentials (``user``, ``password``, etc) — values are
+   * ``${VAR}`` indirections; literals are blanked at write time. */
+  auth?: ConnectionAuth | null
+  /** Postgres: SET ROLE applied at connection open. */
+  role?: string | null
+  /** Postgres: search_path applied at connection open. */
+  search_path?: string | null
+  /** Driver-specific extras the server preserves. */
+  [key: string]: unknown
 }
 
 export interface WorkerSpec {
@@ -426,6 +456,9 @@ export interface Notebook {
   secretManagerConfig: Record<string, string>
   workers: WorkerSpec[]
   mounts: MountSpec[]
+  /** SQL connection definitions, keyed by name. Empty when the
+   * notebook has no [connections.<name>] blocks. */
+  connections: ConnectionSpec[]
   cells: Cell[]
   /** Environment info */
   environment: NotebookEnvironment

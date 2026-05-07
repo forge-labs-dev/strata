@@ -797,6 +797,38 @@ def update_notebook_mounts(notebook_dir: Path, mounts: list[MountSpec]) -> None:
     _apply_notebook_toml_update(notebook_dir, mutate)
 
 
+def update_notebook_connections(
+    notebook_dir: Path,
+    connections: list[ConnectionSpec],
+    malformed: list[MalformedConnection] | None = None,
+) -> None:
+    """Persist notebook-level ``[connections.<name>]`` blocks.
+
+    Round-trips both valid and malformed connections (same as the
+    full-notebook writer) so a transient parse error in one entry
+    doesn't get erased by an unrelated edit elsewhere. Auth values
+    are scrubbed at the serializer boundary — literal secrets are
+    blanked before they reach disk; ``${VAR}`` indirections survive.
+
+    The ``[connections]`` table is dropped when the resulting dict
+    is empty so a notebook with no connections doesn't carry a
+    stub block.
+    """
+    new_connections = _serialize_connections(connections, malformed)
+
+    def mutate(toml_data: dict[str, Any]) -> bool:
+        existing = toml_data.get("connections")
+        if existing == new_connections:
+            return False
+        if new_connections:
+            toml_data["connections"] = new_connections
+        else:
+            toml_data.pop("connections", None)
+        return True
+
+    _apply_notebook_toml_update(notebook_dir, mutate)
+
+
 def update_notebook_worker(notebook_dir: Path, worker: str | None) -> None:
     """Persist the notebook-level default worker."""
 

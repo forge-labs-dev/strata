@@ -4,6 +4,7 @@ import type {
   CellId,
   CellOutput,
   CellStatus,
+  ConnectionSpec,
   DagEdge,
   DependencyInfo,
   EnvironmentImportPreview,
@@ -60,6 +61,7 @@ const notebook = reactive<Notebook>({
   secretManagerConfig: {},
   workers: [],
   mounts: [],
+  connections: [],
   cells: [],
   environment: {
     pythonVersion: '',
@@ -1085,6 +1087,9 @@ function loadNotebookStateFromBackend(data: any) {
   applyEnvSources(data)
   notebook.workers = Array.isArray(data.workers) ? data.workers.map(parseWorkerSpec) : []
   notebook.mounts = Array.isArray(data.mounts) ? data.mounts.map(parseMountSpec) : []
+  notebook.connections = Array.isArray(data.connections)
+    ? (data.connections as ConnectionSpec[])
+    : []
   syncEnvironmentPayloadFromBackend(data)
   notebook.createdAt = data.created_at ? new Date(data.created_at).getTime() : Date.now()
   notebook.updatedAt = data.updated_at ? new Date(data.updated_at).getTime() : Date.now()
@@ -2468,6 +2473,14 @@ async function updateNotebookMountsAction(mounts: MountSpec[]) {
   }
 }
 
+async function updateNotebookConnectionsAction(connections: ConnectionSpec[]) {
+  const sid = sessionId()
+  if (!sid) return
+  const strata = useStrata()
+  const data = await strata.updateNotebookConnections(sid, connections)
+  notebook.connections = Array.isArray(data.connections) ? data.connections : []
+}
+
 async function updateNotebookWorkerAction(worker: string | null) {
   const sid = sessionId()
   if (!sid) return
@@ -3123,6 +3136,7 @@ export function useNotebook() {
     refreshSecretManagerAction,
     updateNotebookSecretManagerConfigAction,
     updateNotebookMountsAction,
+    updateNotebookConnectionsAction,
     // LLM assistant
     llmAvailable,
     llmModel,

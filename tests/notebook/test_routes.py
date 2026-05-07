@@ -2094,3 +2094,91 @@ class TestPersonalModeUserScoping:
         assert _sanitize_user_dir_name("alice/bob") == "alice_bob"
         assert _sanitize_user_dir_name("") is None
         assert _sanitize_user_dir_name("...") is None  # all-trim chars
+
+
+def test_list_and_update_notebook_connections():
+    """Round-trip the [connections.<name>] surface through the API.
+
+    Mirrors the mount/worker patterns: a PUT replaces the whole
+    list, a follow-up GET returns the current state. Auth literals
+    are blanked at write time, so the response reflects the
+    on-disk shape — UI components rely on that to highlight which
+    keys still need ``${VAR}`` indirection.
+    """
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Conn Routes Test")
+        opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        assert opened.status_code == 200
+        nb_id = opened.json()["session_id"]
+
+        # Initially empty.
+        resp = client.get(f"/v1/notebooks/{nb_id}/connections")
+        assert resp.status_code == 200
+        assert resp.json()["connections"] == []
+
+        # PUT a SQLite + Postgres pair.
+        payload = {
+            "connections": [
+                {"name": "warehouse", "driver": "sqlite", "path": "analytics.db"},
+                {
+                    "name": "prod",
+                    "driver": "postgresql",
+                    "uri": "postgresql://localhost:5432/prod",
+                    "auth": {"user": "${PGUSER}", "password": "hunter2"},
+                },
+            ]
+        }
+        resp = client.put(f"/v1/notebooks/{nb_id}/connections", json=payload)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        names = sorted(c["name"] for c in body["connections"])
+        assert names == ["prod", "warehouse"]
+
+        # SQLite path resolves against the notebook dir at parse
+        # time, so the on-disk relative path comes back absolute.
+        warehouse = next(c for c in body["connections"] if c["name"] == "warehouse")
+        assert warehouse["path"].endswith("analytics.db")
+        assert Path(warehouse["path"]).is_absolute()
+
+        # Literal "hunter2" is blanked — UI sees the slot is set
+        # but value isn't viable until ${PGPASS} is provided.
+        prod = next(c for c in body["connections"] if c["name"] == "prod")
+        assert prod["auth"]["user"] == "${PGUSER}"
+        assert prod["auth"]["password"] == ""
+
+        # GET returns the same shape as PUT's response.
+        resp2 = client.get(f"/v1/notebooks/{nb_id}/connections")
+        assert resp2.status_code == 200
+        assert sorted(c["name"] for c in resp2.json()["connections"]) == ["prod", "warehouse"]
+
+        # Sending an empty list deletes every connection.
+        resp3 = client.put(f"/v1/notebooks/{nb_id}/connections", json={"connections": []})
+        assert resp3.status_code == 200
+        assert resp3.json()["connections"] == []
+
+
+def test_update_notebook_connections_rejects_duplicate_names():
+    """Two entries with the same name → 400. The annotation
+    validator would surface this even if it landed on disk, but
+    the API layer is the better place to catch it (no on-disk
+    side effects)."""
+    client = TestClient(create_test_app())
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        notebook_dir = create_notebook(Path(tmpdir), "Conn Dup Test")
+        opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+        nb_id = opened.json()["session_id"]
+
+        resp = client.put(
+            f"/v1/notebooks/{nb_id}/connections",
+            json={
+                "connections": [
+                    {"name": "db", "driver": "sqlite", "path": "a.db"},
+                    {"name": "db", "driver": "sqlite", "path": "b.db"},
+                ]
+            },
+        )
+        assert resp.status_code == 400
+        assert "duplicate" in resp.json()["detail"].lower()
