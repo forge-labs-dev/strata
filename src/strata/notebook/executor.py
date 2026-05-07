@@ -519,6 +519,16 @@ class CellExecutor:
                     use_cache=use_cache,
                 )
 
+            # SQL cells use a dedicated executor (ADBC query, no subprocess).
+            if cell is not None and cell.language == "sql":
+                return await self._execute_sql_cell(
+                    cell_id,
+                    source,
+                    start_time,
+                    materialize_upstreams=materialize_upstreams,
+                    use_cache=use_cache,
+                )
+
             # Markdown cells are pure prose — no execution, no subprocess,
             # no provenance chain. Return success with no display outputs:
             # the frontend already renders the source in-place via the
@@ -1818,6 +1828,66 @@ class CellExecutor:
             artifact_uri=result_dict.get("artifact_uri"),
             mutation_warnings=result_dict.get("mutation_warnings", []),
             validation_retries=int(result_dict.get("validation_retries", 0) or 0),
+        )
+
+    async def _execute_sql_cell(
+        self,
+        cell_id: str,
+        source: str,
+        start_time: float,
+        *,
+        materialize_upstreams: bool,
+        use_cache: bool,
+    ) -> CellExecutionResult:
+        """Execute a SQL cell via ``strata.notebook.sql.cell_executor``."""
+        from strata.notebook.sql.cell_executor import execute_sql_cell
+
+        if materialize_upstreams:
+            await self._materialize_upstreams(cell_id)
+
+        result_dict = await execute_sql_cell(
+            self.session,
+            cell_id,
+            source,
+            use_cache=use_cache,
+        )
+
+        if result_dict.get("success"):
+            cell = next(
+                (c for c in self.session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            if cell is not None:
+                # The artifact_uri's underlying provenance hash is the
+                # cell-level hash the staleness checker compares
+                # against — see ``cell_executor.execute_sql_cell``
+                # where we pass it as the artifact's source_hash.
+                # Pull it back via the artifact's metadata. For
+                # simplicity we just record success here; staleness
+                # for SQL cells uses the same artifact-presence path
+                # as Python cells.
+                cell.cache_hit = bool(result_dict.get("cache_hit"))
+
+        # Account for the duration the wrapper itself adds (materialize
+        # upstreams, dispatch overhead). ``execute_sql_cell`` measures
+        # only its own work; the caller's ``start_time`` is the right
+        # reference for the cell's total duration.
+        duration_ms = (time.time() - start_time) * 1000
+
+        return CellExecutionResult(
+            cell_id=cell_id,
+            success=result_dict["success"],
+            outputs=result_dict["outputs"],
+            display_outputs=result_dict.get("display_outputs") or [],
+            display_output=result_dict.get("display_output"),
+            stdout=result_dict.get("stdout", ""),
+            stderr=result_dict.get("stderr", ""),
+            error=result_dict.get("error"),
+            cache_hit=result_dict.get("cache_hit", False),
+            duration_ms=int(duration_ms),
+            execution_method=result_dict.get("execution_method", "sql"),
+            artifact_uri=result_dict.get("artifact_uri"),
+            mutation_warnings=result_dict.get("mutation_warnings", []),
         )
 
     # ------------------------------------------------------------------

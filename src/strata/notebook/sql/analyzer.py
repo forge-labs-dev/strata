@@ -278,6 +278,51 @@ def _blank_strings_and_comments(sql: str) -> str:
     return "".join(out)
 
 
+def rewrite_named_to_positional(sql: str, dialect: str | None) -> str:
+    """Rewrite ``:name`` placeholders to the dialect's positional form.
+
+    ADBC's parameter-binding API takes positional values, and each
+    backend uses its own placeholder syntax — Postgres expects
+    ``$1`` / ``$2`` / ..., SQLite expects ``?``, and other ADBC
+    drivers default to the qmark form. Strata's surface is uniform
+    ``:name``; this function bridges to the wire form just before
+    we hand the SQL to the cursor.
+
+    The rewriter uses ``_blank_strings_and_comments`` to find
+    placeholder positions on a string-and-comment-blanked copy, so
+    a ``:foo`` inside ``'literal :foo'`` or ``-- :foo`` survives
+    untouched in the output. Position-by-position substitution then
+    emits the positional form into the *original* text — keeping
+    comments and string contents byte-exact for any backend that
+    cares (Postgres' query log, SQLite's prepared-statement cache).
+
+    The caller is responsible for keeping the bind tuple in
+    ``placeholder_positions`` order (the analyzer's
+    duplicate-preserving view), so position N in the rewritten SQL
+    matches position N in the bind tuple.
+    """
+    if dialect == "postgres":
+
+        def emit(i: int) -> str:
+            return f"${i + 1}"
+    else:
+        # SQLite ADBC + most others use qmark.
+
+        def emit(i: int) -> str:
+            return "?"
+
+    cleaned = _blank_strings_and_comments(sql)
+    out: list[str] = []
+    last = 0
+    for i, match in enumerate(_BIND_PLACEHOLDER_RE.finditer(cleaned)):
+        start, end = match.start(), match.end()
+        out.append(sql[last:start])
+        out.append(emit(i))
+        last = end
+    out.append(sql[last:])
+    return "".join(out)
+
+
 def _scan_dollar_quote_open(sql: str, start: int) -> int | None:
     """If ``sql[start:]`` opens a dollar-quote, return the index of
     its closing ``$`` (so ``sql[start : ret + 1]`` is the full
