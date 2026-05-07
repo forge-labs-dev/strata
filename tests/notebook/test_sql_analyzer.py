@@ -133,6 +133,47 @@ def test_blank_strings_preserves_length():
     assert len(cleaned) == len(sql)
 
 
+def test_placeholders_skip_dollar_quoted_strings_empty_tag():
+    """Codex review fix: ``$$ ... $$`` is a Postgres dollar-quoted
+    string. The body is literal — including ``:foo`` — and must
+    not surface as a bind reference."""
+    sql = "SELECT $$:foo$$ AS x, :real AS y FROM t"
+    refs = _extract_placeholders(sql)
+    assert refs == ["real"]
+
+
+def test_placeholders_skip_dollar_quoted_strings_with_tag():
+    """``$body$ ... $body$`` is also dollar-quoting — the named tag
+    just lets the body itself contain ``$`` characters."""
+    sql = "SELECT $body$:ignored and $$ inside$body$ AS s, :real FROM t"
+    refs = _extract_placeholders(sql)
+    assert refs == ["real"]
+
+
+def test_placeholders_handle_unterminated_dollar_quote():
+    """An unterminated ``$$`` shouldn't crash; the rest of the source
+    becomes blanks. Earlier placeholders stay visible."""
+    sql = "SELECT :real FROM t WHERE x = $$unterminated :ignored"
+    refs = _extract_placeholders(sql)
+    assert "real" in refs
+    assert "ignored" not in refs
+
+
+def test_placeholders_do_not_treat_positional_dollar_as_quote():
+    """``$1`` / ``$2`` are Postgres positional-bind syntax, not
+    dollar-quote opens. They fall through and any ``:name``
+    placeholders elsewhere still surface."""
+    sql = "SELECT $1, $2, :real FROM t"
+    refs = _extract_placeholders(sql)
+    assert refs == ["real"]
+
+
+def test_blank_dollar_quote_preserves_length():
+    sql = "SELECT $$:foo$$ FROM t"
+    cleaned = _blank_strings_and_comments(sql)
+    assert len(cleaned) == len(sql)
+
+
 # --- analyze_sql_cell wiring ---------------------------------------------
 
 
@@ -224,3 +265,33 @@ def test_returns_sqlanalysis_dataclass():
     assert result.defines == ["result"]
     assert result.references == []
     assert result.connection is None
+
+
+def test_internal_errors_are_not_swallowed_as_parse_errors(monkeypatch):
+    """Codex review fix: only sqlglot-class errors get re-labeled as
+    ``parse_error``. Internal bugs (TypeError, AttributeError,
+    import failures from a sibling module) propagate unchanged so
+    real regressions don't masquerade as user-authored SQL syntax
+    errors."""
+    import strata.notebook.sql.analyzer as analyzer_mod
+
+    def boom(_sql, _dialect):
+        raise TypeError("not a sqlglot error — internal bug")
+
+    monkeypatch.setattr(analyzer_mod, "_extract_tables", boom)
+
+    src = "# @sql connection=db\nSELECT 1"
+    import pytest
+
+    with pytest.raises(TypeError, match="internal bug"):
+        analyze_sql_cell(src, dialect="postgres")
+
+
+def test_genuine_sqlglot_parse_errors_become_parse_error_field():
+    """Sanity check on the narrowed catch: real sqlglot parse errors
+    still land in ``parse_error`` and produce empty tables — no
+    propagation."""
+    src = "# @sql connection=db\nSELECT * FROM"  # truncated
+    result = analyze_sql_cell(src, dialect="postgres")
+    assert result.parse_error is not None
+    assert result.tables == []

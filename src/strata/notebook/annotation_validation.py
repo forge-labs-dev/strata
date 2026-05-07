@@ -362,6 +362,44 @@ def _validate_sql_cell_annotations(
                 )
             )
 
+    # SQL parse errors when a dialect can be resolved. The analyzer
+    # captures sqlglot's syntax / token / optimize errors as
+    # ``parse_error``; surfacing them as a diagnostic is what makes
+    # them survive the session boundary — without this, parse failures
+    # would be silently invisible to the UI.
+    if (
+        sql is not None
+        and sql.connection
+        and sql.connection in valid_by_name
+        and notebook_state.cells is not None
+    ):
+        try:
+            from strata.notebook.sql.analyzer import analyze_sql_cell
+            from strata.notebook.sql.registry import get_adapter
+
+            connection = valid_by_name[sql.connection]
+            adapter = get_adapter(connection.driver)
+            sql_analysis = analyze_sql_cell(cell.source, dialect=adapter.sqlglot_dialect)
+            if sql_analysis.parse_error:
+                diagnostics.append(
+                    AnnotationDiagnostic(
+                        severity="warn",
+                        code="sql_parse_error",
+                        message=(
+                            f"sqlglot couldn't parse this SQL cell: "
+                            f"{sql_analysis.parse_error}. The cell may "
+                            "still execute, but cache invalidation by "
+                            "touched-table fingerprint will fall back to "
+                            "session-only."
+                        ),
+                        line=None,
+                    )
+                )
+        except (KeyError, ImportError):
+            # Driver not registered (handled by connection_driver_unknown
+            # above) or sqlglot not installed — neither is a parse error.
+            pass
+
     # Re-scan raw lines to catch malformed @cache values that the
     # permissive parser silently dropped.
     for lineno, line_text in _annotation_lines(cell.source):

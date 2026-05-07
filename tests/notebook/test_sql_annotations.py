@@ -272,3 +272,43 @@ def test_validation_clean_when_all_auth_uses_indirection():
     )
     diags = validate_cell_annotations(cell, state)
     assert all(d.code != "connection_auth_literal_secret" for d in diags)
+
+
+# --- review fix: SQL parse errors surface as diagnostics ---------------
+
+
+def test_validation_surfaces_sql_parse_error_diagnostic():
+    """Codex review fix: when a SQL cell has a syntax error and the
+    connection's driver is registered, the analyzer's parse error
+    survives the session boundary as a ``sql_parse_error``
+    diagnostic. Without this, parse failures were invisible to the
+    UI — only ``defines`` / ``references`` made it onto the cell."""
+    cell = _sql_cell("# @sql connection=db\nSELECT * FROM")  # truncated
+    state = _state_with([ConnectionSpec(name="db", driver="postgresql")])
+    diags = validate_cell_annotations(cell, state)
+    codes = [d.code for d in diags]
+    assert "sql_parse_error" in codes
+    err = next(d for d in diags if d.code == "sql_parse_error")
+    assert err.severity == "warn"
+    # Body should mention what went wrong, not just say "error".
+    assert "parse" in err.message.lower() or "sql" in err.message.lower()
+
+
+def test_validation_no_sql_parse_error_for_valid_sql():
+    cell = _sql_cell("# @sql connection=db\nSELECT * FROM events")
+    state = _state_with([ConnectionSpec(name="db", driver="postgresql")])
+    diags = validate_cell_annotations(cell, state)
+    assert all(d.code != "sql_parse_error" for d in diags)
+
+
+def test_validation_skips_sql_parse_check_when_connection_unknown():
+    """Without a resolved connection (and therefore no dialect), we
+    can't parse SQL deterministically — so no ``sql_parse_error``
+    even though the SQL is malformed. The user already gets
+    ``sql_connection_unknown`` for the underlying problem."""
+    cell = _sql_cell("# @sql connection=missing\nSELECT * FROM")
+    state = _state_with([])
+    diags = validate_cell_annotations(cell, state)
+    codes = [d.code for d in diags]
+    assert "sql_connection_unknown" in codes
+    assert "sql_parse_error" not in codes

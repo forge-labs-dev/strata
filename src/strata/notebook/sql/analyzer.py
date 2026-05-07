@@ -21,6 +21,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from sqlglot.errors import SqlglotError as _SqlglotError
+
 from strata.notebook.annotations import CachePolicy, parse_annotations
 from strata.notebook.sql.adapter import QualifiedTable
 
@@ -85,7 +87,12 @@ def analyze_sql_cell(source: str, *, dialect: str | None = None) -> SqlAnalysis:
     if dialect is not None and sql_body:
         try:
             tables = _extract_tables(sql_body, dialect)
-        except Exception as exc:
+        except _SqlglotError as exc:
+            # User-authored SQL syntax / token / optimize errors. Caller
+            # surfaces this as a ``sql_parse_error`` diagnostic. Other
+            # exception classes (TypeError, AttributeError, etc.) are
+            # analyzer bugs and propagate normally — masking them as
+            # parse errors would hide real regressions.
             parse_error = str(exc)
 
     return SqlAnalysis(
@@ -144,11 +151,22 @@ def _blank_strings_and_comments(sql: str) -> str:
     - ``'string'`` with ``''`` doubled-quote escaping
     - ``-- line comment`` (to end of line)
     - ``/* block comment */``
+    - ``$tag$ ... $tag$`` Postgres dollar-quoted strings (including
+      empty-tag ``$$ ... $$``)
 
-    Doesn't try to parse double-quoted identifiers or dollar-quoted
-    Postgres strings — those are dialect-specific edge cases. False
-    positives there surface as bogus placeholder references that the
-    executor rejects with a clear "no upstream variable :foo" error.
+    Dollar-quoting matters for placeholder extraction because the body
+    is treated literally — including any ``:name`` patterns. Without
+    blanking, ``SELECT $$:foo$$ AS x`` produces a bogus ``foo``
+    reference. ``$1`` / ``$2`` (Postgres positional bind syntax) is
+    NOT a dollar quote and falls through unchanged: my recognizer
+    only triggers when ``$`` is followed by either another ``$`` or an
+    identifier-start character followed by a closing ``$``.
+
+    Doesn't try to parse double-quoted identifiers or
+    backtick-quoted MySQL identifiers — those are dialect-specific
+    edge cases. False positives there surface as bogus placeholder
+    references that the executor rejects with a clear "no upstream
+    variable :foo" error.
     """
     out: list[str] = []
     i = 0
@@ -200,10 +218,56 @@ def _blank_strings_and_comments(sql: str) -> str:
                 i += 1
             continue
 
+        # ``$tag$...$tag$`` dollar-quoted Postgres string. Allow
+        # empty tags (``$$``) and tags matching ``[a-zA-Z_][a-zA-Z0-9_]*``.
+        # ``$1`` / ``$2`` positional binds fall through here because
+        # the char after ``$`` isn't ``$`` or an identifier-start.
+        if c == "$":
+            tag_end = _scan_dollar_quote_open(sql, i)
+            if tag_end is not None:
+                opening = sql[i : tag_end + 1]
+                end_idx = sql.find(opening, tag_end + 1)
+                if end_idx == -1:
+                    # unterminated — consume the rest as blanks
+                    while i < n:
+                        out.append(" ")
+                        i += 1
+                else:
+                    stop = end_idx + len(opening)
+                    while i < stop:
+                        out.append(" ")
+                        i += 1
+                continue
+
         out.append(c)
         i += 1
 
     return "".join(out)
+
+
+def _scan_dollar_quote_open(sql: str, start: int) -> int | None:
+    """If ``sql[start:]`` opens a dollar-quote, return the index of
+    its closing ``$`` (so ``sql[start : ret + 1]`` is the full
+    ``$tag$`` opening). Otherwise return None.
+
+    Treats ``$$`` (empty tag) and ``$<ident>$`` (tag matches
+    ``[a-zA-Z_][a-zA-Z0-9_]*``) as opens. Anything else — ``$1``,
+    ``$ word``, end-of-string — returns None so the caller emits the
+    ``$`` verbatim.
+    """
+    n = len(sql)
+    if start >= n or sql[start] != "$":
+        return None
+    j = start + 1
+    if j < n and sql[j] == "$":
+        return j  # $$ — empty tag
+    # $tag$ — tag must start with letter/underscore.
+    if j < n and (sql[j].isalpha() or sql[j] == "_"):
+        while j < n and (sql[j].isalnum() or sql[j] == "_"):
+            j += 1
+        if j < n and sql[j] == "$":
+            return j
+    return None
 
 
 def _extract_tables(sql: str, dialect: str) -> list[QualifiedTable]:
