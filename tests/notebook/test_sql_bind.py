@@ -179,6 +179,19 @@ def test_coerce_rejects_int_subclass():
         coerce_bind_value("n", MyInt(5))
 
 
+def test_coerce_rejects_bytearray_subclass():
+    """Codex review fix: the ``bytearray`` shortcut used ``isinstance``
+    which silently widened user-subclassed ``bytearray`` types
+    against the rest of the contract. ``type() is`` semantics now
+    rejects subclasses everywhere, including the bytearray path."""
+
+    class TaggedBytes(bytearray):
+        pass
+
+    with pytest.raises(BindError, match=r":b.*TaggedBytes"):
+        coerce_bind_value("b", TaggedBytes(b"data"))
+
+
 def test_coerce_rejects_datetime_subclass():
     """Same strictness rationale for ``datetime``: a
     ``pandas.Timestamp`` is a ``datetime`` subclass with different
@@ -260,11 +273,37 @@ def test_resolve_short_circuits_on_first_failure():
 
 
 def test_resolve_handles_duplicate_placeholder_names():
-    """The analyzer dedupes references for the DAG, but the SQL body
-    can repeat ``:foo`` and the executor needs every position
-    filled when rewriting to positional binds."""
+    """The analyzer dedupes ``references`` for the DAG, but exposes a
+    parallel ``placeholder_positions`` list with duplicates kept —
+    that's what the executor passes here when the SQL body repeats
+    ``:foo`` (e.g. ``SELECT :foo + :foo``). The integration test
+    below pipes the analyzer through to confirm the contract holds
+    end-to-end; this test pins the local behavior."""
     out = resolve_bind_params(["foo", "bar", "foo"], {"foo": 1, "bar": 2})
     assert out == (1, 2, 1)
+
+
+def test_resolve_consumes_analyzer_placeholder_positions_for_duplicates():
+    """Codex review fix: ``resolve_bind_params``'s duplicate
+    semantics were unreachable — the analyzer's ``references`` is
+    deduplicated. The fix added ``SqlAnalysis.placeholder_positions``
+    that preserves duplicates; this test exercises the wire-up so
+    the duplicate behavior is actually reachable from real callers."""
+    from strata.notebook.sql.analyzer import analyze_sql_cell
+
+    analysis = analyze_sql_cell(
+        "# @sql connection=db\nSELECT :foo + :foo AS doubled, :bar AS single",
+    )
+    # DAG view is deduped.
+    assert analysis.references == ["foo", "bar"]
+    # Executor view keeps every occurrence in source order.
+    assert analysis.placeholder_positions == ["foo", "foo", "bar"]
+
+    out = resolve_bind_params(
+        analysis.placeholder_positions,
+        {"foo": 7, "bar": 99},
+    )
+    assert out == (7, 7, 99)
 
 
 def test_resolve_passes_none_through_for_null_binds():

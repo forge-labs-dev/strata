@@ -40,11 +40,23 @@ class SqlAnalysis:
     is empty when ``parse_error`` is set. Both stay empty when no
     dialect was supplied (the analyzer can't pick the right grammar
     without one).
+
+    Two placeholder views, populated together:
+
+    - ``references`` — deduplicated, source-order. The DAG layer
+      consumes this; one cell shouldn't claim the same upstream
+      variable twice in its edges.
+    - ``placeholder_positions`` — every ``:name`` occurrence in
+      source order, duplicates included. The executor rewrites
+      ``:name`` to the driver's positional syntax (``?`` for SQLite,
+      ``$1`` / ``$2`` for Postgres) in this exact order, and the
+      bind layer's tuple lines up position-for-position.
     """
 
     name: str = "result"
     defines: list[str] = field(default_factory=lambda: ["result"])
     references: list[str] = field(default_factory=list)
+    placeholder_positions: list[str] = field(default_factory=list)
     connection: str | None = None
     cache_policy: CachePolicy = field(default_factory=lambda: CachePolicy(kind="fingerprint"))
     sql_body: str = ""
@@ -77,7 +89,8 @@ def analyze_sql_cell(source: str, *, dialect: str | None = None) -> SqlAnalysis:
     if not output_name.isidentifier():
         output_name = "result"
 
-    placeholders = _extract_placeholders(sql_body)
+    positions = _extract_placeholder_positions(sql_body)
+    references = _dedupe_preserve_order(positions)
 
     cache_policy = annotations.cache or CachePolicy(kind="fingerprint")
     connection = annotations.sql.connection if annotations.sql else None
@@ -98,7 +111,8 @@ def analyze_sql_cell(source: str, *, dialect: str | None = None) -> SqlAnalysis:
     return SqlAnalysis(
         name=output_name,
         defines=[output_name],
-        references=placeholders,
+        references=references,
+        placeholder_positions=positions,
         connection=connection,
         cache_policy=cache_policy,
         sql_body=sql_body,
@@ -123,22 +137,41 @@ def _strip_leading_annotations(source: str) -> str:
     return ""
 
 
-def _extract_placeholders(sql: str) -> list[str]:
-    """Return ``:name`` placeholders in source order, deduplicated.
+def _extract_placeholder_positions(sql: str) -> list[str]:
+    """Return ``:name`` placeholders in source order, duplicates kept.
 
     Strings and comments are blanked before the regex runs so embedded
     ``:foo`` inside ``'literal :foo'`` or ``-- :foo`` doesn't surface
-    as a bind reference. Repeated placeholders collapse to one entry —
-    the cell's DAG references list shouldn't carry duplicates.
+    as a bind reference. Duplicates are preserved here because the
+    executor rewrites ``:name`` to positional binds (``?`` for SQLite,
+    ``$1`` for Postgres) in this exact order; the bind layer must
+    produce one tuple slot per occurrence to keep positions aligned.
+
+    Use ``_extract_placeholders`` (or ``SqlAnalysis.references``)
+    when you want the deduplicated DAG-facing view.
     """
     cleaned = _blank_strings_and_comments(sql)
+    return [m.group(1) for m in _BIND_PLACEHOLDER_RE.finditer(cleaned)]
+
+
+def _extract_placeholders(sql: str) -> list[str]:
+    """Return ``:name`` placeholders in source order, deduplicated.
+
+    Thin wrapper over ``_extract_placeholder_positions`` for callers
+    that only need the DAG-facing (deduplicated) view. The cell's DAG
+    references list shouldn't carry duplicates — one cell can't claim
+    the same upstream variable twice.
+    """
+    return _dedupe_preserve_order(_extract_placeholder_positions(sql))
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
-    for match in _BIND_PLACEHOLDER_RE.finditer(cleaned):
-        name = match.group(1)
-        if name not in seen:
-            seen.add(name)
-            out.append(name)
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
     return out
 
 

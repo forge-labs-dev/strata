@@ -6,6 +6,7 @@ from strata.notebook.sql.adapter import QualifiedTable
 from strata.notebook.sql.analyzer import (
     SqlAnalysis,
     _blank_strings_and_comments,
+    _extract_placeholder_positions,
     _extract_placeholders,
     _strip_leading_annotations,
     analyze_sql_cell,
@@ -77,6 +78,28 @@ def test_placeholders_dedupe_repeated_names():
     """The DAG references list shouldn't carry duplicates."""
     sql = "SELECT :foo + :foo AS doubled, :bar AS single"
     assert _extract_placeholders(sql) == ["foo", "bar"]
+
+
+def test_placeholder_positions_preserve_duplicates():
+    """Codex review fix: the deduped ``references`` list is right
+    for the DAG, but the executor needs every ``:name`` occurrence
+    in source order to rewrite ``:foo + :foo`` into the driver's
+    positional binds (``? + ?`` for SQLite, ``$1 + $2`` for
+    Postgres). ``_extract_placeholder_positions`` is the
+    duplicate-preserving counterpart."""
+    sql = "SELECT :foo + :foo AS doubled, :bar AS single"
+    assert _extract_placeholder_positions(sql) == ["foo", "foo", "bar"]
+
+
+def test_analyze_exposes_both_references_and_positions():
+    """End-to-end: ``analyze_sql_cell`` populates the deduped
+    ``references`` field and the duplicate-preserving
+    ``placeholder_positions`` field together so DAG and executor
+    consumers each get the view they need."""
+    src = "# @sql connection=db\nSELECT :foo + :foo + :bar"
+    result = analyze_sql_cell(src)
+    assert result.references == ["foo", "bar"]
+    assert result.placeholder_positions == ["foo", "foo", "bar"]
 
 
 def test_placeholders_preserve_first_appearance_order():

@@ -85,11 +85,14 @@ def coerce_bind_value(name: str, value: Any) -> Any:
     the right thing for a hash-key downstream. Everything else passes
     through unchanged.
 
-    Raises ``BindError`` if the value's *exact* type is not on the
-    accept list. Subclasses (``numpy.int64``, ``pandas.Timestamp``)
-    are rejected — see module docstring.
+    Raises ``BindError`` if the value's *exact* type isn't on the
+    accept list. Subclasses (``numpy.int64``, ``pandas.Timestamp``,
+    user-defined ``MyBytes(bytearray)``) are rejected — strict
+    ``type() is`` semantics across the board, no isinstance widening,
+    so the ``bytearray`` shortcut and the main allowlist behave
+    consistently.
     """
-    if isinstance(value, bytearray):
+    if type(value) is bytearray:
         return bytes(value)
     if type(value) in _ACCEPTED_TYPES:
         return value
