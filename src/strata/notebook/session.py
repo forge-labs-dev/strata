@@ -343,6 +343,20 @@ class NotebookSession:
                 defines = prompt_analysis.defines
                 references = prompt_analysis.references
                 mutation_defines: list[str] = []
+            elif cell.language == "sql":
+                from strata.notebook.sql.analyzer import analyze_sql_cell
+
+                # Resolve the dialect for table extraction lazily —
+                # bind-placeholder references work even when the
+                # connection isn't declared yet (regex path), so
+                # passing dialect=None keeps the cell DAG-correct
+                # while the executor will re-extract tables with the
+                # resolved dialect at execute time.
+                dialect = self._resolve_sql_dialect(cell)
+                sql_analysis = analyze_sql_cell(cell.source, dialect=dialect)
+                defines = sql_analysis.defines
+                references = sql_analysis.references
+                mutation_defines = []
             elif cell.language == "markdown":
                 # Markdown cells are pure prose — no Python identifiers
                 # to define or reference, so they sit isolated in the
@@ -491,6 +505,13 @@ class NotebookSession:
             prompt_analysis = analyze_prompt_cell(cell.source)
             cell.defines = prompt_analysis.defines
             cell.references = prompt_analysis.references
+        elif cell.language == "sql":
+            from strata.notebook.sql.analyzer import analyze_sql_cell
+
+            dialect = self._resolve_sql_dialect(cell)
+            sql_analysis = analyze_sql_cell(cell.source, dialect=dialect)
+            cell.defines = sql_analysis.defines
+            cell.references = sql_analysis.references
         elif cell.language == "markdown":
             # Markdown is prose — no identifiers in or out of the DAG.
             cell.defines = []
@@ -502,6 +523,38 @@ class NotebookSession:
 
         # Rebuild full DAG (since one cell changed, downstream may be affected)
         self._analyze_and_build_dag()
+
+    def _resolve_sql_dialect(self, cell) -> str | None:
+        """Look up the sqlglot dialect for a SQL cell's connection.
+
+        Walks: cell source → ``# @sql connection=<name>`` →
+        ``notebook.connections[<name>]`` → ``DriverAdapter.sqlglot_dialect``.
+
+        Returns ``None`` when any step is unresolved — the connection
+        isn't declared, the driver isn't registered, or the cell has
+        no ``# @sql`` annotation. The analyzer treats ``None`` as
+        "skip table extraction"; the executor re-resolves at execute
+        time when the connection MUST exist.
+        """
+        from strata.notebook.annotations import parse_annotations
+
+        annotations = parse_annotations(cell.source)
+        if annotations.sql is None or not annotations.sql.connection:
+            return None
+        connection_name = annotations.sql.connection
+        connection = next(
+            (c for c in self.notebook_state.connections if c.name == connection_name),
+            None,
+        )
+        if connection is None:
+            return None
+        try:
+            from strata.notebook.sql.registry import get_adapter
+
+            adapter = get_adapter(connection.driver)
+        except (KeyError, ImportError):
+            return None
+        return adapter.sqlglot_dialect
 
     def get_artifact_manager(self) -> NotebookArtifactManager:
         """Get the artifact manager for this session.
