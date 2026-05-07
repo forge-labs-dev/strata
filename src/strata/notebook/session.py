@@ -659,7 +659,19 @@ class NotebookSession:
                     staleness_map[cell_id] = CellStaleness(status=CellStatus.READY, reasons=[])
                 else:
                     can_preserve_uncached_ready = (
-                        (cell.is_leaf or cell.language == "prompt")
+                        (
+                            cell.is_leaf
+                            or cell.language == "prompt"
+                            # SQL cells store artifacts under a
+                            # SQL-specific per-variable hash
+                            # (compute_sql_provenance_hash), so the
+                            # generic per-variable lookup above won't
+                            # match. The wrapper persists the
+                            # generic hash via
+                            # ``record_successful_execution_provenance``
+                            # so this path keeps the cell READY.
+                            or cell.language == "sql"
+                        )
                         and cell.status == CellStatus.READY
                         and cell.last_provenance_hash == provenance_hash
                     )

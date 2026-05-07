@@ -1858,15 +1858,52 @@ class CellExecutor:
                 None,
             )
             if cell is not None:
-                # The artifact_uri's underlying provenance hash is the
-                # cell-level hash the staleness checker compares
-                # against — see ``cell_executor.execute_sql_cell``
-                # where we pass it as the artifact's source_hash.
-                # Pull it back via the artifact's metadata. For
-                # simplicity we just record success here; staleness
-                # for SQL cells uses the same artifact-presence path
-                # as Python cells.
                 cell.cache_hit = bool(result_dict.get("cache_hit"))
+
+            # SQL cells need to participate in the notebook's standard
+            # staleness machinery so a recompute or reopen correctly
+            # marks them READY. ``compute_staleness`` always recomputes
+            # the *generic* provenance triplet (input hashes + source
+            # hash + env hash) and compares against
+            # ``cell.last_provenance_hash``; the SQL-specific hash the
+            # cell_executor folds is invisible to that path. Mirror
+            # ``_execute_prompt_cell`` and persist the generic triplet
+            # via ``record_successful_execution_provenance`` — this
+            # writes ``cell.last_*`` and the runtime-state mirror so
+            # the can_preserve_uncached_ready path picks it up across
+            # session reopens.
+            annotations = parse_annotations(source)
+            source_hash = compute_source_hash(source)
+            runtime_env = self._resolve_effective_runtime_env(cell_id, annotations.env)
+            effective_worker = self._resolve_effective_worker(cell_id, annotations.worker)
+            runtime_identity = worker_runtime_identity(
+                self.session.notebook_state, effective_worker
+            )
+            cell_state = next(
+                (c for c in self.session.notebook_state.cells if c.id == cell_id),
+                None,
+            )
+            declared_env_keys = set(annotations.env) | set(
+                getattr(cell_state, "env_overrides", {}) or {}
+            )
+            provenance_env = narrow_env_for_provenance(source, runtime_env, declared_env_keys)
+            env_hash = compute_execution_env_hash(
+                self.session.path,
+                provenance_env,
+                runtime_identity=runtime_identity,
+            )
+            input_hashes = self._collect_input_hashes(cell_id)
+            mount_specs = self._resolve_cell_mount_specs(cell_id, source)
+            mount_fingerprints, _ = await self._fingerprint_mounts(mount_specs)
+            standard_provenance = compute_provenance_hash(
+                input_hashes + mount_fingerprints, source_hash, env_hash
+            )
+            self.session.record_successful_execution_provenance(
+                cell_id,
+                standard_provenance,
+                source_hash,
+                env_hash,
+            )
 
         # Account for the duration the wrapper itself adds (materialize
         # upstreams, dispatch overhead). ``execute_sql_cell`` measures

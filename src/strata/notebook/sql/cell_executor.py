@@ -158,6 +158,8 @@ async def execute_sql_cell(
                     canonical,
                     output_name,
                     start_time,
+                    session=session,
+                    cell_id=cell_id,
                 )
 
     # ---- execute query ---------------------------------------------
@@ -179,6 +181,20 @@ async def execute_sql_cell(
         source_hash=provenance_hash,  # cell-level provenance for staleness
     )
     uri = f"strata://artifact/{artifact.id}@v={artifact.version}"
+
+    # Make the artifact discoverable from downstream cells via the
+    # cell-state ``artifact_uris`` map. ``_collect_input_hashes`` and
+    # ``_load_input_blobs`` both walk these on the upstream cell, so
+    # without this, a downstream Python cell that consumes a SQL
+    # cell's output would compute its provenance without the SQL
+    # input hash — a silent staleness leak.
+    cell_state = next(
+        (c for c in session.notebook_state.cells if c.id == cell_id),
+        None,
+    )
+    if cell_state is not None:
+        cell_state.artifact_uris[output_name] = uri
+        cell_state.artifact_uri = uri
 
     duration_ms = (time.time() - start_time) * 1000
     display_output = _table_display(table)
@@ -423,6 +439,9 @@ def _cache_hit_result(
     canonical: Any,
     output_name: str,
     start_time: float,
+    *,
+    session: NotebookSession | None = None,
+    cell_id: str | None = None,
 ) -> dict[str, Any]:
     blob = artifact_mgr.load_artifact_data(canonical.id, canonical.version)
     import pyarrow as pa
@@ -431,6 +450,19 @@ def _cache_hit_result(
     duration_ms = (time.time() - start_time) * 1000
     display_output = _table_display(table)
     uri = f"strata://artifact/{canonical.id}@v={canonical.version}"
+
+    # Cache hits update the cell's artifact map for the same
+    # downstream-discovery reason as the miss path. Without this, a
+    # cell-cache hit on a SQL cell after a notebook reopen would
+    # leave artifact_uris empty and stale downstream caches.
+    if session is not None and cell_id is not None:
+        cell_state = next(
+            (c for c in session.notebook_state.cells if c.id == cell_id),
+            None,
+        )
+        if cell_state is not None:
+            cell_state.artifact_uris[output_name] = uri
+            cell_state.artifact_uri = uri
     return {
         "success": True,
         "outputs": {

@@ -294,6 +294,120 @@ async def test_sql_cell_missing_connection_yields_clear_error(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sql_cell_stays_ready_after_staleness_recompute(tmp_path):
+    """Codex review fix: SQL cells must participate in the notebook's
+    standard staleness machinery so a recompute or reopen keeps them
+    READY. The SQL executor stores artifacts under a SQL-specific
+    per-variable hash that ``compute_staleness`` doesn't recompute,
+    so we have to persist the generic provenance triplet via
+    ``record_successful_execution_provenance`` and let the
+    ``can_preserve_uncached_ready`` path mark the cell READY."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.models import CellStatus
+
+    db_path = tmp_path / "events.db"
+    _seed_sqlite(db_path)
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=("# @sql connection=db\n# @cache forever\nSELECT * FROM events\n"),
+    )
+    session = _make_session(nb_dir)
+    executor = CellExecutor(session)
+
+    src = _read_cell(nb_dir, "c1")
+    result = await executor.execute_cell("c1", src)
+    assert result.success, result.error
+
+    cell = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell.last_provenance_hash, (
+        "record_successful_execution_provenance must persist last_provenance_hash for SQL cells"
+    )
+
+    # Mirror the route handler's post-execute sequence: compute
+    # staleness, then mark_executed_ready bumps status to READY.
+    session.compute_staleness()
+    session.mark_executed_ready("c1")
+
+    # A *second* staleness recompute (the path a notebook reopen
+    # also walks under load) must keep the cell READY. Without the
+    # language=='sql' branch in can_preserve_uncached_ready, this
+    # drops to IDLE because the generic per-variable artifact
+    # lookup misses (the SQL executor stored the artifact under
+    # SQL-specific provenance).
+    session.compute_staleness()
+    cell_after = next(c for c in session.notebook_state.cells if c.id == "c1")
+    assert cell_after.status == CellStatus.READY, (
+        f"SQL cell should stay READY after staleness recompute; got {cell_after.status!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_sql_cell_artifact_uri_visible_to_downstream_python(tmp_path):
+    """Codex review fix: ``cell.artifact_uris`` must be set after a
+    successful SQL execution so a downstream Python cell's
+    ``_collect_input_hashes`` finds the upstream artifact. Without
+    this, the downstream provenance hash is computed without the
+    SQL input hash — silently identical across SQL-content changes,
+    so the downstream cell would serve a stale cached value after
+    the SQL upstream's data shifts."""
+    from strata.notebook.executor import CellExecutor
+    from strata.notebook.parser import parse_notebook
+    from strata.notebook.session import NotebookSession
+    from strata.notebook.writer import (
+        add_cell_to_notebook,
+        create_notebook,
+        write_cell,
+    )
+
+    db_path = tmp_path / "events.db"
+    _seed_sqlite(db_path)
+    nb_dir = create_notebook(tmp_path, "downstream_sql")
+    add_cell_to_notebook(nb_dir, "sql", language="sql")
+    write_cell(
+        nb_dir,
+        "sql",
+        ("# @sql connection=db\n# @cache forever\nSELECT name FROM events ORDER BY id\n"),
+    )
+    add_cell_to_notebook(nb_dir, "py", after_cell_id="sql", language="python")
+    write_cell(
+        nb_dir,
+        "py",
+        # Python cell consumes the SQL output.
+        "names = [r['name'] for r in result.to_pylist()]\n",
+    )
+    toml_path = nb_dir / "notebook.toml"
+    toml_path.write_text(
+        toml_path.read_text()
+        + "\n[connections.db]\n"
+        + 'driver = "sqlite"\n'
+        + f'path = "{db_path}"\n'
+    )
+    session = NotebookSession(parse_notebook(nb_dir), nb_dir)
+    executor = CellExecutor(session)
+
+    sql_src = (nb_dir / "cells" / "sql.py").read_text()
+    sql_result = await executor.execute_cell("sql", sql_src)
+    assert sql_result.success, sql_result.error
+
+    # The SQL cell's artifact must be discoverable from the upstream
+    # cell-state map; this is what ``_collect_input_hashes`` walks.
+    sql_cell = next(c for c in session.notebook_state.cells if c.id == "sql")
+    assert sql_cell.artifact_uri, (
+        "SQL cell artifact_uri must be set so downstream cells can find the upstream artifact"
+    )
+    assert "result" in sql_cell.artifact_uris
+
+    # And the downstream Python cell's input-hashes collection picks
+    # up the SQL artifact's provenance hash — exercising the wiring
+    # end-to-end.
+    input_hashes = session._collect_input_hashes("py")
+    assert len(input_hashes) == 1, (
+        f"downstream py cell should see 1 upstream input hash; got {input_hashes!r}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sql_cell_executor_dispatched_via_main_executor(tmp_path):
     """The ``CellExecutor`` dispatches ``language='sql'`` to the SQL
     path. This is the wiring point that makes the slice 8 helpers
