@@ -7,18 +7,31 @@ degree the backend can expose. This module computes that hash and
 implements the ``# @cache`` policy that controls how DB-side state
 factors in.
 
-Hash composition (mirrors ``docs/internal/design-sql-cells.md``)::
+Hash composition::
 
     provenance_hash = H(
         query_normalized,         # sqlglot pretty-print, dialect-aware
         bind_params,              # type-tagged tuple of resolved values
         connection_id,            # canonical non-secret connection identity
         upstream_input_hashes,    # variables referenced in :placeholders
-        source_hash,              # AST-normalized cell source
         cache_salt,               # policy-derived static salt
         freshness_token,          # per-driver data-change token (or None)
         schema_fingerprint,       # touched-table column structure (or None)
     )
+
+Note this differs from ``docs/internal/design-sql-cells.md``'s
+original sketch by *omitting* a generic ``source_hash``. For Python
+cells, ``compute_source_hash`` AST-normalizes the body so cosmetic
+edits don't churn the cache. For SQL bodies ``ast.parse`` fails and
+that helper falls back to a line-strip — which would re-introduce
+exactly the whitespace / comment churn that ``normalize_query``
+already strips. ``query_normalized`` *is* the SQL equivalent of an
+AST-normalized form; folding a separate weak-normalization hash on
+top would defeat the cosmetic-edit goal. The non-body parts of a
+SQL cell source (``# @sql connection=...``, ``# @cache ...``, the
+``# @name`` override) are captured by ``connection_id`` and
+``cache_salt`` already; ``# @name`` doesn't affect data identity
+(rename creates a new artifact-name pointer to the same hash).
 
 Policy resolution lives here too because the policy decides which
 slots get filled how — ``forever`` skips the freshness/schema probe
@@ -289,7 +302,6 @@ def compute_sql_provenance_hash(
     bind_params: Sequence[Any],
     connection_id: str,
     upstream_input_hashes: dict[str, str],
-    source_hash: str,
     cache_salt: bytes,
     freshness_token: FreshnessToken | None,
     schema_fingerprint: SchemaFingerprint | None,
@@ -306,6 +318,10 @@ def compute_sql_provenance_hash(
     flags are folded too. They reflect a real semantic difference
     (a session-only token *was* in the hash; the cell's identity
     depends on it not being treated as a per-table fingerprint).
+
+    There is no separate ``source_hash`` parameter — see this
+    module's docstring for the rationale. ``query_normalized`` is
+    the SQL equivalent of an AST-normalized source.
     """
     payload = {
         "query": query_normalized,
@@ -314,7 +330,6 @@ def compute_sql_provenance_hash(
         # ``sort_keys=True`` on the outer dump handles this; the
         # nested dict is included literally and stable-keyed.
         "upstream": dict(sorted(upstream_input_hashes.items())),
-        "source": source_hash,
         "cache_salt": base64.b64encode(cache_salt).decode("ascii"),
         "freshness": (
             None

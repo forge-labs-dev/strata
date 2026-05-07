@@ -46,7 +46,6 @@ def _hash_inputs(**overrides):
         bind_params=(),
         connection_id="conn-id-aaaa",
         upstream_input_hashes={},
-        source_hash="source-hash-aaaa",
         cache_salt=b"strata.cache.fingerprint",
         freshness_token=None,
         schema_fingerprint=None,
@@ -361,14 +360,22 @@ def test_hash_upstream_inputs_change_invalidates():
     assert a != b
 
 
-def test_hash_responds_to_source_hash_change():
-    """Source edits that aren't in the SQL body itself (e.g.
-    AST-normalized whitespace edits to surrounding annotations)
-    are caught by the source_hash slot — distinct from
-    query_normalized which only sees the SQL body."""
-    a = compute_sql_provenance_hash(**_hash_inputs(source_hash="src-a"))
-    b = compute_sql_provenance_hash(**_hash_inputs(source_hash="src-b"))
-    assert a != b
+def test_hash_unaffected_by_cosmetic_sql_edits():
+    """Codex review fix: the prior version folded a generic
+    ``source_hash`` into the SQL hash. ``compute_source_hash`` for
+    SQL falls back to a line-strip (since ``ast.parse`` rejects
+    SQL), which would re-introduce exactly the whitespace and
+    comment churn that ``normalize_query`` strips away. The fix
+    drops ``source_hash`` from the SQL hash; ``query_normalized``
+    is the canonical equivalent. This regression test confirms
+    that two cells whose only difference is whitespace or
+    comments hash to the same value end-to-end."""
+    a_query = normalize_query("SELECT 1 FROM t", dialect="postgres")
+    b_query = normalize_query("select  1  /* doc */\nFROM t  -- trailing\n", dialect="postgres")
+    assert a_query == b_query  # normalize_query agrees
+    a = compute_sql_provenance_hash(**_hash_inputs(query_normalized=a_query))
+    b = compute_sql_provenance_hash(**_hash_inputs(query_normalized=b_query))
+    assert a == b
 
 
 def test_hash_responds_to_cache_salt_change():
