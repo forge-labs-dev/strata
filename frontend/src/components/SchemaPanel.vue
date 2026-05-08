@@ -102,7 +102,7 @@ function nullabilityLabel(col: SchemaColumn): string {
     <button class="schema-toggle" @click="showPanel = !showPanel">
       Schema
       <span class="schema-count">{{ connectionCount }}</span>
-      <span class="toggle-icon">{{ showPanel ? '▲' : '▼' }}</span>
+      <span class="toggle-icon">{{ showPanel ? '&#9650;' : '&#9660;' }}</span>
     </button>
 
     <div v-if="showPanel" class="schema-content">

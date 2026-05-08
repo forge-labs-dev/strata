@@ -25,7 +25,7 @@ async function save(connections: typeof notebook.connections) {
     <button class="connections-toggle" @click="showPanel = !showPanel">
       Connections
       <span class="connection-count">{{ connectionCount }}</span>
-      <span class="toggle-icon">{{ showPanel ? '▲' : '▼' }}</span>
+      <span class="toggle-icon">{{ showPanel ? '&#9650;' : '&#9660;' }}</span>
     </button>
 
     <div v-if="showPanel" class="connections-content">

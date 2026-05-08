@@ -220,8 +220,8 @@ function save() {
   width: 100%;
   min-width: 0;
   padding: 6px 8px;
-  background: var(--bg-base);
-  border: 1px solid var(--bg-input);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   color: var(--text-primary);
   font-size: 12px;
