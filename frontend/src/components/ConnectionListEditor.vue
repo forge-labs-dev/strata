@@ -403,7 +403,8 @@ function preservedExtraSummary(d: DraftConnection): string {
   border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 10px;
-  background: var(--bg-secondary, #fff);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
 }
 
 .conn-row.has-error {
@@ -422,14 +423,23 @@ function preservedExtraSummary(d: DraftConnection): string {
   font-size: 13px;
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
 }
 
-.conn-driver-select {
+/* Set color on both the select and its options. Browsers (esp.
+   Chrome on macOS dark mode) ignore the inherited color on
+   <option> in some configurations, so an option list rendered
+   on a system-default white background needs the option color
+   set explicitly to stay readable. */
+.conn-driver-select,
+.conn-driver-select option {
   padding: 4px 6px;
   font-size: 12px;
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
   background: var(--bg-input);
+  color: var(--text-primary);
 }
 
 .conn-remove-btn {
@@ -478,6 +488,12 @@ function preservedExtraSummary(d: DraftConnection): string {
   font-family: var(--font-mono, monospace);
   border: 1px solid var(--border-subtle);
   border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.conn-field input::placeholder {
+  color: var(--text-muted);
 }
 
 .conn-field input.literal-secret {
@@ -522,9 +538,15 @@ function preservedExtraSummary(d: DraftConnection): string {
   padding: 5px 10px;
   font-size: 12px;
   border-radius: 4px;
-  border: 1px solid var(--border-subtle);
+  border: 1px solid var(--border-strong, var(--border-subtle));
   cursor: pointer;
-  background: var(--bg-secondary, #fff);
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.conn-add-btn:hover:not(:disabled),
+.conn-reset-btn:hover:not(:disabled) {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.06));
 }
 
 .conn-save-btn {
