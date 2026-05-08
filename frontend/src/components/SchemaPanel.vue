@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { useNotebook } from '../stores/notebook'
-import { useStrata } from '../composables/useStrata'
 
 interface SchemaColumn {
   name: string
@@ -24,8 +23,7 @@ interface ConnectionSchemaState {
   expandedTables: Set<string>
 }
 
-const { notebook, connected } = useNotebook()
-const strata = useStrata()
+const { notebook, connected, getConnectionSchemaAction } = useNotebook()
 const showPanel = ref(false)
 const states = ref<Record<string, ConnectionSchemaState>>({})
 
@@ -48,12 +46,11 @@ async function loadSchema(name: string, force = false) {
   const state = getState(name)
   if (state.status === 'loading') return
   if (state.status === 'ready' && !force) return
-  if (!notebook.id) return
 
   state.status = 'loading'
   state.error = null
   try {
-    const res = await strata.getConnectionSchema(notebook.id, name)
+    const res = await getConnectionSchemaAction(name)
     state.tables = (res.tables || []).map((t) => ({
       catalog: t.catalog,
       schema: t.schema,

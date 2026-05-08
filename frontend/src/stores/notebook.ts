@@ -2481,6 +2481,15 @@ async function updateNotebookConnectionsAction(connections: ConnectionSpec[]) {
   notebook.connections = Array.isArray(data.connections) ? data.connections : []
 }
 
+async function getConnectionSchemaAction(name: string) {
+  const sid = sessionId()
+  if (!sid) {
+    throw new Error("Notebook session isn't open yet")
+  }
+  const strata = useStrata()
+  return strata.getConnectionSchema(sid, name)
+}
+
 async function updateNotebookWorkerAction(worker: string | null) {
   const sid = sessionId()
   if (!sid) return
@@ -3137,6 +3146,7 @@ export function useNotebook() {
     updateNotebookSecretManagerConfigAction,
     updateNotebookMountsAction,
     updateNotebookConnectionsAction,
+    getConnectionSchemaAction,
     // LLM assistant
     llmAvailable,
     llmModel,
