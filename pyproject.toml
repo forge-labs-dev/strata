@@ -76,6 +76,9 @@ sql-postgres = [
 sql-sqlite = [
     "adbc-driver-sqlite>=1.0.0",
 ]
+sql-snowflake = [
+    "adbc-driver-snowflake>=1.0.0",
+]
 
 [dependency-groups]
 dev = [

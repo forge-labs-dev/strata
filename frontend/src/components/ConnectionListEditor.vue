@@ -20,13 +20,18 @@ interface DraftConnection {
   driver: string
   // SQLite
   path: string
-  // Postgres / generic URI drivers
+  // Postgres / Snowflake / generic URI drivers
   uri: string
-  // Postgres
+  // Postgres / Snowflake
   authUser: string
   authPassword: string
   role: string
   searchPath: string
+  // Snowflake
+  account: string
+  warehouse: string
+  database: string
+  schema: string
   // Round-trip for fields the form doesn't editorialize. Two slots:
   //  - extras: top-level keys outside the known set (``options``,
   //    plus driver-specific extras a future driver may add).
@@ -48,11 +53,16 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'auth',
   'role',
   'search_path',
+  'account',
+  'warehouse',
+  'database',
+  'schema',
 ])
 
 const DRIVER_OPTIONS = [
   { value: 'sqlite', label: 'SQLite' },
   { value: 'postgresql', label: 'PostgreSQL' },
+  { value: 'snowflake', label: 'Snowflake' },
 ] as const
 
 const KNOWN_DRIVERS = new Set(DRIVER_OPTIONS.map((o) => o.value))
@@ -73,6 +83,7 @@ function toDraft(spec?: ConnectionSpec): DraftConnection {
       extras[key] = value
     }
   }
+  const specAny = (spec ?? {}) as Record<string, unknown>
   return {
     _key: `conn-${nextKey++}`,
     name: spec?.name ?? '',
@@ -83,6 +94,10 @@ function toDraft(spec?: ConnectionSpec): DraftConnection {
     authPassword,
     role: typeof spec?.role === 'string' ? spec.role : '',
     searchPath: typeof spec?.search_path === 'string' ? spec.search_path : '',
+    account: typeof specAny.account === 'string' ? (specAny.account as string) : '',
+    warehouse: typeof specAny.warehouse === 'string' ? (specAny.warehouse as string) : '',
+    database: typeof specAny.database === 'string' ? (specAny.database as string) : '',
+    schema: typeof specAny.schema === 'string' ? (specAny.schema as string) : '',
     extras,
     extraAuth,
   }
@@ -137,6 +152,10 @@ function validate(): boolean {
       if (!d.uri.trim()) {
         errors[d._key] = 'PostgreSQL needs a connection URI'
       }
+    } else if (d.driver === 'snowflake') {
+      if (!d.uri.trim() && !d.account.trim()) {
+        errors[d._key] = 'Snowflake needs either an account identifier or a full URI'
+      }
     }
   }
   validationErrors.value = errors
@@ -173,6 +192,25 @@ function toSpec(d: DraftConnection): ConnectionSpec {
     else delete spec.role
     if (d.searchPath.trim()) spec.search_path = d.searchPath.trim()
     else delete spec.search_path
+  } else if (d.driver === 'snowflake') {
+    if (d.uri.trim()) spec.uri = d.uri.trim()
+    else delete spec.uri
+    if (d.account.trim()) spec.account = d.account.trim()
+    else delete spec.account
+    if (d.warehouse.trim()) spec.warehouse = d.warehouse.trim()
+    else delete spec.warehouse
+    if (d.database.trim()) spec.database = d.database.trim()
+    else delete spec.database
+    if (d.schema.trim()) spec.schema = d.schema.trim()
+    else delete spec.schema
+    if (d.role.trim()) spec.role = d.role.trim()
+    else delete spec.role
+
+    const auth: Record<string, string> = { ...d.extraAuth }
+    if (d.authUser.trim()) auth.user = d.authUser.trim()
+    if (d.authPassword.trim()) auth.password = d.authPassword.trim()
+    if (Object.keys(auth).length) spec.auth = auth
+    else delete spec.auth
   } else {
     // Unknown driver — preserve every editable text field but
     // don't impose Postgres-shaped auth structure.
@@ -346,6 +384,94 @@ function preservedExtraSummary(d: DraftConnection): string {
               />
             </label>
           </div>
+        </template>
+        <template v-else-if="conn.driver === 'snowflake'">
+          <div class="conn-field-row">
+            <label class="conn-field">
+              <span class="field-label">Account</span>
+              <input
+                v-model="conn.account"
+                type="text"
+                placeholder="ACME-PROD"
+                :disabled="readOnly"
+              />
+            </label>
+            <label class="conn-field">
+              <span class="field-label">Warehouse</span>
+              <input
+                v-model="conn.warehouse"
+                type="text"
+                placeholder="ANALYTICS_WH"
+                :disabled="readOnly"
+              />
+            </label>
+          </div>
+          <div class="conn-field-row">
+            <label class="conn-field">
+              <span class="field-label">Database</span>
+              <input
+                v-model="conn.database"
+                type="text"
+                placeholder="EVENTS"
+                :disabled="readOnly"
+              />
+            </label>
+            <label class="conn-field">
+              <span class="field-label">Schema</span>
+              <input v-model="conn.schema" type="text" placeholder="PUBLIC" :disabled="readOnly" />
+            </label>
+          </div>
+          <label class="conn-field">
+            <span class="field-label">Role (used for read-only enforcement)</span>
+            <input
+              v-model="conn.role"
+              type="text"
+              placeholder="ANALYTICS_RO"
+              :disabled="readOnly"
+            />
+          </label>
+          <div class="conn-field-row">
+            <label class="conn-field">
+              <span class="field-label">User</span>
+              <input
+                v-model="conn.authUser"
+                type="text"
+                placeholder="${SF_USER}"
+                :disabled="readOnly"
+                :class="{ 'literal-secret': isLiteralSecret(conn.authUser) }"
+              />
+            </label>
+            <label class="conn-field">
+              <span class="field-label">Password</span>
+              <input
+                v-model="conn.authPassword"
+                type="text"
+                placeholder="${SF_PASS}"
+                :disabled="readOnly"
+                :class="{ 'literal-secret': isLiteralSecret(conn.authPassword) }"
+              />
+            </label>
+          </div>
+          <p
+            v-if="isLiteralSecret(conn.authUser) || isLiteralSecret(conn.authPassword)"
+            class="conn-secret-hint"
+          >
+            Use <code>$&#123;VAR&#125;</code> indirection — literal credentials are blanked when
+            notebook.toml is saved.
+          </p>
+          <p class="conn-secret-hint">
+            Snowflake read-only enforcement is role-based: configure a role that has SELECT but not
+            INSERT/UPDATE/DELETE for read cells.
+          </p>
+          <label class="conn-field">
+            <span class="field-label">URI (overrides the fields above)</span>
+            <input
+              v-model="conn.uri"
+              type="text"
+              placeholder="snowflake://reader@ACME/EVENTS?authenticator=externalbrowser"
+              :disabled="readOnly"
+            />
+          </label>
         </template>
         <template v-else-if="isUnknownDriver(conn.driver)">
           <!-- Unknown driver: surface the common URI + path slots
