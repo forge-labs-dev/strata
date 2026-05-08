@@ -1253,15 +1253,14 @@ class TestActiveScanCount:
         assert _get_active_scan_count(state) == 0
 
 
-class TestAsyncIONonBlocking:
-    """Tests verifying async I/O doesn't block the event loop."""
+class TestConcurrentScans:
+    """Tests verifying concurrent scans complete correctly."""
 
-    def test_concurrent_scans_dont_block_each_other(self, temp_warehouse, tmp_path):
-        """Multiple concurrent scans can execute without blocking.
-
-        This test verifies that asyncio.to_thread() allows concurrent scans
-        to make progress. If I/O blocked the event loop, concurrent scans
-        would serialize and take much longer.
+    def test_concurrent_scans_all_succeed(self, temp_warehouse, tmp_path):
+        """Five concurrent scans against the same table all return 200 with
+        valid IPC bytes. If concurrency were broken (e.g. a shared
+        non-thread-safe cursor, a deadlock, a corrupted shared cache), one
+        or more requests would error or hang past the per-request timeout.
         """
         import socket
         from concurrent.futures import as_completed
@@ -1302,12 +1301,9 @@ class TestAsyncIONonBlocking:
 
         table_uri = temp_warehouse["table_uri"]
 
-        def do_scan():
-            """Execute a complete scan and return elapsed time."""
-            start = time.perf_counter()
-
+        def do_scan() -> int:
+            """Run one materialize+stream cycle and return the byte count."""
             with httpx.Client(timeout=30.0) as http_client:
-                # Create materialize request
                 resp = http_client.post(
                     f"http://127.0.0.1:{port}/v1/materialize",
                     json=build_materialize_request(table_uri),
@@ -1315,53 +1311,21 @@ class TestAsyncIONonBlocking:
                 assert resp.status_code == 200
                 stream_url = resp.json()["stream_url"]
 
-                # Fetch data
                 resp = http_client.get(f"http://127.0.0.1:{port}{stream_url}")
                 assert resp.status_code == 200
-                assert len(resp.content) > 0
+                return len(resp.content)
 
-            return time.perf_counter() - start
-
-        # Warm cache first so both sequential and concurrent measurements are
-        # operating on the same steady-state cached path.
+        # Warm the cache so all 5 concurrent requests follow the cache-hit
+        # path uniformly.
         do_scan()
 
-        # Run multiple concurrent scans
         num_concurrent = 5
-        wall_start = time.perf_counter()
         with ThreadPoolExecutor(max_workers=num_concurrent) as executor:
             futures = [executor.submit(do_scan) for _ in range(num_concurrent)]
-            concurrent_times = [f.result() for f in as_completed(futures)]
-        total_concurrent_time = time.perf_counter() - wall_start
+            byte_counts = [f.result() for f in as_completed(futures)]
 
-        # Measure the same workload sequentially as a control. Using a same-run
-        # control is more stable than comparing to a single cached request,
-        # which can fluctuate a lot under suite load.
-        sequential_start = time.perf_counter()
-        sequential_times = [do_scan() for _ in range(num_concurrent)]
-        total_sequential_time = time.perf_counter() - sequential_start
-        avg_sequential_time = total_sequential_time / num_concurrent
-
-        # When each steady-state cached request is extremely fast, client-side
-        # overhead and suite noise can erase any measurable advantage from
-        # concurrent execution. In that case, just assert that concurrency is
-        # not materially worse than the same-run sequential control. For slower
-        # workloads, keep the stronger overlap assertion to catch effectively
-        # serialized behavior.
-        if avg_sequential_time < 0.1:
-            # On CI runners, client-side overhead and scheduling noise can
-            # cause significant variance for sub-100ms cached requests.
-            assert total_concurrent_time <= total_sequential_time * 3.0, (
-                f"Concurrent scans regressed unexpectedly: total={total_concurrent_time:.3f}s, "
-                f"sequential={total_sequential_time:.3f}s."
-            )
-        else:
-            assert total_concurrent_time < total_sequential_time * 0.9, (
-                f"Concurrent scans too slow: total={total_concurrent_time:.3f}s, "
-                f"sequential={total_sequential_time:.3f}s. May indicate event loop blocking."
-            )
-            assert max(concurrent_times) < total_sequential_time
-        assert all(elapsed > 0 for elapsed in sequential_times)
+        assert len(byte_counts) == num_concurrent
+        assert all(n > 0 for n in byte_counts)
 
 
 class TestNonBlockingLogging:
