@@ -437,3 +437,165 @@ def test_list_schema_empty_when_no_database():
     cur = _FakeCursor([("CURRENT_DATABASE", (None,))])
     a = SnowflakeAdapter()
     assert a.list_schema(_FakeConn(cur)) == []
+
+
+# --- Codex review fixes -----------------------------------------------------
+
+
+def test_connection_id_includes_uri_components():
+    """Codex review fix: explicit ``spec.uri`` overrides used to
+    bypass the cache identity entirely — two URI-only connections
+    pointing at different DBs collapsed onto the same id. The
+    adapter now parses the URI and folds account / database /
+    schema / warehouse / role into the identity."""
+    a = SnowflakeAdapter()
+    db_a = ConnectionSpec(
+        name="a",
+        driver="snowflake",
+        uri="snowflake://reader@ACME/DB_A/PUBLIC?warehouse=W&role=R",
+    )
+    db_b = ConnectionSpec(
+        name="b",
+        driver="snowflake",
+        uri="snowflake://reader@ACME/DB_B/PUBLIC?warehouse=W&role=R",
+    )
+    different_role = ConnectionSpec(
+        name="c",
+        driver="snowflake",
+        uri="snowflake://reader@ACME/DB_A/PUBLIC?warehouse=W&role=OTHER",
+    )
+
+    assert a.canonicalize_connection_id(db_a) != a.canonicalize_connection_id(db_b)
+    assert a.canonicalize_connection_id(db_a) != a.canonicalize_connection_id(different_role)
+
+
+def test_connection_id_discrete_fields_override_uri():
+    """A user can build on a URI base and supply discrete
+    overrides — ``spec.role = "OVERRIDE"`` wins over a role
+    embedded in the URI. The merged identity is what gets
+    hashed."""
+    a = SnowflakeAdapter()
+    base_uri = "snowflake://reader@ACME/EVENTS/PUBLIC?warehouse=WH&role=URI_ROLE"
+    spec = ConnectionSpec(
+        name="x",
+        driver="snowflake",
+        uri=base_uri,
+        role="DISCRETE_ROLE",
+    )
+    same_explicit = ConnectionSpec(
+        name="x",
+        driver="snowflake",
+        account="ACME",
+        database="EVENTS",
+        schema="PUBLIC",
+        warehouse="WH",
+        role="DISCRETE_ROLE",
+        auth={"user": "reader"},
+    )
+    # Same effective identity → same id.
+    assert a.canonicalize_connection_id(spec) == a.canonicalize_connection_id(same_explicit)
+
+
+def test_probe_freshness_uses_current_schema_for_unqualified_tables():
+    """Codex review fix: probes used to hardcode ``PUBLIC`` for
+    unqualified tables. Now they resolve via
+    ``CURRENT_SCHEMA()``, which matches what the query
+    connection's ``USE SCHEMA`` left as the default. A
+    connection defaulting to ANALYTICS now fingerprints
+    ANALYTICS.orders, not PUBLIC.orders."""
+    cur = _FakeCursor(
+        [
+            ("CURRENT_DATABASE()", ("EVENTS", "ANALYTICS")),
+            ("INFORMATION_SCHEMA.TABLES", ("ANALYTICS", "orders", "ts")),
+        ]
+    )
+    a = SnowflakeAdapter()
+    # Unqualified table — relies on CURRENT_SCHEMA()
+    tables = [QualifiedTable(catalog=None, schema=None, name="orders")]
+    a.probe_freshness(_FakeConn(cur), tables)
+
+    # Find the INFORMATION_SCHEMA query and its schema bind value.
+    info_calls = [(sql, params) for sql, params in cur.executions if "INFORMATION_SCHEMA" in sql]
+    assert len(info_calls) == 1
+    _, params = info_calls[0]
+    # First param is the schema; should be ANALYTICS, not PUBLIC.
+    assert params[0] == "ANALYTICS", (
+        f"probe should resolve unqualified tables against CURRENT_SCHEMA, got {params[0]!r}"
+    )
+
+
+def test_probe_freshness_no_schema_does_not_pretend_to_match_public():
+    """When neither the table nor the session has a schema, the
+    probe must not silently pretend it's PUBLIC and run the
+    query — that would hash a fingerprint that doesn't match
+    what execution would resolve. Fold a sentinel and skip."""
+    cur = _FakeCursor(
+        [
+            # CURRENT_SCHEMA returns null (no default schema).
+            ("CURRENT_DATABASE()", ("EVENTS", None)),
+        ]
+    )
+    a = SnowflakeAdapter()
+    tables = [QualifiedTable(catalog=None, schema=None, name="orders")]
+    token = a.probe_freshness(_FakeConn(cur), tables)
+    assert token.value  # non-empty (sentinel)
+    info_calls = [sql for sql, _ in cur.executions if "INFORMATION_SCHEMA" in sql]
+    # No INFORMATION_SCHEMA query was issued — sentinel only.
+    assert info_calls == []
+
+
+def test_open_uses_write_role_when_read_only_false():
+    """Codex review fix: the ``read_only`` parameter used to be
+    discarded. Now the adapter applies ``role`` for read cells
+    and ``write_role`` for write cells (falling back to ``role``
+    when no write_role is configured). This makes
+    ``# @sql write=true`` meaningful on Snowflake."""
+    cur = _FakeCursor([])
+    a = SnowflakeAdapter(connect_fn=lambda _uri: _FakeConn(cur))
+    spec = ConnectionSpec(
+        name="x",
+        driver="snowflake",
+        account="ACME",
+        role="ANALYTICS_RO",
+        write_role="ANALYTICS_RW",
+    )
+
+    a.open(spec, read_only=True)
+    assert [sql for sql, _ in cur.executions] == ['USE ROLE "ANALYTICS_RO"']
+
+    cur2 = _FakeCursor([])
+    a2 = SnowflakeAdapter(connect_fn=lambda _uri: _FakeConn(cur2))
+    a2.open(spec, read_only=False)
+    assert [sql for sql, _ in cur2.executions] == ['USE ROLE "ANALYTICS_RW"']
+
+
+def test_open_falls_back_to_role_when_write_role_unset():
+    """Without write_role, write cells inherit the same role as
+    read cells. Documented behavior — the user's warehouse access
+    policy then decides whether the write succeeds."""
+    cur = _FakeCursor([])
+    a = SnowflakeAdapter(connect_fn=lambda _uri: _FakeConn(cur))
+    spec = ConnectionSpec(
+        name="x",
+        driver="snowflake",
+        account="ACME",
+        role="ANALYTICS_GENERAL",
+    )
+
+    a.open(spec, read_only=False)
+    assert [sql for sql, _ in cur.executions] == ['USE ROLE "ANALYTICS_GENERAL"']
+
+
+def test_connection_id_includes_write_role():
+    """Two connections that differ only in write_role should
+    produce different ids — without this, switching to a more
+    privileged write role wouldn't invalidate cache entries."""
+    a = SnowflakeAdapter()
+    base = ConnectionSpec(
+        name="x",
+        driver="snowflake",
+        account="ACME",
+        role="RO",
+    )
+    with_write = base.model_copy(update={"write_role": "RW"})
+    assert a.canonicalize_connection_id(base) != a.canonicalize_connection_id(with_write)

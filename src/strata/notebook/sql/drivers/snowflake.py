@@ -27,7 +27,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlparse
 
 from strata.notebook.sql.adapter import (
     AdapterCapabilities,
@@ -79,6 +79,77 @@ def _spec_attr(spec: Any, key: str) -> Any:
     if callable(value) and getattr(value, "__self__", None) is not None:
         return None
     return value
+
+
+def _resolve_session_defaults(cursor: Any) -> tuple[str | None, str | None]:
+    """Read ``CURRENT_DATABASE()`` and ``CURRENT_SCHEMA()``.
+
+    Returns ``(database, schema)`` — either may be None if the
+    role/warehouse has no defaults configured. Used by the
+    freshness and schema probes to resolve unqualified table
+    names against the same defaults the executor's query
+    connection would use, instead of hardcoding ``PUBLIC`` and
+    risking a probe that fingerprints the wrong schema.
+    """
+    cursor.execute("SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
+    row = cursor.fetchone()
+    if not row:
+        return None, None
+    db = str(row[0]) if row[0] else None
+    sch = str(row[1]) if len(row) > 1 and row[1] else None
+    return db, sch
+
+
+def _parse_snowflake_uri(uri: str) -> dict[str, Any]:
+    """Pull identity-shaping fields out of a gosnowflake URI.
+
+    Shape: ``snowflake://<user>:<password>@<account>/<database>/<schema>?warehouse=…&role=…``.
+
+    Returns a dict with whichever of ``account`` / ``user`` /
+    ``database`` / ``schema`` / ``warehouse`` / ``role`` were
+    present. Password is intentionally not extracted (secret).
+    Empty strings are dropped so a bare ``snowflake://account/``
+    doesn't introduce phantom keys.
+    """
+    out: dict[str, Any] = {}
+    try:
+        parsed = urlparse(uri)
+    except Exception:  # noqa: BLE001
+        return out
+
+    if parsed.username:
+        out["user"] = parsed.username
+
+    # ``urlparse.hostname`` lowercases per RFC, but Snowflake
+    # account identifiers can carry case-sensitive segments
+    # (legacy account-locator format, region suffixes). Parse
+    # ``netloc`` directly to preserve the original case.
+    netloc = parsed.netloc or ""
+    if "@" in netloc:
+        host_part = netloc.rsplit("@", 1)[1]
+    else:
+        host_part = netloc
+    if ":" in host_part:
+        host_part = host_part.split(":", 1)[0]
+    if host_part:
+        out["account"] = host_part
+
+    # gosnowflake encodes db/schema in the path: /DB/SCHEMA.
+    if parsed.path and parsed.path.startswith("/"):
+        path_parts = [p for p in parsed.path.split("/") if p]
+        if len(path_parts) >= 1:
+            out["database"] = path_parts[0]
+        if len(path_parts) >= 2:
+            out["schema"] = path_parts[1]
+
+    if parsed.query:
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        for key in ("warehouse", "role"):
+            values = params.get(key)
+            if values:
+                out[key] = values[0]
+
+    return out
 
 
 def _resolve_var(value: str) -> str:
@@ -136,7 +207,26 @@ class SnowflakeAdapter:
     def _extract_identity(self, spec: Any) -> dict[str, Any]:
         identity: dict[str, Any] = {}
 
-        for key in ("account", "user", "role", "warehouse", "database", "schema"):
+        # If a URI is set, its components are part of the
+        # connection's identity — without this, two connections
+        # whose only configured field is ``uri`` (different DBs,
+        # different roles) would collapse onto the same
+        # connection_id and share cache entries. Discrete fields
+        # below override URI-derived components so the user can
+        # build on a base URI with overrides.
+        uri = _spec_attr(spec, "uri")
+        if uri:
+            identity.update(_parse_snowflake_uri(str(uri)))
+
+        for key in (
+            "account",
+            "user",
+            "role",
+            "write_role",
+            "warehouse",
+            "database",
+            "schema",
+        ):
             value = _spec_attr(spec, key)
             if value is not None:
                 identity[key] = value
@@ -163,38 +253,51 @@ class SnowflakeAdapter:
         """Open an ADBC Snowflake connection.
 
         Read-only enforcement for Snowflake is **role-based**:
-        Strata applies the spec's ``role`` (via ``USE ROLE``) and
-        relies on the role's grants to gate writes. There is no
-        session-level read-only flag in Snowflake equivalent to
-        Postgres's ``default_transaction_read_only``. A read cell
-        must reference a connection whose role lacks DML grants;
-        a write cell (``# @sql write=true``) must reference a
-        role that has them.
+        Snowflake has no session-level read-only flag like
+        Postgres's ``default_transaction_read_only``, so the
+        security boundary lives in the role's grants. The adapter
+        wires ``read_only`` through to which role gets applied:
 
-        After ``USE ROLE``, applies the spec's warehouse, default
-        database, and default schema (each via the corresponding
-        ``USE …`` statement). All identifiers are validated
-        against ``_IDENTIFIER_RE`` before splicing — Snowflake's
-        ``USE`` statements don't accept bind parameters.
+        - ``read_only=True`` (read cells): apply the spec's
+          ``role``. The user is responsible for picking a role
+          whose grants are SELECT-only on the touched objects.
+        - ``read_only=False`` (write cells, ``# @sql write=true``):
+          apply ``write_role`` if the spec sets it; otherwise
+          fall back to ``role``. ``write_role`` is the per-cell
+          handle to a DML-capable role; without it, write cells
+          inherit the same role as read cells (which the user's
+          warehouse access policy then decides whether to allow).
+
+        After role selection, applies the spec's warehouse,
+        default database, and default schema (each via the
+        corresponding ``USE …`` statement). All identifiers are
+        validated against ``_IDENTIFIER_RE`` before splicing —
+        Snowflake's ``USE`` statements don't accept bind
+        parameters.
         """
         uri = self._build_uri(spec)
         conn = self._invoke_connect(uri)
 
+        # Pick the role for this open() call based on the
+        # cell's read/write intent.
+        ro_role = _spec_attr(spec, "role")
+        rw_role = _spec_attr(spec, "write_role") or ro_role
+        chosen_role = ro_role if read_only else rw_role
+
         applied_any = False
         with conn.cursor() as cursor:
-            for key, kw in (
-                ("role", "ROLE"),
-                ("warehouse", "WAREHOUSE"),
-                ("database", "DATABASE"),
-                ("schema", "SCHEMA"),
+            for kw, value in (
+                ("ROLE", chosen_role),
+                ("WAREHOUSE", _spec_attr(spec, "warehouse")),
+                ("DATABASE", _spec_attr(spec, "database")),
+                ("SCHEMA", _spec_attr(spec, "schema")),
             ):
-                value = _spec_attr(spec, key)
                 if not value:
                     continue
                 value_str = str(value)
                 if not _IDENTIFIER_RE.match(value_str):
                     raise RuntimeError(
-                        f"Connection {key} {value!r} is not a valid Snowflake "
+                        f"Connection {kw.lower()} {value!r} is not a valid Snowflake "
                         "identifier; must match [A-Za-z_][A-Za-z0-9_$]*"
                     )
                 cursor.execute(f'USE {kw} "{value_str}"')
@@ -212,13 +315,6 @@ class SnowflakeAdapter:
                     # specific class — applied_any is true so we
                     # don't lose any writes.
                     pass
-
-        # Note: ``read_only`` is honored at the role level. We
-        # could log a warning here when read_only=True and no
-        # role is configured, but the validator already surfaces
-        # connection-level diagnostics; doing it here would
-        # duplicate the channel.
-        _ = read_only
 
         return conn
 
@@ -314,30 +410,19 @@ class SnowflakeAdapter:
         if not tables:
             return FreshnessToken(value=b"")
 
-        # Group tables by their effective catalog (database).
-        # Tables without a catalog get grouped under None and
-        # resolved via the session's current database.
         by_catalog: dict[str | None, list[QualifiedTable]] = {}
         for t in tables:
             by_catalog.setdefault(t.catalog, []).append(t)
 
         h = hashlib.sha256()
         with probe_conn.cursor() as cursor:
-            current_db: str | None = None
-            if None in by_catalog:
-                cursor.execute("SELECT CURRENT_DATABASE()")
-                row = cursor.fetchone()
-                if row and row[0]:
-                    current_db = str(row[0])
+            current_db, current_schema = _resolve_session_defaults(cursor)
 
             for catalog, group in sorted(
                 by_catalog.items(),
                 key=lambda kv: (kv[0] or "") + ":",
             ):
                 effective_db = catalog or current_db
-                # When neither the table nor the session has a
-                # database, we can't probe. Fold a sentinel into
-                # the hash so the result is stable.
                 if not effective_db:
                     for table in sorted(group, key=lambda t: t.render()):
                         h.update(b"no-database:")
@@ -350,22 +435,31 @@ class SnowflakeAdapter:
                         f"Snowflake database identifier {effective_db!r} is not valid"
                     )
 
-                # One placeholder pair per touched table — Snowflake
-                # is fine with re-querying for each table individually
-                # since INFORMATION_SCHEMA hits are cheap (cloud-
-                # services-layer credit, not warehouse credit).
                 query = (
                     f"SELECT TABLE_SCHEMA, TABLE_NAME, LAST_ALTERED "
                     f'FROM "{effective_db}".INFORMATION_SCHEMA.TABLES '
                     f"WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
                 )
                 for table in sorted(group, key=lambda t: t.render()):
-                    schema_arg = table.schema or "PUBLIC"
+                    schema_arg = table.schema or current_schema
+                    if not schema_arg:
+                        # Neither the table nor the session has
+                        # a schema. Fold a sentinel rather than
+                        # silently picking PUBLIC — the cache key
+                        # must reflect the unresolved name.
+                        h.update(b"no-schema:")
+                        h.update(effective_db.encode())
+                        h.update(b".")
+                        h.update(table.render().encode())
+                        h.update(b"\x00")
+                        continue
                     cursor.execute(query, (schema_arg, table.name))
                     row = cursor.fetchone()
                     h.update(effective_db.encode())
                     h.update(b".")
-                    h.update(table.render().encode())
+                    h.update(schema_arg.encode())
+                    h.update(b".")
+                    h.update(table.name.encode())
                     h.update(b":")
                     if row is None:
                         h.update(b"missing")
@@ -404,12 +498,7 @@ class SnowflakeAdapter:
 
         h = hashlib.sha256()
         with probe_conn.cursor() as cursor:
-            current_db: str | None = None
-            if None in by_catalog:
-                cursor.execute("SELECT CURRENT_DATABASE()")
-                row = cursor.fetchone()
-                if row and row[0]:
-                    current_db = str(row[0])
+            current_db, current_schema = _resolve_session_defaults(cursor)
 
             for catalog, group in sorted(
                 by_catalog.items(),
@@ -435,13 +524,22 @@ class SnowflakeAdapter:
                     f"ORDER BY ORDINAL_POSITION"
                 )
                 for table in sorted(group, key=lambda t: t.render()):
-                    schema_arg = table.schema or "PUBLIC"
+                    schema_arg = table.schema or current_schema
+                    if not schema_arg:
+                        h.update(b"no-schema:")
+                        h.update(effective_db.encode())
+                        h.update(b".")
+                        h.update(table.render().encode())
+                        h.update(b"\x00")
+                        continue
                     cursor.execute(query, (schema_arg, table.name))
                     rows = cursor.fetchall() or []
 
                     h.update(effective_db.encode())
                     h.update(b".")
-                    h.update(table.render().encode())
+                    h.update(schema_arg.encode())
+                    h.update(b".")
+                    h.update(table.name.encode())
                     h.update(b":")
                     for col_name, data_type, is_nullable in rows:
                         h.update(str(col_name).encode())

@@ -32,6 +32,7 @@ interface DraftConnection {
   warehouse: string
   database: string
   schema: string
+  writeRole: string
   // Round-trip for fields the form doesn't editorialize. Two slots:
   //  - extras: top-level keys outside the known set (``options``,
   //    plus driver-specific extras a future driver may add).
@@ -57,6 +58,7 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'warehouse',
   'database',
   'schema',
+  'write_role',
 ])
 
 const DRIVER_OPTIONS = [
@@ -98,6 +100,7 @@ function toDraft(spec?: ConnectionSpec): DraftConnection {
     warehouse: typeof specAny.warehouse === 'string' ? (specAny.warehouse as string) : '',
     database: typeof specAny.database === 'string' ? (specAny.database as string) : '',
     schema: typeof specAny.schema === 'string' ? (specAny.schema as string) : '',
+    writeRole: typeof specAny.write_role === 'string' ? (specAny.write_role as string) : '',
     extras,
     extraAuth,
   }
@@ -205,6 +208,8 @@ function toSpec(d: DraftConnection): ConnectionSpec {
     else delete spec.schema
     if (d.role.trim()) spec.role = d.role.trim()
     else delete spec.role
+    if (d.writeRole.trim()) spec.write_role = d.writeRole.trim()
+    else delete spec.write_role
 
     const auth: Record<string, string> = { ...d.extraAuth }
     if (d.authUser.trim()) auth.user = d.authUser.trim()
@@ -421,15 +426,26 @@ function preservedExtraSummary(d: DraftConnection): string {
               <input v-model="conn.schema" type="text" placeholder="PUBLIC" :disabled="readOnly" />
             </label>
           </div>
-          <label class="conn-field">
-            <span class="field-label">Role (used for read-only enforcement)</span>
-            <input
-              v-model="conn.role"
-              type="text"
-              placeholder="ANALYTICS_RO"
-              :disabled="readOnly"
-            />
-          </label>
+          <div class="conn-field-row">
+            <label class="conn-field">
+              <span class="field-label">Role (read cells)</span>
+              <input
+                v-model="conn.role"
+                type="text"
+                placeholder="ANALYTICS_RO"
+                :disabled="readOnly"
+              />
+            </label>
+            <label class="conn-field">
+              <span class="field-label">write_role (write cells, optional)</span>
+              <input
+                v-model="conn.writeRole"
+                type="text"
+                placeholder="ANALYTICS_RW"
+                :disabled="readOnly"
+              />
+            </label>
+          </div>
           <div class="conn-field-row">
             <label class="conn-field">
               <span class="field-label">User</span>

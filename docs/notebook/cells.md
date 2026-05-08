@@ -351,7 +351,7 @@ Notes:
 - **Driver-specific extras** (e.g. `options.search_path`, `options.warehouse` for Snowflake, future driver-specific keys) round-trip through the editor unchanged. The form editorializes the keys it knows; everything else is preserved.
 - **Auth values use `${VAR}` indirection.** Literal credentials get blanked when `notebook.toml` is saved, so committing the file never leaks secrets. The form shows a warning border on a literal value so you know to switch it to a variable reference.
 - **Relative `path` values are notebook-local.** `path = "analytics.db"` resolves against the notebook directory at execution time. The on-disk value stays relative so a notebook moves cleanly between machines.
-- **Currently shipped drivers**: SQLite, PostgreSQL, and Snowflake. All ADBC-backed (`adbc-driver-sqlite`, `adbc-driver-postgresql`, `adbc-driver-snowflake`). Snowflake's read-only enforcement is role-based — configure a role with SELECT-only grants for read cells (Snowflake has no session-level read-only flag like Postgres's `SET default_transaction_read_only = on`).
+- **Currently shipped drivers**: SQLite, PostgreSQL, and Snowflake. All ADBC-backed (`adbc-driver-sqlite`, `adbc-driver-postgresql`, `adbc-driver-snowflake`). Snowflake's read-only enforcement is role-based — configure `role` with SELECT-only grants for read cells, and optionally a separate `write_role` with DML grants for `# @sql write=true` cells. Without `write_role`, write cells inherit the same role as read cells (Snowflake has no session-level read-only flag like Postgres's `SET default_transaction_read_only = on`).
 
 ### Schema discovery
 
