@@ -916,3 +916,48 @@ def _load_arrow_from_uri(session: Any, uri: str) -> Any:
     helper out keeps the per-statement test self-contained.
     """
     return _load_artifact_as_arrow(session, uri)
+
+
+# --- _resolve_runtime_spec: notebook-relative path rebasing ---------------
+
+
+def test_resolve_runtime_spec_rebases_credentials_paths(tmp_path):
+    """``credentials_path`` and ``write_credentials_path`` are
+    declared in ``notebook.toml`` and should be relative to the
+    notebook directory — same convention as SQLite ``path``. The
+    server's CWD is unrelated, so without rebasing a relative
+    ``creds/ro.json`` would be looked up under the launching
+    process's directory and fail to open."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.cell_executor import _resolve_runtime_spec
+
+    spec = ConnectionSpec(
+        name="bq",
+        driver="bigquery",
+        project_id="acme",
+        credentials_path="creds/ro.json",
+        write_credentials_path="creds/rw.json",
+    )
+    resolved = _resolve_runtime_spec(spec, tmp_path)
+
+    expected_ro = str((tmp_path / "creds/ro.json").resolve())
+    expected_rw = str((tmp_path / "creds/rw.json").resolve())
+    assert getattr(resolved, "credentials_path") == expected_ro
+    assert getattr(resolved, "write_credentials_path") == expected_rw
+
+
+def test_resolve_runtime_spec_leaves_absolute_credentials_paths_alone(tmp_path):
+    """An absolute ``credentials_path`` is already meaningful on
+    its own — don't munge it by joining with the notebook dir."""
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.cell_executor import _resolve_runtime_spec
+
+    abs_path = str(tmp_path / "absolute.json")
+    spec = ConnectionSpec(
+        name="bq",
+        driver="bigquery",
+        project_id="acme",
+        credentials_path=abs_path,
+    )
+    resolved = _resolve_runtime_spec(spec, tmp_path / "subdir")
+    assert getattr(resolved, "credentials_path") == abs_path

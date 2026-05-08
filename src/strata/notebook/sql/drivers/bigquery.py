@@ -148,22 +148,38 @@ class BigQueryAdapter:
 
     # --- identity ---------------------------------------------------------
 
-    def canonicalize_connection_id(self, spec: Any) -> str:
+    def canonicalize_connection_id(self, spec: Any, *, read_only: bool = True) -> str:
         """Hash identity-shaping fields, excluding secrets.
 
-        Identity-shaping for BigQuery: project_id, dataset_id, the
-        service account's principal (extracted from the credentials
-        JSON when readable), and the write-credentials principal
-        (so swapping a write_credentials_path invalidates the
-        cache identity for write cells).
+        Identity-shaping for BigQuery: project_id, dataset_id, and
+        the service account's principal (extracted from the
+        credentials JSON when readable). ``read_only`` decides
+        which credentials principal joins the hash — read cells
+        fold only ``credentials_path``'s principal; write cells
+        fold ``write_credentials_path``'s principal (falling back
+        to ``credentials_path``). Without the read_only branch,
+        swapping the write SA would churn read-cell caches even
+        though read execution never uses it.
 
-        Excluded: the credentials file's *contents* (the
-        signing key); paths fall back when principal extraction
-        fails.
+        When neither credentials path is configured, the adapter
+        falls back to ambient Application Default Credentials at
+        execute time. The principal is unknown at canonicalize
+        time without a network call, so the identity carries an
+        ``ambient_adc`` sentinel — two notebooks with no creds
+        configured stay segregated from notebooks with explicit
+        creds, but the cache may leak across machines that share
+        a notebook spec but use different ambient principals.
+        Users who want stable cache identity across machines
+        should set an explicit ``credentials_path``.
+
+        Excluded: the credentials file's *contents* (the signing
+        key); paths fall back when principal extraction fails.
         """
-        return hash_connection_identity(self.name, self._extract_identity(spec))
+        return hash_connection_identity(
+            self.name, self._extract_identity(spec, read_only=read_only)
+        )
 
-    def _extract_identity(self, spec: Any) -> dict[str, Any]:
+    def _extract_identity(self, spec: Any, *, read_only: bool = True) -> dict[str, Any]:
         identity: dict[str, Any] = {}
 
         for key in ("project_id", "dataset_id"):
@@ -171,18 +187,32 @@ class BigQueryAdapter:
             if value is not None:
                 identity[key] = str(value)
 
-        for key, ident_key in (
-            ("credentials_path", "credentials_principal"),
-            ("write_credentials_path", "write_credentials_principal"),
-        ):
-            path_value = _spec_attr(spec, key)
-            if not path_value:
-                continue
-            principal = _credentials_principal(path_value)
-            # Prefer the principal (stable across machines); fall
-            # back to the path so identity is still distinct
-            # between two unread credentials.
-            identity[ident_key] = principal or str(path_value)
+        # Read-side credentials always join. Write-side joins only
+        # when ``read_only=False``. This way changing
+        # ``write_credentials_path`` doesn't invalidate read-cell
+        # caches that never touch the write principal.
+        ro_path = _spec_attr(spec, "credentials_path")
+        if ro_path:
+            principal = _credentials_principal(ro_path)
+            identity["credentials_principal"] = principal or str(ro_path)
+
+        if not read_only:
+            rw_path = _spec_attr(spec, "write_credentials_path")
+            if rw_path:
+                principal = _credentials_principal(rw_path)
+                identity["write_credentials_principal"] = principal or str(rw_path)
+
+        # When no credentials are configured at all (for the
+        # active read/write side), the driver will pick up
+        # ambient ADC at execute time. We can't know which
+        # principal that is without a network call, so flag it
+        # explicitly. Notebooks that want machine-portable cache
+        # identity should configure ``credentials_path``.
+        active_creds = (
+            ro_path if read_only else (_spec_attr(spec, "write_credentials_path") or ro_path)
+        )
+        if not active_creds:
+            identity["ambient_adc"] = True
 
         return identity
 

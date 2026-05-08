@@ -179,7 +179,14 @@ class SqliteAdapter:
 
     # --- identity ---------------------------------------------------------
 
-    def canonicalize_connection_id(self, spec: Any) -> str:
+    def canonicalize_connection_id(self, spec: Any, *, read_only: bool = True) -> str:
+        # ``read_only`` is part of the Protocol so adapters that
+        # route reads vs writes through different principals
+        # (Snowflake's ``write_role``, BigQuery's
+        # ``write_credentials_path``) can include only the
+        # relevant fields. SQLite has no read/write principal
+        # split, so the flag is a no-op here.
+        del read_only
         """Hash the absolute DB path (or URI / ``:memory:`` literal).
 
         Identity-shaping for SQLite is just "which file." Two specs

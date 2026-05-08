@@ -152,8 +152,13 @@ async def execute_sql_cell(
             )
 
     # ---- provenance hash -------------------------------------------
+    # The runtime spec is what gets handed to ``open()``, with
+    # relative paths rebased against the notebook directory. Use
+    # it for canonicalize too so credential-file principal
+    # extraction can read the file when the path is relative on
+    # disk.
     query_normalized = normalize_query(analysis.sql_body, adapter.sqlglot_dialect)
-    connection_id = adapter.canonicalize_connection_id(spec)
+    connection_id = adapter.canonicalize_connection_id(runtime_spec, read_only=True)
     provenance_hash = compute_sql_provenance_hash(
         query_normalized=query_normalized,
         bind_params=params,
@@ -338,9 +343,14 @@ async def _execute_write_cell(
         return _error_result(str(exc), start_time)
 
     # Provenance via the same hash function read cells use, with
-    # the freshness/schema slots set to None (no probe).
+    # the freshness/schema slots set to None (no probe). Run on
+    # the runtime spec (paths rebased against the notebook dir)
+    # so credential-file principal extraction works for relative
+    # paths. ``read_only=False`` so the write-side principal
+    # joins the cache identity for write cells.
+    runtime_spec = _resolve_runtime_spec(spec, session.path)
     query_normalized = normalize_query(analysis.sql_body, adapter.sqlglot_dialect)
-    connection_id = adapter.canonicalize_connection_id(spec)
+    connection_id = adapter.canonicalize_connection_id(runtime_spec, read_only=False)
     provenance_hash = compute_sql_provenance_hash(
         query_normalized=query_normalized,
         bind_params=params,
@@ -370,8 +380,6 @@ async def _execute_write_cell(
                     session=session,
                     cell_id=cell_id,
                 )
-
-    runtime_spec = _resolve_runtime_spec(spec, session.path)
 
     try:
         stats = _execute_write_statements(adapter, runtime_spec, analysis.sql_body, namespace)
@@ -404,7 +412,7 @@ async def _execute_write_cell(
         cell_state.artifact_uri = uri
 
     duration_ms = (time.time() - start_time) * 1000
-    display_output = _table_display(table)
+    display_output = _table_display(table, max_rows=write_display_cap)
     return {
         "success": True,
         "outputs": {
@@ -658,20 +666,51 @@ def _resolve_runtime_spec(spec: ConnectionSpec, notebook_dir: Any) -> Connection
     because the server's process CWD is unrelated to the notebook
     directory.
 
-    Only ``path`` is rewritten; ``uri`` round-trips as-is because
-    SQLite's URI form already has well-defined absolute / relative
-    semantics that the engine handles.
+    The same rule applies to driver-specific path-shaped fields
+    that point at notebook-local files — currently
+    ``credentials_path`` and ``write_credentials_path`` for the
+    BigQuery driver. Without rebasing, a relative
+    ``credentials_path = "creds/ro.json"`` resolves against the
+    server's process CWD instead of the notebook directory and
+    fails to open. ``uri`` round-trips as-is because SQLite's URI
+    form already has well-defined absolute / relative semantics.
     """
-    raw_path = getattr(spec, "path", None)
-    if not isinstance(raw_path, str) or not raw_path:
-        return spec
     from pathlib import Path
 
-    p = Path(raw_path)
-    if p.is_absolute():
+    nb_dir = Path(str(notebook_dir))
+
+    def _rebase(value: Any) -> Any:
+        if not isinstance(value, str) or not value:
+            return value
+        p = Path(value)
+        if p.is_absolute():
+            return value
+        return str((nb_dir / p).resolve())
+
+    update: dict[str, Any] = {}
+    raw_path = getattr(spec, "path", None)
+    new_path = _rebase(raw_path)
+    if new_path != raw_path:
+        update["path"] = new_path
+
+    # Driver-specific path fields. ``model_extra`` is where
+    # extras live (BigQuery's credentials_path is an extra), so
+    # the rebase has to update that dict too — Pydantic surfaces
+    # extras both as attributes and through ``model_extra``, but
+    # ``model_copy(update=...)`` only updates declared fields
+    # by default. We pass them through anyway because Pydantic v2
+    # also accepts unknown keys when ``extra='allow'`` is set on
+    # the model (which ConnectionSpec uses).
+    extras = getattr(spec, "model_extra", None) or {}
+    for key in ("credentials_path", "write_credentials_path"):
+        raw_value = extras.get(key) if key in extras else getattr(spec, key, None)
+        new_value = _rebase(raw_value)
+        if new_value != raw_value:
+            update[key] = new_value
+
+    if not update:
         return spec
-    resolved = str((Path(str(notebook_dir)) / p).resolve())
-    return spec.model_copy(update={"path": resolved})
+    return spec.model_copy(update=update)
 
 
 def _load_upstream_variables(

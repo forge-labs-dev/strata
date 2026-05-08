@@ -191,20 +191,28 @@ class SnowflakeAdapter:
 
     # --- identity ---------------------------------------------------------
 
-    def canonicalize_connection_id(self, spec: Any) -> str:
+    def canonicalize_connection_id(self, spec: Any, *, read_only: bool = True) -> str:
         """Hash identity-shaping fields, excluding secrets.
 
-        Identity-shaping for Snowflake: account, user, role,
-        warehouse, default database, default schema. Two
-        connections that differ in any of these may see different
-        objects (different role grants, different warehouse
-        compute), so the cache must segregate them.
+        Identity-shaping for Snowflake: account, user, role
+        (when ``read_only=True``) or write_role (when
+        ``read_only=False``), warehouse, default database,
+        default schema.
+
+        ``read_only`` controls which role joins the identity:
+        read cells fold ``role`` only, so swapping ``write_role``
+        on a connection used by both read and write cells doesn't
+        churn read-cell caches. Write cells fold ``write_role``
+        (or ``role`` as the fallback) since that's the role
+        actually applied at open time.
 
         Excluded: password / private_key (secret).
         """
-        return hash_connection_identity(self.name, self._extract_identity(spec))
+        return hash_connection_identity(
+            self.name, self._extract_identity(spec, read_only=read_only)
+        )
 
-    def _extract_identity(self, spec: Any) -> dict[str, Any]:
+    def _extract_identity(self, spec: Any, *, read_only: bool = True) -> dict[str, Any]:
         identity: dict[str, Any] = {}
 
         # If a URI is set, its components are part of the
@@ -222,7 +230,6 @@ class SnowflakeAdapter:
             "account",
             "user",
             "role",
-            "write_role",
             "warehouse",
             "database",
             "schema",
@@ -230,6 +237,15 @@ class SnowflakeAdapter:
             value = _spec_attr(spec, key)
             if value is not None:
                 identity[key] = value
+
+        # ``write_role`` only joins write-cell identity. When
+        # the cell is read-only, the role applied at open time
+        # is just ``role``, so the cache key shouldn't depend
+        # on the write_role.
+        if not read_only:
+            write_role = _spec_attr(spec, "write_role")
+            if write_role is not None:
+                identity["write_role"] = write_role
 
         # ``auth.user`` is identity-shaping (different user →
         # different object visibility). Resolve ${VAR} so two

@@ -118,7 +118,15 @@ class PostgresAdapter:
 
     # --- identity ---------------------------------------------------------
 
-    def canonicalize_connection_id(self, spec: Any) -> str:
+    def canonicalize_connection_id(self, spec: Any, *, read_only: bool = True) -> str:
+        # ``read_only`` is part of the Protocol so adapters that
+        # route reads vs writes through different principals
+        # (Snowflake's ``write_role``, BigQuery's
+        # ``write_credentials_path``) can include only the
+        # relevant fields. Postgres has no read/write principal
+        # split — both are governed by the connection's role —
+        # so the flag is a no-op here.
+        del read_only
         """Hash identity-shaping fields, excluding secrets and runtime tunables.
 
         Identity-shaping for Postgres: host, port, database, user, role,

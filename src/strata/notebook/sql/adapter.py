@@ -151,7 +151,7 @@ class DriverAdapter(Protocol):
 
     capabilities: AdapterCapabilities
 
-    def canonicalize_connection_id(self, spec: Any) -> str:
+    def canonicalize_connection_id(self, spec: Any, *, read_only: bool = True) -> str:
         """Return a stable hash of the connection's identity-shaping config.
 
         Includes everything that changes object visibility (host, port,
@@ -165,6 +165,15 @@ class DriverAdapter(Protocol):
         principal. Two connections that differ in identity-shaping
         config produce different ``connection_id`` so cache entries
         can't bleed between them.
+
+        ``read_only`` lets adapters that route reads vs writes through
+        different principals (Snowflake's ``write_role``, BigQuery's
+        ``write_credentials_path``) include only the fields that
+        actually shape *this* cell's identity. Without the param, a
+        change to the write principal would invalidate read-cell
+        caches even though read execution never touches it.
+        Defaults to ``True`` because read cells are more common; the
+        cell executor passes ``False`` for ``# @sql write=true``.
         """
         ...
 

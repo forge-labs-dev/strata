@@ -138,10 +138,15 @@ def test_connection_id_falls_back_to_path_when_principal_unreadable(tmp_path):
     assert a.canonicalize_connection_id(base) != a.canonicalize_connection_id(other)
 
 
-def test_connection_id_includes_write_credentials(tmp_path):
-    """write_credentials_path is a per-cell escape hatch for
-    write cells; switching it changes which principal write cells
-    run as. Identity tracks it."""
+def test_connection_id_write_credentials_only_in_write_identity(tmp_path):
+    """``write_credentials_path`` joins identity only when
+    ``read_only=False``.
+
+    Read cells never apply write_credentials_path at open time, so
+    changing it must not churn read-cell caches. Write cells *do*
+    use those credentials, so the cache identity for write cells
+    must distinguish them from the read-side principal.
+    """
     sa_ro = tmp_path / "ro.json"
     sa_rw = tmp_path / "rw.json"
     sa_ro.write_text(json.dumps({"client_email": "reader@x.iam"}))
@@ -155,7 +160,36 @@ def test_connection_id_includes_write_credentials(tmp_path):
         credentials_path=str(sa_ro),
     )
     with_write = base.model_copy(update={"write_credentials_path": str(sa_rw)})
-    assert a.canonicalize_connection_id(base) != a.canonicalize_connection_id(with_write)
+
+    # Read identity: ignores write_credentials_path, so swapping it
+    # leaves the read connection_id unchanged.
+    assert a.canonicalize_connection_id(base, read_only=True) == a.canonicalize_connection_id(
+        with_write, read_only=True
+    )
+
+    # Write identity: write_credentials_path joins, so swapping
+    # invalidates write-cell caches.
+    assert a.canonicalize_connection_id(base, read_only=False) != a.canonicalize_connection_id(
+        with_write, read_only=False
+    )
+
+
+def test_connection_id_ambient_adc_sentinel_when_no_credentials():
+    """When no credentials are configured for the active side,
+    identity carries an ``ambient_adc`` sentinel. Without it, two
+    laptops running gcloud auth as different humans would alias
+    onto the same connection_id and poison each other's cache."""
+    a = BigQueryAdapter()
+    spec = ConnectionSpec(name="x", driver="bigquery", project_id="acme")
+
+    cid_ambient = a.canonicalize_connection_id(spec, read_only=True)
+
+    # Same project, but with explicit credentials → must differ
+    # from the ambient case.
+    with_creds = spec.model_copy(update={"credentials_path": "/tmp/missing.json"})
+    cid_explicit = a.canonicalize_connection_id(with_creds, read_only=True)
+
+    assert cid_ambient != cid_explicit
 
 
 # --- open() credentials selection ------------------------------------------

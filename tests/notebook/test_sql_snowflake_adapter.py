@@ -586,10 +586,15 @@ def test_open_falls_back_to_role_when_write_role_unset():
     assert [sql for sql, _ in cur.executions] == ['USE ROLE "ANALYTICS_GENERAL"']
 
 
-def test_connection_id_includes_write_role():
-    """Two connections that differ only in write_role should
-    produce different ids — without this, switching to a more
-    privileged write role wouldn't invalidate cache entries."""
+def test_connection_id_write_role_only_in_write_identity():
+    """``write_role`` joins identity only when ``read_only=False``.
+
+    Read cells never apply write_role at open time, so changing
+    it must not churn read-cell caches. Write cells *do* apply
+    write_role, so the cache identity for write cells must
+    distinguish a more-privileged write role from a less-
+    privileged one.
+    """
     a = SnowflakeAdapter()
     base = ConnectionSpec(
         name="x",
@@ -598,4 +603,14 @@ def test_connection_id_includes_write_role():
         role="RO",
     )
     with_write = base.model_copy(update={"write_role": "RW"})
-    assert a.canonicalize_connection_id(base) != a.canonicalize_connection_id(with_write)
+
+    # Read identity: ignores write_role, so swapping it leaves
+    # the read connection_id unchanged.
+    assert a.canonicalize_connection_id(base, read_only=True) == a.canonicalize_connection_id(
+        with_write, read_only=True
+    )
+
+    # Write identity: write_role joins, so swapping invalidates.
+    assert a.canonicalize_connection_id(base, read_only=False) != a.canonicalize_connection_id(
+        with_write, read_only=False
+    )
