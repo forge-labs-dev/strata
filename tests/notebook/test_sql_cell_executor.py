@@ -961,3 +961,111 @@ def test_resolve_runtime_spec_leaves_absolute_credentials_paths_alone(tmp_path):
     )
     resolved = _resolve_runtime_spec(spec, tmp_path / "subdir")
     assert getattr(resolved, "credentials_path") == abs_path
+
+
+# --- DuckDB end-to-end ----------------------------------------------------
+
+duckdb_lib = pytest.importorskip("duckdb")
+
+
+def _seed_duckdb(path: Path) -> None:
+    """Create a DuckDB file the cells can query.
+
+    Mirrors ``_seed_sqlite`` shape (``events`` with id/name/value/timestamp).
+    Using the native duckdb package directly — no harness, no notebook
+    yet — keeps this fixture independent of the rest of the SQL pipeline.
+    """
+    conn = duckdb_lib.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE events (id INTEGER PRIMARY KEY, name VARCHAR, value INTEGER)")
+        conn.execute(
+            "INSERT INTO events VALUES (1, 'alpha', 10), (2, 'beta', 20), (3, 'gamma', 30)"
+        )
+    finally:
+        conn.close()
+
+
+def _build_notebook_with_duckdb_cell(
+    tmp_path: Path,
+    *,
+    db_path: Path,
+    cell_id: str = "c1",
+    cell_source: str,
+) -> Path:
+    """Materialize a notebook with a single DuckDB-bound SQL cell."""
+    from strata.notebook.writer import add_cell_to_notebook, create_notebook, write_cell
+
+    nb_dir = create_notebook(tmp_path, "duckdb_e2e")
+    add_cell_to_notebook(nb_dir, cell_id, language="sql")
+    write_cell(nb_dir, cell_id, cell_source)
+
+    toml_path = nb_dir / "notebook.toml"
+    text = toml_path.read_text()
+    text += f'\n[connections.db]\ndriver = "duckdb"\npath = "{db_path}"\n'
+    toml_path.write_text(text)
+    return nb_dir
+
+
+@pytest.mark.asyncio
+async def test_duckdb_cell_executes_and_returns_arrow_table(tmp_path):
+    """End-to-end: open notebook → execute SQL cell against DuckDB →
+    verify the artifact carries the rows. Exercises canonicalize →
+    open(read_only=True) → query → store-as-Arrow on a real DuckDB
+    file."""
+    db_path = tmp_path / "events.duckdb"
+    _seed_duckdb(db_path)
+    nb_dir = _build_notebook_with_duckdb_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db\n"
+            "# @cache forever\n"
+            "SELECT id, name, value FROM events ORDER BY id\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"], result.get("error")
+    assert result["cache_hit"] is False
+    assert result["execution_method"] == "sql"
+
+    table = _load_artifact_as_arrow(session, result["artifact_uri"])
+    assert table.num_rows == 3
+    assert set(table.schema.names) == {"id", "name", "value"}
+    assert {r["name"] for r in table.to_pylist()} == {"alpha", "beta", "gamma"}
+
+
+@pytest.mark.asyncio
+async def test_duckdb_cell_read_only_blocks_writes(tmp_path):
+    """A SQL cell that tries to INSERT against a DuckDB connection
+    must fail and leave the DB untouched. The adapter opens the
+    file with ``read_only=True``, so the engine refuses the write
+    before it touches storage — no SQL-text keyword filtering
+    needed."""
+    db_path = tmp_path / "events.duckdb"
+    _seed_duckdb(db_path)
+    nb_dir = _build_notebook_with_duckdb_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db\n# @cache forever\nINSERT INTO events VALUES (99, 'hack', 1)\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"] is False
+    assert result["error"]
+
+    # Underlying DB row count is unchanged.
+    conn = duckdb_lib.connect(str(db_path), read_only=True)
+    try:
+        (count,) = conn.execute("SELECT count(*) FROM events").fetchone()
+        assert count == 3
+    finally:
+        conn.close()
