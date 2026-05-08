@@ -33,6 +33,11 @@ interface DraftConnection {
   database: string
   schema: string
   writeRole: string
+  // BigQuery
+  projectId: string
+  datasetId: string
+  credentialsPath: string
+  writeCredentialsPath: string
   // Round-trip for fields the form doesn't editorialize. Two slots:
   //  - extras: top-level keys outside the known set (``options``,
   //    plus driver-specific extras a future driver may add).
@@ -59,12 +64,17 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   'database',
   'schema',
   'write_role',
+  'project_id',
+  'dataset_id',
+  'credentials_path',
+  'write_credentials_path',
 ])
 
 const DRIVER_OPTIONS = [
   { value: 'sqlite', label: 'SQLite' },
   { value: 'postgresql', label: 'PostgreSQL' },
   { value: 'snowflake', label: 'Snowflake' },
+  { value: 'bigquery', label: 'BigQuery' },
 ] as const
 
 const KNOWN_DRIVERS = new Set(DRIVER_OPTIONS.map((o) => o.value))
@@ -101,6 +111,14 @@ function toDraft(spec?: ConnectionSpec): DraftConnection {
     database: typeof specAny.database === 'string' ? (specAny.database as string) : '',
     schema: typeof specAny.schema === 'string' ? (specAny.schema as string) : '',
     writeRole: typeof specAny.write_role === 'string' ? (specAny.write_role as string) : '',
+    projectId: typeof specAny.project_id === 'string' ? (specAny.project_id as string) : '',
+    datasetId: typeof specAny.dataset_id === 'string' ? (specAny.dataset_id as string) : '',
+    credentialsPath:
+      typeof specAny.credentials_path === 'string' ? (specAny.credentials_path as string) : '',
+    writeCredentialsPath:
+      typeof specAny.write_credentials_path === 'string'
+        ? (specAny.write_credentials_path as string)
+        : '',
     extras,
     extraAuth,
   }
@@ -159,6 +177,10 @@ function validate(): boolean {
       if (!d.uri.trim() && !d.account.trim()) {
         errors[d._key] = 'Snowflake needs either an account identifier or a full URI'
       }
+    } else if (d.driver === 'bigquery') {
+      if (!d.projectId.trim()) {
+        errors[d._key] = 'BigQuery needs a project ID'
+      }
     }
   }
   validationErrors.value = errors
@@ -195,6 +217,15 @@ function toSpec(d: DraftConnection): ConnectionSpec {
     else delete spec.role
     if (d.searchPath.trim()) spec.search_path = d.searchPath.trim()
     else delete spec.search_path
+  } else if (d.driver === 'bigquery') {
+    if (d.projectId.trim()) spec.project_id = d.projectId.trim()
+    else delete spec.project_id
+    if (d.datasetId.trim()) spec.dataset_id = d.datasetId.trim()
+    else delete spec.dataset_id
+    if (d.credentialsPath.trim()) spec.credentials_path = d.credentialsPath.trim()
+    else delete spec.credentials_path
+    if (d.writeCredentialsPath.trim()) spec.write_credentials_path = d.writeCredentialsPath.trim()
+    else delete spec.write_credentials_path
   } else if (d.driver === 'snowflake') {
     if (d.uri.trim()) spec.uri = d.uri.trim()
     else delete spec.uri
@@ -488,6 +519,52 @@ function preservedExtraSummary(d: DraftConnection): string {
               :disabled="readOnly"
             />
           </label>
+        </template>
+        <template v-else-if="conn.driver === 'bigquery'">
+          <div class="conn-field-row">
+            <label class="conn-field">
+              <span class="field-label">Project ID</span>
+              <input
+                v-model="conn.projectId"
+                type="text"
+                placeholder="acme-prod"
+                :disabled="readOnly"
+              />
+            </label>
+            <label class="conn-field">
+              <span class="field-label">Dataset (default)</span>
+              <input
+                v-model="conn.datasetId"
+                type="text"
+                placeholder="events"
+                :disabled="readOnly"
+              />
+            </label>
+          </div>
+          <label class="conn-field">
+            <span class="field-label">Service account JSON path (read cells)</span>
+            <input
+              v-model="conn.credentialsPath"
+              type="text"
+              placeholder="/secrets/bq-reader.json"
+              :disabled="readOnly"
+            />
+          </label>
+          <label class="conn-field">
+            <span class="field-label">Write credentials path (write cells, optional)</span>
+            <input
+              v-model="conn.writeCredentialsPath"
+              type="text"
+              placeholder="/secrets/bq-writer.json"
+              :disabled="readOnly"
+            />
+          </label>
+          <p class="conn-secret-hint">
+            BigQuery read-only enforcement is credential-based: the service account's IAM grants
+            decide what's allowed. Use a SA with
+            <code>roles/bigquery.dataViewer</code> for read cells; pair with a write SA carrying
+            <code>roles/bigquery.dataEditor</code> for <code># @sql write=true</code>.
+          </p>
         </template>
         <template v-else-if="isUnknownDriver(conn.driver)">
           <!-- Unknown driver: surface the common URI + path slots

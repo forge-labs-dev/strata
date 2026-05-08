@@ -79,6 +79,9 @@ sql-sqlite = [
 sql-snowflake = [
     "adbc-driver-snowflake>=1.0.0",
 ]
+sql-bigquery = [
+    "adbc-driver-bigquery>=1.0.0",
+]
 
 [dependency-groups]
 dev = [

@@ -351,7 +351,7 @@ Notes:
 - **Driver-specific extras** (e.g. `options.search_path`, `options.warehouse` for Snowflake, future driver-specific keys) round-trip through the editor unchanged. The form editorializes the keys it knows; everything else is preserved.
 - **Auth values use `${VAR}` indirection.** Literal credentials get blanked when `notebook.toml` is saved, so committing the file never leaks secrets. The form shows a warning border on a literal value so you know to switch it to a variable reference.
 - **Relative `path` values are notebook-local.** `path = "analytics.db"` resolves against the notebook directory at execution time. The on-disk value stays relative so a notebook moves cleanly between machines.
-- **Currently shipped drivers**: SQLite, PostgreSQL, and Snowflake. All ADBC-backed (`adbc-driver-sqlite`, `adbc-driver-postgresql`, `adbc-driver-snowflake`). Snowflake's read-only enforcement is role-based — configure `role` with SELECT-only grants for read cells, and optionally a separate `write_role` with DML grants for `# @sql write=true` cells. Without `write_role`, write cells inherit the same role as read cells (Snowflake has no session-level read-only flag like Postgres's `SET default_transaction_read_only = on`).
+- **Currently shipped drivers**: SQLite, PostgreSQL, Snowflake, and BigQuery. All ADBC-backed (`adbc-driver-sqlite`, `adbc-driver-postgresql`, `adbc-driver-snowflake`, `adbc-driver-bigquery`). For Snowflake, read-only enforcement is role-based — configure `role` with SELECT-only grants for read cells, optionally pair with `write_role` for `# @sql write=true`. For BigQuery the same shape applies via service-account credentials: `credentials_path` for read cells (a SA with `roles/bigquery.dataViewer`), optionally `write_credentials_path` for write cells (a SA with `roles/bigquery.dataEditor`). Both clouds lack a session-level read-only flag like Postgres's `SET default_transaction_read_only = on`.
 
 ### Schema discovery
 
@@ -410,6 +410,7 @@ SELECT * FROM dim_country
 | PostgreSQL   | `pg_stat_user_tables` + `pg_class.relfilenode`     | per-table        | Up to ~500 ms stats-collector lag.           |
 | SQLite       | `PRAGMA data_version` + `PRAGMA schema_version`    | **DB-wide**      | DML cross-process needs the probe connection open across the write — `data_version` resets on a fresh connection. DDL (schema change) invalidates cleanly. |
 | Snowflake    | `INFORMATION_SCHEMA.TABLES.LAST_ALTERED`           | per-table        | Per-database scoping (one query per touched database). Bills cloud-services credits but each query is small. `LAST_ALTERED` updates even on 0-row DML — safe direction (over-invalidates, never under). |
+| BigQuery     | `__TABLES__.last_modified_time`                    | per-table        | Per-dataset scoping. `__TABLES__` is the legacy-but-stable view; `INFORMATION_SCHEMA.TABLES` doesn't expose `last_modified_time`. **Streaming-buffer caveat**: tables receiving streaming inserts have `last_modified_time` lag by minutes-to-90-min until the buffer flushes — pin `# @cache session` on those queries. Permissions: `bigquery.tables.get`. |
 
 The schema fingerprint catches metadata-only changes (`ADD COLUMN`, type changes, nullability flips) that the freshness token would miss.
 

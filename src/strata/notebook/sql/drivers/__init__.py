@@ -21,7 +21,7 @@ import importlib
 
 # Built-in driver module names. Add an entry only after the
 # corresponding module exists and exposes ``register()``.
-_BUILTIN_DRIVERS: tuple[str, ...] = ("postgresql", "sqlite", "snowflake")
+_BUILTIN_DRIVERS: tuple[str, ...] = ("postgresql", "sqlite", "snowflake", "bigquery")
 
 
 def register_default_adapters() -> None:
