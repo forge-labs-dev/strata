@@ -234,6 +234,113 @@ WebSocket as `cell_iteration_progress` messages.
 
 ---
 
+## SQL Cell Annotations
+
+A cell with `language = "sql"` runs a query through a declared connection.
+See [SQL Cells](cells.md#sql-cells) for the full feature walkthrough; this
+section is the per-annotation reference.
+
+### `@sql`
+
+Marks the cell as SQL and binds it to a named connection.
+
+```sql
+# @sql connection=warehouse
+SELECT * FROM orders WHERE amount > :min_amount
+```
+
+Key/value parameters:
+
+- `connection=<name>` — required. Must reference an entry under
+  `[connections.<name>]` in `notebook.toml`. Manage these via the
+  **Connections panel** in the sidebar; you don't need to edit the file
+  directly.
+- `write=true` — opt the cell into writable execution. Without this flag,
+  the connection is opened in enforced read-only mode (SQLite `mode=ro` +
+  `PRAGMA query_only=ON`; PostgreSQL `SET default_transaction_read_only =
+  on`) and any DDL/DML errors before mutating the database. With it, the
+  cell can run setup scripts (`CREATE TABLE`, `INSERT`, `DROP`). The flag
+  is per-cell — read cells using the same connection stay read-only.
+
+```sql
+# @sql connection=warehouse write=true
+DROP TABLE IF EXISTS events;
+CREATE TABLE events (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
+INSERT INTO events VALUES (1, 'alpha'), (2, 'beta');
+```
+
+Write cells split the body into individual statements via sqlglot, run each
+in sequence, and emit a per-statement status table (`stmt`, `kind`,
+`rows_affected`). Default cache policy for write cells is `session`;
+`fingerprint` and `snapshot` error early because probe-based invalidation
+has no anchor when the cell mutates state.
+
+### `@cache`
+
+Override the default `fingerprint` cache policy on a SQL cell.
+
+| Policy            | Behavior                                                     |
+| ----------------- | ------------------------------------------------------------ |
+| `fingerprint`     | Default. Probe-derived freshness token + schema fingerprint folded into the hash. |
+| `forever`         | Static salt; never invalidates from DB-side state.           |
+| `session`         | Session-unique salt; invalidates across sessions.            |
+| `ttl=<seconds>`   | `floor(now / ttl)` bucketed time-based salt.                 |
+| `snapshot`        | Probe MUST return a durable snapshot ID. Errors at execute time when the driver can't (SQLite/Postgres can't; Iceberg-via-engine can). |
+
+```sql
+# @sql connection=warehouse
+# @cache forever
+SELECT * FROM dim_country
+```
+
+`# @cache snapshot` requires `AdapterCapabilities.supports_snapshot = True`
+on the driver; otherwise the resolver fails fast before any connection is
+opened. Per-driver freshness probe details are in
+[SQL Cells](cells.md#per-driver-freshness).
+
+### `@name`
+
+For SQL cells, `@name` sets the output variable name (default `result`),
+the same way it does for prompt cells.
+
+```sql
+# @sql connection=warehouse
+# @name top_customers
+SELECT customer, SUM(amount) AS total
+FROM orders GROUP BY customer ORDER BY total DESC LIMIT 5
+```
+
+A downstream Python cell can then reference `top_customers` directly as a
+pandas DataFrame.
+
+---
+
+## Cross-Cell Ordering
+
+### `@after`
+
+Add an ordering-only DAG edge from another cell to this one. Useful when the
+dependency is on a side effect — e.g. a SQL `seed` cell creates the database
+state that subsequent SQL cells query — and no Python variable flows
+between them.
+
+```sql
+# @sql connection=warehouse
+# @after seed
+SELECT category, COUNT(*) FROM products GROUP BY category
+```
+
+Multiple `@after` lines stack; each cell ID adds one edge. Whitespace-
+separated IDs on a single line work too: `# @after seed migrate`. Self-
+references and unknown cell IDs are silently dropped at the DAG layer
+(annotation_validation surfaces them as a diagnostic for the user).
+
+The edge participates in upstream/downstream wiring and the topological
+order, but contributes no variable to `consumed_variables` — so it
+doesn't affect per-variable provenance hashes.
+
+---
+
 ## Precedence Rules
 
 When the same setting is configured at multiple levels, the most specific wins:
@@ -244,6 +351,8 @@ When the same setting is configured at multiple levels, the most specific wins:
 | **Timeout** | `# @timeout N` | `cell.timeout` field | 30 seconds |
 | **Env vars** | `# @env K=V` | `cell.env` overrides | `notebook.env` defaults |
 | **Mounts** | `# @mount ...` | `cell.mounts` overrides | `notebook.mounts` defaults |
+| **SQL connection** | `# @sql connection=X` | — | none — required for SQL cells |
+| **Cache policy** | `# @cache <policy>` | — | `fingerprint` (read), `session` (write) |
 
 Annotations always take priority. This lets you override per-cell behavior without editing `notebook.toml`.
 

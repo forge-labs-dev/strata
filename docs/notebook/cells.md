@@ -1,14 +1,15 @@
 # Cell Types
 
-Strata Notebook has three cell kinds:
+Strata Notebook has four cell kinds:
 
-| Kind       | What it runs                              | Created by                                                        |
-| ---------- | ----------------------------------------- | ----------------------------------------------------------------- |
-| **Python** | Python source in the notebook's venv      | The default — any new cell                                        |
-| **Prompt** | A text template sent to an LLM            | The "Add Prompt Cell" button in the UI                            |
-| **Loop**   | A Python cell executed N times in a row   | Add a Python cell, then put a `# @loop` annotation at the top     |
+| Kind       | What it runs                              | Created by                                                          |
+| ---------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| **Python** | Python source in the notebook's venv      | The default — pick **Python** from the **+ Add cell** menu          |
+| **Prompt** | A text template sent to an LLM            | Pick **Prompt** from the **+ Add cell** menu                        |
+| **SQL**    | A query against a connected database      | Pick **SQL** from the **+ Add cell** menu                           |
+| **Loop**   | A Python cell executed N times in a row   | Add a Python cell, then put a `# @loop` annotation at the top       |
 
-All three participate in the DAG, cache by provenance hash, and can be routed to remote workers. Pick the kind that matches the shape of the computation — this page walks through each.
+All four participate in the DAG, cache by provenance hash, and can be routed to remote workers. Pick the kind that matches the shape of the computation — this page walks through each.
 
 See [Concepts](concepts.md) for the execution model; see [Cell Annotations](annotations.md) for the full per-annotation reference.
 
@@ -312,6 +313,183 @@ See [LLM Integration](llm.md) for provider configuration and the conversational 
 
 ---
 
+## SQL Cells
+
+A SQL cell sends a query to a connected database via ADBC and stores the result as an Arrow Table artifact. Like Python and prompt cells, SQL cells participate in the DAG, cache by provenance hash, and surface their output to downstream cells.
+
+```sql
+# @sql connection=warehouse
+SELECT customer, SUM(amount) AS total
+FROM orders
+WHERE amount > :min_amount
+GROUP BY customer
+ORDER BY total DESC
+```
+
+The cell above pulls `min_amount` from an upstream Python cell, sends a parameterized query through the `warehouse` connection, and stores the resulting rows as an Arrow Table that any downstream cell can consume as a pandas DataFrame.
+
+### Connections
+
+A SQL cell references a **named connection**. Connections live in `notebook.toml` under `[connections.<name>]`, but you don't need to edit the file by hand — open the **Connections panel** in the right sidebar, click `+ Add connection`, fill in the form. The driver dropdown picks the per-driver field layout (path for SQLite; URI + auth + role + search_path for PostgreSQL).
+
+```toml
+[connections.warehouse]
+driver = "sqlite"
+path = "analytics.db"
+
+[connections.prod]
+driver = "postgresql"
+uri = "postgresql://localhost:5432/prod"
+
+[connections.prod.auth]
+user = "${PGUSER}"
+password = "${PGPASS}"
+```
+
+Notes:
+
+- **Driver-specific extras** (e.g. `options.search_path`, `options.warehouse` for Snowflake, future driver-specific keys) round-trip through the editor unchanged. The form editorializes the keys it knows; everything else is preserved.
+- **Auth values use `${VAR}` indirection.** Literal credentials get blanked when `notebook.toml` is saved, so committing the file never leaks secrets. The form shows a warning border on a literal value so you know to switch it to a variable reference.
+- **Relative `path` values are notebook-local.** `path = "analytics.db"` resolves against the notebook directory at execution time. The on-disk value stays relative so a notebook moves cleanly between machines.
+- **Currently shipped drivers**: SQLite and PostgreSQL. Both ADBC-backed (`adbc-driver-sqlite`, `adbc-driver-postgresql`).
+
+### Schema discovery
+
+The **Schema panel** in the sidebar shows the tables and columns of every declared connection. Click a connection to lazy-load its schema; click a table to expand its columns. The `↻` button re-fetches when the underlying database has changed externally. No SQL cell needs to be written to drive the discovery — the panel uses each driver's catalog query directly (`sqlite_master` for SQLite, `information_schema.tables JOIN columns` for PostgreSQL).
+
+### Bind parameters
+
+`:name` placeholders resolve against upstream cell variables. Strata coerces a strict allowlist of Python types (`int`, `float`, `str`, `bytes`, `bool`, `None`, `Decimal`, `UUID`, `datetime`/`date`/`time`) into ADBC bind values; anything else (a list, a numpy scalar, a custom object) is rejected with a clear error. **No string substitution ever** — values flow through ADBC's prepared-statement layer, so adversarial strings (`'; DROP TABLE …`) round-trip as data, not SQL.
+
+```python
+# upstream Python cell
+min_amount = 100
+```
+
+```sql
+# @sql connection=warehouse
+SELECT * FROM orders WHERE amount > :min_amount
+```
+
+The DAG links the SQL cell to the Python cell automatically — same edge logic Strata uses for Python free variables.
+
+### Cache policies
+
+A SQL cell's **provenance hash** folds together:
+
+- The query text (sqlglot-normalized so whitespace and comment edits don't churn the cache).
+- The bind parameters (type-tagged: `True` ≠ `1`).
+- The connection's identity (host / DB / user / role / search_path — never the password).
+- The hashes of every upstream artifact referenced via `:name`.
+- The driver's **freshness probe** result for the touched tables.
+- The driver's **schema fingerprint** for the touched tables.
+- A salt derived from the `# @cache` policy below.
+
+`# @cache` controls how DB-side state factors in. Default is `fingerprint`.
+
+| Policy            | Behavior                                                            | When to use                              |
+| ----------------- | ------------------------------------------------------------------- | ---------------------------------------- |
+| `fingerprint`     | Default. Probe-derived freshness token + schema fingerprint folded in. | Most queries.                            |
+| `forever`         | Static salt; never invalidates from DB-side state.                  | True reference data. User asserts.       |
+| `session`         | Session-unique salt; invalidates across sessions.                   | Always-fresh queries / dashboards.       |
+| `ttl=<seconds>`   | `floor(now / ttl)` in the salt; bucketed time-based invalidation.    | Stale-tolerant aggregations.             |
+| `snapshot`        | Probe MUST return a durable snapshot ID. Errors at execute time if the driver can't (SQLite/Postgres can't; Iceberg can). | Reproducibility-critical reads.          |
+
+```sql
+# @sql connection=warehouse
+# @cache forever
+SELECT * FROM dim_country
+```
+
+### Per-driver freshness
+
+`fingerprint` correctness depends on what the driver can probe.
+
+| Driver       | Probe                                              | Granularity      | Notes                                        |
+| ------------ | -------------------------------------------------- | ---------------- | -------------------------------------------- |
+| PostgreSQL   | `pg_stat_user_tables` + `pg_class.relfilenode`     | per-table        | Up to ~500 ms stats-collector lag.           |
+| SQLite       | `PRAGMA data_version` + `PRAGMA schema_version`    | **DB-wide**      | DML cross-process needs the probe connection open across the write — `data_version` resets on a fresh connection. DDL (schema change) invalidates cleanly. |
+
+The schema fingerprint catches metadata-only changes (`ADD COLUMN`, type changes, nullability flips) that the freshness token would miss.
+
+### Read-only by default
+
+A SQL cell opens its connection in **enforced read-only mode** — SQLite gets `mode=ro` plus `PRAGMA query_only=ON`; PostgreSQL gets `SET default_transaction_read_only = on`. Any `INSERT`/`UPDATE`/`DELETE`/`CREATE`/`DROP` errors before mutating the database. This is the security boundary, not text-level keyword filtering.
+
+### Write cells
+
+Setup, seeding, and migration scripts opt into writable execution per cell:
+
+```sql
+# @sql connection=warehouse write=true
+DROP TABLE IF EXISTS orders;
+CREATE TABLE orders (
+    id INTEGER PRIMARY KEY,
+    customer TEXT NOT NULL,
+    amount REAL
+);
+INSERT INTO orders VALUES (1, 'alice', 25.50), (2, 'bob', 199.99);
+```
+
+- The body is split into individual statements via sqlglot (ADBC's cursor runs only the first statement otherwise).
+- `:name` bind placeholders work the same as in read cells.
+- The default cache policy is `session` (one execution per session; same body in the same session is a cache hit).
+- `# @cache fingerprint` and `# @cache snapshot` error early on write cells — probe-based invalidation has no anchor when the cell mutates state.
+- The cell still produces an Arrow artifact: a per-statement status table with `stmt`, `kind` (`CREATE TABLE`, `INSERT`, …), and `rows_affected` (nullable; `null` for DDL).
+- Read cells using the same connection stay read-only — the override is per-cell.
+
+### `# @name` and downstream consumption
+
+A SQL cell's output variable name defaults to `result`; override with `# @name <identifier>`. Downstream cells access the result as a pandas DataFrame (Arrow IPC artifacts deserialize through the standard notebook serializer):
+
+```sql
+# @sql connection=warehouse
+# @name top_customers
+SELECT customer, SUM(amount) AS total
+FROM orders GROUP BY customer ORDER BY total DESC LIMIT 5
+```
+
+```python
+# downstream Python cell
+print(top_customers.shape)            # (5, 2)
+print(top_customers["total"].sum())   # ndarray sum, etc
+```
+
+### `# @after` for setup-then-query pipelines
+
+A read SQL cell that depends on a write SQL cell's side effects (the underlying database state) can declare an explicit ordering edge:
+
+```sql
+# @sql connection=warehouse write=true
+CREATE TABLE products (sku TEXT PRIMARY KEY, category TEXT);
+INSERT INTO products VALUES ('A', 'widgets'), ('B', 'gadgets');
+```
+
+```sql
+# @sql connection=warehouse
+# @after seed
+SELECT category, COUNT(*) FROM products GROUP BY category
+```
+
+`# @after seed` adds a DAG edge from the `seed` cell to this one even though no Python variable flows between them — the dependency is on a side effect (the SQLite file). This is what cascade execution and staleness recompute use to ensure the right ordering.
+
+### Worked example
+
+The [`sql_orders_report`](../../examples/sql_orders_report) example notebook walks through all of this end-to-end: a SQL `seed` cell, a Python `threshold` cell, two parameterized SQL queries, and a Python report cell — five cells, two languages, with both `fingerprint` and `forever` cache policies side by side.
+
+### SQL-cell annotations
+
+| Annotation                                | What it does                                             |
+| ----------------------------------------- | -------------------------------------------------------- |
+| `# @sql connection=<name> [write=true]`   | Mark the cell as SQL; reference a declared connection    |
+| `# @cache <policy>`                       | Override the default `fingerprint` cache policy          |
+| `# @name <identifier>`                    | Name the output variable (default: `result`)             |
+| `# @after <cell-id>`                      | Add an ordering-only DAG edge to an upstream cell        |
+
+See [Cell Annotations][a] for the full reference.
+
+---
+
 ## Loop Cells
 
 A loop cell is a regular Python cell with a `# @loop` annotation. The body runs N times, with a **carry variable** threaded between iterations. Each iteration's state is stored as its own artifact, so you can inspect any intermediate step.
@@ -418,10 +596,11 @@ Reach for loop cells when **being able to inspect or fork from iteration k matte
 
 ## Choosing between kinds
 
-| Reach for a…  | When you want…                                                                     |
-| ------------- | ---------------------------------------------------------------------------------- |
-| Python cell   | Ordinary computation. Default.                                                     |
-| Prompt cell   | An LLM response as a first-class, cached, DAG-participating artifact.              |
-| Loop cell     | Iterative refinement where pausing or forking from an intermediate state matters.  |
+| Reach for a…  | When you want…                                                                                           |
+| ------------- | -------------------------------------------------------------------------------------------------------- |
+| Python cell   | Ordinary computation. Default.                                                                           |
+| Prompt cell   | An LLM response as a first-class, cached, DAG-participating artifact.                                    |
+| SQL cell      | A query against a connected database, with bind parameters, schema discovery, and probe-based caching.   |
+| Loop cell     | Iterative refinement where pausing or forking from an intermediate state matters.                        |
 
-Mixing is encouraged — a typical LLM-assisted pipeline is Python cells for data prep → prompt cell for extraction → Python cells for aggregation.
+Mixing is encouraged — a typical pipeline might be a SQL cell for extraction → Python cells for transformation → a prompt cell for narrative summarization.
