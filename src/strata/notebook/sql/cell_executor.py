@@ -220,6 +220,8 @@ async def execute_sql_cell(
         cell_state.artifact_uri = uri
 
     duration_ms = (time.time() - start_time) * 1000
+    # Read path: query results can be huge, keep the default cap.
+    # Write-path display passes its own larger cap below.
     display_output = _table_display(table)
     return {
         "success": True,
@@ -378,6 +380,11 @@ async def _execute_write_cell(
 
     table = _synthesize_write_result_table(stats)
     blob = _serialize_arrow_ipc(table)
+    # Use a higher row cap for write-cell status tables — the rows
+    # are status entries (one per statement), not query results, so
+    # truncating "5 of 6 statements" is unhelpful. Read cells keep
+    # the default cap of 5.
+    write_display_cap = max(20, table.num_rows)
     artifact = artifact_mgr.store_cell_output(
         cell_id=cell_id,
         variable_name=output_name,
@@ -492,12 +499,26 @@ def _execute_write_statements(
                     cursor.execute(stmt_to_execute, parameters=stmt_params)
                 else:
                     cursor.execute(stmt_to_execute)
-                rc = getattr(cursor, "rowcount", -1)
                 # PEP 249 sentinel: -1 means "not available"; preserve
-                # 0 as a real count (UPDATE matched zero rows).
+                # 0 as a real count (UPDATE matched zero rows). Only
+                # ask for a count on DML — for DDL the concept doesn't
+                # apply, and SQLite's ``changes()`` would inherit from
+                # the prior DML statement, producing a misleading
+                # number on a CREATE TABLE that happens to follow an
+                # INSERT.
                 rows_affected: int | None
-                if isinstance(rc, int) and rc >= 0:
-                    rows_affected = rc
+                if _is_dml_kind(stmt_kind):
+                    rc = getattr(cursor, "rowcount", -1)
+                    if isinstance(rc, int) and rc >= 0:
+                        rows_affected = rc
+                    elif getattr(adapter, "name", None) == "sqlite":
+                        # ADBC SQLite never populates cursor.rowcount;
+                        # fall back to ``SELECT changes()`` which is
+                        # SQLite's "rows modified by the last DML on
+                        # this connection".
+                        rows_affected = _sqlite_last_changes(conn)
+                    else:
+                        rows_affected = None
                 else:
                     rows_affected = None
             finally:
@@ -515,6 +536,47 @@ def _execute_write_statements(
         _safely_close(conn)
 
     return {"statements": statements}
+
+
+_DML_KINDS = frozenset({"INSERT", "UPDATE", "DELETE", "MERGE", "REPLACE"})
+
+
+def _is_dml_kind(kind: str) -> bool:
+    """``rows_affected`` only applies to DML; DDL is null on display."""
+    if not kind:
+        return False
+    head = kind.split()[0].upper()
+    return head in _DML_KINDS
+
+
+def _sqlite_last_changes(conn: Any) -> int | None:
+    """Run ``SELECT changes()`` to recover the last DML's row count.
+
+    ADBC's SQLite driver doesn't populate ``cursor.rowcount`` (always
+    returns -1). SQLite's own ``changes()`` returns the number of
+    rows modified by the most recent INSERT / UPDATE / DELETE on the
+    connection, which is exactly what we need. Errors surface as
+    None so the display gracefully degrades to "—" instead of
+    crashing the cell.
+    """
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT changes()")
+            tbl = cur.fetch_arrow_table()
+            rows = tbl.to_pylist()
+            if rows:
+                # ADBC returns the column under the literal expression
+                # text "changes()"; iterate values defensively in case
+                # a future ADBC release renames it.
+                for v in rows[0].values():
+                    if isinstance(v, int) and v >= 0:
+                        return v
+        finally:
+            _safely_close(cur)
+    except Exception:  # noqa: BLE001
+        logger.exception("sqlite changes() probe failed")
+    return None
 
 
 def _statement_kind_from_expr(expr: Any) -> str:
@@ -790,11 +852,29 @@ def _serialize_arrow_ipc(table: Any) -> bytes:
     return sink.getvalue()
 
 
-def _table_display(table: Any) -> dict[str, Any]:
-    """Build a small markdown preview for the cell's display panel."""
+_WRITE_STATUS_COLUMNS = ("stmt", "kind", "rows_affected")
+
+
+def _table_display(table: Any, *, max_rows: int = 5) -> dict[str, Any]:
+    """Build a small markdown preview for the cell's display panel.
+
+    ``max_rows`` caps the inline body. Read cells default to 5
+    (query results can be huge, the user can ``LIMIT`` for more).
+    Write-cell status tables pass a higher cap because the rows
+    are status entries, not data — truncating "5 of 6 statements"
+    is more confusing than helpful.
+
+    Status tables are auto-detected by their canonical schema
+    (``stmt, kind, rows_affected``) so a cache-hit display path —
+    which doesn't know whether the cell was a write or read —
+    still avoids truncation when re-rendering a cached write
+    artifact.
+    """
     rows = table.num_rows
     cols = table.num_columns
-    sample = min(rows, 5)
+    if tuple(table.schema.names) == _WRITE_STATUS_COLUMNS:
+        max_rows = max(max_rows, rows)
+    sample = min(rows, max_rows)
     head = table.slice(0, sample).to_pylist() if sample else []
     column_names = list(table.schema.names)
 
@@ -804,7 +884,7 @@ def _table_display(table: Any) -> dict[str, Any]:
         preview_lines.append("| " + " | ".join("---" for _ in column_names) + " |")
         for row in head:
             preview_lines.append(
-                "| " + " | ".join(str(row.get(c, "")) for c in column_names) + " |"
+                "| " + " | ".join(_format_cell(row.get(c)) for c in column_names) + " |"
             )
         if rows > sample:
             preview_lines.append(f"… {rows - sample} more rows")
@@ -814,6 +894,18 @@ def _table_display(table: Any) -> dict[str, Any]:
         "preview": preview,
         "markdown_text": preview,
     }
+
+
+def _format_cell(value: Any) -> str:
+    """Render a row-cell value for the markdown preview.
+
+    ``None`` becomes an em-dash so a status table with nullable
+    ``rows_affected`` reads as "no count reported" instead of the
+    literal Python ``None`` repr.
+    """
+    if value is None:
+        return "—"
+    return str(value)
 
 
 def _cache_hit_result(

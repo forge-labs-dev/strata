@@ -862,14 +862,51 @@ async def test_sql_write_cell_emits_per_statement_status_table(tmp_path):
     assert kinds[0] == "DROP TABLE"
     assert kinds[1] == "CREATE TABLE"
     assert kinds[2] == "INSERT"
-    # DDL gets null rows_affected (driver returns -1; we map to None).
+    # DDL gets null rows_affected — we suppress the count for
+    # DDL even when SQLite's changes() would return a value from
+    # a prior DML.
     assert rows[0]["rows_affected"] is None
     assert rows[1]["rows_affected"] is None
-    # INSERT may or may not return a row count depending on the
-    # driver; assert the value is either a non-negative int or
-    # None — both honest, neither is the legacy -1 sentinel.
-    insert_count = rows[2]["rows_affected"]
-    assert insert_count is None or (isinstance(insert_count, int) and insert_count >= 0)
+    # INSERT: ADBC SQLite leaves cursor.rowcount at -1, but the
+    # SQLite ``SELECT changes()`` fallback recovers the real count.
+    assert rows[2]["rows_affected"] == 3
+
+
+@pytest.mark.asyncio
+async def test_sql_write_cell_recovers_rowcount_from_sqlite_changes(tmp_path):
+    """ADBC SQLite never populates cursor.rowcount (always -1).
+    The cell executor falls back to ``SELECT changes()`` so the
+    user sees the real count for INSERT / UPDATE / DELETE. Pins
+    that behavior across DML operations."""
+    db_path = tmp_path / "rowcount.db"
+    nb_dir = _build_notebook_with_sql_cell(
+        tmp_path,
+        db_path=db_path,
+        cell_source=(
+            "# @sql connection=db write=true\n"
+            "CREATE TABLE t (n INTEGER);\n"
+            "INSERT INTO t VALUES (1), (2), (3), (4), (5);\n"
+            "UPDATE t SET n = n * 10 WHERE n > 2;\n"
+            "DELETE FROM t WHERE n >= 40;\n"
+        ),
+    )
+    session = _make_session(nb_dir)
+    from strata.notebook.sql.cell_executor import execute_sql_cell
+
+    result = await execute_sql_cell(session, "c1", _read_cell(nb_dir, "c1"))
+    assert result["success"], result.get("error")
+
+    table = _load_artifact_as_arrow(session, result["artifact_uri"])
+    rows = table.to_pylist()
+    by_kind = {r["kind"]: r["rows_affected"] for r in rows}
+    # CREATE TABLE → DDL → null
+    assert by_kind["CREATE TABLE"] is None
+    # INSERT VALUES (1)..(5) → 5 rows
+    assert by_kind["INSERT"] == 5
+    # UPDATE matched rows where n > 2 → 3 rows
+    assert by_kind["UPDATE"] == 3
+    # DELETE matched rows where n >= 40 (after UPDATE: 30, 40, 50) → 2 rows
+    assert by_kind["DELETE"] == 2
 
 
 def _load_arrow_from_uri(session: Any, uri: str) -> Any:
