@@ -690,3 +690,78 @@ def test_real_schema_fingerprint_changes_on_add_column(tmp_path):
         probe2.close()
 
     assert before != after
+
+
+# --- list_schema (schema-discovery sidebar) -----------------------------
+
+
+def test_sqlite_list_schema_returns_tables_and_columns(tmp_path):
+    """list_schema enumerates tables + columns from sqlite_master /
+    pragma_table_info. Powers the schema sidebar so users can see
+    what's available before writing SQL."""
+    import sqlite3
+
+    db = tmp_path / "schema.db"
+    with sqlite3.connect(db) as raw:
+        raw.executescript(
+            """
+            CREATE TABLE products (
+                sku TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                price REAL
+            );
+            CREATE TABLE orders (
+                id INTEGER PRIMARY KEY,
+                customer TEXT NOT NULL,
+                amount REAL
+            );
+            CREATE VIEW expensive_orders AS
+                SELECT * FROM orders WHERE amount > 100;
+            """
+        )
+
+    pytest.importorskip("adbc_driver_sqlite")
+
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.drivers.sqlite import SqliteAdapter
+
+    adapter = SqliteAdapter()
+    spec = ConnectionSpec(name="db", driver="sqlite", path=str(db))
+    conn = adapter.open(spec, read_only=True)
+    try:
+        schema = adapter.list_schema(conn)
+    finally:
+        conn.close()
+
+    by_name = {t.name: t for t in schema}
+    assert set(by_name) == {"products", "orders", "expensive_orders"}
+
+    products = by_name["products"]
+    assert [c.name for c in products.columns] == ["sku", "category", "price"]
+    # category is NOT NULL in the schema; price isn't.
+    cat = next(c for c in products.columns if c.name == "category")
+    assert cat.nullable is False
+    price = next(c for c in products.columns if c.name == "price")
+    assert price.nullable is True
+
+    # System tables (sqlite_*) are excluded from the listing.
+    assert not any(t.name.startswith("sqlite_") for t in schema)
+
+
+def test_sqlite_list_schema_empty_database(tmp_path):
+    """A brand-new SQLite file has no tables — list_schema returns []."""
+    pytest.importorskip("adbc_driver_sqlite")
+
+    from strata.notebook.models import ConnectionSpec
+    from strata.notebook.sql.drivers.sqlite import SqliteAdapter
+
+    db = tmp_path / "empty.db"
+    db.touch()
+    adapter = SqliteAdapter()
+    spec = ConnectionSpec(name="db", driver="sqlite", path=str(db))
+    conn = adapter.open(spec, read_only=True)
+    try:
+        schema = adapter.list_schema(conn)
+    finally:
+        conn.close()
+    assert schema == []

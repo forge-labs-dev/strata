@@ -2312,3 +2312,59 @@ def test_update_notebook_connections_keeps_relative_paths_relative():
         with open(notebook_dir / "notebook.toml", "rb") as f:
             data = _tomllib.load(f)
         assert data["connections"]["warehouse"]["path"] == "analytics.db"
+
+
+def test_get_connection_schema_endpoint_lists_tables_and_columns(tmp_path):
+    """Schema endpoint opens the connection read-only, runs the
+    adapter's list_schema, and returns a JSON tree the UI can
+    render. Pins the SQLite happy path end-to-end."""
+    import sqlite3
+
+    pytest.importorskip("adbc_driver_sqlite")
+
+    db_path = tmp_path / "warehouse.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE events (id INTEGER PRIMARY KEY, label TEXT NOT NULL);
+            CREATE TABLE attrs (id INTEGER PRIMARY KEY, value REAL);
+            """
+        )
+
+    client = TestClient(create_test_app())
+    notebook_dir = create_notebook(tmp_path / "nb_dir", "Schema Endpoint")
+    toml = notebook_dir / "notebook.toml"
+    toml.write_text(
+        toml.read_text() + f'\n[connections.warehouse]\ndriver = "sqlite"\npath = "{db_path}"\n'
+    )
+
+    opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+    nb_id = opened.json()["session_id"]
+
+    resp = client.get(f"/v1/notebooks/{nb_id}/connections/warehouse/schema")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["connection"] == "warehouse"
+    assert body["driver"] == "sqlite"
+    table_names = {t["name"] for t in body["tables"]}
+    assert table_names == {"events", "attrs"}
+
+    events = next(t for t in body["tables"] if t["name"] == "events")
+    col_names = [c["name"] for c in events["columns"]]
+    assert col_names == ["id", "label"]
+    label = next(c for c in events["columns"] if c["name"] == "label")
+    assert label["nullable"] is False
+
+
+def test_get_connection_schema_endpoint_unknown_connection_404(tmp_path):
+    """Asking for a connection that isn't declared returns 404
+    with the connection name in the error so the UI can surface
+    a useful message."""
+    client = TestClient(create_test_app())
+    notebook_dir = create_notebook(tmp_path, "Schema 404")
+    opened = client.post("/v1/notebooks/open", json={"path": str(notebook_dir)})
+    nb_id = opened.json()["session_id"]
+
+    resp = client.get(f"/v1/notebooks/{nb_id}/connections/nope/schema")
+    assert resp.status_code == 404
+    assert "nope" in resp.json()["detail"]

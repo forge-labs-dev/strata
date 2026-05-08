@@ -13,6 +13,7 @@ const DagView = defineAsyncComponent(() => import('../components/DagView.vue'))
 const EnvironmentPanel = defineAsyncComponent(() => import('../components/EnvironmentPanel.vue'))
 const MountsPanel = defineAsyncComponent(() => import('../components/MountsPanel.vue'))
 const ConnectionsPanel = defineAsyncComponent(() => import('../components/ConnectionsPanel.vue'))
+const SchemaPanel = defineAsyncComponent(() => import('../components/SchemaPanel.vue'))
 const RuntimePanel = defineAsyncComponent(() => import('../components/RuntimePanel.vue'))
 const WorkersPanel = defineAsyncComponent(() => import('../components/WorkersPanel.vue'))
 const ProfilingPanel = defineAsyncComponent(() => import('../components/ProfilingPanel.vue'))
@@ -593,6 +594,7 @@ function goHome() {
         <aside class="sidebar">
           <MountsPanel />
           <ConnectionsPanel />
+          <SchemaPanel />
           <WorkersPanel />
           <RuntimePanel />
           <EnvironmentPanel />

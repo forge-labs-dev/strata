@@ -23,9 +23,11 @@ from urllib.parse import quote, urlparse, urlunparse
 
 from strata.notebook.sql.adapter import (
     AdapterCapabilities,
+    ColumnInfo,
     FreshnessToken,
     QualifiedTable,
     SchemaFingerprint,
+    TableSchema,
     hash_connection_identity,
 )
 from strata.notebook.sql.registry import register_adapter
@@ -353,6 +355,59 @@ class PostgresAdapter:
                 h.update(b"\x00")
 
         return SchemaFingerprint(value=h.digest())
+
+    def list_schema(self, conn: Any) -> list[TableSchema]:
+        """Enumerate user-visible tables and views via ``information_schema``.
+
+        Filters out system schemas (``pg_catalog``, ``information_schema``)
+        because those clutter the discovery surface and the user's
+        own queries almost never touch them. The query joins
+        ``tables`` to ``columns`` so we make one round-trip
+        regardless of how many tables the connection sees.
+
+        Read-only by construction: the connection arrives in
+        ``READ ONLY`` mode courtesy of ``open(read_only=True)``.
+        """
+        query = (
+            "SELECT t.table_catalog, t.table_schema, t.table_name, "
+            "       c.column_name, c.data_type, c.is_nullable "
+            "  FROM information_schema.tables t "
+            "  JOIN information_schema.columns c "
+            "       ON c.table_catalog = t.table_catalog "
+            "      AND c.table_schema  = t.table_schema "
+            "      AND c.table_name    = t.table_name "
+            " WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema') "
+            "   AND t.table_type IN ('BASE TABLE', 'VIEW') "
+            " ORDER BY t.table_schema, t.table_name, c.ordinal_position"
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(query)
+            rows = cursor.fetchall() or []
+
+        # Group columns by (catalog, schema, name) preserving the
+        # ordinal_position order from the query.
+        grouped: dict[tuple[str | None, str | None, str], list[ColumnInfo]] = {}
+        order: list[tuple[str | None, str | None, str]] = []
+        for row in rows:
+            cat, sch, name, col_name, col_type, nullable_str = row
+            key = (cat or None, sch or None, str(name))
+            if key not in grouped:
+                grouped[key] = []
+                order.append(key)
+            grouped[key].append(
+                ColumnInfo(
+                    name=str(col_name),
+                    type=str(col_type),
+                    nullable=(str(nullable_str).upper() == "YES"),
+                )
+            )
+
+        return [
+            TableSchema(
+                catalog=cat, schema=sch, name=name, columns=tuple(grouped[(cat, sch, name)])
+            )
+            for (cat, sch, name) in order
+        ]
 
 
 def _to_regclass_arg(table: QualifiedTable) -> str:

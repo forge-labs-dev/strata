@@ -27,9 +27,11 @@ from typing import Any
 
 from strata.notebook.sql.adapter import (
     AdapterCapabilities,
+    ColumnInfo,
     FreshnessToken,
     QualifiedTable,
     SchemaFingerprint,
+    TableSchema,
     hash_connection_identity,
 )
 from strata.notebook.sql.registry import register_adapter
@@ -395,6 +397,49 @@ class SqliteAdapter:
                 h.update(b"\x00")
 
         return SchemaFingerprint(value=h.digest())
+
+    def list_schema(self, conn: Any) -> list[TableSchema]:
+        """Enumerate tables and views via ``sqlite_master`` + ``pragma_table_info``.
+
+        SQLite has a single namespace per attached database; we
+        report the implicit ``main`` schema only (attached
+        databases would need an extra pass per attachment, deferred
+        until users hit it). Views surface alongside tables so a
+        notebook author sees the full readable surface; the
+        ``type`` column on the result distinguishes them.
+        """
+        out: list[TableSchema] = []
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' "
+                "ORDER BY name"
+            )
+            names = [row[0] for row in cursor.fetchall() or []]
+
+            for name in names:
+                if not _SQLITE_IDENT_RE.fullmatch(name):
+                    # Skip pathological names rather than splice
+                    # them into a pragma — same defense as the
+                    # schema-fingerprint probe.
+                    continue
+                cursor.execute(f'SELECT * FROM pragma_table_info("{name}")')
+                cols: list[ColumnInfo] = []
+                for row in cursor.fetchall() or []:
+                    # pragma_table_info: cid, name, type, notnull, dflt_value, pk
+                    col_name = str(row[1]) if len(row) > 1 else ""
+                    col_type = str(row[2]) if len(row) > 2 else ""
+                    notnull = bool(row[3]) if len(row) > 3 else False
+                    cols.append(ColumnInfo(name=col_name, type=col_type, nullable=not notnull))
+                out.append(
+                    TableSchema(
+                        catalog=None,
+                        schema=None,
+                        name=name,
+                        columns=tuple(cols),
+                    )
+                )
+        return out
 
 
 _ADAPTER = SqliteAdapter()

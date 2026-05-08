@@ -572,6 +572,46 @@ async function updateNotebookMounts(
   return readJson<NotebookMutationResponse>(resp)
 }
 
+interface ConnectionSchemaColumn {
+  name: string
+  type: string
+  nullable: boolean | null
+}
+
+interface ConnectionSchemaTable {
+  catalog: string | null
+  schema: string | null
+  name: string
+  columns: ConnectionSchemaColumn[]
+}
+
+interface ConnectionSchemaResponse {
+  connection: string
+  driver: string
+  tables: ConnectionSchemaTable[]
+}
+
+async function getConnectionSchema(
+  notebookId: string,
+  connectionName: string,
+): Promise<ConnectionSchemaResponse> {
+  const resp = await fetchWithTimeout(
+    `${STRATA_BASE}/v1/notebooks/${notebookId}/connections/${encodeURIComponent(
+      connectionName,
+    )}/schema`,
+  )
+  if (!resp.ok) {
+    let detail = ''
+    try {
+      detail = ((await readJson<{ detail?: string }>(resp)).detail ?? '').toString()
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`Schema fetch failed: ${resp.status}${detail ? ` — ${detail}` : ''}`)
+  }
+  return readJson<ConnectionSchemaResponse>(resp)
+}
+
 async function listNotebookConnections(notebookId: string): Promise<ConnectionSpec[]> {
   const resp = await fetchWithTimeout(`${STRATA_BASE}/v1/notebooks/${notebookId}/connections`)
   if (!resp.ok) {
@@ -1209,6 +1249,7 @@ export function useStrata() {
     updateNotebookMounts,
     listNotebookConnections,
     updateNotebookConnections,
+    getConnectionSchema,
     updateNotebookWorker,
     updateNotebookTimeout,
     updateNotebookEnv,

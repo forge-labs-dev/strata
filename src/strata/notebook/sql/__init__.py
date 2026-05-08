@@ -15,10 +15,12 @@ Each driver module registers its adapter at import time.
 
 from strata.notebook.sql.adapter import (
     AdapterCapabilities,
+    ColumnInfo,
     DriverAdapter,
     FreshnessToken,
     QualifiedTable,
     SchemaFingerprint,
+    TableSchema,
     hash_connection_identity,
 )
 
@@ -37,10 +39,12 @@ _register()
 
 __all__ = [
     "AdapterCapabilities",
+    "ColumnInfo",
     "DriverAdapter",
     "FreshnessToken",
     "QualifiedTable",
     "SchemaFingerprint",
+    "TableSchema",
     "get_adapter",
     "hash_connection_identity",
     "known_drivers",

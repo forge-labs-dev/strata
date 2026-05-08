@@ -1568,6 +1568,77 @@ async def update_notebook_connections_endpoint(
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.get("/{notebook_id}/connections/{name}/schema")
+async def get_connection_schema(notebook_id: str, name: str) -> dict:
+    """Enumerate tables (and columns) on a connection.
+
+    Powers the schema-discovery sidebar so users can see what's
+    available before writing SQL. Opens the connection in
+    enforced read-only mode, runs the adapter's ``list_schema``,
+    closes. Errors surface verbatim so a missing-driver / auth
+    failure / unreachable host is visible to the user instead of
+    a confusing 500.
+    """
+    from strata.notebook.sql.cell_executor import (
+        _resolve_runtime_spec,  # type: ignore[attr-defined]
+        _safely_close,  # type: ignore[attr-defined]
+    )
+    from strata.notebook.sql.registry import get_adapter
+
+    session = _session_manager.get_session(notebook_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Notebook not found")
+
+    spec = next(
+        (c for c in session.notebook_state.connections if c.name == name),
+        None,
+    )
+    if spec is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown connection {name!r}",
+        )
+    try:
+        adapter = get_adapter(spec.driver)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    runtime_spec = _resolve_runtime_spec(spec, session.path)
+    try:
+        conn = adapter.open(runtime_spec, read_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"failed to open connection {name!r}: {exc}",
+        ) from exc
+
+    try:
+        tables = adapter.list_schema(conn)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502,
+            detail=f"schema enumeration failed for {name!r}: {exc}",
+        ) from exc
+    finally:
+        _safely_close(conn)
+
+    return {
+        "connection": name,
+        "driver": spec.driver,
+        "tables": [
+            {
+                "catalog": t.catalog,
+                "schema": t.schema,
+                "name": t.name,
+                "columns": [
+                    {"name": c.name, "type": c.type, "nullable": c.nullable} for c in t.columns
+                ],
+            }
+            for t in tables
+        ],
+    }
+
+
 @router.get("/{notebook_id}/workers")
 async def list_notebook_workers(notebook_id: str, refresh: bool = False) -> dict:
     """List the worker catalog visible to a notebook."""

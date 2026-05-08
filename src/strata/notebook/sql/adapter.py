@@ -87,6 +87,41 @@ class FreshnessToken:
 
 
 @dataclass(frozen=True)
+class ColumnInfo:
+    """One column of a table, as the driver reports it.
+
+    ``type`` is whatever the catalog's column-type column returns —
+    SQL-text form (``INTEGER``, ``VARCHAR(64)``, ``timestamp with
+    time zone``). Strata doesn't normalize across drivers because
+    the user typed SQL for a specific dialect; surfacing the
+    driver's own type label is the most honest thing.
+    """
+
+    name: str
+    type: str
+    nullable: bool | None = None
+
+
+@dataclass(frozen=True)
+class TableSchema:
+    """A table's identity plus its columns.
+
+    Used by the schema-discovery surface (``DriverAdapter.list_schema``)
+    so the UI can show users the tables and columns available on a
+    connection without them having to hand-write probe queries.
+    """
+
+    catalog: str | None
+    schema: str | None
+    name: str
+    columns: tuple[ColumnInfo, ...] = ()
+
+    def render(self) -> str:
+        parts = [p for p in (self.catalog, self.schema, self.name) if p]
+        return ".".join(parts)
+
+
+@dataclass(frozen=True)
 class SchemaFingerprint:
     """Opaque equality token reflecting touched-table column structure.
 
@@ -173,6 +208,23 @@ class DriverAdapter(Protocol):
         Catches metadata-only schema changes (ADD COLUMN, type changes)
         that the freshness token would miss. Cheap; one metadata read
         per touched table.
+        """
+        ...
+
+    def list_schema(self, conn: Any) -> list[TableSchema]:
+        """Enumerate the tables (and columns) visible on this connection.
+
+        Used by the UI's schema-discovery sidebar so users can see
+        what's available before writing SQL. Should be idempotent
+        and side-effect free; the executor calls it on a read-only
+        connection. Each ``TableSchema`` carries the table's
+        catalog/schema/name plus a tuple of ``ColumnInfo`` (column
+        name + driver-reported type).
+
+        Adapters that can't enumerate (e.g. a driver behind a
+        catalog the user lacks rights to) raise — the route
+        surfaces the error verbatim so the user sees what went
+        wrong.
         """
         ...
 
